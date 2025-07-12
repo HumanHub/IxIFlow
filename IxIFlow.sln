@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36203.30
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IxIFlow", "IxIFlow\IxIFlow.csproj", "{8E1B681F-5972-7DCC-3CEF-CF06B860C409}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IxIFlow.Tests", "IxIFlow.Tests\IxIFlow.Tests.csproj", "{7FAC6AC7-1724-DEC2-8D53-D8C41F229462}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8E1B681F-5972-7DCC-3CEF-CF06B860C409}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8E1B681F-5972-7DCC-3CEF-CF06B860C409}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8E1B681F-5972-7DCC-3CEF-CF06B860C409}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8E1B681F-5972-7DCC-3CEF-CF06B860C409}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7FAC6AC7-1724-DEC2-8D53-D8C41F229462}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7FAC6AC7-1724-DEC2-8D53-D8C41F229462}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7FAC6AC7-1724-DEC2-8D53-D8C41F229462}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7FAC6AC7-1724-DEC2-8D53-D8C41F229462}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {8D5D7E22-F7E0-402B-8513-7C386281C933}
+	EndGlobalSection
+EndGlobal
