@@ -1,4 +1,4 @@
-# IxIFlow Workflow Engine
+# IxIFlow Workflow Engine - Beta release
 
 A simple, type-safe workflow engine for .NET that helps you build and orchestrate business processes. Build workflows using a fluent API that keeps your code clean and your logic clear.
 
