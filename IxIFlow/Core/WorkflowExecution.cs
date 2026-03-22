@@ -314,6 +314,124 @@ public class WorkflowInstance
     ///     Current suspension information (if suspended)
     /// </summary>
     public SuspensionInfo? SuspensionInfo { get; set; }
+
+    /// <summary>
+    ///     Structured execution snapshot for resume, replay, and debugging
+    /// </summary>
+    public WorkflowExecutionSnapshot? ExecutionSnapshot { get; set; }
+}
+
+/// <summary>
+///     Structured execution snapshot for durable resume and future debugger support
+/// </summary>
+public class WorkflowExecutionSnapshot
+{
+    /// <summary>
+    ///     Workflow instance identifier that owns this snapshot
+    /// </summary>
+    public string InstanceId { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Workflow definition name
+    /// </summary>
+    public string WorkflowName { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Workflow definition version
+    /// </summary>
+    public int WorkflowVersion { get; set; }
+
+    /// <summary>
+    ///     Workflow status at snapshot time
+    /// </summary>
+    public WorkflowStatus Status { get; set; }
+
+    /// <summary>
+    ///     The current active execution pointers
+    /// </summary>
+    public List<ExecutionPointer> Pointers { get; set; } = new();
+
+    /// <summary>
+    ///     Execution frames that describe nested control flow state
+    /// </summary>
+    public List<ExecutionFrame> Frames { get; set; } = new();
+
+    /// <summary>
+    ///     Serialized values used by the runtime during resume
+    /// </summary>
+    public Dictionary<string, string> Values { get; set; } = new();
+
+    /// <summary>
+    ///     When the snapshot was captured
+    /// </summary>
+    public DateTime CapturedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
+///     Execution pointer describing the next step location for a branch of execution
+/// </summary>
+public class ExecutionPointer
+{
+    /// <summary>
+    ///     Pointer identity
+    /// </summary>
+    public string PointerId { get; set; } = Guid.NewGuid().ToString();
+
+    /// <summary>
+    ///     The step this pointer currently targets
+    /// </summary>
+    public string StepId { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Zero-based step index at the current scope
+    /// </summary>
+    public int StepIndex { get; set; }
+
+    /// <summary>
+    ///     Pointer status, such as Active, Waiting, or Completed
+    /// </summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Optional parent pointer for nested execution
+    /// </summary>
+    public string? ParentPointerId { get; set; }
+
+    /// <summary>
+    ///     Associated frame when the pointer belongs to a nested control-flow scope
+    /// </summary>
+    public string? FrameId { get; set; }
+}
+
+/// <summary>
+///     Execution frame representing nested control-flow context
+/// </summary>
+public class ExecutionFrame
+{
+    /// <summary>
+    ///     Frame identity
+    /// </summary>
+    public string FrameId { get; set; } = Guid.NewGuid().ToString();
+
+    /// <summary>
+    ///     Frame kind such as Try, Catch, Loop, Sequence, or Conditional
+    /// </summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Owning step identifier
+    /// </summary>
+    public string StepId { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Parent frame for nested flow scopes
+    /// </summary>
+    public string? ParentFrameId { get; set; }
+
+    /// <summary>
+    ///     Structured frame state captured as strings for persistence safety
+    /// </summary>
+    public Dictionary<string, string> State { get; set; } = new();
 }
 
 /// <summary>

@@ -254,6 +254,8 @@ public class WorkflowEngine : IWorkflowEngine
             var instance = validationResult.WorkflowInstance!;
             var workflowData = validationResult.WorkflowData!;
             _logger.LogTrace("Retrieved workflow instance and data from resume result");
+            var restoredExecutionState = _suspendResumeExecutor.RestoreExecutionState(instance.ExecutionStateJson);
+            restoredExecutionState.LastStepResult = @event;
 
             // Step 2.5: Check if this is a saga resume and delegate to SagaExecutor
             _logger.LogTrace("Checking for saga resume indicators");
@@ -344,7 +346,7 @@ public class WorkflowEngine : IWorkflowEngine
             _logger.LogTrace("Retrieved workflow definition from registry");
             
             // Continue workflow execution from the step after the suspend point
-            var result = await ContinueWorkflowExecutionAsync(definition, instance, workflowData, cancellationToken);
+            var result = await ContinueWorkflowExecutionAsync(definition, instance, workflowData, restoredExecutionState, @event, cancellationToken);
             
             _logger.LogInformation("Workflow resume completed: {InstanceId}, Status: {Status}", 
                 instanceId, result.Status);
@@ -371,13 +373,12 @@ public class WorkflowEngine : IWorkflowEngine
     private async Task<StepExecutionResult> ExecuteStepsAsync<TWorkflowData>(
         List<WorkflowStep> steps,
         StepExecutionContext<TWorkflowData> context,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ExecutionState? initialExecutionState = null)
         where TWorkflowData : class
     {
-        var executionState = new ExecutionState
-        {
-            LastStepResult = context.PreviousStepData
-        };
+        var executionState = initialExecutionState ?? new ExecutionState();
+        executionState.LastStepResult ??= context.PreviousStepData;
 
         _logger.LogDebug("Starting propagation-based execution of {StepCount} steps", steps.Count);
 
@@ -464,6 +465,17 @@ public class WorkflowEngine : IWorkflowEngine
 
         // Push try block onto stack for nested exception handling
         executionState.TryStack.Push(step);
+        executionState.Frames.Add(new ExecutionFrame
+        {
+            Kind = WorkflowStepType.TryCatch.ToString(),
+            StepId = step.Id,
+            ParentFrameId = executionState.Frames.LastOrDefault()?.FrameId,
+            State = new Dictionary<string, string>
+            {
+                ["StepName"] = step.Name,
+                ["CatchBlockCount"] = step.CatchBlocks.Count.ToString()
+            }
+        });
 
         try
         {
@@ -694,6 +706,11 @@ public class WorkflowEngine : IWorkflowEngine
         if (executionState.TryStack.Count > 0)
         {
             executionState.TryStack.Pop();
+        }
+
+        if (executionState.Frames.Count > 0)
+        {
+            executionState.Frames.RemoveAt(executionState.Frames.Count - 1);
         }
 
         // If we still have a pending exception after all catch/finally processing, 
@@ -1136,6 +1153,13 @@ public class WorkflowEngine : IWorkflowEngine
 
         var iterationCount = 0;
         const int maxIterations = 1000;
+        executionState.Frames.Add(new ExecutionFrame
+        {
+            Kind = step.LoopType.ToString(),
+            StepId = step.Id,
+            ParentFrameId = executionState.Frames.LastOrDefault()?.FrameId,
+            State = new Dictionary<string, string>()
+        });
 
         // Store the original previous step data from before the loop
         // Loop conditions should always be evaluated with the data from the step that came BEFORE the loop
@@ -1148,6 +1172,7 @@ public class WorkflowEngine : IWorkflowEngine
         while (iterationCount < maxIterations)
         {
             iterationCount++;
+            executionState.Frames[^1].State["IterationCount"] = iterationCount.ToString();
 
             bool shouldExecuteBody;
             if (isDoWhile)
@@ -1210,6 +1235,11 @@ public class WorkflowEngine : IWorkflowEngine
             var errorMessage = $"Loop exceeded maximum iterations ({maxIterations})";
             _logger.LogError("{ErrorMessage} for step: {StepId}", errorMessage, step.Id);
             executionState.PendingException = new InvalidOperationException(errorMessage);
+        }
+
+        if (executionState.Frames.Count > 0)
+        {
+            executionState.Frames.RemoveAt(executionState.Frames.Count - 1);
         }
 
         // Loops are transparent pass-through containers
@@ -1324,6 +1354,8 @@ public class WorkflowEngine : IWorkflowEngine
         WorkflowDefinition definition,
         WorkflowInstance instance,
         object workflowData,
+        ExecutionState restoredExecutionState,
+        object resumeEvent,
         CancellationToken cancellationToken)
     {
         _logger.LogInformation("Continuing workflow {InstanceId} from step {CurrentStep}", 
@@ -1346,13 +1378,23 @@ public class WorkflowEngine : IWorkflowEngine
             contextType.GetProperty("WorkflowInstance")?.SetValue(executionContext, instance);
             contextType.GetProperty("WorkflowDefinition")?.SetValue(executionContext, definition);
             contextType.GetProperty("WorkflowData")?.SetValue(executionContext, workflowData);
-            contextType.GetProperty("PreviousStepData")?.SetValue(executionContext, null);
+            contextType.GetProperty("PreviousStepData")?.SetValue(executionContext, resumeEvent);
 
-            // Get remaining steps to execute (from current step + 1 onwards)
-            var remainingSteps = definition.Steps.Skip(instance.CurrentStepNumber).ToList();
+            var resumeStepId = restoredExecutionState.StepMetadata.TryGetValue("ResumeStepId", out var resumeStepIdObj) && resumeStepIdObj is string stepId && !string.IsNullOrWhiteSpace(stepId)
+                ? stepId
+                : null;
+
+            var resumeFromStepIndex = restoredExecutionState.StepMetadata.TryGetValue("ResumeFromStepIndex", out var resumeIndexObj) && resumeIndexObj is int resumeIndex
+                ? resumeIndex
+                : instance.CurrentStepNumber + 1;
+
+            // Get remaining steps to execute from the recorded resume path.
+            var remainingSteps = !string.IsNullOrWhiteSpace(resumeStepId)
+                ? BuildContinuationSteps(definition.Steps, resumeStepId)
+                : definition.Steps.Skip(resumeFromStepIndex).ToList();
             
             _logger.LogDebug("Executing remaining steps: {RemainingStepCount} steps from index {StartIndex}", 
-                remainingSteps.Count, instance.CurrentStepNumber);
+                remainingSteps.Count, resumeFromStepIndex);
 
             // Execute remaining steps using reflection to call the generic method
             var executeMethod = typeof(WorkflowEngine).GetMethod(nameof(ExecuteStepsAsync), BindingFlags.NonPublic | BindingFlags.Instance);
@@ -1362,7 +1404,7 @@ public class WorkflowEngine : IWorkflowEngine
             }
 
             var genericExecuteMethod = executeMethod.MakeGenericMethod(workflowDataType);
-            var executeTask = (Task)genericExecuteMethod.Invoke(this, new[] { remainingSteps, executionContext, cancellationToken })!;
+            var executeTask = (Task)genericExecuteMethod.Invoke(this, new object?[] { remainingSteps, executionContext, cancellationToken, restoredExecutionState })!;
             await executeTask;
 
             // Get the result using reflection
@@ -1447,6 +1489,64 @@ public class WorkflowEngine : IWorkflowEngine
                 ExecutionTime = DateTime.UtcNow - instance.StartedAt!.Value
             };
         }
+    }
+
+    private List<WorkflowStep> BuildContinuationSteps(List<WorkflowStep> steps, string suspendedStepId)
+    {
+        var continuation = BuildContinuationStepsCore(steps, suspendedStepId);
+        return continuation ?? [];
+    }
+
+    private List<WorkflowStep>? BuildContinuationStepsCore(List<WorkflowStep> steps, string suspendedStepId)
+    {
+        for (var index = 0; index < steps.Count; index++)
+        {
+            var step = steps[index];
+            if (step.Id == suspendedStepId)
+            {
+                return [.. steps.Skip(index + 1)];
+            }
+
+            if (step.StepType == WorkflowStepType.TryCatch)
+            {
+                var tryContinuation = BuildContinuationStepsCore(step.SequenceSteps, suspendedStepId);
+                if (tryContinuation != null)
+                {
+                    return [.. tryContinuation, .. step.FinallySteps, .. steps.Skip(index + 1)];
+                }
+
+                foreach (var catchBlock in step.CatchBlocks)
+                {
+                    var catchContinuation = BuildContinuationStepsCore(catchBlock.SequenceSteps, suspendedStepId);
+                    if (catchContinuation != null)
+                    {
+                        return [.. catchContinuation, .. step.FinallySteps, .. steps.Skip(index + 1)];
+                    }
+                }
+            }
+
+            var nestedContinuation = BuildContinuationStepsCore(step.SequenceSteps, suspendedStepId)
+                                     ?? BuildContinuationStepsCore(step.ThenSteps, suspendedStepId)
+                                     ?? BuildContinuationStepsCore(step.ElseSteps, suspendedStepId)
+                                     ?? BuildContinuationStepsCore(step.LoopBodySteps, suspendedStepId)
+                                     ?? BuildContinuationStepsCore(step.FinallySteps, suspendedStepId);
+
+            if (nestedContinuation != null)
+            {
+                return [.. nestedContinuation, .. steps.Skip(index + 1)];
+            }
+
+            foreach (var branch in step.ParallelBranches)
+            {
+                nestedContinuation = BuildContinuationStepsCore(branch, suspendedStepId);
+                if (nestedContinuation != null)
+                {
+                    return [.. nestedContinuation, .. steps.Skip(index + 1)];
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
