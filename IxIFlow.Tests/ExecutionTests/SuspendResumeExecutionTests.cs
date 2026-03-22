@@ -357,6 +357,165 @@ public class SuspendResumeExecutionTests
     }
 
     [Fact]
+    public async Task SuspendThenResume_NextStepCanReadResumeEventAsPreviousStep()
+    {
+        var workflowData = new SuspendResumeTestData
+        {
+            OrderId = "ORDER-004B",
+            ProcessOrderCompleted = false,
+            CompleteOrderCompleted = false
+        };
+
+        var workflow = Workflow
+            .Create<SuspendResumeTestData>("SuspendResumePreviousStepContextTest")
+            .Step<ProcessOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.ProcessOrderCompleted).To(ctx => ctx.WorkflowData.ProcessOrderCompleted))
+            .Suspend<ApprovalEvent>("Waiting for approval with previous-step propagation",
+                (evt, ctx) => evt.OrderId == ctx.WorkflowData.OrderId)
+            .Step<CompleteOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.PreviousStep.OrderId)
+                .Input(act => act.ApprovalStatus).From(ctx => ctx.PreviousStep.Approved)
+                .Output(act => act.CompleteOrderCompleted).To(ctx => ctx.WorkflowData.CompleteOrderCompleted)
+                .Output(act => act.ApprovalStatus).To(ctx => ctx.WorkflowData.ObservedApprovalStatus))
+            .Build();
+
+        var startResult = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+
+        Assert.False(startResult.IsSuccess);
+
+        var resumeResult = await _workflowEngine.ResumeWorkflowAsync(startResult.InstanceId, new ApprovalEvent
+        {
+            OrderId = "ORDER-004B",
+            Approved = true,
+            Declined = false
+        });
+
+        Assert.True(resumeResult.IsSuccess);
+
+        var finalWorkflowData = Assert.IsType<SuspendResumeTestData>(resumeResult.WorkflowData);
+        Assert.True(finalWorkflowData.CompleteOrderCompleted);
+        Assert.True(finalWorkflowData.ObservedApprovalStatus);
+    }
+
+    [Fact]
+    public async Task EventCorrelator_Should_Reject_NonMatchingResumeCondition_BeforeResume()
+    {
+        var workflowData = new SuspendResumeTestData
+        {
+            OrderId = "ORDER-007B"
+        };
+
+        var workflow = Workflow
+            .Create<SuspendResumeTestData>("CorrelationConditionValidationTest")
+            .Step<ProcessOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.ProcessOrderCompleted).To(ctx => ctx.WorkflowData.ProcessOrderCompleted))
+            .Suspend<ApprovalEvent>("Waiting for manager approval",
+                (evt, ctx) => evt.OrderId == ctx.WorkflowData.OrderId &&
+                              evt.Approved &&
+                              !string.IsNullOrWhiteSpace(evt.ApproverName) &&
+                              evt.ApproverName.Contains("Manager"))
+            .Build();
+
+        var startResult = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        Assert.False(startResult.IsSuccess);
+
+        var instance = await _stateRepository.GetWorkflowInstanceAsync(startResult.InstanceId);
+        Assert.NotNull(instance);
+
+        var correlator = _serviceProvider.GetRequiredService<IEventCorrelator>();
+        var matches = await correlator.EvaluateResumeConditionAsync(new ApprovalEvent
+        {
+            OrderId = "ORDER-007B",
+            Approved = true,
+            Declined = false,
+            ApproverName = "John Employee"
+        }, instance!);
+
+        Assert.False(matches);
+    }
+
+    [Fact]
+    public async Task SuspendWithinTryBlock_Should_Capture_ExecutionSnapshot_WithTryFrame()
+    {
+        var workflowData = new SuspendResumeTestData
+        {
+            OrderId = "ORDER-TRY-001"
+        };
+
+        var workflow = Workflow
+            .Create<SuspendResumeTestData>("SuspendWithinTrySnapshotTest")
+            .Step<ProcessOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.ProcessOrderCompleted).To(ctx => ctx.WorkflowData.ProcessOrderCompleted))
+            .Try(tryBlock => tryBlock
+                .Suspend<ApprovalEvent>("Waiting inside try block",
+                    (evt, ctx) => evt.OrderId == ctx.WorkflowData.OrderId)
+                .Step<CompleteOrderAsyncActivity>(setup => setup
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                    .Output(act => act.CompleteOrderCompleted).To(ctx => ctx.WorkflowData.CompleteOrderCompleted)))
+            .Catch<Exception>(catchBlock => catchBlock
+                .Step<LogErrorActivity>(setup => setup
+                    .Input(act => act.Message).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                    .Output(act => act.Logged).To(ctx => ctx.WorkflowData.RequiresApproval)))
+            .Build();
+
+        var startResult = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+
+        Assert.False(startResult.IsSuccess);
+
+        var instance = await _stateRepository.GetWorkflowInstanceAsync(startResult.InstanceId);
+        Assert.NotNull(instance);
+        Assert.NotNull(instance!.ExecutionSnapshot);
+        Assert.Single(instance.ExecutionSnapshot.Pointers);
+        Assert.Contains(instance.ExecutionSnapshot.Frames, frame => frame.Kind == WorkflowStepType.TryCatch.ToString());
+    }
+
+    [Fact]
+    public async Task SuspendWithinTryBlock_Should_Resume_And_Complete_AfterSnapshotRestore()
+    {
+        var workflowData = new SuspendResumeTestData
+        {
+            OrderId = "ORDER-TRY-002"
+        };
+
+        var workflow = Workflow
+            .Create<SuspendResumeTestData>("SuspendWithinTryResumeTest")
+            .Step<ProcessOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.ProcessOrderCompleted).To(ctx => ctx.WorkflowData.ProcessOrderCompleted))
+            .Try(tryBlock => tryBlock
+                .Suspend<ApprovalEvent>("Waiting inside try block",
+                    (evt, ctx) => evt.OrderId == ctx.WorkflowData.OrderId)
+                .Step<CompleteOrderAsyncActivity>(setup => setup
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                    .Output(act => act.CompleteOrderCompleted).To(ctx => ctx.WorkflowData.CompleteOrderCompleted)))
+            .Catch<Exception>(catchBlock => catchBlock
+                .Step<LogErrorActivity>(setup => setup
+                    .Input(act => act.Message).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                    .Output(act => act.Logged).To(ctx => ctx.WorkflowData.RequiresApproval)))
+            .Build();
+
+        var startResult = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        Assert.False(startResult.IsSuccess);
+
+        var resumeResult = await _workflowEngine.ResumeWorkflowAsync(startResult.InstanceId, new ApprovalEvent
+        {
+            OrderId = "ORDER-TRY-002",
+            Approved = true,
+            Declined = false
+        });
+
+        Assert.True(resumeResult.IsSuccess);
+
+        var finalWorkflowData = Assert.IsType<SuspendResumeTestData>(resumeResult.WorkflowData);
+        Assert.True(finalWorkflowData.CompleteOrderCompleted);
+    }
+
+    [Fact]
     public async Task SuspendInConditionalBranch_ConditionalSuspend_ResumeCorrectly()
     {
         // Arrange - Create workflow with suspend inside conditional branch

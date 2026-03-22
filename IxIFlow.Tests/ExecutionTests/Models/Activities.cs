@@ -931,6 +931,7 @@ public class SuspendResumeTestData
     // Approval tracking
     public bool RequiresApproval { get; set; }
     public bool ApprovalStatus { get; set; }
+    public bool ObservedApprovalStatus { get; set; }
     public bool RequiresSecondApproval { get; set; }
     public string ApproverName { get; set; } = string.Empty;
 }

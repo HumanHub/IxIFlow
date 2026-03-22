@@ -11,12 +11,14 @@ namespace IxIFlow.Core;
 public class SuspendResumeExecutor(
     IWorkflowStateRepository stateRepository,
     IWorkflowTracer tracer,
+    IWorkflowVersionRegistry versionRegistry,
     ILogger<SuspendResumeExecutor> logger,
     IServiceProvider serviceProvider)
     : ISuspendResumeExecutor
 {
     private readonly IWorkflowStateRepository _stateRepository = stateRepository ?? throw new ArgumentNullException(nameof(stateRepository));
     private readonly IWorkflowTracer _tracer = tracer ?? throw new ArgumentNullException(nameof(tracer));
+    private readonly IWorkflowVersionRegistry _versionRegistry = versionRegistry ?? throw new ArgumentNullException(nameof(versionRegistry));
     private readonly ILogger<SuspendResumeExecutor> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     private readonly IServiceProvider _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
 
@@ -90,11 +92,8 @@ public class SuspendResumeExecutor(
                 resumeConditionJson = JsonSerializer.Serialize(new { HasCondition = true });
             }
 
-            // Serialize current workflow definition
-            var workflowDefinitionJson = SerializeWorkflowDefinition(context.WorkflowDefinition);
-
             // Serialize current execution state
-            var executionStateJson = SerializeExecutionState(context, executionState);
+            var executionStateJson = SerializeExecutionState(context, executionState, step);
 
             // Get suspend reason from step metadata (set by WorkflowBuilder.Suspend method)
             var suspendReason = step.StepMetadata.TryGetValue("SuspendReason", out var reasonObj) && reasonObj is string reason
@@ -120,8 +119,9 @@ public class SuspendResumeExecutor(
             // Update workflow instance with suspension information
             context.WorkflowInstance.Status = WorkflowStatus.Suspended;
             context.WorkflowInstance.SuspensionInfo = suspensionInfo;
-            context.WorkflowInstance.WorkflowDefinitionJson = workflowDefinitionJson;
+            context.WorkflowInstance.WorkflowDefinitionJson = string.Empty;
             context.WorkflowInstance.ExecutionStateJson = executionStateJson;
+            context.WorkflowInstance.ExecutionSnapshot = CreateExecutionSnapshot(context, executionState, step);
 
             // Save workflow instance to repository
             await _stateRepository.SaveWorkflowInstanceAsync(context.WorkflowInstance);
@@ -250,9 +250,16 @@ public class SuspendResumeExecutor(
 
             _logger.LogDebug("Workflow data deserialized successfully");
 
+            var workflowDefinition = await _versionRegistry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
+            if (workflowDefinition == null)
+            {
+                _logger.LogError("Workflow definition not found for {WorkflowName} v{WorkflowVersion}", instance.WorkflowName, instance.WorkflowVersion);
+                return ResumeValidationResult.Failed($"Workflow definition not found: {instance.WorkflowName} v{instance.WorkflowVersion}");
+            }
+
             // OPTIMIZED: Evaluate condition AND apply mappings in one flow
             _logger.LogDebug("Evaluating condition and applying mappings using original suspend step");
-            var conditionAndMappingResult = await EvaluateConditionAndApplyMappingsAsync(@event, instance, workflowData, workflowDataType);
+            var conditionAndMappingResult = await EvaluateConditionAndApplyMappingsAsync(@event, instance, workflowData, workflowDataType, workflowDefinition);
             
             if (!conditionAndMappingResult.ConditionMet)
             {
@@ -349,65 +356,26 @@ public class SuspendResumeExecutor(
     }
 
     /// <summary>
-    /// Serializes workflow definition to JSON
-    /// </summary>
-    private string SerializeWorkflowDefinition(WorkflowDefinition definition)
-    {
-        // For now, serialize basic metadata - full serialization would be more complex
-        var metadata = new
-        {
-            definition.Id,
-            definition.Name,
-            definition.Version,
-            definition.Description,
-            WorkflowDataTypeName = definition.WorkflowDataType.AssemblyQualifiedName,
-            definition.CreatedAt,
-            definition.CreatedBy,
-            definition.Tags,
-            definition.EstimatedStepCount,
-            definition.SupportsSuspension,
-            definition.UsesSagaPattern,
-            definition.SupportsParallelExecution,
-            StepCount = definition.Steps.Count
-        };
-
-        return JsonSerializer.Serialize(metadata);
-    }
-
-    /// <summary>
-    /// Deserializes workflow definition from JSON
-    /// </summary>
-    private WorkflowDefinition DeserializeWorkflowDefinition(string json)
-    {
-        // For now, return a placeholder - full deserialization would need more work
-        var metadata = JsonSerializer.Deserialize<dynamic>(json);
-        
-        return new WorkflowDefinition
-        {
-            Id = Guid.NewGuid().ToString(),
-            Name = "Resumed Workflow",
-            Version = 1,
-            WorkflowDataType = typeof(object),
-            CreatedAt = DateTime.UtcNow,
-            Steps = new List<WorkflowStep>()
-        };
-    }
-
-    /// <summary>
     /// Serializes execution state to JSON
     /// </summary>
     private string SerializeExecutionState<TWorkflowData>(
         StepExecutionContext<TWorkflowData> context,
-        ExecutionState executionState)
+        ExecutionState executionState,
+        WorkflowStep suspendedStep)
+        where TWorkflowData : class
     {
-        var state = new
+        var state = new SuspendedExecutionState
         {
             CurrentStepNumber = context.WorkflowInstance.CurrentStepNumber,
             LastStepResultJson = executionState.LastStepResult != null ? JsonSerializer.Serialize(executionState.LastStepResult) : "",
             LastStepResultType = executionState.LastStepResult?.GetType().AssemblyQualifiedName ?? "",
             HasPendingException = executionState.PendingException != null,
-            TryStackDepth = executionState.TryStack.Count,
-            SerializedAt = DateTime.UtcNow
+            TryStackStepIds = [.. executionState.TryStack.Select(t => t.Id)],
+            Pointers = CreateExecutionPointers(context, executionState),
+            Frames = CreateExecutionFrames(executionState),
+            SerializedAt = DateTime.UtcNow,
+            ResumeStepId = suspendedStep.Id,
+            ResumeFromStepIndex = context.WorkflowInstance.CurrentStepNumber
         };
 
         return JsonSerializer.Serialize(state);
@@ -418,12 +386,25 @@ public class SuspendResumeExecutor(
     /// </summary>
     private ExecutionState DeserializeExecutionState(string json)
     {
-        // For now, return a basic execution state - full deserialization would need more work
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new ExecutionState();
+        }
+
+        var state = JsonSerializer.Deserialize<SuspendedExecutionState>(json) ?? new SuspendedExecutionState();
+
         return new ExecutionState
         {
-            LastStepResult = null,
+            LastStepResult = DeserializeLastStepResult(state),
             PendingException = null,
-            TryStack = new Stack<WorkflowStep>()
+            TryStack = new Stack<WorkflowStep>(),
+            Pointers = state.Pointers,
+            Frames = state.Frames,
+            StepMetadata = new Dictionary<string, object>
+            {
+                ["ResumeFromStepIndex"] = state.ResumeFromStepIndex,
+                ["ResumeStepId"] = state.ResumeStepId ?? string.Empty
+            }
         };
     }
 
@@ -443,16 +424,12 @@ public class SuspendResumeExecutor(
             _logger.LogDebug("Getting original workflow definition from registry: {WorkflowName} v{WorkflowVersion}",
                 instance.WorkflowName, instance.WorkflowVersion);
 
-            // We need to inject IWorkflowVersionRegistry to get the original definition
-            var versionRegistry = _serviceProvider.GetRequiredService<IWorkflowVersionRegistry>();
-
-            var workflowDefinition = await versionRegistry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
+            var workflowDefinition = await _versionRegistry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
             if (workflowDefinition == null)
             {
-                _logger.LogWarning("Workflow definition not found in registry: {WorkflowName} v{WorkflowVersion}, falling back to basic property matching",
+                _logger.LogWarning("Workflow definition not found in registry: {WorkflowName} v{WorkflowVersion}",
                     instance.WorkflowName, instance.WorkflowVersion);
-                ApplyBasicPropertyMatching(@event, workflowData);
-                return;
+                throw new InvalidOperationException($"Workflow definition not found: {instance.WorkflowName} v{instance.WorkflowVersion}");
             }
 
             _logger.LogDebug("Retrieved workflow definition from registry");
@@ -464,17 +441,13 @@ public class SuspendResumeExecutor(
 
             if (string.IsNullOrEmpty(suspendStepId))
             {
-                _logger.LogWarning("No suspend step ID found in suspension metadata, falling back to basic property matching");
-                ApplyBasicPropertyMatching(@event, workflowData);
-                return;
+                throw new InvalidOperationException("No suspend step ID found in suspension metadata");
             }
 
             var suspendStep = FindStepById(workflowDefinition.Steps, suspendStepId);
             if (suspendStep == null)
             {
-                _logger.LogWarning("Suspend step not found in workflow definition: {StepId}, falling back to basic property matching", suspendStepId);
-                ApplyBasicPropertyMatching(@event, workflowData);
-                return;
+                throw new InvalidOperationException($"Suspend step not found in workflow definition: {suspendStepId}");
             }
 
             _logger.LogDebug("Found suspend step: {StepName} with {MappingCount} output mappings", 
@@ -561,8 +534,7 @@ public class SuspendResumeExecutor(
 
         if (suspendStep.OutputMappings.Count == 0)
         {
-            _logger.LogDebug("No output mappings found on suspend step, falling back to basic property matching");
-            ApplyBasicPropertyMatching(@event, workflowData);
+            _logger.LogDebug("No output mappings found on suspend step {StepName}", suspendStep.Name);
             return;
         }
 
@@ -647,81 +619,6 @@ public class SuspendResumeExecutor(
     }
 
     /// <summary>
-    /// Applies event data mappings to workflow data using suspend step's output mappings
-    /// </summary>
-    private void ApplyEventMappingsToWorkflowData<TEvent>(TEvent @event, WorkflowInstance instance, object workflowData)
-        where TEvent : class
-    {
-        _logger.LogDebug("Applying event mappings for event type {EventType} to workflow data", typeof(TEvent).Name);
-
-        try
-        {
-            // For now, we need to get the original suspend step's output mappings
-            // Since we don't have full workflow definition reconstruction yet,
-            // we'll use a simplified approach based on the stored metadata
-            
-            if (instance.SuspensionInfo?.Metadata.TryGetValue("EventDataJson", out var eventDataJsonObj) == true &&
-                eventDataJsonObj is string eventDataJson && !string.IsNullOrEmpty(eventDataJson))
-            {
-                // The original suspend step stored expected event data structure
-                // We can use this to understand what mappings were intended
-                _logger.LogDebug("Found stored event data structure for mapping reference");
-            }
-
-            // For now, we'll use reflection to try basic property matching
-            // This will be replaced when we implement workflow definition reconstruction
-            ApplyBasicPropertyMatching(@event, workflowData);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to apply event mappings for event type {EventType}", typeof(TEvent).Name);
-            throw new InvalidOperationException($"Failed to apply event mappings: {ex.Message}", ex);
-        }
-    }
-
-    /// <summary>
-    /// Applies basic property matching between event and workflow data as fallback
-    /// </summary>
-    private void ApplyBasicPropertyMatching<TEvent>(TEvent @event, object workflowData)
-        where TEvent : class
-    {
-        var eventType = typeof(TEvent);
-        var workflowDataType = workflowData.GetType();
-
-        _logger.LogDebug("Applying basic property matching from {EventType} to {WorkflowDataType}", 
-            eventType.Name, workflowDataType.Name);
-
-        var eventProperties = eventType.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.CanRead)
-            .ToList();
-
-        var workflowProperties = workflowDataType.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.CanWrite)
-            .ToDictionary(p => p.Name, p => p);
-
-        foreach (var eventProperty in eventProperties)
-        {
-            if (workflowProperties.TryGetValue(eventProperty.Name, out var workflowProperty))
-            {
-                try
-                {
-                    var eventValue = eventProperty.GetValue(@event);
-                    var convertedValue = ConvertValue(eventValue, workflowProperty.PropertyType);
-                    workflowProperty.SetValue(workflowData, convertedValue);
-
-                    _logger.LogTrace("Mapped property {PropertyName}: {Value}", 
-                        eventProperty.Name, convertedValue);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to map property {PropertyName} from event to workflow data", 
-                        eventProperty.Name);
-                }
-            }
-        }
-    }
-
-    /// <summary>
     /// OPTIMIZED: Evaluates condition AND applies mappings in one efficient flow
     /// This avoids duplicate workflow definition retrieval and context creation
     /// </summary>
@@ -729,7 +626,8 @@ public class SuspendResumeExecutor(
         TEvent @event, 
         WorkflowInstance instance, 
         object workflowData, 
-        Type workflowDataType)
+        Type workflowDataType,
+        WorkflowDefinition workflowDefinition)
         where TEvent : class
     {
         _logger.LogDebug("Evaluating condition and applying mappings for event type {EventType}, Instance: {InstanceId}",
@@ -737,22 +635,8 @@ public class SuspendResumeExecutor(
 
         try
         {
-            // Step 1: Get the original workflow definition from the version registry (ONCE)
-            _logger.LogTrace("Getting workflow definition from version registry: {WorkflowName} v{WorkflowVersion}",
-                instance.WorkflowName, instance.WorkflowVersion);
-            
-            var versionRegistry = _serviceProvider.GetRequiredService<IWorkflowVersionRegistry>();
-            var workflowDefinition = await versionRegistry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
-            
-            if (workflowDefinition == null)
-            {
-                _logger.LogWarning("Workflow definition not found for {WorkflowName} v{WorkflowVersion}, falling back to basic property matching",
-                    instance.WorkflowName, instance.WorkflowVersion);
-                ApplyBasicPropertyMatching(@event, workflowData);
-                return (true, true); // Allow resume with basic mapping
-            }
-
-            _logger.LogTrace("Found workflow definition with {StepCount} steps", workflowDefinition.Steps.Count);
+            _logger.LogTrace("Using workflow definition {WorkflowName} v{WorkflowVersion} with {StepCount} steps",
+                workflowDefinition.Name, workflowDefinition.Version, workflowDefinition.Steps.Count);
 
             // Step 2: Find the suspend step that caused the suspension (ONCE)
             var suspendStepId = instance.SuspensionInfo?.Metadata.TryGetValue("StepId", out var stepIdObj) == true && stepIdObj is string stepId
@@ -763,9 +647,7 @@ public class SuspendResumeExecutor(
 
             if (string.IsNullOrEmpty(suspendStepId))
             {
-                _logger.LogWarning("No suspend step ID found in suspension metadata, falling back to basic property matching");
-                ApplyBasicPropertyMatching(@event, workflowData);
-                return (true, true); // Allow resume with basic mapping
+                throw new InvalidOperationException("No suspend step ID found in suspension metadata");
             }
 
             _logger.LogTrace("Searching for suspend step with ID: {StepId}", suspendStepId);
@@ -782,9 +664,7 @@ public class SuspendResumeExecutor(
                 }
                 else
                 {
-                    _logger.LogWarning("Suspend step not found: {StepId}, falling back to basic property matching", suspendStepId);
-                    ApplyBasicPropertyMatching(@event, workflowData);
-                    return (true, true); // Allow resume with basic mapping
+                    throw new InvalidOperationException($"Suspend step not found: {suspendStepId}");
                 }
             }
             else
@@ -833,12 +713,125 @@ public class SuspendResumeExecutor(
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to evaluate condition and apply mappings for event type {EventType}", typeof(TEvent).Name);
-            
-            // Fallback: apply basic property matching and allow resume
-            _logger.LogWarning("Falling back to basic property matching due to error");
-            ApplyBasicPropertyMatching(@event, workflowData);
-            return (true, true); // Be permissive on errors
+            throw;
         }
+    }
+
+    public ExecutionState RestoreExecutionState(string executionStateJson)
+    {
+        return DeserializeExecutionState(executionStateJson);
+    }
+
+    private static object? DeserializeLastStepResult(SuspendedExecutionState state)
+    {
+        if (string.IsNullOrWhiteSpace(state.LastStepResultJson) || string.IsNullOrWhiteSpace(state.LastStepResultType))
+        {
+            return null;
+        }
+
+        var resultType = Type.GetType(state.LastStepResultType);
+        return resultType == null ? null : JsonSerializer.Deserialize(state.LastStepResultJson, resultType);
+    }
+
+    private static List<ExecutionPointer> CreateExecutionPointers<TWorkflowData>(
+        StepExecutionContext<TWorkflowData> context,
+        ExecutionState executionState)
+        where TWorkflowData : class
+    {
+        if (executionState.Pointers.Count > 0)
+        {
+            return executionState.Pointers.Select(ClonePointer).ToList();
+        }
+
+        var currentStep = context.WorkflowDefinition.Steps.ElementAtOrDefault(context.WorkflowInstance.CurrentStepNumber);
+        return
+        [
+            new ExecutionPointer
+            {
+                StepId = currentStep?.Id ?? string.Empty,
+                StepIndex = context.WorkflowInstance.CurrentStepNumber,
+                Status = WorkflowStatus.Suspended.ToString(),
+                FrameId = executionState.Frames.LastOrDefault()?.FrameId
+            }
+        ];
+    }
+
+    private static List<ExecutionFrame> CreateExecutionFrames(ExecutionState executionState)
+    {
+        if (executionState.Frames.Count > 0)
+        {
+            return executionState.Frames.Select(CloneFrame).ToList();
+        }
+
+        var frames = new List<ExecutionFrame>();
+        string? parentFrameId = null;
+        foreach (var tryStep in executionState.TryStack.Reverse())
+        {
+            var frame = new ExecutionFrame
+            {
+                Kind = WorkflowStepType.TryCatch.ToString(),
+                StepId = tryStep.Id,
+                ParentFrameId = parentFrameId,
+                State = new Dictionary<string, string>
+                {
+                    ["StepName"] = tryStep.Name
+                }
+            };
+
+            frames.Add(frame);
+            parentFrameId = frame.FrameId;
+        }
+
+        return frames;
+    }
+
+    private static WorkflowExecutionSnapshot CreateExecutionSnapshot<TWorkflowData>(
+        StepExecutionContext<TWorkflowData> context,
+        ExecutionState executionState,
+        WorkflowStep suspendedStep)
+        where TWorkflowData : class
+    {
+        return new WorkflowExecutionSnapshot
+        {
+            InstanceId = context.WorkflowInstance.InstanceId,
+            WorkflowName = context.WorkflowInstance.WorkflowName,
+            WorkflowVersion = context.WorkflowInstance.WorkflowVersion,
+            Status = WorkflowStatus.Suspended,
+            Pointers = CreateExecutionPointers(context, executionState),
+            Frames = CreateExecutionFrames(executionState),
+            Values = new Dictionary<string, string>
+            {
+                ["SuspendedStepId"] = suspendedStep.Id,
+                ["CurrentStepNumber"] = context.WorkflowInstance.CurrentStepNumber.ToString(),
+                ["HasPendingException"] = (executionState.PendingException != null).ToString()
+            },
+            CapturedAtUtc = DateTime.UtcNow
+        };
+    }
+
+    private static ExecutionPointer ClonePointer(ExecutionPointer pointer)
+    {
+        return new ExecutionPointer
+        {
+            PointerId = pointer.PointerId,
+            StepId = pointer.StepId,
+            StepIndex = pointer.StepIndex,
+            Status = pointer.Status,
+            ParentPointerId = pointer.ParentPointerId,
+            FrameId = pointer.FrameId
+        };
+    }
+
+    private static ExecutionFrame CloneFrame(ExecutionFrame frame)
+    {
+        return new ExecutionFrame
+        {
+            FrameId = frame.FrameId,
+            Kind = frame.Kind,
+            StepId = frame.StepId,
+            ParentFrameId = frame.ParentFrameId,
+            State = new Dictionary<string, string>(frame.State)
+        };
     }
 
     /// <summary>
@@ -955,4 +948,18 @@ public class SuspendResumeExecutor(
     }
 
     #endregion
+}
+
+public class SuspendedExecutionState
+{
+    public int CurrentStepNumber { get; set; }
+    public string LastStepResultJson { get; set; } = string.Empty;
+    public string LastStepResultType { get; set; } = string.Empty;
+    public bool HasPendingException { get; set; }
+    public List<string> TryStackStepIds { get; set; } = new();
+    public List<ExecutionPointer> Pointers { get; set; } = new();
+    public List<ExecutionFrame> Frames { get; set; } = new();
+    public DateTime SerializedAt { get; set; }
+    public string? ResumeStepId { get; set; }
+    public int ResumeFromStepIndex { get; set; }
 }
