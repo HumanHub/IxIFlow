@@ -24,4 +24,9 @@ public interface ISuspendResumeExecutor
         TEvent @event,
         CancellationToken cancellationToken = default)
         where TEvent : class;
+
+    /// <summary>
+    /// Restores persisted execution state for a suspended workflow instance.
+    /// </summary>
+    ExecutionState RestoreExecutionState(string executionStateJson);
 }
