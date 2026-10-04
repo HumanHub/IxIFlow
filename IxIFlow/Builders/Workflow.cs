@@ -147,6 +147,7 @@ public static class WorkflowBuilderExtensions
         services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
         services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
         services.AddSingleton<ISuspendResumeExecutor, SuspendResumeExecutor>();
+        services.AddSingleton<ISagaExecutor, SagaExecutor>();
 
         // Add event management services
         services.AddSingleton<IEventCorrelator, EventCorrelator>();

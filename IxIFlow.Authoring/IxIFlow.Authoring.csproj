@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>1.0.0</Version>
+    <Description>Workflow document model, validation, and compilation for IxIFlow.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
+  </ItemGroup>
+</Project>
