@@ -120,6 +120,7 @@ public class SuspendResumeExecutor(
             context.WorkflowInstance.Status = WorkflowStatus.Suspended;
             context.WorkflowInstance.SuspensionInfo = suspensionInfo;
             context.WorkflowInstance.WorkflowDefinitionJson = string.Empty;
+            context.WorkflowInstance.WorkflowDataJson = JsonSerializer.Serialize(context.WorkflowData);
             context.WorkflowInstance.ExecutionStateJson = executionStateJson;
             context.WorkflowInstance.ExecutionSnapshot = CreateExecutionSnapshot(context, executionState, step);
 
@@ -371,7 +372,7 @@ public class SuspendResumeExecutor(
             LastStepResultType = executionState.LastStepResult?.GetType().AssemblyQualifiedName ?? "",
             HasPendingException = executionState.PendingException != null,
             TryStackStepIds = [.. executionState.TryStack.Select(t => t.Id)],
-            Pointers = CreateExecutionPointers(context, executionState),
+            Pointers = CreateExecutionPointers(context, executionState, suspendedStep),
             Frames = CreateExecutionFrames(executionState),
             SerializedAt = DateTime.UtcNow,
             ResumeStepId = suspendedStep.Id,
@@ -735,20 +736,17 @@ public class SuspendResumeExecutor(
 
     private static List<ExecutionPointer> CreateExecutionPointers<TWorkflowData>(
         StepExecutionContext<TWorkflowData> context,
-        ExecutionState executionState)
+        ExecutionState executionState,
+        WorkflowStep suspendedStep)
         where TWorkflowData : class
     {
-        if (executionState.Pointers.Count > 0)
-        {
-            return executionState.Pointers.Select(ClonePointer).ToList();
-        }
-
-        var currentStep = context.WorkflowDefinition.Steps.ElementAtOrDefault(context.WorkflowInstance.CurrentStepNumber);
+        var previousPointer = executionState.Pointers.FirstOrDefault();
         return
         [
             new ExecutionPointer
             {
-                StepId = currentStep?.Id ?? string.Empty,
+                PointerId = previousPointer?.PointerId ?? Guid.NewGuid().ToString(),
+                StepId = suspendedStep.Id,
                 StepIndex = context.WorkflowInstance.CurrentStepNumber,
                 Status = WorkflowStatus.Suspended.ToString(),
                 FrameId = executionState.Frames.LastOrDefault()?.FrameId
@@ -797,7 +795,7 @@ public class SuspendResumeExecutor(
             WorkflowName = context.WorkflowInstance.WorkflowName,
             WorkflowVersion = context.WorkflowInstance.WorkflowVersion,
             Status = WorkflowStatus.Suspended,
-            Pointers = CreateExecutionPointers(context, executionState),
+            Pointers = CreateExecutionPointers(context, executionState, suspendedStep),
             Frames = CreateExecutionFrames(executionState),
             Values = new Dictionary<string, string>
             {
@@ -809,28 +807,34 @@ public class SuspendResumeExecutor(
         };
     }
 
-    private static ExecutionPointer ClonePointer(ExecutionPointer pointer)
-    {
-        return new ExecutionPointer
-        {
-            PointerId = pointer.PointerId,
-            StepId = pointer.StepId,
-            StepIndex = pointer.StepIndex,
-            Status = pointer.Status,
-            ParentPointerId = pointer.ParentPointerId,
-            FrameId = pointer.FrameId
-        };
-    }
-
     private static ExecutionFrame CloneFrame(ExecutionFrame frame)
     {
+        var state = new Dictionary<string, string>(frame.State);
+        foreach (var (key, value) in frame.RuntimeValues)
+        {
+            if (key == "CompletedSteps" && value is List<SagaExecutionStepInfo> completedSteps)
+            {
+                state[key] = SagaExecutor.SerializeCompletedSteps(completedSteps);
+                continue;
+            }
+
+            if (value == null)
+            {
+                continue;
+            }
+
+            var valueType = value.GetType();
+            state[$"{key}Type"] = valueType.AssemblyQualifiedName!;
+            state[$"{key}Json"] = JsonSerializer.Serialize(value, valueType);
+        }
+
         return new ExecutionFrame
         {
             FrameId = frame.FrameId,
             Kind = frame.Kind,
             StepId = frame.StepId,
             ParentFrameId = frame.ParentFrameId,
-            State = new Dictionary<string, string>(frame.State)
+            State = state
         };
     }
 
