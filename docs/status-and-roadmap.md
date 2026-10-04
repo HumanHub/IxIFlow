@@ -20,7 +20,7 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 
 - The default state repository and event store are singleton in-process memory. They survive scopes in one process but not restarts. No built-in shared SQL workflow state repository is registered by the host setup.
 - Local continuation now re-enters loop and saga scopes. Repeated loop waits, repeated saga waits, and compensation after a wait have regression coverage. The saved step identifier still selects the path; a unified frame-and-pointer interpreter is unfinished.
-- Saga retry after a direct wait has success and exhaustion coverage. Retry through nested handlers and resume inside parallel branches or every `Catch`/`Finally` path need explicit checkpoint and replay coverage.
+- Saga retry after a direct wait has success and exhaustion coverage. Retry through nested handlers still needs coverage. New regression tests show that a wait in `Catch` is silently skipped, while resuming a wait in `Finally` or a parallel branch faults because saved handler or branch checkpoints are not implemented.
 - Parallel branches share the workflow context and mutable workflow data. Branch-local state and output merge rules need an explicit contract before durable parallel execution.
 - Resume does not atomically claim an instance, so concurrent requests need stronger coordination.
 - Typed resume events and correlation exist, but there is no published start-trigger registry for HTTP, schedules, or messages. General event matching still scans suspended instances. Targeted event-template updates now resume only their specified instance, and the default memory template store survives DI scopes.
