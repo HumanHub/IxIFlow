@@ -228,6 +228,128 @@ public class EngineContractRegressionTests
     }
 
     [Fact]
+    public async Task ResumeInsideCatch_DoesNotReplayHandledStepsAndRunsFinally()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+
+        var definition = Workflow.Create<RegressionData>("CatchWait")
+            .Step<MarkChildActivity>(_ => { })
+            .Try(tryBlock => tryBlock.Step<ThrowRegressionActivity>(_ => { }))
+            .Catch<ApplicationException>(catchBlock => catchBlock
+                .Step<IncrementRegressionActivity>(setup => setup
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.CatchBeforeWaitCount)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.CatchBeforeWaitCount))
+                .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
+                .Step<MarkChildActivity>(setup => setup
+                    .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.CatchExecuted)))
+            .Finally(finallyBlock => finallyBlock.Step<MarkChildActivity>(setup => setup
+                .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.FinallyExecuted)))
+            .Build();
+
+        var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
+        var suspendedData = Assert.IsType<RegressionData>(suspended.WorkflowData);
+        Assert.Equal(1, suspendedData.CatchBeforeWaitCount);
+        Assert.False(suspendedData.FinallyExecuted);
+
+        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+            new RegressionApprovalEvent { Approved = true });
+        Assert.True(resumed.Status == WorkflowExecutionStatus.Success,
+            $"Expected catch continuation to succeed, got {resumed.Status}: {resumed.ErrorMessage}");
+        var data = Assert.IsType<RegressionData>(resumed.WorkflowData);
+        Assert.Equal(1, data.CatchBeforeWaitCount);
+        Assert.True(data.CatchExecuted);
+        Assert.True(data.FinallyExecuted);
+    }
+
+    [Fact]
+    public async Task ResumeInsideFinally_DoesNotReplayCleanup()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+
+        var definition = Workflow.Create<RegressionData>("FinallyWait")
+            .Step<MarkChildActivity>(_ => { })
+            .Try(tryBlock => tryBlock.Step<MarkChildActivity>(_ => { }))
+            .Finally(finallyBlock => finallyBlock
+                .Step<IncrementRegressionActivity>(setup => setup
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.FinallyBeforeWaitCount)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.FinallyBeforeWaitCount))
+                .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
+                .Step<MarkChildActivity>(setup => setup
+                    .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.FinallyExecuted)))
+            .Step<MarkChildActivity>(setup => setup
+                .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.AfterTryExecuted))
+            .Build();
+
+        var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
+        var suspendedData = Assert.IsType<RegressionData>(suspended.WorkflowData);
+        Assert.Equal(1, suspendedData.FinallyBeforeWaitCount);
+        Assert.False(suspendedData.AfterTryExecuted);
+
+        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+            new RegressionApprovalEvent { Approved = true });
+        Assert.True(resumed.Status == WorkflowExecutionStatus.Success,
+            $"Expected finally continuation to succeed, got {resumed.Status}: {resumed.ErrorMessage}");
+        var data = Assert.IsType<RegressionData>(resumed.WorkflowData);
+        Assert.Equal(1, data.FinallyBeforeWaitCount);
+        Assert.True(data.FinallyExecuted);
+        Assert.True(data.AfterTryExecuted);
+    }
+
+    [Fact]
+    public async Task ResumeInsideParallel_DoesNotReplayCompletedBranch()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+
+        var definition = Workflow.Create<RegressionData>("ParallelWait")
+            .Step<MarkChildActivity>(_ => { })
+            .Parallel(parallel =>
+            {
+                parallel.Do(branch => branch.Step<IncrementRegressionActivity>(setup => setup
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.ParallelCompletedBranchCount)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.ParallelCompletedBranchCount)));
+                parallel.Do(branch => branch
+                    .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
+                    .Step<MarkChildActivity>(setup => setup
+                        .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.ParallelWaitBranchCompleted)));
+            })
+            .Step<MarkChildActivity>(setup => setup
+                .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.AfterTryExecuted))
+            .Build();
+
+        var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
+        var suspendedData = Assert.IsType<RegressionData>(suspended.WorkflowData);
+        Assert.Equal(1, suspendedData.ParallelCompletedBranchCount);
+        Assert.False(suspendedData.AfterTryExecuted);
+
+        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+            new RegressionApprovalEvent { Approved = true });
+        Assert.True(resumed.Status == WorkflowExecutionStatus.Success,
+            $"Expected parallel continuation to succeed, got {resumed.Status}: {resumed.ErrorMessage}");
+        var data = Assert.IsType<RegressionData>(resumed.WorkflowData);
+        Assert.Equal(1, data.ParallelCompletedBranchCount);
+        Assert.True(data.ParallelWaitBranchCompleted);
+        Assert.True(data.AfterTryExecuted);
+    }
+
+    [Fact]
     public void SqlHostRegistration_UsesSharedWorkflowState()
     {
         var services = new ServiceCollection();
@@ -534,6 +656,10 @@ public sealed class RegressionData
     public bool CatchExecuted { get; set; }
     public bool FinallyExecuted { get; set; }
     public bool AfterTryExecuted { get; set; }
+    public int CatchBeforeWaitCount { get; set; }
+    public int FinallyBeforeWaitCount { get; set; }
+    public int ParallelCompletedBranchCount { get; set; }
+    public bool ParallelWaitBranchCompleted { get; set; }
 }
 
 public sealed class ChildData
