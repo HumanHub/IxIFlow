@@ -910,6 +910,27 @@ public class SagaSystemDependentAsyncActivity : IAsyncActivity
     }
 }
 
+public class SagaTransientSystemAsyncActivity : IAsyncActivity
+{
+    public string SystemName { get; set; } = string.Empty;
+    public string OrderId { get; set; } = string.Empty;
+    public bool Step2Completed { get; set; }
+
+    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+    {
+        var attempt = context.Metadata.TryGetValue("Saga:CurrentAttempt", out var value)
+            ? (int)value
+            : 0;
+        if (attempt == 0)
+        {
+            throw new SystemUnavailableException($"System {SystemName} is temporarily unavailable", SystemName);
+        }
+
+        Step2Completed = true;
+        return Task.CompletedTask;
+    }
+}
+
 // =====================================================
 // SUSPEND/RESUME TEST ACTIVITIES AND DATA MODELS
 // =====================================================

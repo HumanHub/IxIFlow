@@ -1,6 +1,7 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Extensions;
+using IxIFlow.Tests.ExecutionTests.Models;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 
@@ -112,6 +113,30 @@ public class SagaResumeRegressionTests
             .ResumeWorkflowAsync(first.InstanceId, new RegressionApprovalEvent { Approved = true });
         var data = Assert.IsType<SagaRegressionData>(final.WorkflowData);
         Assert.True(data.BeforeCompensated);
+    }
+
+    [Fact]
+    public async Task PermanentSagaFailure_ExhaustsRetriesAfterResume()
+    {
+        var definition = Workflow.Create<SagaRegressionData>("SagaPermanentFailure")
+            .Step<SagaSetupActivity>(_ => { })
+            .Saga(saga => saga
+                .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
+                .Step<SagaSystemDependentAsyncActivity>(setup => setup
+                    .Input(activity => activity.SystemName).From(_ => "Payments")))
+            .OnError<SystemUnavailableException>(error => error.Compensate().ThenRetry(2))
+            .Build();
+
+        using var provider = CreateProvider();
+        using var scope = provider.CreateScope();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var suspended = await engine.ExecuteWorkflowAsync(definition, new SagaRegressionData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
+
+        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+            new RegressionApprovalEvent { Approved = true });
+        Assert.Equal(WorkflowExecutionStatus.Faulted, resumed.Status);
+        Assert.Contains("retry exhausted", resumed.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     private static ServiceProvider CreateProvider()

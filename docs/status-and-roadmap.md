@@ -12,7 +12,7 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 | Fluent C# definitions | Implemented and covered by syntax and execution tests. |
 | Local activity execution | Implemented in the workflow host process. |
 | Conditions, parallel work, and exceptions | Implemented, with execution tests. |
-| In-process saga compensation | Direct and outcome-branch waits resume with saved compensation results. Error-handler retry paths still need work. |
+| In-process saga compensation | Direct and outcome-branch waits resume with saved compensation results. A direct wait followed by a transient failure can retry to success; a permanent failure exhausts its retry limit. |
 | Coordinator and host selection | Infrastructure exists; end-to-end distributed reliability is not established. |
 | Studio designer exercise | Vue Flow canvas with an `If` node, a custom database node, manifest-driven fields, and draft YAML editing. It does not execute workflows. |
 
@@ -20,12 +20,12 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 
 - The default state repository and event store are singleton in-process memory. They survive scopes in one process but not restarts. No built-in shared SQL workflow state repository is registered by the host setup.
 - Local continuation now re-enters loop and saga scopes. Repeated loop waits, repeated saga waits, and compensation after a wait have regression coverage. The saved step identifier still selects the path; a unified frame-and-pointer interpreter is unfinished.
-- Saga error-handler retry on resume still fails its existing execution test. Resume inside parallel branches and every `Catch`/`Finally` path needs explicit checkpoint and replay coverage.
+- Saga retry after a direct wait has success and exhaustion coverage. Retry through nested handlers and resume inside parallel branches or every `Catch`/`Finally` path need explicit checkpoint and replay coverage.
 - Parallel branches share the workflow context and mutable workflow data. Branch-local state and output merge rules need an explicit contract before durable parallel execution.
 - Resume does not atomically claim an instance, so concurrent requests need stronger coordination.
 - Typed resume events and correlation exist, but there is no published start-trigger registry for HTTP, schedules, or messages. General event matching still scans suspended instances. Targeted event-template updates now resume only their specified instance, and the default memory template store survives DI scopes.
 - SQL messages are marked processed before handler success and need acknowledgement and retry behavior.
-- Named child-workflow invocation and document compilation have unsupported paths that must fail clearly or be implemented.
+- Named child-workflow invocation resolves the registered definition and version. Document compilation still has unsupported paths that must fail clearly or be implemented.
 - The JSON document compiler is preliminary. YAML is not an executable authoring path. Vue Flow has been selected and a designer exercise exists, but a runtime-connected Studio is not built.
 
 Regression tests exist for the critical and high-priority gaps. Some are expected to fail until the engine fixes land. SQL reliability tests require an isolated SQL test database.
