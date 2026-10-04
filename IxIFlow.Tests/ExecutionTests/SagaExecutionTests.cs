@@ -703,7 +703,7 @@ public class SagaExecutionTests
             Notes = "Order confirmed for testing"
         };
         var resumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, confirmationEvent);
-        Assert.True(resumeResult.IsSuccess); // Should succeed after resume
+        Assert.True(resumeResult.IsSuccess, $"Resume returned {resumeResult.Status}: {resumeResult.ErrorMessage}"); // Should succeed after resume
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SagaTestData)resumeResult.WorkflowData!;
         Assert.Equal(workflowData.ProductId, finalWorkflowData.SuspensionMessage); // Should contain the confirmed product ID
