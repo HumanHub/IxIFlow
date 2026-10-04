@@ -15,15 +15,18 @@ public class WorkflowInvoker : IWorkflowInvoker
     private readonly IWorkflowTracer _tracer;
     private readonly ILogger<WorkflowInvoker> _logger;
     private readonly IServiceProvider _serviceProvider;
+    private readonly IWorkflowVersionRegistry _versionRegistry;
 
     public WorkflowInvoker(
         IWorkflowTracer tracer,
         ILogger<WorkflowInvoker> logger,
-        IServiceProvider serviceProvider)
+        IServiceProvider serviceProvider,
+        IWorkflowVersionRegistry versionRegistry)
     {
         _tracer = tracer ?? throw new ArgumentNullException(nameof(tracer));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+        _versionRegistry = versionRegistry ?? throw new ArgumentNullException(nameof(versionRegistry));
     }
 
     /// <summary>
@@ -43,6 +46,7 @@ public class WorkflowInvoker : IWorkflowInvoker
             // Create child workflow data instance
             object childWorkflowData;
             Type childWorkflowDataType;
+            WorkflowDefinition? registeredDefinition = null;
 
             // Determine child workflow data type from step metadata
             if (step.WorkflowType != null)
@@ -59,14 +63,14 @@ public class WorkflowInvoker : IWorkflowInvoker
             }
             else
             {
-                // For name/version invocation, we need to infer the type from the mappings
-                // This is a simplified approach - in a real system, you'd have a workflow registry
-                var firstInputMapping = step.InputMappings.FirstOrDefault();
-                if (firstInputMapping == null)
-                    throw new InvalidOperationException(
-                        $"Cannot determine child workflow data type for step {step.Id}");
+                if (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowVersion == null)
+                    throw new InvalidOperationException($"Workflow reference is incomplete for step {step.Id}");
 
-                childWorkflowDataType = firstInputMapping.SourceType.DeclaringType ?? firstInputMapping.SourceType;
+                registeredDefinition = await _versionRegistry.GetWorkflowDefinitionAsync(step.WorkflowName, step.WorkflowVersion.Value)
+                    ?? throw new InvalidOperationException(
+                        $"Workflow definition not found: {step.WorkflowName} v{step.WorkflowVersion}");
+                childWorkflowDataType = registeredDefinition.WorkflowDataType
+                    ?? throw new InvalidOperationException($"Workflow {step.WorkflowName} has no data type");
             }
 
             // Create instance of child workflow data
@@ -113,17 +117,7 @@ public class WorkflowInvoker : IWorkflowInvoker
             }
             else
             {
-                // For name/version invocation, we'd typically look up the workflow from a registry
-                // For now, we'll create a simple placeholder workflow
-                childWorkflowDefinition = new WorkflowDefinition
-                {
-                    Id = Guid.NewGuid().ToString(),
-                    Name = step.WorkflowName ?? "Unknown",
-                    Version = step.WorkflowVersion ?? 1,
-                    WorkflowDataType = childWorkflowDataType,
-                    CreatedAt = DateTime.UtcNow,
-                    Steps = new List<WorkflowStep>()
-                };
+                childWorkflowDefinition = registeredDefinition!;
             }
 
             // Add child workflow started trace
@@ -232,7 +226,8 @@ public class WorkflowInvoker : IWorkflowInvoker
     where TChildWorkflowData : class
     {
         // Get the workflow engine from DI
-        var workflowEngine = _serviceProvider.GetRequiredService<WorkflowEngine>();
+        var workflowEngine = _serviceProvider.GetService<IWorkflowEngine>()
+            ?? _serviceProvider.GetRequiredService<WorkflowEngine>();
 
         // Create child workflow options
         var childOptions = new WorkflowOptions

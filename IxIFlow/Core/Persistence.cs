@@ -437,7 +437,10 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
     public Task RegisterWorkflowAsync(WorkflowDefinition definition)
     {
         var key = $"{definition.Name}:{definition.Version}";
-        _workflows.AddOrUpdate(key, definition, (k, existing) => definition);
+        if (!_workflows.TryAdd(key, definition) && !ReferenceEquals(_workflows[key], definition))
+        {
+            throw new InvalidOperationException($"Workflow {definition.Name} v{definition.Version} is already registered");
+        }
         return Task.CompletedTask;
     }
 

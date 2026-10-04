@@ -454,6 +454,26 @@ public class EngineContractRegressionTests
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);
     }
 
+    [Fact]
+    public async Task NamedWorkflowInvocation_RejectsAnUnknownVersion()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var parent = Workflow.Create<RegressionData>("MissingChildParent")
+            .Step<MarkChildActivity>(_ => { })
+            .Invoke<ChildData>("MissingChild", 1, _ => { })
+            .Build();
+        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(parent, new RegressionData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("Workflow definition not found: MissingChild v1", result.ErrorMessage);
+    }
+
     private static WorkflowDocument Document(WorkflowStepDocument step) => new()
     {
         Workflow = new WorkflowDefinitionDocument { Name = "Regression", Version = 1, DataType = "RegressionData" },

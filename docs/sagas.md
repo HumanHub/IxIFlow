@@ -28,7 +28,7 @@ Compensation is an application action, not an automatic rollback of another serv
 
 ## Current resume limits
 
-Direct waits inside a saga now resume the remaining saga activities. Completed activity results are saved at suspension and restored for compensation if later work fails. Regression tests cover repeated waits and an outcome-branch wait. Saga error-handler retry on resume remains unfinished; its existing execution test fails. A process crash is not recoverable with the default memory state repository.
+Direct waits inside a saga now resume the remaining saga activities. Completed activity results are saved at suspension and restored for compensation if later work fails. Regression tests cover repeated waits, an outcome-branch wait, transient failure followed by retry success, and permanent failure followed by retry exhaustion. More complex error-handler and nested resume paths need coverage. A process crash is not recoverable with the default memory state repository.
 
 The default state repository is process memory. It can retain an instance across request scopes in the same process, but not across a restart or another host. These limits apply even if the coordinator selects a healthy host.
 
