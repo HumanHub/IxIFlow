@@ -3,6 +3,7 @@ using IxIFlow.Builders;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace IxIFlow.Extensions;
 
@@ -27,14 +28,15 @@ public static class ServiceCollectionExtensions
         
         // Workflow state and persistence
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
-        services.AddScoped<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
-        services.AddScoped<IEventStore, InMemoryEventStore>();
+        services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
+        services.TryAddSingleton<IEventStore, InMemoryEventStore>();
         
         // Workflow tracing and monitoring
         services.AddScoped<IWorkflowTracer, WorkflowTracer>();
         
         // Event management
         services.AddScoped<IEventCorrelator, EventCorrelator>();
+        services.AddSingleton<InMemoryEventTemplateStore>();
         services.AddScoped<IEventRepository, InMemoryEventRepository>();
         
         // Expression evaluation
@@ -66,12 +68,12 @@ public static class ServiceCollectionExtensions
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
         {
-            services.AddScoped(typeof(IWorkflowStateRepository), options.UseCustomStateRepository);
+            services.Replace(ServiceDescriptor.Scoped(typeof(IWorkflowStateRepository), options.UseCustomStateRepository));
         }
 
         if (options.UseCustomEventStore != null)
         {
-            services.AddScoped(typeof(IEventStore), options.UseCustomEventStore);
+            services.Replace(ServiceDescriptor.Scoped(typeof(IEventStore), options.UseCustomEventStore));
         }
 
         if (options.UseCustomTracer != null)
@@ -327,78 +329,4 @@ public class IxIFlowOptions
     /// Maximum number of concurrent workflow executions
     /// </summary>
     public int MaxConcurrentExecutions { get; set; } = 100;
-}
-
-public static class WorkflowHostExtensions
-{
-    /// <summary>
-    /// Adds IxIFlow distributed workflow host services with SQL Server persistence
-    /// </summary>
-    /// <param name="services">The service collection to add services to</param>
-    /// <param name="configure">Configuration action for workflow host options</param>
-    /// <param name="connectionString">SQL Server connection string for persistence</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddIxIFlowHost(
-        this IServiceCollection services,
-        Action<WorkflowHostOptions> configure,
-        string connectionString)
-    {
-        // Add core IxIFlow services
-        services.AddIxIFlow();
-
-        // Configure host options
-        var options = new WorkflowHostOptions();
-        configure(options);
-        options.StateRepositoryConnectionString = connectionString;
-        options.MessageBusConnectionString = connectionString;
-        services.AddSingleton(options);
-
-        // Add distributed workflow services
-        services.AddSingleton<IWorkflowHost, WorkflowHost>();
-        services.AddSingleton<IWorkflowCoordinator, WorkflowCoordinator>();
-        services.AddSingleton<IWorkflowHostClient, HttpWorkflowHostClient>();
-
-        // Add SQL-based persistence services
-        services.AddSingleton<IHostRegistry>(sp => new SqlHostRegistry(connectionString));
-        services.AddSingleton<IMessageBus>(sp => new SqlMessageBus(connectionString));
-
-        // Add background services for distributed operation
-        services.AddHostedService<WorkflowQueueService>();
-        services.AddHostedService<HostHealthService>();
-
-        return services;
-    }
-
-    /// <summary>
-    /// Adds IxIFlow distributed workflow host services with custom persistence implementations
-    /// </summary>
-    /// <param name="services">The service collection to add services to</param>
-    /// <param name="configure">Configuration action for workflow host options</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddIxIFlowHost(
-        this IServiceCollection services,
-        Action<WorkflowHostOptions> configure)
-    {
-        // Add core IxIFlow services
-        services.AddIxIFlow();
-
-        // Configure host options
-        var options = new WorkflowHostOptions();
-        configure(options);
-        services.AddSingleton(options);
-
-        // Add distributed workflow services
-        services.AddSingleton<IWorkflowHost, WorkflowHost>();
-        services.AddSingleton<IWorkflowCoordinator, WorkflowCoordinator>();
-        services.AddSingleton<IWorkflowHostClient, HttpWorkflowHostClient>();
-
-        // Note: IHostRegistry and IMessageBus must be registered separately when using this overload
-        // This allows for custom implementations to be provided
-
-        // Add background services for distributed operation
-        services.AddHostedService<WorkflowQueueService>();
-        services.AddHostedService<HostHealthService>();
-
-        return services;
-    }
 }

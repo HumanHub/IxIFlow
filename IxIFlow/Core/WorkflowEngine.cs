@@ -306,6 +306,29 @@ public class WorkflowEngine : IWorkflowEngine
                 }
                 catch (Exception ex)
                 {
+                    var sagaRetryException = ex as SagaRetryRequestedException ?? ex.InnerException as SagaRetryRequestedException;
+                    if (sagaRetryException != null)
+                    {
+                        _logger.LogInformation("Saga resume requested retry continuation for workflow {InstanceId}", instanceId);
+
+                        instance.SuspensionInfo = null;
+                        instance.WorkflowDataJson = JsonSerializer.Serialize(workflowData);
+                        await _stateRepository.SaveWorkflowInstanceAsync(instance);
+
+                        var workflowDefinition = await _versionRegistry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
+                        if (workflowDefinition == null)
+                        {
+                            return new WorkflowExecutionResult
+                            {
+                                InstanceId = instanceId,
+                                Status = WorkflowExecutionStatus.Faulted,
+                                ErrorMessage = $"Workflow definition not found: {instance.WorkflowName} v{instance.WorkflowVersion}"
+                            };
+                        }
+
+                        return await ContinueWorkflowExecutionAsync(workflowDefinition, instance, workflowData, restoredExecutionState, @event, cancellationToken);
+                    }
+
                     _logger.LogError(ex, "Saga resume failed: {ErrorMessage}", ex.Message);
                     
                     return new WorkflowExecutionResult
@@ -391,6 +414,12 @@ public class WorkflowEngine : IWorkflowEngine
             if (!stepResult.IsSuccess)
             {
                 return stepResult;
+            }
+
+            // An exception belongs to the active scope. A later Try step must not catch it.
+            if (executionState.PendingException != null)
+            {
+                break;
             }
 
             // Update execution state
@@ -932,6 +961,11 @@ public class WorkflowEngine : IWorkflowEngine
             {
                 return result;
             }
+
+            if (executionState.PendingException != null)
+            {
+                break;
+            }
         }
 
         return new StepExecutionResult
@@ -1287,8 +1321,26 @@ public class WorkflowEngine : IWorkflowEngine
     {
         _logger.LogDebug("Delegating saga execution to SagaExecutor: {StepId}", step.Id);
 
+        SagaResumeInfo? resumeInfo = null;
+        if (executionState.StepMetadata.TryGetValue("SagaResumeParentStepId", out var sagaResumeParentObj) &&
+            sagaResumeParentObj is string sagaResumeParentId &&
+            sagaResumeParentId == step.Id &&
+            executionState.StepMetadata.TryGetValue("SagaResumeFromStepIndex", out var sagaResumeIndexObj) &&
+            sagaResumeIndexObj is int sagaResumeIndex)
+        {
+            resumeInfo = new SagaResumeInfo
+            {
+                ResumeFromStepIndex = sagaResumeIndex,
+                ResumeEventData = executionState.LastStepResult,
+                CompletedSteps = new List<SagaExecutionStepInfo>()
+            };
+
+            executionState.StepMetadata.Remove("SagaResumeParentStepId");
+            executionState.StepMetadata.Remove("SagaResumeFromStepIndex");
+        }
+
         // Delegate to the dedicated SagaExecutor
-        var result = await _sagaExecutor.ExecuteSagaStepAsync(step, context, executionState, cancellationToken);
+        var result = await _sagaExecutor.ExecuteSagaStepAsync(step, context, executionState, cancellationToken, resumeInfo);
         
         _logger.LogTrace("SagaExecutor returned - IsSuccess={IsSuccess}, HasPendingException={HasPendingException}", 
             result.IsSuccess, executionState.PendingException != null);
@@ -1387,6 +1439,11 @@ public class WorkflowEngine : IWorkflowEngine
             var resumeFromStepIndex = restoredExecutionState.StepMetadata.TryGetValue("ResumeFromStepIndex", out var resumeIndexObj) && resumeIndexObj is int resumeIndex
                 ? resumeIndex
                 : instance.CurrentStepNumber + 1;
+
+            if (!string.IsNullOrWhiteSpace(resumeStepId))
+            {
+                PopulateSagaResumeMetadata(definition.Steps, resumeStepId, restoredExecutionState.StepMetadata);
+            }
 
             // Get remaining steps to execute from the recorded resume path.
             var remainingSteps = !string.IsNullOrWhiteSpace(resumeStepId)
@@ -1525,6 +1582,11 @@ public class WorkflowEngine : IWorkflowEngine
                 }
             }
 
+            if (step.StepType == WorkflowStepType.Saga && ContainsStep(step, suspendedStepId))
+            {
+                return [.. steps.Skip(index + 1)];
+            }
+
             var nestedContinuation = BuildContinuationStepsCore(step.SequenceSteps, suspendedStepId)
                                      ?? BuildContinuationStepsCore(step.ThenSteps, suspendedStepId)
                                      ?? BuildContinuationStepsCore(step.ElseSteps, suspendedStepId)
@@ -1544,9 +1606,167 @@ public class WorkflowEngine : IWorkflowEngine
                     return [.. nestedContinuation, .. steps.Skip(index + 1)];
                 }
             }
+
+            if (step.StepMetadata.TryGetValue("OutcomeBranches", out var branchesObj) && branchesObj is System.Collections.IList branches)
+            {
+                foreach (var branchObj in branches)
+                {
+                    if (branchObj.GetType().GetProperty("Steps", BindingFlags.Public | BindingFlags.Instance)?.GetValue(branchObj) is List<WorkflowStep> outcomeBranchSteps)
+                    {
+                        nestedContinuation = BuildContinuationStepsCore(outcomeBranchSteps, suspendedStepId);
+                        if (nestedContinuation != null)
+                        {
+                            return [.. nestedContinuation, .. steps.Skip(index + 1)];
+                        }
+                    }
+                }
+            }
+
+            if (step.StepMetadata.TryGetValue("DefaultBranch", out var defaultBranchObj) && defaultBranchObj != null)
+            {
+                if (defaultBranchObj.GetType().GetProperty("Steps", BindingFlags.Public | BindingFlags.Instance)?.GetValue(defaultBranchObj) is List<WorkflowStep> defaultBranchSteps)
+                {
+                    nestedContinuation = BuildContinuationStepsCore(defaultBranchSteps, suspendedStepId);
+                    if (nestedContinuation != null)
+                    {
+                        return [.. nestedContinuation, .. steps.Skip(index + 1)];
+                    }
+                }
+            }
         }
 
         return null;
+    }
+
+    private void PopulateSagaResumeMetadata(List<WorkflowStep> steps, string suspendedStepId, Dictionary<string, object> metadata)
+    {
+        if (TryFindSagaResumePoint(steps, suspendedStepId, out var sagaStepId, out var resumeIndex))
+        {
+            metadata["SagaResumeParentStepId"] = sagaStepId;
+            metadata["SagaResumeFromStepIndex"] = resumeIndex;
+        }
+    }
+
+    private bool TryFindSagaResumePoint(List<WorkflowStep> steps, string suspendedStepId, out string sagaStepId, out int resumeIndex)
+    {
+        foreach (var step in steps)
+        {
+            if (step.StepType == WorkflowStepType.Saga)
+            {
+                for (var index = 0; index < step.SequenceSteps.Count; index++)
+                {
+                    if (step.SequenceSteps[index].Id == suspendedStepId)
+                    {
+                        sagaStepId = step.Id;
+                        resumeIndex = index + 1;
+                        return true;
+                    }
+                }
+            }
+
+            if (TryFindSagaResumePoint(step.SequenceSteps, suspendedStepId, out sagaStepId, out resumeIndex) ||
+                TryFindSagaResumePoint(step.ThenSteps, suspendedStepId, out sagaStepId, out resumeIndex) ||
+                TryFindSagaResumePoint(step.ElseSteps, suspendedStepId, out sagaStepId, out resumeIndex) ||
+                TryFindSagaResumePoint(step.LoopBodySteps, suspendedStepId, out sagaStepId, out resumeIndex) ||
+                TryFindSagaResumePoint(step.FinallySteps, suspendedStepId, out sagaStepId, out resumeIndex))
+            {
+                return true;
+            }
+
+            foreach (var branch in step.ParallelBranches)
+            {
+                if (TryFindSagaResumePoint(branch, suspendedStepId, out sagaStepId, out resumeIndex))
+                {
+                    return true;
+                }
+            }
+
+            if (step.StepMetadata.TryGetValue("OutcomeBranches", out var branchesObj) && branchesObj is System.Collections.IList branches)
+            {
+                foreach (var branchObj in branches)
+                {
+                    if (branchObj.GetType().GetProperty("Steps", BindingFlags.Public | BindingFlags.Instance)?.GetValue(branchObj) is List<WorkflowStep> outcomeSteps &&
+                        TryFindSagaResumePoint(outcomeSteps, suspendedStepId, out sagaStepId, out resumeIndex))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            if (step.StepMetadata.TryGetValue("DefaultBranch", out var defaultBranchObj) && defaultBranchObj != null &&
+                defaultBranchObj.GetType().GetProperty("Steps", BindingFlags.Public | BindingFlags.Instance)?.GetValue(defaultBranchObj) is List<WorkflowStep> defaultSteps &&
+                TryFindSagaResumePoint(defaultSteps, suspendedStepId, out sagaStepId, out resumeIndex))
+            {
+                return true;
+            }
+        }
+
+        sagaStepId = string.Empty;
+        resumeIndex = -1;
+        return false;
+    }
+
+    private static bool ContainsStep(WorkflowStep step, string targetStepId)
+    {
+        if (step.Id == targetStepId)
+        {
+            return true;
+        }
+
+        if (ContainsStep(step.SequenceSteps, targetStepId) ||
+            ContainsStep(step.ThenSteps, targetStepId) ||
+            ContainsStep(step.ElseSteps, targetStepId) ||
+            ContainsStep(step.LoopBodySteps, targetStepId) ||
+            ContainsStep(step.FinallySteps, targetStepId))
+        {
+            return true;
+        }
+
+        foreach (var catchBlock in step.CatchBlocks)
+        {
+            if (ContainsStep(catchBlock.SequenceSteps, targetStepId))
+            {
+                return true;
+            }
+        }
+
+        foreach (var branch in step.ParallelBranches)
+        {
+            if (ContainsStep(branch, targetStepId))
+            {
+                return true;
+            }
+        }
+
+        if (step.StepMetadata.TryGetValue("OutcomeBranches", out var branchesObj) && branchesObj is IList branches)
+        {
+            foreach (var branchObj in branches)
+            {
+                if (branchObj.GetType().GetProperty("Steps", BindingFlags.Public | BindingFlags.Instance)?.GetValue(branchObj) is List<WorkflowStep> outcomeBranchSteps &&
+                    ContainsStep(outcomeBranchSteps, targetStepId))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return step.StepMetadata.TryGetValue("DefaultBranch", out var defaultBranchObj) &&
+               defaultBranchObj != null &&
+               defaultBranchObj.GetType().GetProperty("Steps", BindingFlags.Public | BindingFlags.Instance)?.GetValue(defaultBranchObj) is List<WorkflowStep> defaultBranchSteps &&
+               ContainsStep(defaultBranchSteps, targetStepId);
+    }
+
+    private static bool ContainsStep(List<WorkflowStep> steps, string targetStepId)
+    {
+        foreach (var step in steps)
+        {
+            if (ContainsStep(step, targetStepId))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

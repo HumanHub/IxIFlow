@@ -7,6 +7,12 @@ namespace IxIFlow.Core;
 /// </summary>
 public interface ISuspensionManager
 {
+    /// <summary>Resumes one suspended workflow with an event.</summary>
+    Task ResumeInstanceAsync<TEventData>(
+        string instanceId,
+        TEventData @event,
+        CancellationToken cancellationToken = default) where TEventData : class;
+
     /// <summary>
     ///     Processes an event and resumes matching workflows
     /// </summary>
@@ -61,6 +67,16 @@ public class SuspensionManager : ISuspensionManager
         _eventCorrelator = eventCorrelator ?? throw new ArgumentNullException(nameof(eventCorrelator));
         _workflowEngine = workflowEngine ?? throw new ArgumentNullException(nameof(workflowEngine));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    public async Task ResumeInstanceAsync<TEventData>(
+        string instanceId,
+        TEventData @event,
+        CancellationToken cancellationToken = default) where TEventData : class
+    {
+        var result = await _workflowEngine.ResumeWorkflowAsync(instanceId, @event, cancellationToken);
+        if (result.Status == WorkflowExecutionStatus.Faulted)
+            throw new InvalidOperationException(result.ErrorMessage ?? $"Failed to resume workflow {instanceId}");
     }
 
     /// <inheritdoc />
