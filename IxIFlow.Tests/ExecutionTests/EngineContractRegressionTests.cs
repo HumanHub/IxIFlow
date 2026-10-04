@@ -327,7 +327,8 @@ public class EngineContractRegressionTests
                 parallel.Do(branch => branch
                     .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
                     .Step<MarkChildActivity>(setup => setup
-                        .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.ParallelWaitBranchCompleted)));
+                        .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.ParallelWaitBranchCompleted))
+                    .Suspend<RegressionApprovalEvent>("second approval", (evt, _) => evt.Approved));
             })
             .Step<MarkChildActivity>(setup => setup
                 .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.AfterTryExecuted))
@@ -341,12 +342,44 @@ public class EngineContractRegressionTests
 
         var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
-        Assert.True(resumed.Status == WorkflowExecutionStatus.Success,
-            $"Expected parallel continuation to succeed, got {resumed.Status}: {resumed.ErrorMessage}");
+        Assert.True(resumed.Status == WorkflowExecutionStatus.Suspended,
+            $"Expected a second parallel wait, got {resumed.Status}: {resumed.ErrorMessage}");
         var data = Assert.IsType<RegressionData>(resumed.WorkflowData);
         Assert.Equal(1, data.ParallelCompletedBranchCount);
         Assert.True(data.ParallelWaitBranchCompleted);
+        Assert.False(data.AfterTryExecuted);
+
+        var completed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+            new RegressionApprovalEvent { Approved = true });
+        Assert.True(completed.Status == WorkflowExecutionStatus.Success,
+            $"Expected parallel continuation to succeed, got {completed.Status}: {completed.ErrorMessage}");
+        data = Assert.IsType<RegressionData>(completed.WorkflowData);
+        Assert.Equal(1, data.ParallelCompletedBranchCount);
         Assert.True(data.AfterTryExecuted);
+    }
+
+    [Fact]
+    public async Task ParallelWithTwoWaitingBranches_FaultsClearly()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var definition = Workflow.Create<RegressionData>("ParallelTwoWaits")
+            .Step<MarkChildActivity>(_ => { })
+            .Parallel(parallel =>
+            {
+                parallel.Do(branch => branch.Suspend<RegressionApprovalEvent>("first", (evt, _) => evt.Approved));
+                parallel.Do(branch => branch.Suspend<RegressionApprovalEvent>("second", (evt, _) => evt.Approved));
+            })
+            .Build();
+
+        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new RegressionData());
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("multiple simultaneous waits", result.ErrorMessage);
     }
 
     [Fact]
@@ -381,19 +414,21 @@ public class EngineContractRegressionTests
     [Fact]
     public void DistributedExecutionCommand_HasSerializableWorkflowReference()
     {
-        var definition = Workflow.Create<RegressionData>("Distributed")
-            .Step<MarkChildActivity>(_ => { })
-            .Build();
         var command = new ExecuteWorkflowCommand
         {
             InstanceId = "instance-1",
-            Definition = definition,
+            WorkflowName = "Distributed",
+            WorkflowVersion = 1,
             WorkflowDataJson = "{}",
             WorkflowDataType = typeof(RegressionData).AssemblyQualifiedName!
         };
 
         var json = JsonSerializer.Serialize(command);
-        Assert.Contains("Distributed", json);
+        var restored = JsonSerializer.Deserialize<ExecuteWorkflowCommand>(json);
+        Assert.NotNull(restored);
+        Assert.Equal("Distributed", restored.WorkflowName);
+        Assert.Equal(1, restored.WorkflowVersion);
+        Assert.DoesNotContain("Definition", json);
     }
 
     [Fact]

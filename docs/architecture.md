@@ -21,7 +21,7 @@ The default `IWorkflowStateRepository` and `IEventStore` implementations are sin
 
 `AddIxIFlowHost(connectionString)` adds a coordinator, host, registry, SQL message bus, and background services. The coordinator selects a host for a **whole workflow**. That host calls its local engine; saga steps still run in process there.
 
-<div class="arch-diagram" role="img" aria-label="Coordinator selects a workflow host using the SQL host registry. A SQL message bus supports commands. The selected host still runs the core engine with in-memory workflow instance state by default.">
+<div class="arch-diagram" role="img" aria-label="Coordinator selects a workflow host using the SQL host registry. A SQL message bus supports commands. The SQL host registers shared workflow instance state, while the selected host runs activities in process.">
   <div class="arch-node"><strong>Coordinator</strong><small>Selects a healthy host</small></div>
   <div class="arch-connector"></div>
   <div class="arch-node"><strong>Workflow host</strong><small>Runs the local engine</small></div>
@@ -29,7 +29,7 @@ The default `IWorkflowStateRepository` and `IEventStore` implementations are sin
   <div class="arch-node"><strong>Activities</strong><small>Run on that host</small></div>
 </div>
 
-The SQL connection configures the host registry and message bus. It does **not** replace the singleton in-memory workflow state repository or event store. SQL-backed host routing should not be read as SQL-durable workflow instances.
+The SQL overload also registers `SqlWorkflowStateRepository`, so workflow instance records are shared in SQL Server. The event store and definition registry remain in process memory. After a process restart, the definition must be registered again before a saved instance can resume.
 
 ## Project boundaries
 
@@ -38,8 +38,8 @@ The SQL connection configures the host registry and message bus. It does **not**
 | `IxIFlow` | Fluent C# API, execution engine, saga and suspension runtime, and in-memory state/event defaults. `AddIxIFlow()` is sufficient for local execution. |
 | `IxIFlow.Authoring` | Preliminary document model, validation, and compiler. It does not parse YAML yet. |
 | `IxIFlow.Distributed` | Coordinator, workflow host, host client, transport and registry interfaces, and background services. |
-| `IxIFlow.Distributed.SqlServer` | SQL Server message bus and host registry for the optional host path. |
+| `IxIFlow.Distributed.SqlServer` | SQL Server workflow state repository, message bus, and host registry for the optional host path. |
 
 The projects form one-way dependencies: authoring and distributed hosting depend on the core; the SQL Server host integration depends on distributed hosting. The core does not reference hosting or SQL Server libraries.
 
-Instance persistence and command transport are separate concerns. There is **no SQL workflow state or event-store provider** in these projects yet. Custom `IWorkflowStateRepository` and `IEventStore` implementations can be registered through the core DI hooks. The SQL Server integration only supplies host registration and a message bus. Distributed saga recovery is a target, not a current capability.
+Instance persistence and command transport are separate concerns. The SQL Server integration supplies workflow state, host registration, and claimed message delivery. It does not supply a durable definition registry or event store. Custom `IWorkflowStateRepository` and `IEventStore` implementations can be registered through the core DI hooks. Distributed saga recovery still needs atomic instance claims and host-loss tests.

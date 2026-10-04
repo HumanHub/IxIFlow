@@ -493,77 +493,84 @@ public class WorkflowEngine : IWorkflowEngine
 
         // Catch blocks use the value that entered the try scope, including after resume.
         var resumeStepId = GetResumeStepId(executionState);
-        var resumingTry = resumeStepId != null && ContainsStep(step, resumeStepId);
-        if (resumingTry &&
-            (step.CatchBlocks.Any(catchBlock => ContainsStep(catchBlock.SequenceSteps, resumeStepId!)) ||
-             ContainsStep(step.FinallySteps, resumeStepId!)))
-        {
-            throw new NotSupportedException("Continuation inside Catch or Finally needs a saved handler frame");
-        }
+        var resumingCatchIndex = resumeStepId == null
+            ? -1
+            : step.CatchBlocks.FindIndex(catchBlock => ContainsStep(catchBlock.SequenceSteps, resumeStepId));
+        var resumingFinally = resumeStepId != null && ContainsStep(step.FinallySteps, resumeStepId);
+        var resumingTry = resumeStepId != null && ContainsStep(step.SequenceSteps, resumeStepId);
 
         // Push try block onto stack for nested exception handling
         executionState.TryStack.Push(step);
         var tryFrame = EnterFrame(executionState, step, WorkflowStepType.TryCatch.ToString());
-        var stepBeforeTryCatch = resumingTry
+        if ((resumingTry || resumingCatchIndex >= 0 || resumingFinally) &&
+            !tryFrame.State.ContainsKey("EntryType") && !tryFrame.State.ContainsKey("EntryIsNull") &&
+            !tryFrame.RuntimeValues.ContainsKey("Entry"))
+        {
+            throw new InvalidOperationException($"Handler frame for step {step.Id} is missing its entry value");
+        }
+        var stepBeforeTryCatch = resumeStepId != null
             ? RestoreFrameValue(tryFrame, "Entry")
             : context.PreviousStepData;
-        if (!resumingTry)
+        if (resumeStepId == null)
         {
             SaveFrameValue(tryFrame, "Entry", stepBeforeTryCatch);
         }
 
-        try
+        if (resumingCatchIndex < 0 && !resumingFinally)
         {
-            // Execute try block steps
-            var tryStartIndex = GetResumeStepId(executionState) != null && ContainsStep(step.SequenceSteps, GetResumeStepId(executionState)!)
-                ? GetContinuationStartIndex(step.SequenceSteps, executionState)
-                : 0;
-            for (var tryIndex = tryStartIndex; tryIndex < step.SequenceSteps.Count; tryIndex++)
+            try
             {
-                var tryStep = step.SequenceSteps[tryIndex];
-                _logger.LogTrace("Executing try step: {StepType} - {StepId}", tryStep.StepType, tryStep.Id);
-
-                var result = await ExecuteStepWithPropagationAsync(tryStep, context, executionState, cancellationToken);
-
-                _logger.LogTrace("Try step result: Success={IsSuccess}, HasPendingException={HasPendingException}",
-                    result.IsSuccess, executionState.PendingException != null);
-
-                if (!result.IsSuccess)
+                // Execute try block steps
+                var tryStartIndex = resumingTry
+                    ? GetContinuationStartIndex(step.SequenceSteps, executionState)
+                    : 0;
+                for (var tryIndex = tryStartIndex; tryIndex < step.SequenceSteps.Count; tryIndex++)
                 {
-                    _logger.LogError("Try step failed: {StepId} - {ErrorMessage}", tryStep.Id, result.ErrorMessage);
-                    return result;
-                }
+                    var tryStep = step.SequenceSteps[tryIndex];
+                    _logger.LogTrace("Executing try step: {StepType} - {StepId}", tryStep.StepType, tryStep.Id);
 
-                // Check if the step set a pending exception (from activity failure)
-                if (executionState.PendingException != null)
-                {
-                    _logger.LogDebug("Try step set pending exception: {ExceptionType} - {Message}",
-                        executionState.PendingException.GetType().Name, executionState.PendingException.Message);
-                    break; // Exit try block to process catch blocks
+                    var result = await ExecuteStepWithPropagationAsync(tryStep, context, executionState, cancellationToken);
+
+                    _logger.LogTrace("Try step result: Success={IsSuccess}, HasPendingException={HasPendingException}",
+                        result.IsSuccess, executionState.PendingException != null);
+
+                    if (!result.IsSuccess)
+                    {
+                        _logger.LogError("Try step failed: {StepId} - {ErrorMessage}", tryStep.Id, result.ErrorMessage);
+                        return result;
+                    }
+
+                    if (executionState.PendingException != null)
+                    {
+                        break;
+                    }
                 }
             }
-
-            if (executionState.PendingException == null)
+            catch (Exception ex)
             {
-                _logger.LogDebug("Try block completed successfully: {StepId}", step.Id);
+                executionState.PendingException = ex;
             }
         }
-        catch (Exception ex)
+        else if (resumingCatchIndex >= 0)
         {
-            _logger.LogDebug("Try block threw direct exception: {ExceptionType} - {Message}", ex.GetType().Name, ex.Message);
-
-            // Set the exception as pending for catch block evaluation
-            executionState.PendingException = ex;
+            executionState.PendingException = RestoreHandlerException(tryFrame, "HandledException")
+                ?? throw new InvalidOperationException($"Handler frame for step {step.Id} has no caught exception");
         }
 
         // Process catch blocks if we have a pending exception
-        if (executionState.PendingException != null)
+        if (!resumingFinally && executionState.PendingException != null)
         {
             _logger.LogDebug("Processing catch blocks for exception: {ExceptionType}, CatchBlockCount: {CatchBlockCount}",
                 executionState.PendingException.GetType().Name, step.CatchBlocks.Count);
 
-            foreach (var catchBlock in step.CatchBlocks)
+            for (var catchIndex = 0; catchIndex < step.CatchBlocks.Count; catchIndex++)
             {
+                if (resumingCatchIndex >= 0 && catchIndex != resumingCatchIndex)
+                {
+                    continue;
+                }
+
+                var catchBlock = step.CatchBlocks[catchIndex];
                 _logger.LogTrace("Checking catch block: {CatchBlockName}, ExceptionType: {CatchType}",
                     catchBlock.Name, catchBlock.ExceptionType?.Name ?? "null");
 
@@ -581,14 +588,22 @@ public class WorkflowEngine : IWorkflowEngine
 
                 // Store the original exception being handled
                 var originalException = executionState.PendingException;
+                SaveHandlerException(tryFrame, "HandledException", originalException);
+                tryFrame.State["Phase"] = "Catch";
+                tryFrame.State["CatchIndex"] = catchIndex.ToString();
+                executionState.PendingException = null;
 
                 try
                 {
                     _logger.LogTrace("Starting catch block execution: {CatchBlockName}", catchBlock.Name);
 
                     // Execute catch block activities with exception context
-                    foreach (var catchStep in catchBlock.SequenceSteps)
+                    var catchStartIndex = catchIndex == resumingCatchIndex
+                        ? GetContinuationStartIndex(catchBlock.SequenceSteps, executionState)
+                        : 0;
+                    for (var catchStepIndex = catchStartIndex; catchStepIndex < catchBlock.SequenceSteps.Count; catchStepIndex++)
                     {
+                        var catchStep = catchBlock.SequenceSteps[catchStepIndex];
                         _logger.LogTrace("Executing catch step: {StepType} - {StepId}", catchStep.StepType, catchStep.Id);
 
                         // Create typed execution request with catch exception context
@@ -660,8 +675,16 @@ public class WorkflowEngine : IWorkflowEngine
                             var result = await ExecuteStepWithPropagationAsync(catchStep, context, executionState, cancellationToken);
                             if (!result.IsSuccess)
                             {
+                                if (context.WorkflowInstance.Status == WorkflowStatus.Suspended)
+                                {
+                                    return result;
+                                }
                                 // Catch block step failed - throw exception
                                 throw result.Exception ?? new Exception(result.ErrorMessage ?? "Catch block step failed");
+                            }
+                            if (executionState.PendingException != null)
+                            {
+                                throw executionState.PendingException;
                             }
                         }
                     }
@@ -669,6 +692,7 @@ public class WorkflowEngine : IWorkflowEngine
                     // If we get here, all catch steps succeeded - clear the exception
                     _logger.LogDebug("Catch block handled exception successfully: {CatchBlockName}", catchBlock.Name);
                     executionState.PendingException = null; // Exception handled successfully
+                    resumingCatchIndex = -1;
                     break; // Exit catch block processing
                 }
                 catch (Exception catchEx)
@@ -678,6 +702,7 @@ public class WorkflowEngine : IWorkflowEngine
 
                     // Catch block threw an exception - set as new pending exception
                     executionState.PendingException = catchEx;
+                    resumingCatchIndex = -1;
                     _logger.LogDebug("Continuing to next catch block to handle new exception: {ExceptionType}", catchEx.GetType().Name);
                     // Continue to next catch block to see if it can handle this new exception
                 }
@@ -689,23 +714,31 @@ public class WorkflowEngine : IWorkflowEngine
         {
             _logger.LogDebug("Executing finally block with {Count} steps: {StepId}", step.FinallySteps.Count, step.Id);
 
-            // Store the current pending exception to restore it if finally succeeds
-            var pendingExceptionBeforeFinally = executionState.PendingException;
+            var pendingExceptionBeforeFinally = resumingFinally
+                ? RestoreHandlerException(tryFrame, "FinallyException")
+                : executionState.PendingException;
+            if (!resumingFinally)
+            {
+                SaveHandlerException(tryFrame, "FinallyException", pendingExceptionBeforeFinally);
+            }
+            tryFrame.State["Phase"] = "Finally";
+            executionState.PendingException = null;
 
             try
             {
-                foreach (var finallyStep in step.FinallySteps)
+                var finallyStartIndex = resumingFinally
+                    ? GetContinuationStartIndex(step.FinallySteps, executionState)
+                    : 0;
+                for (var finallyIndex = finallyStartIndex; finallyIndex < step.FinallySteps.Count; finallyIndex++)
                 {
-                    // Create a clean execution state for finally block (no pending exception)
-                    var finallyExecutionState = new ExecutionState
-                    {
-                        LastStepResult = executionState.LastStepResult,
-                        PendingException = null // Finally blocks execute regardless of pending exceptions
-                    };
-
-                    var result = await ExecuteStepWithPropagationAsync(finallyStep, context, finallyExecutionState, cancellationToken);
+                    var finallyStep = step.FinallySteps[finallyIndex];
+                    var result = await ExecuteStepWithPropagationAsync(finallyStep, context, executionState, cancellationToken);
                     if (!result.IsSuccess)
                     {
+                        if (context.WorkflowInstance.Status == WorkflowStatus.Suspended)
+                        {
+                            return result;
+                        }
                         // Finally block failed - this takes precedence over any pending exception
                         _logger.LogError("Finally block step failed: {StepId} - {Error}", finallyStep.Id, result.ErrorMessage);
                         executionState.PendingException = result.Exception ??
@@ -714,17 +747,16 @@ public class WorkflowEngine : IWorkflowEngine
                     }
 
                     // Check if the finally step set a pending exception (from activity failure)
-                    if (finallyExecutionState.PendingException != null)
+                    if (executionState.PendingException != null)
                     {
                         // Finally block activity threw an exception - this takes precedence over any pending exception
                         _logger.LogError("Finally block activity threw exception: {StepId} - {ExceptionType}",
-                            finallyStep.Id, finallyExecutionState.PendingException.GetType().Name);
-                        executionState.PendingException = finallyExecutionState.PendingException;
+                            finallyStep.Id, executionState.PendingException.GetType().Name);
                         break;
                     }
 
                     // Update the main execution state with finally results
-                    executionState.LastStepResult = finallyExecutionState.LastStepResult;
+                    executionState.LastStepResult = result.OutputData;
                 }
 
                 // If finally block succeeded and we had a pending exception before, restore it
@@ -1088,76 +1120,115 @@ public class WorkflowEngine : IWorkflowEngine
         if (step.ParallelBranches == null || step.ParallelBranches.Count == 0)
             throw new InvalidOperationException($"Parallel step {step.Id} has no branches");
 
-        if (GetResumeStepId(executionState) is string resumeStepId && ContainsStep(step, resumeStepId))
+        var resumeStepId = GetResumeStepId(executionState);
+        var resumingParallel = resumeStepId != null && ContainsStep(step, resumeStepId);
+        var parallelFrame = EnterFrame(executionState, step, WorkflowStepType.Parallel.ToString());
+        var completedBranches = parallelFrame.State.TryGetValue("CompletedBranches", out var savedBranches)
+            ? JsonSerializer.Deserialize<HashSet<int>>(savedBranches) ?? []
+            : new HashSet<int>();
+        var branchTasks = new List<(int Index, Task<(StepExecutionResult Result, ExecutionState State)> Task)>();
+
+        for (var index = 0; index < step.ParallelBranches.Count; index++)
         {
-            throw new NotSupportedException("Continuation inside Parallel needs branch checkpoints");
-        }
+            if (completedBranches.Contains(index))
+            {
+                continue;
+            }
 
-        _logger.LogDebug("Executing parallel step: {StepId} with {BranchCount} branches",
-            step.Id, step.ParallelBranches.Count);
+            var branch = step.ParallelBranches[index];
+            var ownsResumeStep = resumingParallel && ContainsStep(branch, resumeStepId!);
+            if (resumingParallel && !ownsResumeStep)
+            {
+                throw new InvalidOperationException($"Parallel branch {index} has no checkpoint for continuation");
+            }
 
-        // For parallel execution with propagation, we need to handle each branch independently
-        // but merge the results appropriately
-        var branchTasks = new List<Task<(StepExecutionResult Result, ExecutionState State)>>();
-
-        for (var i = 0; i < step.ParallelBranches.Count; i++)
-        {
-            var branch = step.ParallelBranches[i];
-            var branchExecutionState = new ExecutionState
+            var branchState = new ExecutionState
             {
                 LastStepResult = executionState.LastStepResult,
-                PendingException = null // Each branch starts with no pending exception
+                Frames = new List<ExecutionFrame>(executionState.Frames),
+                StepMetadata = ownsResumeStep
+                    ? new Dictionary<string, object>(executionState.StepMetadata)
+                    : new Dictionary<string, object>()
             };
-
-            var branchTask = ExecuteBranchWithStateAsync(branch, context, branchExecutionState, cancellationToken);
-            branchTasks.Add(branchTask);
+            branchTasks.Add((index, ExecuteBranchWithStateAsync(branch, context, branchState, cancellationToken)));
         }
 
         try
         {
-            await Task.WhenAll(branchTasks);
+            await Task.WhenAll(branchTasks.Select(branch => branch.Task));
+            var results = branchTasks.Select(branch =>
+                (branch.Index, branch.Task.Result.Result, branch.Task.Result.State)).ToList();
+            var waiting = results.Where(branch => !branch.Result.IsSuccess &&
+                branch.Result.ErrorMessage?.StartsWith("Workflow suspended", StringComparison.Ordinal) == true).ToList();
+            var failures = results.Where(branch => branch.State.PendingException != null ||
+                (!branch.Result.IsSuccess && !waiting.Any(wait => wait.Index == branch.Index))).ToList();
 
-            // Check results from all branches
-            var branchResults = branchTasks.Select(t => t.Result).ToList();
-            var failedBranches = branchResults.Where(r => !r.Result.IsSuccess || r.State.PendingException != null).ToList();
-
-            if (failedBranches.Count > 0)
+            if (failures.Count > 0)
             {
-                var firstFailure = failedBranches.First();
-                var exception = firstFailure.State.PendingException ?? firstFailure.Result.Exception;
-                var errorMessage = exception?.Message ?? firstFailure.Result.ErrorMessage ?? "Parallel branch failed";
-
-                _logger.LogError("Parallel execution failed: {FailedCount} out of {TotalCount} branches failed. First error: {ErrorMessage}",
-                    failedBranches.Count, branchResults.Count, errorMessage);
-
-                // Set pending exception for propagation
-                executionState.PendingException = exception ?? new Exception($"Parallel execution failed: {failedBranches.Count} branches failed");
-
-                return new StepExecutionResult
+                var firstFailure = failures[0];
+                if (waiting.Count > 0)
                 {
-                    IsSuccess = true, // Continue execution to find catch blocks
-                    OutputData = executionState.LastStepResult
-                };
+                    context.WorkflowInstance.Status = WorkflowStatus.Failed;
+                    context.WorkflowInstance.SuspensionInfo = null;
+                }
+                executionState.PendingException = firstFailure.State.PendingException ?? firstFailure.Result.Exception ??
+                    new Exception(firstFailure.Result.ErrorMessage ?? "Parallel branch failed");
+                RemoveFrame(executionState, step.Id);
+                return new StepExecutionResult { IsSuccess = true, OutputData = executionState.LastStepResult };
             }
 
-            _logger.LogDebug("All parallel branches completed successfully: {StepId}", step.Id);
-
-            return new StepExecutionResult
+            foreach (var branch in results.Where(branch => branch.Result.IsSuccess))
             {
-                IsSuccess = true,
-                OutputData = executionState.LastStepResult
-            };
+                completedBranches.Add(branch.Index);
+            }
+            parallelFrame.State["CompletedBranches"] = JsonSerializer.Serialize(completedBranches.Order());
+
+            if (waiting.Count > 0)
+            {
+                if (waiting.Count != 1)
+                {
+                    throw new NotSupportedException("Parallel execution with multiple simultaneous waits needs multiple event pointers");
+                }
+
+                var instance = context.WorkflowInstance;
+                var suspendedState = JsonSerializer.Deserialize<SuspendedExecutionState>(instance.ExecutionStateJson)
+                    ?? throw new InvalidOperationException("Parallel wait has no saved execution state");
+                var savedParallelFrame = suspendedState.Frames.FirstOrDefault(frame => frame.StepId == step.Id)
+                    ?? throw new InvalidOperationException("Parallel wait has no saved branch frame");
+                savedParallelFrame.State["CompletedBranches"] = parallelFrame.State["CompletedBranches"];
+                instance.ExecutionStateJson = JsonSerializer.Serialize(suspendedState);
+                instance.WorkflowDataJson = JsonSerializer.Serialize(context.WorkflowData);
+                var snapshotFrame = instance.ExecutionSnapshot?.Frames.FirstOrDefault(frame => frame.StepId == step.Id);
+                if (snapshotFrame != null)
+                {
+                    snapshotFrame.State["CompletedBranches"] = parallelFrame.State["CompletedBranches"];
+                }
+                await _stateRepository.SaveWorkflowInstanceAsync(instance);
+                if (resumingParallel)
+                {
+                    executionState.StepMetadata.Remove("ResumeStepId");
+                }
+                return waiting[0].Result;
+            }
+
+            if (resumingParallel)
+            {
+                executionState.StepMetadata.Remove("ResumeStepId");
+            }
+            RemoveFrame(executionState, step.Id);
+            return new StepExecutionResult { IsSuccess = true, OutputData = executionState.LastStepResult };
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Parallel step execution failed with exception: {StepId}", step.Id);
-            executionState.PendingException = ex;
-
-            return new StepExecutionResult
+            if (context.WorkflowInstance.Status == WorkflowStatus.Suspended)
             {
-                IsSuccess = true, // Continue to find catch blocks
-                OutputData = executionState.LastStepResult
-            };
+                context.WorkflowInstance.Status = WorkflowStatus.Failed;
+                context.WorkflowInstance.SuspensionInfo = null;
+            }
+            RemoveFrame(executionState, step.Id);
+            executionState.PendingException = ex;
+            return new StepExecutionResult { IsSuccess = true, OutputData = executionState.LastStepResult };
         }
     }
 
@@ -1171,12 +1242,20 @@ public class WorkflowEngine : IWorkflowEngine
         CancellationToken cancellationToken)
         where TWorkflowData : class
     {
-        foreach (var branchStep in branchSteps)
+        var startIndex = GetResumeStepId(branchExecutionState) != null
+            ? GetContinuationStartIndex(branchSteps, branchExecutionState)
+            : 0;
+        for (var index = startIndex; index < branchSteps.Count; index++)
         {
+            var branchStep = branchSteps[index];
             var result = await ExecuteStepWithPropagationAsync(branchStep, context, branchExecutionState, cancellationToken);
             if (!result.IsSuccess)
             {
                 return result;
+            }
+            if (branchExecutionState.PendingException != null)
+            {
+                break;
             }
         }
 
@@ -1640,6 +1719,50 @@ public class WorkflowEngine : IWorkflowEngine
     private static void SaveFrameValue(ExecutionFrame frame, string key, object? value)
     {
         frame.RuntimeValues[key] = value;
+        if (value == null)
+        {
+            frame.State[$"{key}IsNull"] = "true";
+        }
+    }
+
+    private static void SaveHandlerException(ExecutionFrame frame, string key, Exception? exception)
+    {
+        frame.State.Remove($"{key}Type");
+        frame.State.Remove($"{key}Message");
+        if (exception == null)
+        {
+            return;
+        }
+
+        frame.State[$"{key}Type"] = exception.GetType().AssemblyQualifiedName!;
+        frame.State[$"{key}Message"] = exception.Message;
+    }
+
+    private static Exception? RestoreHandlerException(ExecutionFrame frame, string key)
+    {
+        if (!frame.State.TryGetValue($"{key}Type", out var typeName))
+        {
+            return null;
+        }
+
+        var type = Type.GetType(typeName)
+            ?? throw new InvalidOperationException($"Saved exception type {typeName} is unavailable");
+        if (!typeof(Exception).IsAssignableFrom(type))
+        {
+            throw new InvalidOperationException($"Saved handler type {typeName} is not an exception");
+        }
+
+        frame.State.TryGetValue($"{key}Message", out var message);
+        var messageConstructor = type.GetConstructor([typeof(string)]);
+        if (messageConstructor != null)
+        {
+            return (Exception)messageConstructor.Invoke([message]);
+        }
+
+        var emptyConstructor = type.GetConstructor(Type.EmptyTypes);
+        return emptyConstructor != null
+            ? (Exception)emptyConstructor.Invoke(null)
+            : throw new InvalidOperationException($"Saved exception type {typeName} cannot be reconstructed");
     }
 
     private static object? RestoreFrameValue(ExecutionFrame frame, string key)

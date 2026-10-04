@@ -63,8 +63,9 @@ public class WorkflowQueueService : BackgroundService
     {
         _logger.LogDebug("Starting to process execute commands for host {HostId}", _hostId);
 
-        await foreach (var command in _messageBus.ConsumeAsync<ExecuteWorkflowCommand>().WithCancellation(cancellationToken))
+        await foreach (var delivery in ConsumeCommandsAsync<ExecuteWorkflowCommand>(cancellationToken))
         {
+            var command = delivery.Message;
             try
             {
                 // Only process commands targeted at this host
@@ -75,6 +76,7 @@ public class WorkflowQueueService : BackgroundService
                     command.InstanceId, _hostId);
 
                 await ProcessExecuteCommandAsync(command);
+                await delivery.AcknowledgeAsync();
             }
             catch (Exception ex)
             {
@@ -88,8 +90,9 @@ public class WorkflowQueueService : BackgroundService
     {
         _logger.LogDebug("Starting to process resume commands for host {HostId}", _hostId);
 
-        await foreach (var command in _messageBus.ConsumeAsync<ResumeWorkflowCommand>().WithCancellation(cancellationToken))
+        await foreach (var delivery in ConsumeCommandsAsync<ResumeWorkflowCommand>(cancellationToken))
         {
+            var command = delivery.Message;
             try
             {
                 // Only process commands targeted at this host
@@ -100,6 +103,7 @@ public class WorkflowQueueService : BackgroundService
                     command.InstanceId, _hostId);
 
                 await ProcessResumeCommandAsync(command);
+                await delivery.AcknowledgeAsync();
             }
             catch (Exception ex)
             {
@@ -113,8 +117,9 @@ public class WorkflowQueueService : BackgroundService
     {
         _logger.LogDebug("Starting to process cancel commands for host {HostId}", _hostId);
 
-        await foreach (var command in _messageBus.ConsumeAsync<CancelWorkflowCommand>().WithCancellation(cancellationToken))
+        await foreach (var delivery in ConsumeCommandsAsync<CancelWorkflowCommand>(cancellationToken))
         {
+            var command = delivery.Message;
             try
             {
                 // Only process commands targeted at this host
@@ -125,6 +130,7 @@ public class WorkflowQueueService : BackgroundService
                     command.InstanceId, _hostId);
 
                 await ProcessCancelCommandAsync(command);
+                await delivery.AcknowledgeAsync();
             }
             catch (Exception ex)
             {
@@ -134,10 +140,38 @@ public class WorkflowQueueService : BackgroundService
         }
     }
 
+    private async IAsyncEnumerable<IMessageDelivery<T>> ConsumeCommandsAsync<T>(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        where T : class
+    {
+        if (_messageBus is IAcknowledgingMessageBus acknowledgingBus)
+        {
+            await foreach (var delivery in acknowledgingBus.ConsumeDeliveriesAsync<T>(_hostId, cancellationToken)
+                               .WithCancellation(cancellationToken))
+            {
+                yield return delivery;
+            }
+        }
+        else
+        {
+            await foreach (var message in _messageBus.ConsumeAsync<T>().WithCancellation(cancellationToken))
+            {
+                yield return new ImmediateDelivery<T>(message);
+            }
+        }
+    }
+
+    private sealed class ImmediateDelivery<T>(T message) : IMessageDelivery<T> where T : class
+    {
+        public T Message => message;
+        public Task AcknowledgeAsync() => Task.CompletedTask;
+    }
+
     private async Task ProcessExecuteCommandAsync(ExecuteWorkflowCommand command)
     {
         using var scope = _serviceProvider.CreateScope();
         var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var versionRegistry = scope.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>();
 
         try
         {
@@ -146,9 +180,12 @@ public class WorkflowQueueService : BackgroundService
             {
                 InstanceId = command.InstanceId,
                 HostId = _hostId,
-                WorkflowName = command.Definition.Name,
+                WorkflowName = command.WorkflowName,
                 StartedAt = DateTime.UtcNow
             });
+
+            var definition = await versionRegistry.GetWorkflowDefinitionAsync(command.WorkflowName, command.WorkflowVersion)
+                ?? throw new InvalidOperationException($"Workflow definition not found: {command.WorkflowName} v{command.WorkflowVersion}");
 
             // Deserialize workflow data
             var workflowDataType = Type.GetType(command.WorkflowDataType);
@@ -157,10 +194,16 @@ public class WorkflowQueueService : BackgroundService
                 throw new InvalidOperationException($"Could not resolve workflow data type: {command.WorkflowDataType}");
             }
 
-            var workflowData = System.Text.Json.JsonSerializer.Deserialize(command.WorkflowDataJson, workflowDataType);
+            if (definition.WorkflowDataType != workflowDataType)
+            {
+                throw new InvalidOperationException($"Workflow data type does not match {command.WorkflowName} v{command.WorkflowVersion}");
+            }
+
+            var workflowData = System.Text.Json.JsonSerializer.Deserialize(command.WorkflowDataJson, workflowDataType)
+                ?? throw new InvalidOperationException("Workflow data cannot be null");
 
             // Execute workflow
-            var result = await workflowEngine.ExecuteWorkflowAsync(command.Definition, workflowData, command.Options);
+            var result = await workflowEngine.ExecuteWorkflowAsync(definition, workflowData, command.Options);
 
             // Publish completion event
             await _messageBus.PublishAsync(new WorkflowExecutionCompletedEvent
