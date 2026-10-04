@@ -215,6 +215,8 @@ public class WorkflowOptions
 /// </summary>
 public class WorkflowInstance
 {
+    internal WorkflowInstance CopyForResume() => (WorkflowInstance)MemberwiseClone();
+
     /// <summary>
     ///     Unique identifier for this workflow instance
     /// </summary>
@@ -445,6 +447,11 @@ public class ExecutionFrame
 /// </summary>
 public class SuspensionInfo
 {
+    /// <summary>
+    ///     Identifies this particular wait, including repeated waits at the same step.
+    /// </summary>
+    public string SuspensionId { get; set; } = Guid.NewGuid().ToString("N");
+
     /// <summary>
     ///     When the workflow was suspended
     /// </summary>

@@ -268,23 +268,7 @@ public class SuspendResumeExecutor(
                 return ResumeValidationResult.ConditionNotMet("Resume condition not met");
             }
 
-            // Update workflow data in instance (mappings were applied)
-            instance.WorkflowDataJson = JsonSerializer.Serialize(workflowData);
             _logger.LogDebug("Condition evaluation and output mappings completed");
-
-            // Add resume trace
-            await _tracer.TraceAsync(instance.InstanceId, new ExecutionTraceEntry
-            {
-                StepNumber = instance.CurrentStepNumber,
-                EntryType = TraceEntryType.WorkflowResumed,
-                ActivityName = "Resume",
-                InputDataJson = JsonSerializer.Serialize(@event),
-                Metadata = new Dictionary<string, object>
-                {
-                    ["EventType"] = typeof(TEvent).Name,
-                    ["ResumedAt"] = DateTime.UtcNow
-                }
-            }, cancellationToken);
 
             _logger.LogInformation("Workflow resume validation successful: {InstanceId}, Event: {EventType}",
                 instanceId, typeof(TEvent).Name);

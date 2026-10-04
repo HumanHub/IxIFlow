@@ -32,10 +32,10 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             WHEN MATCHED THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
-                StateJson = @StateJson
+                SuspensionId = @SuspensionId, StateJson = @StateJson
             WHEN NOT MATCHED THEN INSERT
-                (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt, StateJson)
-                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @SuspensionExpiresAt, @StateJson);
+                (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt, SuspensionId, StateJson)
+                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @SuspensionExpiresAt, @SuspensionId, @StateJson);
             """, new
         {
             instance.InstanceId,
@@ -43,8 +43,36 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             Status = instance.Status.ToString(),
             instance.CorrelationId,
             SuspensionExpiresAt = instance.SuspensionInfo?.ExpiresAt,
+            SuspensionId = instance.SuspensionInfo?.SuspensionId,
             StateJson = JsonSerializer.Serialize(instance)
         });
+    }
+
+    public async Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        if (instance.Status != WorkflowStatus.Running ||
+            string.IsNullOrWhiteSpace(instance.SuspensionInfo?.SuspensionId))
+        {
+            throw new ArgumentException("A running instance with a suspension ID is required", nameof(instance));
+        }
+
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var updated = await connection.ExecuteAsync("""
+            UPDATE dbo.IxIFlowWorkflowInstances
+            SET Status = @RunningStatus, StateJson = @StateJson
+            WHERE InstanceId = @InstanceId AND Status = @SuspendedStatus
+                AND SuspensionId = @SuspensionId
+            """, new
+        {
+            instance.InstanceId,
+            SuspensionId = instance.SuspensionInfo.SuspensionId,
+            RunningStatus = WorkflowStatus.Running.ToString(),
+            SuspendedStatus = WorkflowStatus.Suspended.ToString(),
+            StateJson = JsonSerializer.Serialize(instance)
+        });
+        return updated == 1;
     }
 
     public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
@@ -127,6 +155,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                         Status NVARCHAR(50) NOT NULL,
                         CorrelationId NVARCHAR(100) NULL,
                         SuspensionExpiresAt DATETIME2 NULL,
+                        SuspensionId NVARCHAR(100) NULL,
                         StateJson NVARCHAR(MAX) NOT NULL
                     );
                     CREATE INDEX IX_IxIFlowWorkflowInstances_Status
@@ -136,6 +165,17 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                     CREATE INDEX IX_IxIFlowWorkflowInstances_CorrelationId
                         ON dbo.IxIFlowWorkflowInstances (CorrelationId);
                 END
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'SuspensionId') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD SuspensionId NVARCHAR(100) NULL;
+                UPDATE dbo.IxIFlowWorkflowInstances
+                SET SuspensionId = COALESCE(
+                    NULLIF(JSON_VALUE(StateJson, '$.SuspensionInfo.SuspensionId'), ''),
+                    CONVERT(NVARCHAR(36), NEWID()))
+                WHERE Status = 'Suspended' AND SuspensionId IS NULL;
+                UPDATE dbo.IxIFlowWorkflowInstances
+                SET StateJson = JSON_MODIFY(StateJson, '$.SuspensionInfo.SuspensionId', SuspensionId)
+                WHERE Status = 'Suspended' AND SuspensionId IS NOT NULL
+                    AND JSON_VALUE(StateJson, '$.SuspensionInfo.SuspensionId') IS NULL;
                 """);
             _schemaReady = true;
         }
