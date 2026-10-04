@@ -154,8 +154,77 @@ public class EngineContractRegressionTests
         var resumed = await engine.ResumeWorkflowAsync(started.InstanceId,
             new RegressionApprovalEvent { Approved = true });
 
-        Assert.Equal(WorkflowExecutionStatus.Suspended, resumed.Status);
+        Assert.True(resumed.Status == WorkflowExecutionStatus.Suspended, $"Expected another suspension, got {resumed.Status}: {resumed.ErrorMessage}");
         Assert.Equal(1, Assert.IsType<LoopResumeRegressionData>(resumed.WorkflowData).Count);
+
+        var completed = await engine.ResumeWorkflowAsync(started.InstanceId,
+            new RegressionApprovalEvent { Approved = true });
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Equal(2, Assert.IsType<LoopResumeRegressionData>(completed.WorkflowData).Count);
+    }
+
+    [Fact]
+    public async Task ResumeInsideTry_HandlesLaterFailureAndRunsFinallyOnce()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+
+        var definition = Workflow.Create<RegressionData>("TryResumeFailure")
+            .Step<MarkChildActivity>(_ => { })
+            .Try(tryBlock => tryBlock
+                .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
+                .Step<ThrowRegressionActivity>(_ => { }))
+            .Catch<ApplicationException>(catchBlock => catchBlock
+                .Step<MarkChildActivity>(setup => setup
+                    .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.CatchExecuted)))
+            .Finally(finallyBlock => finallyBlock
+                .Step<MarkChildActivity>(setup => setup
+                    .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.FinallyExecuted)))
+            .Step<MarkChildActivity>(setup => setup
+                .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.AfterTryExecuted))
+            .Build();
+
+        var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
+        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+            new RegressionApprovalEvent { Approved = true });
+        Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
+        var data = Assert.IsType<RegressionData>(resumed.WorkflowData);
+        Assert.True(data.CatchExecuted);
+        Assert.True(data.FinallyExecuted);
+        Assert.True(data.AfterTryExecuted);
+    }
+
+    [Fact]
+    public async Task ResumeInsideConditional_RestoresValueBeforeTheBranch()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+
+        var definition = Workflow.Create<RegressionData>("ConditionalEntryResume")
+            .Step<MarkChildActivity>(setup => setup
+                .Input(activity => activity.Value).From(_ => "entry"))
+            .If(ctx => true, then => then
+                .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved))
+            .Step<MarkChildActivity>(setup => setup
+                .Input(activity => activity.Value).From(ctx => ctx.PreviousStep.Value)
+                .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Result))
+            .Build();
+
+        var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
+        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+            new RegressionApprovalEvent { Approved = true });
+        Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
+        Assert.Equal("entry", Assert.IsType<RegressionData>(resumed.WorkflowData).Result);
     }
 
     [Fact]
@@ -442,6 +511,9 @@ public sealed class RegressionData
     public string Value { get; set; } = string.Empty;
     public string Result { get; set; } = string.Empty;
     public bool ChildExecuted { get; set; }
+    public bool CatchExecuted { get; set; }
+    public bool FinallyExecuted { get; set; }
+    public bool AfterTryExecuted { get; set; }
 }
 
 public sealed class ChildData

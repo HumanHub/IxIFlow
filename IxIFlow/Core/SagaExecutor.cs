@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace IxIFlow.Core;
 
@@ -34,6 +35,28 @@ public class SagaExecutor : ISagaExecutor
         where TWorkflowData : class
     {
         _logger.LogDebug("Starting saga execution for step {StepId} with {StepCount} steps", sagaStep.Id, sagaStep.SequenceSteps.Count);
+
+        var sagaFrame = executionState.Frames.FirstOrDefault(frame => frame.StepId == sagaStep.Id && frame.Kind == WorkflowStepType.Saga.ToString());
+        if (sagaFrame == null)
+        {
+            sagaFrame = new ExecutionFrame
+            {
+                Kind = WorkflowStepType.Saga.ToString(),
+                StepId = sagaStep.Id,
+                ParentFrameId = executionState.Frames.LastOrDefault()?.FrameId
+            };
+            executionState.Frames.Add(sagaFrame);
+        }
+
+        if (!sagaFrame.State.ContainsKey("CompletedSteps"))
+        {
+            sagaFrame.State["CompletedSteps"] = "[]";
+        }
+
+        if (resumeInfo != null && resumeInfo.ResumeFromStepIndex > 0)
+        {
+            resumeInfo.CompletedSteps = RestoreCompletedSteps(sagaFrame, sagaStep);
+        }
 
         // Get saga retry configuration (0-based)
         var sagaCurrentAttempt = executionState.StepMetadata.TryGetValue("CurrentAttempt", out var currentAttemptObj) 
@@ -147,6 +170,7 @@ public class SagaExecutor : ISagaExecutor
                         CompletedAt = DateTime.UtcNow
                     };
                     successfulSagaSteps.Add(sagaStepInfo);
+                    SaveCompletedSteps(sagaFrame, successfulSagaSteps);
 
                     _logger.LogTrace("Saga step {Index} completed: {StepId}", sagaStepIndex, step.Id);
                     sagaStepIndex++;
@@ -240,6 +264,59 @@ public class SagaExecutor : ISagaExecutor
                 };
             }
         }
+    }
+
+    private static void SaveCompletedSteps(ExecutionFrame frame, List<SagaExecutionStepInfo> completedSteps)
+    {
+        frame.RuntimeValues["CompletedSteps"] = completedSteps;
+    }
+
+    internal static string SerializeCompletedSteps(List<SagaExecutionStepInfo> completedSteps)
+    {
+        var checkpoint = completedSteps.Select(step => new SagaCheckpointStep
+        {
+            StepIndex = step.StepIndex,
+            StepId = step.Step.Id,
+            ResultType = step.Result?.GetType().AssemblyQualifiedName,
+            ResultJson = step.Result == null ? null : JsonSerializer.Serialize(step.Result, step.Result.GetType())
+        }).ToList();
+        return JsonSerializer.Serialize(checkpoint);
+    }
+
+    private static List<SagaExecutionStepInfo> RestoreCompletedSteps(ExecutionFrame frame, WorkflowStep sagaStep)
+    {
+        if (!frame.State.TryGetValue("CompletedSteps", out var json))
+        {
+            throw new InvalidOperationException($"Saga {sagaStep.Id} has no completed-step checkpoint");
+        }
+
+        var checkpoint = JsonSerializer.Deserialize<List<SagaCheckpointStep>>(json)
+            ?? throw new InvalidOperationException($"Saga {sagaStep.Id} has an invalid completed-step checkpoint");
+        return checkpoint.Select(saved =>
+        {
+            if (saved.StepIndex < 0 || saved.StepIndex >= sagaStep.SequenceSteps.Count ||
+                sagaStep.SequenceSteps[saved.StepIndex].Id != saved.StepId)
+            {
+                throw new InvalidOperationException($"Saga {sagaStep.Id} changed after its checkpoint was saved");
+            }
+
+            var resultType = saved.ResultType == null ? null : Type.GetType(saved.ResultType)
+                ?? throw new InvalidOperationException($"Saga result type {saved.ResultType} is unavailable");
+            return new SagaExecutionStepInfo
+            {
+                StepIndex = saved.StepIndex,
+                Step = sagaStep.SequenceSteps[saved.StepIndex],
+                Result = resultType == null || saved.ResultJson == null ? null : JsonSerializer.Deserialize(saved.ResultJson, resultType)
+            };
+        }).ToList();
+    }
+
+    private sealed class SagaCheckpointStep
+    {
+        public int StepIndex { get; set; }
+        public string StepId { get; set; } = string.Empty;
+        public string? ResultType { get; set; }
+        public string? ResultJson { get; set; }
     }
 
     /// <summary>
@@ -662,21 +739,6 @@ public class SagaExecutor : ISagaExecutor
                 throw new InvalidOperationException($"OutcomeBranches not found in conditional step metadata: {step.Id}");
             }
 
-            // Get the property value to evaluate
-            object? propertyValue;
-            try
-            {
-                // Create context for property evaluation
-                var evaluationContext = CreateEvaluationContext(context, executionState, step);
-                propertyValue = propertySelector(evaluationContext);
-                _logger.LogTrace("Conditional property evaluated to: {PropertyValue}", propertyValue);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to evaluate conditional property in saga step: {StepId}", step.Id);
-                throw new InvalidOperationException($"Failed to evaluate conditional property: {ex.Message}", ex);
-            }
-
             // Find matching outcome branch using reflection (since OutcomeBranch is internal to SagaBuilder)
             var outcomeBranchesType = outcomeBranchesObj.GetType();
             if (!outcomeBranchesType.IsGenericType || !outcomeBranchesType.GetGenericTypeDefinition().IsAssignableFrom(typeof(List<>)))
@@ -686,9 +748,42 @@ public class SagaExecutor : ISagaExecutor
 
             var outcomeBranches = (System.Collections.IList)outcomeBranchesObj;
             object? selectedBranch = null;
+            object? propertyValue = null;
+            var resumeStepId = executionState.StepMetadata.TryGetValue("ResumeStepId", out var resumeStepObj)
+                ? resumeStepObj as string
+                : null;
+            if (!string.IsNullOrWhiteSpace(resumeStepId))
+            {
+                selectedBranch = outcomeBranches.Cast<object>().FirstOrDefault(branch =>
+                    branch.GetType().GetProperty("Steps")?.GetValue(branch) is List<WorkflowStep> branchSteps &&
+                    ContainsSagaStep(branchSteps, resumeStepId));
+
+                if (selectedBranch == null &&
+                    step.StepMetadata.TryGetValue("DefaultBranch", out var defaultResumeBranch) &&
+                    defaultResumeBranch?.GetType().GetProperty("Steps")?.GetValue(defaultResumeBranch) is List<WorkflowStep> defaultSteps &&
+                    ContainsSagaStep(defaultSteps, resumeStepId))
+                {
+                    selectedBranch = defaultResumeBranch;
+                }
+            }
+
+            if (selectedBranch == null)
+            {
+                try
+                {
+                    var evaluationContext = CreateEvaluationContext(context, executionState, step);
+                    propertyValue = propertySelector(evaluationContext);
+                    _logger.LogTrace("Conditional property evaluated to: {PropertyValue}", propertyValue);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to evaluate conditional property in saga step: {StepId}", step.Id);
+                    throw new InvalidOperationException($"Failed to evaluate conditional property: {ex.Message}", ex);
+                }
+            }
 
             // Find the matching branch
-            foreach (var branch in outcomeBranches)
+            foreach (var branch in selectedBranch == null ? outcomeBranches : Array.Empty<object>())
             {
                 var branchValueProperty = branch.GetType().GetProperty("Value");
                 var isDefaultProperty = branch.GetType().GetProperty("IsDefault");
@@ -736,8 +831,20 @@ public class SagaExecutor : ISagaExecutor
                 _logger.LogTrace("Executing {StepCount} steps in selected outcome branch", branchSteps.Count);
 
                 // Execute each step in the branch sequentially
-                foreach (var branchStep in branchSteps)
+                var startIndex = 0;
+                if (!string.IsNullOrWhiteSpace(resumeStepId) && ContainsSagaStep(branchSteps, resumeStepId))
                 {
+                    startIndex = branchSteps.FindIndex(branchStep => ContainsSagaStep(branchStep, resumeStepId));
+                    if (branchSteps[startIndex].Id == resumeStepId)
+                    {
+                        startIndex++;
+                        executionState.StepMetadata.Remove("ResumeStepId");
+                    }
+                }
+
+                for (var branchIndex = startIndex; branchIndex < branchSteps.Count; branchIndex++)
+                {
+                    var branchStep = branchSteps[branchIndex];
                     var stepResult = await ExecuteStepDirectlyAsync(branchStep, context, executionState, cancellationToken);
                     
                     if (!stepResult.IsSuccess)
@@ -786,6 +893,34 @@ public class SagaExecutor : ISagaExecutor
                 Exception = ex
             };
         }
+    }
+
+    private static bool ContainsSagaStep(List<WorkflowStep> steps, string stepId) =>
+        steps.Any(step => ContainsSagaStep(step, stepId));
+
+    private static bool ContainsSagaStep(WorkflowStep step, string stepId)
+    {
+        if (step.Id == stepId || ContainsSagaStep(step.SequenceSteps, stepId) ||
+            ContainsSagaStep(step.ThenSteps, stepId) || ContainsSagaStep(step.ElseSteps, stepId))
+        {
+            return true;
+        }
+
+        if (step.StepMetadata.TryGetValue("OutcomeBranches", out var branchesObj) && branchesObj is System.Collections.IList branches)
+        {
+            foreach (var branch in branches)
+            {
+                if (branch.GetType().GetProperty("Steps")?.GetValue(branch) is List<WorkflowStep> branchSteps &&
+                    ContainsSagaStep(branchSteps, stepId))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return step.StepMetadata.TryGetValue("DefaultBranch", out var defaultBranch) &&
+               defaultBranch?.GetType().GetProperty("Steps")?.GetValue(defaultBranch) is List<WorkflowStep> defaultSteps &&
+               ContainsSagaStep(defaultSteps, stepId);
     }
 
     /// <summary>

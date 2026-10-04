@@ -432,6 +432,12 @@ public class ExecutionFrame
     ///     Structured frame state captured as strings for persistence safety
     /// </summary>
     public Dictionary<string, string> State { get; set; } = new();
+
+    /// <summary>
+    /// Values needed only while a scope is active. They are encoded into State at suspension.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Dictionary<string, object?> RuntimeValues { get; set; } = new();
 }
 
 /// <summary>
