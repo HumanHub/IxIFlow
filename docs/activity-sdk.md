@@ -30,3 +30,25 @@ A database transaction scope is distinct from a connection scope. A live transac
 5. Execute with the memory provider in process. Later, repeat with a durable provider and resume on another host.
 
 The [Studio designer exercise](/studio-demo/) shows the canvas, a custom database node, manifest-driven properties, and YAML editing. It is an interactive authoring exercise; it does not yet run the workflow or load a .NET activity assembly.
+
+## Package boundaries and embedding
+
+Keep execution, authoring, and editing separate:
+
+| Package | Responsibility |
+| --- | --- |
+| `IxIFlow` | Run a compiled workflow in process. No designer, web server, or SQL dependency. |
+| `IxIFlow.Authoring` | Own the versioned workflow document, YAML reader and writer, validation, and compilation to the runtime graph. |
+| `IxIFlow.ActivitySdk` | Help activity authors register a .NET activity, its stable key, input and output metadata, and property rules. It builds on the runtime and authoring contracts. |
+| Vue editor package | Render the activity palette, canvas, property editor, diagnostics, and YAML view. It receives the document and activity catalog through an application adapter. |
+| Studio application | Supply login, storage, publishing, instance inspection, and API integration around the reusable editor. |
+
+The editor should ship as an npm package that a Vue application can mount in its own page. A small web-component wrapper can make the same editor available to React, Angular, Razor, or plain HTML hosts. The standalone Studio should consume the package too. A host may provide its own save and validation adapters, so embedding the editor does not require the IxIFlow coordinator. The website is a consumer of the editor package, not its permanent source.
+
+YAML remains the workflow source format for document-authored workflows. An API may transport the parsed document as JSON, and generated TypeScript types may describe it, but those are representations of the same authoring contract rather than a second workflow language.
+
+## Canvas interaction
+
+Use top-to-bottom layout for structured workflows. A sequence is ordered from top to bottom; an `If` owns distinct Then and Else paths. Every path and position between activities should have a visible insertion target. Drag an activity from the palette to that target, or select an activity and activate the target by keyboard. A target belongs to a specific control-flow node, so ten `If` steps still have unambiguous Then and Else destinations.
+
+For structured constructs, the document's child lists define execution order and the canvas derives its lines from them. Freehand connections would allow links the document cannot represent. If arbitrary links, back edges, and joins are added later, define a separate flowchart construct with explicit graph semantics and validation. Canvas coordinates are editor layout data and never change execution order.
