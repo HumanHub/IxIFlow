@@ -117,6 +117,10 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
                     {
                         diagnostics.Add(new WorkflowDiagnostic("STEP007", $"Unknown step template '{stepReferenceStep.Ref}'", WorkflowDiagnosticSeverity.Error, $"{stepPath}.ref"));
                     }
+                    else if (!document.Steps.ContainsKey(stepReferenceStep.Ref))
+                    {
+                        diagnostics.Add(new WorkflowDiagnostic("STEP012", $"External step template '{stepReferenceStep.Ref}' has no executable definition", WorkflowDiagnosticSeverity.Error, $"{stepPath}.ref"));
+                    }
                     break;
 
                 case SuspendStepDocument suspendStep:
@@ -234,15 +238,24 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
                 break;
 
             case BinaryExpressionDocument binaryExpression:
+                if (binaryExpression.Operator is not ("eq" or "ne" or "and" or "or"))
+                {
+                    diagnostics.Add(new WorkflowDiagnostic("EXPR002", $"Unknown binary operator '{binaryExpression.Operator}'", WorkflowDiagnosticSeverity.Error, $"{path}.operator"));
+                }
                 ValidateExpression(binaryExpression.Left, diagnostics, $"{path}.left", allowedRoots);
                 ValidateExpression(binaryExpression.Right, diagnostics, $"{path}.right", allowedRoots);
                 break;
 
             case FunctionExpressionDocument functionExpression:
+                diagnostics.Add(new WorkflowDiagnostic("EXPR003", $"Unknown function '{functionExpression.Function}'", WorkflowDiagnosticSeverity.Error, $"{path}.function"));
                 for (var index = 0; index < functionExpression.Arguments.Count; index++)
                 {
                     ValidateExpression(functionExpression.Arguments[index], diagnostics, $"{path}.arguments[{index}]", allowedRoots);
                 }
+                break;
+
+            case not null and not ConstantExpressionDocument:
+                diagnostics.Add(new WorkflowDiagnostic("EXPR004", $"Unsupported expression '{expression.GetType().Name}'", WorkflowDiagnosticSeverity.Error, path));
                 break;
         }
     }

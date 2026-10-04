@@ -86,6 +86,19 @@ public sealed class WorkflowDocumentCompiler : IWorkflowDocumentCompiler
             case SequenceStepDocument sequenceStep:
                 return await CompileStepsAsync(sequenceStep.Steps, document, context, workflowDataType, state, cancellationToken);
 
+            case ConditionalStepDocument conditionalStep:
+                return [new WorkflowStep
+                {
+                    Id = CreateStepId(conditionalStep.Id),
+                    Name = conditionalStep.Name ?? conditionalStep.Id,
+                    StepType = WorkflowStepType.Conditional,
+                    WorkflowDataType = workflowDataType,
+                    Order = state.NextOrder(),
+                    CompiledCondition = CreateCondition(conditionalStep.Condition),
+                    ThenSteps = await CompileStepsAsync(conditionalStep.Then, document, context, workflowDataType, state, cancellationToken),
+                    ElseSteps = await CompileStepsAsync(conditionalStep.Else, document, context, workflowDataType, state, cancellationToken)
+                }];
+
             case SuspendStepDocument suspendStep:
                 return [await CompileSuspendStepAsync(suspendStep, context, workflowDataType, state, cancellationToken)];
 
@@ -93,7 +106,7 @@ public sealed class WorkflowDocumentCompiler : IWorkflowDocumentCompiler
                 return [await CompileInvokeWorkflowStepAsync(invokeWorkflowStep, context, workflowDataType, state, cancellationToken)];
 
             default:
-                return [];
+                throw new NotSupportedException($"Step kind '{step.GetType().Name}' cannot be compiled");
         }
     }
 
@@ -158,8 +171,7 @@ public sealed class WorkflowDocumentCompiler : IWorkflowDocumentCompiler
             return await CompileStepsAsync(localTemplate.Steps, document, context, workflowDataType, state, cancellationToken);
         }
 
-        await context.StepTemplateRegistry.FindAsync(stepReferenceStep.Ref, cancellationToken);
-        return [];
+        throw new NotSupportedException($"External step template '{stepReferenceStep.Ref}' cannot be compiled without a definition");
     }
 
     private async Task<WorkflowStep> CompileSuspendStepAsync(
@@ -182,6 +194,7 @@ public sealed class WorkflowDocumentCompiler : IWorkflowDocumentCompiler
             Order = state.NextOrder(),
             InputMappings = CompileInputMappings(suspendStep.Input),
             OutputMappings = CompileOutputMappings(suspendStep.Output),
+            CompiledCondition = suspendStep.ResumeCondition == null ? null : CreateCondition(suspendStep.ResumeCondition),
             StepMetadata = new Dictionary<string, object>
             {
                 ["SuspendReason"] = suspendStep.Reason
@@ -207,7 +220,7 @@ public sealed class WorkflowDocumentCompiler : IWorkflowDocumentCompiler
             WorkflowDataType = workflowDataType,
             WorkflowName = workflowDescriptor.Name,
             WorkflowVersion = workflowDescriptor.Version,
-            WorkflowType = workflowDescriptor.RuntimeDefinition?.WorkflowDataType,
+            WorkflowType = null,
             Order = state.NextOrder(),
             InputMappings = CompileInputMappings(invokeWorkflowStep.Input),
             OutputMappings = CompileOutputMappings(invokeWorkflowStep.Output)
@@ -245,7 +258,29 @@ public sealed class WorkflowDocumentCompiler : IWorkflowDocumentCompiler
         {
             ConstantExpressionDocument constant => _ => GetJsonValue(constant.Value),
             PathExpressionDocument path => context => ReadPathValue(context, path.Path),
-            _ => _ => null
+            BinaryExpressionDocument binary => context => EvaluateBinary(binary.Operator,
+                CreateSourceFunction(binary.Left)(context), CreateSourceFunction(binary.Right)(context)),
+            _ => throw new NotSupportedException($"Expression kind '{expression.GetType().Name}' cannot be compiled")
+        };
+    }
+
+    private static Func<object, bool> CreateCondition(ExpressionDocument expression)
+    {
+        var evaluate = CreateSourceFunction(expression);
+        return context => evaluate(context) is bool result
+            ? result
+            : throw new InvalidOperationException("Condition expression must return a Boolean value");
+    }
+
+    private static object EvaluateBinary(string op, object? left, object? right)
+    {
+        return op.ToLowerInvariant() switch
+        {
+            "eq" => Equals(left, right),
+            "ne" => !Equals(left, right),
+            "and" when left is bool l && right is bool r => l && r,
+            "or" when left is bool l && right is bool r => l || r,
+            _ => throw new NotSupportedException($"Binary operator '{op}' cannot be evaluated for these operands")
         };
     }
 
@@ -256,16 +291,25 @@ public sealed class WorkflowDocumentCompiler : IWorkflowDocumentCompiler
 
     private static object? ReadPathValue(object source, string path)
     {
-        object? current = source;
-        foreach (var segment in GetPathSegments(path))
+        var segments = path.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        object? current = segments[0].ToLowerInvariant() switch
+        {
+            "workflow" => source.GetType().GetProperty("WorkflowData")?.GetValue(source),
+            "previousstep" => source.GetType().GetProperty("PreviousStep")?.GetValue(source)
+                ?? source.GetType().GetProperty("PreviousStepData")?.GetValue(source),
+            "event" => source.GetType().GetProperty("ResumeEvent")?.GetValue(source),
+            _ => throw new InvalidOperationException($"Unknown path root in '{path}'")
+        };
+        foreach (var segment in segments.Skip(1))
         {
             if (current == null)
             {
                 return null;
             }
 
-            var property = current.GetType().GetProperty(segment);
-            current = property?.GetValue(current);
+            var property = current.GetType().GetProperty(segment)
+                ?? throw new InvalidOperationException($"Property '{segment}' was not found in path '{path}'");
+            current = property.GetValue(current);
         }
 
         return current;
@@ -273,9 +317,14 @@ public sealed class WorkflowDocumentCompiler : IWorkflowDocumentCompiler
 
     private static void AssignPathValue(object target, string path, object? value)
     {
-        object? current = target;
-        var segments = GetPathSegments(path).ToArray();
-        for (var index = 0; index < segments.Length - 1; index++)
+        var segments = path.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 2 || !segments[0].Equals("workflow", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Output path '{path}' must start with workflow.");
+        }
+
+        object? current = target.GetType().GetProperty("WorkflowData")?.GetValue(target);
+        for (var index = 1; index < segments.Length - 1; index++)
         {
             if (current == null)
             {
@@ -298,16 +347,6 @@ public sealed class WorkflowDocumentCompiler : IWorkflowDocumentCompiler
 
         var convertedValue = ConvertValue(value, targetProperty.PropertyType);
         targetProperty.SetValue(current, convertedValue);
-    }
-
-    private static IEnumerable<string> GetPathSegments(string path)
-    {
-        return path.Split('.', StringSplitOptions.RemoveEmptyEntries)
-            .Skip(path.StartsWith("workflow.", StringComparison.OrdinalIgnoreCase) ||
-                  path.StartsWith("activity.", StringComparison.OrdinalIgnoreCase) ||
-                  path.StartsWith("event.", StringComparison.OrdinalIgnoreCase)
-                ? 1
-                : 0);
     }
 
     private static object? ConvertValue(object? value, Type targetType)

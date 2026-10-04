@@ -30,10 +30,10 @@ Compensation is an application action, not an automatic rollback of another serv
 
 Direct waits inside a saga now resume the remaining saga activities. Completed activity results are saved at suspension and restored for compensation if later work fails. Regression tests cover repeated waits, an outcome-branch wait, transient failure followed by retry success, and permanent failure followed by retry exhaustion. More complex error-handler and nested resume paths need coverage. A process crash is not recoverable with the default memory state repository.
 
-The default state repository is process memory. It can retain an instance across request scopes in the same process, but not across a restart or another host. These limits apply even if the coordinator selects a healthy host.
+The default state repository is process memory. It can retain an instance across request scopes in the same process, but not across a restart or another host. The optional SQL Server host stores instance state in SQL, but definitions must be registered on the resuming host and concurrent resume still needs an atomic claim.
 
 ## Distributed saga goal
 
-Reliable distributed saga recovery is planned. It requires shared durable state, an atomic claim for each resumed transition, stable definitions, persisted step attempts, and a persisted compensation stack. The current coordinator and SQL message bus do not provide these guarantees on their own.
+Reliable distributed saga recovery still needs an atomic claim for each resumed transition, durable published definitions, persisted step attempts, and a persisted compensation stack. SQL state and acknowledged message delivery alone do not provide those guarantees.
 
 Read [execution model](/docs/execution-model/) and [coordinator and hosts](/docs/coordinator-and-hosts/) for the wider runtime boundary.
