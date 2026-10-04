@@ -450,3 +450,6 @@ jspm_packages/
 # Stores VSCode versions used for testing VSCode extensions
 .vscode-test
 */Workflows/*
+
+# Local agent instructions
+AGENTS.md

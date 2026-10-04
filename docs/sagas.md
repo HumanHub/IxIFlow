@@ -1,0 +1,42 @@
+---
+title: Sagas and compensation
+description: Current saga behavior, the process boundary, and resume limits.
+---
+
+A saga groups steps that need compensating actions when later work fails. IxIFlow's `SagaExecutor` runs those activities through the local `ActivityExecutor`. Compensation is also local to that workflow execution.
+
+An activity may call a remote service, but IxIFlow does not dispatch each saga step to a durable remote worker. The current saga is an in-process orchestration pattern.
+
+## Define compensation
+
+The fluent API lets a saga step name a compensation activity:
+
+```csharp
+.Saga(saga =>
+{
+    saga.Step<ReserveProductActivity>(step => step
+            .Input(x => x.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+            .CompensateWith<ReleaseProductActivity>())
+        .Step<ChargeCustomerActivity>(step => step
+            .Input(x => x.Amount).From(ctx => ctx.WorkflowData.TotalAmount)
+            .CompensateWith<RefundCustomerActivity>());
+})
+.OnError<Exception>(error => error.Compensate())
+```
+
+Compensation is an application action, not an automatic rollback of another service or database. Design it to be safe when retried, and test its behavior when a later activity fails.
+
+## Current resume limits
+
+Saga suspension and resume are not yet reliable enough for production recovery. Current regression tests expose two failures:
+
+- Resuming from a suspension inside a saga can continue after the saga and skip its remaining activities.
+- Compensation after resume can lose the record of successful saga activities from before suspension.
+
+The default state repository is process memory. It can retain an instance across request scopes in the same process, but not across a restart or another host. These limits apply even if the coordinator selects a healthy host.
+
+## Distributed saga goal
+
+Reliable distributed saga recovery is planned. It requires shared durable state, an atomic claim for each resumed transition, stable definitions, persisted step attempts, and a persisted compensation stack. The current coordinator and SQL message bus do not provide these guarantees on their own.
+
+Read [execution model](/docs/execution-model/) and [coordinator and hosts](/docs/coordinator-and-hosts/) for the wider runtime boundary.

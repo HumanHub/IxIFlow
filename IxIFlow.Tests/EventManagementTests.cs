@@ -1,4 +1,6 @@
+using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -7,6 +9,62 @@ namespace IxIFlow.Tests;
 
 public class EventManagementTests
 {
+    [Fact]
+    public async Task DefaultEventTemplateRepository_PreservesTemplateAcrossScopes()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var instanceId = Guid.NewGuid().ToString();
+
+        using (var firstScope = provider.CreateScope())
+        {
+            await firstScope.ServiceProvider.GetRequiredService<IEventRepository>()
+                .CreateEventTemplateAsync(instanceId, new EventTemplate<TestEvent>
+                {
+                    WorkflowInstanceId = instanceId,
+                    EventData = new TestEvent { ApprovalStatus = "Pending" }
+                });
+        }
+
+        using var secondScope = provider.CreateScope();
+        var restored = await secondScope.ServiceProvider.GetRequiredService<IEventRepository>()
+            .GetEventTemplateAsync<TestEvent>(instanceId);
+        Assert.Equal("Pending", restored.EventData.ApprovalStatus);
+    }
+
+    [Fact]
+    public async Task UpdatingOneEventTemplate_DoesNotResumeAnotherInstance()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
+        var events = scope.ServiceProvider.GetRequiredService<IEventRepository>();
+        var manager = scope.ServiceProvider.GetRequiredService<IWorkflowEventManager>();
+        var definition = Workflow.Create<EventScopeData>("TargetedApproval")
+            .Step<EventScopeNoOpActivity>(_ => { })
+            .Suspend<EventScopeApproval>("approval", (approval, _) => approval.Approved)
+            .Build();
+
+        var first = await engine.ExecuteWorkflowAsync(definition, new EventScopeData());
+        var second = await engine.ExecuteWorkflowAsync(definition, new EventScopeData());
+        await events.CreateEventTemplateAsync(first.InstanceId, new EventTemplate<EventScopeApproval>
+        {
+            WorkflowInstanceId = first.InstanceId,
+            EventData = new EventScopeApproval()
+        });
+
+        await manager.UpdateEventAndResumeAsync(first.InstanceId, new EventScopeApproval { Approved = true });
+
+        Assert.Equal(WorkflowStatus.Completed, (await repository.GetWorkflowInstanceAsync(first.InstanceId))?.Status);
+        Assert.Equal(WorkflowStatus.Suspended, (await repository.GetWorkflowInstanceAsync(second.InstanceId))?.Status);
+    }
+
     private readonly WorkflowEventManager _eventManager;
     private readonly InMemoryEventRepository _eventRepository;
     private readonly Mock<ILogger<WorkflowEventManager>> _mockManagerLogger;
@@ -110,8 +168,9 @@ public class EventManagementTests
         Assert.Equal(workflowId, result.WorkflowInstanceId);
         Assert.Equal("Approved", result.EventData.ApprovalStatus);
 
-        // Verify that ProcessEventAsync was called
-        _mockSuspensionManager.Verify(m => m.ProcessEventAsync(
+        // Verify that only the target instance was resumed.
+        _mockSuspensionManager.Verify(m => m.ResumeInstanceAsync(
+                workflowId,
                 It.Is<TestEvent>(e => e.ApprovalStatus == "Approved"),
                 It.IsAny<CancellationToken>()),
             Times.Once);
@@ -228,8 +287,9 @@ public class EventManagementTests
         Assert.Equal(workflowId, result.WorkflowInstanceId);
         Assert.Equal("Approved", result.EventData.ApprovalStatus);
 
-        // Verify that ProcessEventAsync was called
-        _mockSuspensionManager.Verify(m => m.ProcessEventAsync(
+        // Verify that only the target instance was resumed.
+        _mockSuspensionManager.Verify(m => m.ResumeInstanceAsync(
+                workflowId,
                 It.Is<TestEvent>(e => e.ApprovalStatus == "Approved"),
                 It.IsAny<CancellationToken>()),
             Times.Once);
@@ -278,4 +338,18 @@ public class EventManagementTests
     {
         public string Message { get; set; } = "";
     }
+}
+
+public sealed class EventScopeData
+{
+}
+
+public sealed class EventScopeApproval
+{
+    public bool Approved { get; set; }
+}
+
+public sealed class EventScopeNoOpActivity : IAsyncActivity
+{
+    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
 }

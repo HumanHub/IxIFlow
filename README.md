@@ -1,4 +1,4 @@
-# IxIFlow Workflow Engine - Beta release
+# IxIFlow Workflow Engine
 
 A simple, type-safe workflow engine for .NET that helps you build and orchestrate business processes. Build workflows using a fluent API that keeps your code clean and your logic clear.
 
@@ -8,17 +8,19 @@ A simple, type-safe workflow engine for .NET that helps you build and orchestrat
 - **Type Safety**: Compile-time checking for all workflow inputs and outputs
 - **Parallel Execution**: Run multiple tasks simultaneously
 - **Exception Handling**: Built-in try-catch support for robust error handling
-- **Saga Pattern**: Distributed transactions with automatic rollback
+- **Saga Pattern**: In-process compensation for completed saga steps
 - **Suspend/Resume**: Pause workflows and continue when events occur
 - **Conditional Logic**: Dynamic branching based on your data
 - **Dependency Injection**: Works great with Microsoft DI container
-- **In-Process or Distributed**: Run workflows locally or across multiple instances
+- **Optional Hosting**: Coordinator and host projects for multi-instance routing under development
 
 ## Installation
 
 ```bash
 dotnet add package IxIFlow
 ```
+
+The solution also contains optional `IxIFlow.Authoring`, `IxIFlow.Distributed`, and `IxIFlow.Distributed.SqlServer` projects. The core project has no hosting or SQL Server dependency. Local execution only needs `IxIFlow`.
 
 ## Quick Start
 
@@ -208,7 +210,7 @@ Handle errors gracefully:
 
 ### Saga Transactions
 
-Handle complex distributed operations with automatic compensation:
+Compensate completed saga steps when a later step fails:
 
 ```csharp
 .Saga(saga =>
@@ -254,9 +256,9 @@ services.AddIxIFlow(options =>
 });
 ```
 
-### Distributed Workflows
+### Optional Host Infrastructure
 
-For running workflows across multiple servers:
+The SQL Server host integration is in `IxIFlow.Distributed.SqlServer`. It registers a SQL message bus and host registry. It does not provide durable workflow instance state or distributed saga recovery yet:
 
 ```csharp
 services.AddIxIFlowHost(options =>

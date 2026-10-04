@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
@@ -5,18 +6,32 @@ namespace IxIFlow.Core;
 /// <summary>
 ///     In-memory implementation of IEventRepository
 /// </summary>
+public sealed class InMemoryEventTemplateStore
+{
+    public ConcurrentDictionary<string, object> Templates { get; } = new();
+}
+
 public class InMemoryEventRepository : IEventRepository
 {
-    private readonly Dictionary<string, object> _eventTemplates = new();
+    private readonly ConcurrentDictionary<string, object> _eventTemplates;
     private readonly ILogger<InMemoryEventRepository> _logger;
     private readonly ISuspensionManager _suspensionManager;
 
     public InMemoryEventRepository(
         ISuspensionManager suspensionManager,
-        ILogger<InMemoryEventRepository> logger)
+        ILogger<InMemoryEventRepository> logger,
+        InMemoryEventTemplateStore store)
     {
         _suspensionManager = suspensionManager ?? throw new ArgumentNullException(nameof(suspensionManager));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _eventTemplates = (store ?? throw new ArgumentNullException(nameof(store))).Templates;
+    }
+
+    public InMemoryEventRepository(
+        ISuspensionManager suspensionManager,
+        ILogger<InMemoryEventRepository> logger)
+        : this(suspensionManager, logger, new InMemoryEventTemplateStore())
+    {
     }
 
     /// <inheritdoc />
@@ -72,7 +87,7 @@ public class InMemoryEventRepository : IEventRepository
         if (triggerResume)
         {
             _logger.LogDebug("Triggering workflow resumption for {WorkflowInstanceId}", workflowInstanceId);
-            await _suspensionManager.ProcessEventAsync(eventData, cancellationToken);
+            await _suspensionManager.ResumeInstanceAsync(workflowInstanceId, eventData, cancellationToken);
         }
 
         return template;
