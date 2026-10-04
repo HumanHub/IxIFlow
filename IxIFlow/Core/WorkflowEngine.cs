@@ -223,7 +223,7 @@ public class WorkflowEngine : IWorkflowEngine
             
             if (!validationResult.IsValid)
             {
-                if (!validationResult.IsConditionMet)
+                if (validationResult.IsConditionNotMet)
                 {
                     // Condition not met - workflow should remain suspended
                     _logger.LogWarning("Resume condition not met for workflow {InstanceId}, keeping suspended", instanceId);
@@ -252,11 +252,36 @@ public class WorkflowEngine : IWorkflowEngine
 
             // Step 2: Get validated data from result
             _logger.LogTrace("Getting validated data from resume result");
-            var instance = validationResult.WorkflowInstance!;
+            var instance = validationResult.WorkflowInstance!.CopyForResume();
             var workflowData = validationResult.WorkflowData!;
             _logger.LogTrace("Retrieved workflow instance and data from resume result");
             var restoredExecutionState = _suspendResumeExecutor.RestoreExecutionState(instance.ExecutionStateJson);
             restoredExecutionState.LastStepResult = @event;
+
+            instance.Status = WorkflowStatus.Running;
+            instance.WorkflowDataJson = JsonSerializer.Serialize(workflowData);
+            if (!await _stateRepository.TryClaimSuspendedWorkflowAsync(instance))
+            {
+                return new WorkflowExecutionResult
+                {
+                    InstanceId = instanceId,
+                    Status = WorkflowExecutionStatus.Faulted,
+                    ErrorMessage = "This suspension has already been claimed or replaced"
+                };
+            }
+
+            await _tracer.TraceAsync(instanceId, new ExecutionTraceEntry
+            {
+                StepNumber = instance.CurrentStepNumber,
+                EntryType = TraceEntryType.WorkflowResumed,
+                ActivityName = "Resume",
+                InputDataJson = JsonSerializer.Serialize(@event),
+                Metadata = new Dictionary<string, object>
+                {
+                    ["EventType"] = typeof(TEventData).Name,
+                    ["ResumedAt"] = DateTime.UtcNow
+                }
+            }, cancellationToken);
 
             // Step 2.5: Check if this is a saga resume and delegate to SagaExecutor
             _logger.LogTrace("Checking for saga resume indicators");
@@ -1007,6 +1032,9 @@ public class WorkflowEngine : IWorkflowEngine
             {
                 break;
             }
+
+            executionState.LastStepResult = result.OutputData;
+            context.PreviousStepData = result.OutputData;
         }
 
         return new StepExecutionResult
@@ -1150,7 +1178,14 @@ public class WorkflowEngine : IWorkflowEngine
                     ? new Dictionary<string, object>(executionState.StepMetadata)
                     : new Dictionary<string, object>()
             };
-            branchTasks.Add((index, ExecuteBranchWithStateAsync(branch, context, branchState, cancellationToken)));
+            var branchContext = new StepExecutionContext<TWorkflowData>
+            {
+                WorkflowInstance = context.WorkflowInstance,
+                WorkflowDefinition = context.WorkflowDefinition,
+                WorkflowData = context.WorkflowData,
+                PreviousStepData = context.PreviousStepData
+            };
+            branchTasks.Add((index, ExecuteBranchWithStateAsync(branch, branchContext, branchState, cancellationToken)));
         }
 
         try
@@ -1257,6 +1292,9 @@ public class WorkflowEngine : IWorkflowEngine
             {
                 break;
             }
+
+            branchExecutionState.LastStepResult = result.OutputData;
+            context.PreviousStepData = result.OutputData;
         }
 
         return new StepExecutionResult
@@ -1366,6 +1404,17 @@ public class WorkflowEngine : IWorkflowEngine
                     // Restore original context before returning
                     context.PreviousStepData = originalContextPreviousStepData;
                     return result;
+                }
+
+                if (executionState.PendingException != null)
+                {
+                    context.PreviousStepData = originalContextPreviousStepData;
+                    RemoveFrame(executionState, step.Id);
+                    return new StepExecutionResult
+                    {
+                        IsSuccess = true,
+                        OutputData = loopEntryContext
+                    };
                 }
 
                 // Update the previous step data for the next step in the loop body

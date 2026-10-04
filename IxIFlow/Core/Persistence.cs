@@ -15,6 +15,12 @@ public interface IWorkflowStateRepository
     Task SaveWorkflowInstanceAsync(WorkflowInstance instance);
 
     /// <summary>
+    ///     Atomically take ownership of one suspended wait before executing its continuation.
+    ///     The supplied instance must contain the same suspension ID and have Running status.
+    /// </summary>
+    Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance);
+
+    /// <summary>
     ///     Get workflow instance by ID
     /// </summary>
     Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId);
@@ -299,11 +305,38 @@ public class WorkflowSerializer
 public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 {
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
+    private readonly object _claimLock = new();
 
     public Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
     {
-        _instances.AddOrUpdate(instance.InstanceId, instance, (key, existing) => instance);
+        lock (_claimLock)
+        {
+            _instances[instance.InstanceId] = instance;
+        }
         return Task.CompletedTask;
+    }
+
+    public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        if (instance.Status != WorkflowStatus.Running ||
+            string.IsNullOrWhiteSpace(instance.SuspensionInfo?.SuspensionId))
+        {
+            throw new ArgumentException("A running instance with a suspension ID is required", nameof(instance));
+        }
+
+        lock (_claimLock)
+        {
+            if (!_instances.TryGetValue(instance.InstanceId, out var stored) ||
+                stored.Status != WorkflowStatus.Suspended ||
+                stored.SuspensionInfo?.SuspensionId != instance.SuspensionInfo.SuspensionId)
+            {
+                return Task.FromResult(false);
+            }
+
+            _instances[instance.InstanceId] = instance;
+            return Task.FromResult(true);
+        }
     }
 
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)

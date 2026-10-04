@@ -1132,6 +1132,22 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
             return Task.CompletedTask;
         }
 
+        public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance)
+        {
+            lock (_instances)
+            {
+                if (!_instances.TryGetValue(instance.InstanceId, out var stored) ||
+                    stored.Status != WorkflowStatus.Suspended ||
+                    stored.SuspensionInfo?.SuspensionId != instance.SuspensionInfo?.SuspensionId)
+                {
+                    return Task.FromResult(false);
+                }
+
+                _instances[instance.InstanceId] = instance;
+                return Task.FromResult(true);
+            }
+        }
+
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName)
         {
             var instances = _instances.Values.Where(i => i.WorkflowName == workflowName);
