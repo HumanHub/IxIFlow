@@ -107,6 +107,83 @@ public class EngineContractRegressionTests
     }
 
     [Fact]
+    public async Task ConcurrentResume_OnlyOneRequestExecutesTheContinuation()
+    {
+        var gate = new ResumeActivityGate();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(gate);
+        services.AddTransient<BlockingResumeActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var firstScope = provider.CreateScope();
+        using var secondScope = provider.CreateScope();
+
+        var definition = Workflow.Create<RegressionData>("ConcurrentResume")
+            .Step<MarkChildActivity>(_ => { })
+            .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
+            .Step<BlockingResumeActivity>(_ => { })
+            .Build();
+        var firstEngine = firstScope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var suspended = await firstEngine.ExecuteWorkflowAsync(definition, new RegressionData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
+
+        var firstResume = firstEngine.ResumeWorkflowAsync(suspended.InstanceId,
+            new RegressionApprovalEvent { Approved = true });
+        try
+        {
+            await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var secondResume = await secondScope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+                .ResumeWorkflowAsync(suspended.InstanceId, new RegressionApprovalEvent { Approved = true });
+            Assert.Equal(WorkflowExecutionStatus.Faulted, secondResume.Status);
+            Assert.Contains("not suspended", secondResume.ErrorMessage);
+            Assert.Equal(1, gate.ExecutionCount);
+        }
+        finally
+        {
+            gate.Release.TrySetResult();
+        }
+
+        Assert.Equal(WorkflowExecutionStatus.Success, (await firstResume).Status);
+        Assert.Equal(1, gate.ExecutionCount);
+    }
+
+    [Fact]
+    public async Task MemoryStateRepository_ClaimsEachSuspensionOnlyOnce()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var firstWait = new SuspensionInfo { SuspendReason = "approval" };
+        await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
+        {
+            InstanceId = "instance-1",
+            Status = WorkflowStatus.Suspended,
+            SuspensionInfo = firstWait
+        });
+
+        WorkflowInstance Claim(SuspensionInfo wait) => new()
+        {
+            InstanceId = "instance-1",
+            Status = WorkflowStatus.Running,
+            SuspensionInfo = wait
+        };
+
+        var claims = await Task.WhenAll(
+            repository.TryClaimSuspendedWorkflowAsync(Claim(firstWait)),
+            repository.TryClaimSuspendedWorkflowAsync(Claim(firstWait)));
+        Assert.Single(claims, claimed => claimed);
+
+        var secondWait = new SuspensionInfo { SuspendReason = "approval" };
+        await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
+        {
+            InstanceId = "instance-1",
+            Status = WorkflowStatus.Suspended,
+            SuspensionInfo = secondWait
+        });
+        Assert.False(await repository.TryClaimSuspendedWorkflowAsync(Claim(firstWait)));
+        Assert.True(await repository.TryClaimSuspendedWorkflowAsync(Claim(secondWait)));
+    }
+
+    [Fact]
     public async Task ExceptionFromPreviousStep_CannotBeCaughtByLaterTryBlock()
     {
         var services = new ServiceCollection();
@@ -127,6 +204,85 @@ public class EngineContractRegressionTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.False(Assert.IsType<RegressionData>(result.WorkflowData).ChildExecuted);
+    }
+
+    [Fact]
+    public async Task LoopBodyFailure_ReachesOuterCatchWithoutRepeatingTheBody()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var definition = Workflow.Create<RegressionData>("LoopBodyFailure")
+            .Step<MarkChildActivity>(_ => { })
+            .Try(tryBlock => tryBlock.WhileDo(_ => true,
+                body => body.Step<ThrowRegressionActivity>(_ => { })))
+            .Catch<ApplicationException>(catchBlock => catchBlock
+                .Step<MarkChildActivity>(setup => setup
+                    .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.CatchExecuted)))
+            .Build();
+
+        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new RegressionData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.True(Assert.IsType<RegressionData>(result.WorkflowData).CatchExecuted);
+    }
+
+    [Fact]
+    public async Task NestedConditional_PreservesPreviousResultInsideSequence()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var definition = Workflow.Create<RegressionData>("SequencePreviousResult")
+            .Step<MarkChildActivity>(setup => setup
+                .Input(activity => activity.Value).From(_ => "outer"))
+            .Sequence(sequence => sequence
+                .If(_ => true, then => then.Step<MarkChildActivity>(setup => setup
+                    .Input(activity => activity.Value).From(_ => "inner")))
+                .Step<MarkChildActivity>(setup => setup
+                    .Input(activity => activity.Value).From(ctx => ctx.PreviousStep.Value)
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Result)))
+            .Build();
+
+        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new RegressionData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal("outer", Assert.IsType<RegressionData>(result.WorkflowData).Result);
+    }
+
+    [Fact]
+    public async Task NestedConditional_PreservesPreviousResultInsideParallelBranch()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var definition = Workflow.Create<RegressionData>("ParallelPreviousResult")
+            .Step<MarkChildActivity>(setup => setup
+                .Input(activity => activity.Value).From(_ => "outer"))
+            .Parallel(parallel => parallel.Do(branch => branch
+                .If(_ => true, then => then.Step<MarkChildActivity>(setup => setup
+                    .Input(activity => activity.Value).From(_ => "inner")))
+                .Step<MarkChildActivity>(setup => setup
+                    .Input(activity => activity.Value).From(ctx => ctx.PreviousStep.Value)
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Result))))
+            .Build();
+
+        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new RegressionData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal("outer", Assert.IsType<RegressionData>(result.WorkflowData).Result);
     }
 
     [Fact]
@@ -742,5 +898,22 @@ public sealed class IncrementRegressionActivity : IAsyncActivity
     {
         Result = Count + 1;
         return Task.CompletedTask;
+    }
+}
+
+public sealed class ResumeActivityGate
+{
+    public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public int ExecutionCount;
+}
+
+public sealed class BlockingResumeActivity(ResumeActivityGate gate) : IAsyncActivity
+{
+    public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref gate.ExecutionCount);
+        gate.Entered.TrySetResult();
+        await gate.Release.Task.WaitAsync(cancellationToken);
     }
 }

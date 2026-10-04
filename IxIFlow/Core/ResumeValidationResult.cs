@@ -16,6 +16,11 @@ public class ResumeValidationResult
     public bool IsConditionMet { get; private set; }
 
     /// <summary>
+    /// Whether the event was valid but its resume condition rejected it.
+    /// </summary>
+    public bool IsConditionNotMet { get; private set; }
+
+    /// <summary>
     /// Error message if validation failed
     /// </summary>
     public string? ErrorMessage { get; private set; }
@@ -74,6 +79,7 @@ public class ResumeValidationResult
         {
             IsValid = false,
             IsConditionMet = false,
+            IsConditionNotMet = true,
             ErrorMessage = message
         };
     }

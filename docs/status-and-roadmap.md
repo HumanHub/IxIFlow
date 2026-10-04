@@ -11,9 +11,9 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 | --- | --- |
 | Fluent C# definitions | Implemented and covered by syntax and execution tests. |
 | Local activity execution | Implemented in the workflow host process. |
-| Conditions, parallel work, and exceptions | Implemented, with execution tests for waits in `Catch`, `Finally`, and a single waiting parallel branch. |
+| Conditions, parallel work, and exceptions | Implemented, with execution tests for waits in `Catch`, `Finally`, and a single waiting parallel branch. Loop failure propagation and nested `PreviousStep` pass-through have regression tests. |
 | In-process saga compensation | Direct and outcome-branch waits resume with saved compensation results. A direct wait followed by a transient failure can retry to success; a permanent failure exhausts its retry limit. |
-| SQL host and state | Shared SQL Server workflow instance state, host registry, and acknowledged message delivery are implemented. Cross-host recovery remains unfinished. |
+| SQL host and state | Shared SQL Server workflow instance state, atomic suspended-instance claims, host registry, and acknowledged message delivery are implemented. Cross-host recovery remains unfinished. |
 | Studio designer exercise | Vue Flow canvas with an `If` node, a custom database node, manifest-driven fields, and draft YAML editing. It does not execute workflows. |
 
 ## Known gaps
@@ -22,7 +22,8 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 - Local continuation now re-enters loop and saga scopes. Repeated loop waits, repeated saga waits, and compensation after a wait have regression coverage. The saved step identifier still selects the path; a unified frame-and-pointer interpreter is unfinished.
 - Saga retry after a direct wait has success and exhaustion coverage. Retry through nested handlers still needs coverage. Waits in `Catch` and `Finally` resume from saved handler frames; custom exception fields are not preserved in those frames.
 - A parallel scope can resume one waiting branch without rerunning completed branches. Multiple simultaneous waits remain unsupported. Branches share the workflow context and mutable workflow data; branch-local state and output merge rules need an explicit contract.
-- Resume does not atomically claim an instance, so concurrent requests need stronger coordination.
+- Memory and SQL state repositories can atomically claim one suspension before executing its continuation. General saves still have no checkpoint version check, worker lease, or crash recovery, so this is not a complete distributed ownership protocol.
+- In-process error handling still needs a cancellation contract and tests for cancellation during nested scopes. Saga `OnError` suspension is not exposed by the fluent builder; its dormant runtime path is incomplete. Ordinary waits inside sagas are supported and tested.
 - Typed resume events and correlation exist, but there is no published start-trigger registry for HTTP, schedules, or messages. General event matching still scans suspended instances. Targeted event-template updates now resume only their specified instance, and the default memory template store survives DI scopes.
 - SQL messages are claimed and acknowledged after queue handling. Long-running handlers need claim renewal, and duplicate delivery still requires idempotent commands.
 - Named child-workflow invocation resolves the registered definition and version. Queued commands carry a name and version, but the HTTP host client still sends unserializable workflow definitions.
@@ -62,5 +63,12 @@ Use one expression contract for YAML and Studio. For a .NET audience, C# express
 Checkpointing does not make arbitrary external effects exactly once. Activities that call outside systems need idempotency keys or another explicit recovery policy. Broker acknowledgement must follow durable state changes, not precede execution.
 
 Docker is available for repeatable integration runs. Use isolated PostgreSQL and SQL Server containers for state and existing SQL transport tests, then RabbitMQ and the Azure Service Bus emulator when those adapters exist. The host-recovery suite should kill a worker between an external effect, checkpoint, and message acknowledgement, then assert the documented retry behavior.
+
+### Immediate engine gates
+
+1. Define and test cancellation through activities, nested loops, handlers, waits, and sagas. Decide when an instance is `Cancelled` and whether compensation runs.
+2. Complete or remove the dormant saga `OnError` suspension path. If exposed, its wait must use a stable step ID, preserve its post-resume action, and resume through the same saved frames as other waits.
+3. Replace unconditional state saves with versioned checkpoints and a recoverable execution lease. The current atomic wait claim prevents two simultaneous resumes but cannot recover a process that stops after claiming.
+4. Finish the frame-and-pointer interpreter and cover repeated waits and failures in nested control flow before treating local execution as a stable contract.
 
 This is a dependency order, not a release date. Check the repository's tests and changes before depending on a specific capability.
