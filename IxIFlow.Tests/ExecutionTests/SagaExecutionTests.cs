@@ -658,7 +658,7 @@ public class SagaExecutionTests
                             comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
                             comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
                         }))
-                    .Step<SagaSystemDependentAsyncActivity>(setup => setup // Will fail due to system unavailable
+                    .Step<SagaTransientSystemAsyncActivity>(setup => setup // Fails once, then succeeds on retry
                         .Input(act => act.SystemName).From(ctx => "PaymentProcessor")
                         .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                         .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed)
@@ -707,6 +707,7 @@ public class SagaExecutionTests
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SagaTestData)resumeResult.WorkflowData!;
         Assert.Equal(workflowData.ProductId, finalWorkflowData.SuspensionMessage); // Should contain the confirmed product ID
+        Assert.True(finalWorkflowData.Step2Completed);
         Assert.True(finalWorkflowData.AnalyticsUpdated);
     }
 
