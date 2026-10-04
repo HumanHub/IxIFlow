@@ -59,6 +59,40 @@ public class SqlMessageBusReliabilityTests
                 });
         }
     }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task AcknowledgedMessage_IsNotRedelivered()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var token = Guid.NewGuid().ToString("N");
+        try
+        {
+            using (var firstBus = new SqlMessageBus(connectionString, TimeSpan.FromMilliseconds(20)))
+            {
+                await firstBus.PublishAsync(new BusDeliveryProbe { Token = token });
+                await using var consumer = firstBus.ConsumeDeliveriesAsync<BusDeliveryProbe>().GetAsyncEnumerator();
+                Assert.True(await consumer.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+                Assert.Equal(token, consumer.Current.Message.Token);
+                await consumer.Current.AcknowledgeAsync();
+            }
+
+            using var secondBus = new SqlMessageBus(connectionString, TimeSpan.FromMilliseconds(20));
+            await using var secondConsumer = secondBus.ConsumeDeliveriesAsync<BusDeliveryProbe>().GetAsyncEnumerator();
+            var receiveTask = secondConsumer.MoveNextAsync().AsTask();
+            await Task.Delay(200);
+            await secondBus.StopAsync();
+            Assert.False(await receiveTask);
+        }
+        finally
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                "DELETE FROM dbo.WorkflowMessages WHERE MessageType = @MessageType AND Payload LIKE @Payload",
+                new { MessageType = typeof(BusDeliveryProbe).AssemblyQualifiedName, Payload = $"%{token}%" });
+        }
+    }
 }
 
 public sealed class BusDeliveryProbe

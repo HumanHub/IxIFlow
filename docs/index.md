@@ -5,7 +5,7 @@ description: Start here for the IxIFlow workflow engine, its current API, and it
 
 IxIFlow is a code-first workflow engine for .NET. You define a workflow with a fluent C# builder, register its activities with dependency injection, and run it through `IWorkflowEngine`.
 
-The current engine supports activities, typed data mapping, conditions, parallel branches, exception handling, suspension, and saga compensation. These features have automated tests. Some resume and distributed-host paths have known reliability gaps.
+The current engine supports activities, typed data mapping, conditions, parallel branches, exception handling, suspension, and saga compensation. These features have automated tests. Multiple parallel waits and cross-host recovery still have reliability gaps.
 
 ## Choose a starting point
 
@@ -19,6 +19,6 @@ The current engine supports activities, typed data mapping, conditions, parallel
 
 ## Current boundary
 
-Saga activities execute in the selected host process. The coordinator can select a host for a whole workflow, but it does not dispatch each saga activity as a durable remote task. The default workflow state repository lives in process memory across dependency injection scopes. SQL host registration and messaging do not make workflow instance state durable.
+Saga activities execute in the selected host process. The coordinator can select a host for a whole workflow, but it does not dispatch each saga activity as a durable remote task. The default workflow state repository lives in process memory across dependency injection scopes; the optional SQL Server host registers shared workflow instance state. Definitions and event history are still held in process memory.
 
 Use IxIFlow for evaluation and controlled in-process workloads while the reliability work continues. Validate the specific control flow and resume paths your application uses before relying on them.

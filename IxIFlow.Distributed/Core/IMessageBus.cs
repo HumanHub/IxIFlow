@@ -22,6 +22,19 @@ public interface IMessageBus
     Task StopAsync();
 }
 
+public interface IMessageDelivery<out T> where T : class
+{
+    T Message { get; }
+    Task AcknowledgeAsync();
+}
+
+public interface IAcknowledgingMessageBus : IMessageBus
+{
+    IAsyncEnumerable<IMessageDelivery<T>> ConsumeDeliveriesAsync<T>(
+        string? targetHostId = null, CancellationToken cancellationToken = default)
+        where T : class;
+}
+
 /// <summary>
 /// Workflow commands for distributed execution
 /// </summary>
@@ -29,7 +42,8 @@ public class ExecuteWorkflowCommand
 {
     public string InstanceId { get; set; } = "";
     public string TargetHostId { get; set; } = "";
-    public WorkflowDefinition Definition { get; set; } = null!;
+    public string WorkflowName { get; set; } = "";
+    public int WorkflowVersion { get; set; }
     public string WorkflowDataJson { get; set; } = "";
     public string WorkflowDataType { get; set; } = "";
     public WorkflowOptions? Options { get; set; }

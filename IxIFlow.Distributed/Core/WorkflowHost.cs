@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Core;
 
@@ -9,7 +10,7 @@ namespace IxIFlow.Core;
 /// </summary>
 public class WorkflowHost : IWorkflowHost, IDisposable
 {
-    private readonly IWorkflowEngine _workflowEngine;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly IHostRegistry _hostRegistry;
     private readonly WorkflowHostOptions _options;
     private readonly ConcurrentDictionary<string, WorkflowInstance> _runningWorkflows = new();
@@ -19,11 +20,11 @@ public class WorkflowHost : IWorkflowHost, IDisposable
     private volatile bool _isDisposed = false;
 
     public WorkflowHost(
-        IWorkflowEngine workflowEngine,
+        IServiceScopeFactory scopeFactory,
         IHostRegistry hostRegistry,
         WorkflowHostOptions options)
     {
-        _workflowEngine = workflowEngine ?? throw new ArgumentNullException(nameof(workflowEngine));
+        _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
         _hostRegistry = hostRegistry ?? throw new ArgumentNullException(nameof(hostRegistry));
         _options = options ?? throw new ArgumentNullException(nameof(options));
 
@@ -160,7 +161,9 @@ public class WorkflowHost : IWorkflowHost, IDisposable
             UpdateStatus();
 
             // Execute workflow using the existing engine
-            var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData, options);
+            using var scope = _scopeFactory.CreateScope();
+            var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+                .ExecuteWorkflowAsync(definition, workflowData, options);
 
             // Update instance status
             instance.Status = result.IsSuccess ? WorkflowStatus.Completed : WorkflowStatus.Failed;
@@ -200,7 +203,9 @@ public class WorkflowHost : IWorkflowHost, IDisposable
             }
 
             // Resume using the existing engine
-            var result = await _workflowEngine.ResumeWorkflowAsync(instanceId, @event);
+            using var scope = _scopeFactory.CreateScope();
+            var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+                .ResumeWorkflowAsync(instanceId, @event);
 
             // Update instance status if we're tracking it
             if (instance != null)
@@ -288,7 +293,9 @@ public class WorkflowHost : IWorkflowHost, IDisposable
             };
 
             // Execute workflow using the existing engine
-            var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData, workflowOptions);
+            using var scope = _scopeFactory.CreateScope();
+            var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+                .ExecuteWorkflowAsync(definition, workflowData, workflowOptions);
 
             // Update instance status
             instance.Status = result.IsSuccess ? WorkflowStatus.Completed : WorkflowStatus.Failed;

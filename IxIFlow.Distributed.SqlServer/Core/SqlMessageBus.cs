@@ -2,6 +2,7 @@ using System.Data;
 using Microsoft.Data.SqlClient;
 using System.Text.Json;
 using Dapper;
+using System.Runtime.CompilerServices;
 
 namespace IxIFlow.Core;
 
@@ -9,20 +10,19 @@ namespace IxIFlow.Core;
 /// SQL Server-based message bus implementation for distributed workflow communication
 /// Uses polling-based approach for reliable message delivery with persistence
 /// </summary>
-public class SqlMessageBus : IMessageBus, IDisposable
+public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
 {
     private readonly string _connectionString;
     private readonly TimeSpan _pollInterval;
     private readonly CancellationTokenSource _cancellationTokenSource;
-    private readonly Dictionary<string, Task> _consumerTasks;
-    private readonly object _lock = new();
+    private readonly SemaphoreSlim _schemaLock = new(1, 1);
+    private bool _schemaReady;
     
     public SqlMessageBus(string connectionString, TimeSpan? pollInterval = null)
     {
         _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(1);
         _cancellationTokenSource = new CancellationTokenSource();
-        _consumerTasks = new Dictionary<string, Task>();
     }
 
     /// <summary>
@@ -32,6 +32,7 @@ public class SqlMessageBus : IMessageBus, IDisposable
     {
         if (message == null) throw new ArgumentNullException(nameof(message));
 
+        await EnsureSchemaAsync();
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
 
@@ -53,37 +54,56 @@ public class SqlMessageBus : IMessageBus, IDisposable
     /// </summary>
     public async IAsyncEnumerable<T> ConsumeAsync<T>() where T : class
     {
-        var messageType = typeof(T).AssemblyQualifiedName ?? typeof(T).Name;
-        
-        while (!_cancellationTokenSource.Token.IsCancellationRequested)
+        await foreach (var delivery in ConsumeDeliveriesAsync<T>())
         {
-            IEnumerable<T> messages;
-            
+            yield return delivery.Message;
+        }
+    }
+
+    public async IAsyncEnumerable<IMessageDelivery<T>> ConsumeDeliveriesAsync<T>(
+        string? targetHostId = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default) where T : class
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, _cancellationTokenSource.Token);
+        var token = linked.Token;
+        var messageType = typeof(T).AssemblyQualifiedName ?? typeof(T).Name;
+
+        while (!token.IsCancellationRequested)
+        {
+            SqlMessageDelivery<T>? delivery;
             try
             {
-                messages = await PollMessagesAsync<T>(messageType);
+                delivery = await ClaimMessageAsync<T>(messageType, targetHostId);
             }
-            catch (Exception ex)
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
-                // Log error and continue polling
-                Console.WriteLine($"Error polling messages: {ex.Message}");
-                await Task.Delay(_pollInterval, _cancellationTokenSource.Token);
+                yield break;
+            }
+
+            if (delivery == null)
+            {
+                try
+                {
+                    await Task.Delay(_pollInterval, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    yield break;
+                }
                 continue;
             }
 
-            foreach (var message in messages)
-            {
-                yield return message;
-            }
-
-            // Wait before next poll
             try
             {
-                await Task.Delay(_pollInterval, _cancellationTokenSource.Token);
+                yield return delivery;
             }
-            catch (OperationCanceledException)
+            finally
             {
-                yield break;
+                if (!delivery.IsAcknowledged)
+                {
+                    await ReleaseClaimAsync(delivery.MessageId, delivery.ClaimToken);
+                }
             }
         }
     }
@@ -91,86 +111,104 @@ public class SqlMessageBus : IMessageBus, IDisposable
     /// <summary>
     /// Stop the message bus and cleanup resources
     /// </summary>
-    public async Task StopAsync()
+    public Task StopAsync()
     {
         _cancellationTokenSource.Cancel();
-        
-        lock (_lock)
-        {
-            var tasks = _consumerTasks.Values.ToArray();
-            _consumerTasks.Clear();
-            
-            Task.WaitAll(tasks, TimeSpan.FromSeconds(5));
-        }
-        
-        await Task.CompletedTask;
+        return Task.CompletedTask;
     }
 
     /// <summary>
     /// Poll for unprocessed messages of a specific type
     /// </summary>
-    private async Task<IEnumerable<T>> PollMessagesAsync<T>(string messageType) where T : class
+    private async Task<SqlMessageDelivery<T>?> ClaimMessageAsync<T>(string messageType, string? targetHostId)
+        where T : class
+    {
+        await EnsureSchemaAsync();
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+        var claimToken = Guid.NewGuid().ToString("N");
+        var row = await connection.QuerySingleOrDefaultAsync<MessageRow>("""
+            ;WITH next_message AS (
+                SELECT TOP (1) Id
+                FROM dbo.WorkflowMessages WITH (UPDLOCK, READPAST, ROWLOCK)
+                WHERE MessageType = @MessageType AND ProcessedAt IS NULL
+                  AND (ClaimedUntil IS NULL OR ClaimedUntil <= SYSUTCDATETIME())
+                  AND (@TargetHostId IS NULL OR JSON_VALUE(Payload, '$.TargetHostId') = @TargetHostId)
+                ORDER BY Priority DESC, CreatedAt ASC
+            )
+            UPDATE message
+            SET ClaimToken = @ClaimToken, ClaimedUntil = DATEADD(SECOND, 300, SYSUTCDATETIME())
+            OUTPUT inserted.Id, inserted.Payload
+            FROM dbo.WorkflowMessages AS message
+            INNER JOIN next_message ON next_message.Id = message.Id;
+            """, new { MessageType = messageType, TargetHostId = targetHostId, ClaimToken = claimToken });
+        if (row == null)
+        {
+            return null;
+        }
+
+        var message = JsonSerializer.Deserialize<T>(row.Payload)
+            ?? throw new InvalidOperationException($"Message {row.Id} could not be deserialized");
+        return new SqlMessageDelivery<T>(this, row.Id, claimToken, message);
+    }
+
+    private async Task AcknowledgeAsync(string messageId, string claimToken)
     {
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
+        var changed = await connection.ExecuteAsync("""
+            UPDATE dbo.WorkflowMessages
+            SET ProcessedAt = SYSUTCDATETIME(), ClaimToken = NULL, ClaimedUntil = NULL
+            WHERE Id = @MessageId AND ClaimToken = @ClaimToken AND ProcessedAt IS NULL
+            """, new { MessageId = messageId, ClaimToken = claimToken });
+        if (changed != 1)
+        {
+            throw new InvalidOperationException($"Message claim {messageId} is no longer owned by this consumer");
+        }
+    }
 
-        // Use a transaction to atomically fetch and mark messages as processed
-        await using var transaction = await connection.BeginTransactionAsync();
-        
+    private async Task ReleaseClaimAsync(string messageId, string claimToken)
+    {
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("""
+            UPDATE dbo.WorkflowMessages
+            SET ClaimToken = NULL, ClaimedUntil = NULL
+            WHERE Id = @MessageId AND ClaimToken = @ClaimToken AND ProcessedAt IS NULL
+            """, new { MessageId = messageId, ClaimToken = claimToken });
+    }
+
+    private async Task EnsureSchemaAsync()
+    {
+        if (_schemaReady) return;
+        await _schemaLock.WaitAsync();
         try
         {
-            // Fetch unprocessed messages ordered by priority and creation time
-            var messageRows = await connection.QueryAsync<MessageRow>(@"
-                SELECT TOP 100 Id, MessageType, Payload, CreatedAt, Priority
-                FROM WorkflowMessages 
-                WHERE MessageType = @MessageType AND ProcessedAt IS NULL
-                ORDER BY Priority DESC, CreatedAt ASC",
-                new { MessageType = messageType },
-                transaction);
-
-            var messages = new List<T>();
-            var messageIds = new List<string>();
-
-            foreach (var row in messageRows)
-            {
-                try
-                {
-                    var message = JsonSerializer.Deserialize<T>(row.Payload);
-                    if (message != null)
-                    {
-                        messages.Add(message);
-                        messageIds.Add(row.Id);
-                    }
-                }
-                catch
-                {
-                    // Skip malformed messages but mark them as processed
-                    messageIds.Add(row.Id);
-                }
-            }
-
-            // Mark messages as processed
-            if (messageIds.Count > 0)
-            {
-                await connection.ExecuteAsync(@"
-                    UPDATE WorkflowMessages 
-                    SET ProcessedAt = @ProcessedAt 
-                    WHERE Id IN @MessageIds",
-                    new 
-                    { 
-                        ProcessedAt = DateTime.UtcNow,
-                        MessageIds = messageIds 
-                    },
-                    transaction);
-            }
-
-            await transaction.CommitAsync();
-            return messages;
+            if (_schemaReady) return;
+            await using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+            await connection.ExecuteAsync("""
+                IF OBJECT_ID(N'dbo.WorkflowMessages', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE dbo.WorkflowMessages (
+                        Id NVARCHAR(50) NOT NULL PRIMARY KEY,
+                        MessageType NVARCHAR(500) NOT NULL,
+                        Payload NVARCHAR(MAX) NOT NULL,
+                        CreatedAt DATETIME2 NOT NULL,
+                        ProcessedAt DATETIME2 NULL,
+                        Priority INT NOT NULL
+                    );
+                END;
+                IF COL_LENGTH(N'dbo.WorkflowMessages', N'ClaimToken') IS NULL
+                    ALTER TABLE dbo.WorkflowMessages ADD ClaimToken NVARCHAR(50) NULL;
+                IF COL_LENGTH(N'dbo.WorkflowMessages', N'ClaimedUntil') IS NULL
+                    ALTER TABLE dbo.WorkflowMessages ADD ClaimedUntil DATETIME2 NULL;
+                """);
+            _schemaReady = true;
         }
-        catch
+        finally
         {
-            await transaction.RollbackAsync();
-            throw;
+            _schemaLock.Release();
         }
     }
 
@@ -204,6 +242,22 @@ public class SqlMessageBus : IMessageBus, IDisposable
         public string Payload { get; set; } = "";
         public DateTime CreatedAt { get; set; }
         public int Priority { get; set; }
+    }
+
+    private sealed class SqlMessageDelivery<T>(SqlMessageBus bus, string messageId, string claimToken, T message)
+        : IMessageDelivery<T> where T : class
+    {
+        public T Message => message;
+        public string MessageId => messageId;
+        public string ClaimToken => claimToken;
+        public bool IsAcknowledged { get; private set; }
+
+        public async Task AcknowledgeAsync()
+        {
+            if (IsAcknowledged) return;
+            await bus.AcknowledgeAsync(messageId, claimToken);
+            IsAcknowledged = true;
+        }
     }
 }
 
