@@ -147,6 +147,15 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
         where TResumeEvent : class;
 
     /// <summary>
+    /// Registers a wait for a correlated event and continues with that event as the previous step.
+    /// </summary>
+    IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(
+        string key,
+        Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class;
+
+    /// <summary>
     /// Builds the workflow definition
     /// </summary>
     /// <returns>The constructed workflow definition</returns>
