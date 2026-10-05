@@ -19,7 +19,65 @@ public sealed class ActivityPackageRegistry : IActivityRegistry
     public void AddPackage(string manifestYaml, Assembly assembly)
     {
         ArgumentNullException.ThrowIfNull(assembly);
-        var manifest = ActivityPackageManifest.Parse(manifestYaml);
+        RegisterManifest(ActivityPackageManifest.Parse(manifestYaml), assembly);
+    }
+
+    public void AddAssembly(Assembly assembly, string packageName, string packageVersion)
+    {
+        ArgumentNullException.ThrowIfNull(assembly);
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageVersion);
+
+        var activities = assembly.GetExportedTypes()
+            .Select(type => (Type: type, Attribute: type.GetCustomAttribute<WorkflowActivityAttribute>()))
+            .Where(entry => entry.Attribute != null)
+            .Select(entry =>
+            {
+                var attribute = entry.Attribute!;
+                var fields = entry.Type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                    .Select(property => (Property: property, Attribute: property.GetCustomAttribute<WorkflowInputAttribute>()))
+                    .Where(field => field.Attribute != null)
+                    .Select(field => new ActivityManifestField
+                    {
+                        Key = field.Property.Name,
+                        Label = field.Attribute!.Label ?? field.Property.Name,
+                        Control = field.Attribute.Control,
+                        Required = field.Attribute.Required,
+                        Help = field.Attribute.Help
+                    })
+                    .ToList();
+                var defaults = entry.Type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                    .Select(property => (Property: property, Attribute: property.GetCustomAttribute<WorkflowInputAttribute>()))
+                    .Where(field => field.Attribute?.Default != null)
+                    .ToDictionary(field => field.Property.Name, field => field.Attribute!.Default!, StringComparer.Ordinal);
+                return new ActivityManifestEntry
+                {
+                    Key = attribute.Key,
+                    Version = attribute.Version,
+                    Name = attribute.Name ?? entry.Type.Name,
+                    Category = attribute.Category ?? "Activities",
+                    Designer = attribute.Designer,
+                    Fields = fields,
+                    Defaults = defaults,
+                    Outputs = entry.Type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                        .Where(property => property.GetCustomAttribute<WorkflowOutputAttribute>() != null)
+                        .Select(property => property.Name)
+                        .ToList()
+                };
+            })
+            .ToList();
+
+        var manifest = new ActivityPackageManifest
+        {
+            Package = new ActivityPackageIdentity { Name = packageName, Version = packageVersion },
+            Activities = activities
+        };
+        manifest.Validate();
+        RegisterManifest(manifest, assembly);
+    }
+
+    private void RegisterManifest(ActivityPackageManifest manifest, Assembly assembly)
+    {
         if (_packages.ContainsKey(manifest.PackageReference))
         {
             throw new InvalidOperationException($"Activity package {manifest.PackageReference} is already registered");

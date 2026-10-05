@@ -21,6 +21,7 @@
     <ProjectReference Include="..\IxIFlow.ActivitySdk\IxIFlow.ActivitySdk.csproj" />
     <ProjectReference Include="..\IxIFlow.Distributed\IxIFlow.Distributed.csproj" />
     <ProjectReference Include="..\IxIFlow.Distributed.SqlServer\IxIFlow.Distributed.SqlServer.csproj" />
+    <ProjectReference Include="..\Activities\IxIFlow.DemoActivities\IxIFlow.DemoActivities.csproj" />
   </ItemGroup>
 
   <ItemGroup>
