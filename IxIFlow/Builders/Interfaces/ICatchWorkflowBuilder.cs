@@ -17,4 +17,7 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TException, TPreviousStepD
     IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
         Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TException, TPreviousStepData>> configure)
         where TActivity : class, IAsyncActivity;
+
+    ISagaContainerBuilder<TWorkflowData, TPreviousStepData> Saga(
+        Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure);
 }

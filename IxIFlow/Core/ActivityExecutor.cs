@@ -76,6 +76,8 @@ public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
     public CancellationToken CancellationToken { get; set; } = default;
     public Exception? CatchException { get; set; } = null; // For catch block execution
     public bool IsCompensationActivity { get; set; } = false; // For compensation activity detection
+    public object? CompensationPreviousStepData { get; set; }
+    public object? CompensationPreviousChainData { get; set; }
     public IDictionary<string, object>? StepMetadata { get; set; } = null; // Step-level metadata from ExecutionState
 }
 
@@ -196,7 +198,9 @@ public class ActivityExecutor : IActivityExecutor
                 request.PreviousStepData,
                 request.CatchException,
                 result,
-                request.IsCompensationActivity);
+                request.IsCompensationActivity,
+                request.CompensationPreviousStepData,
+                request.CompensationPreviousChainData);
 
             // Add activity started trace
             await _tracer.TraceAsync(request.ExecutionContext.WorkflowInstance.InstanceId, new ExecutionTraceEntry
@@ -438,7 +442,9 @@ public class ActivityExecutor : IActivityExecutor
         TPreviousStepData? previousStepData,
         Exception? catchException,
         TypedActivityExecutionResult<object> result,
-        bool isCompensationActivity = false)
+        bool isCompensationActivity = false,
+        object? compensationPreviousStep = null,
+        object? compensationPreviousChain = null)
     {
         _logger.LogTrace("Applying typed input mappings - Activity: {ActivityType}, Mappings: {Count}, TWorkflowData: {WorkflowDataType}, TPreviousStepData: {PreviousStepDataType}, CatchException: {CatchException}",
             activity.GetType().Name, inputMappings.Count, typeof(TWorkflowData).Name, typeof(TPreviousStepData).Name, catchException?.GetType().Name ?? "null");
@@ -481,6 +487,20 @@ public class ActivityExecutor : IActivityExecutor
                             var genericMethod = method.MakeGenericMethod(typeof(TWorkflowData), typeof(TPreviousStepData));
                             evaluationContext = (object)genericMethod.Invoke(this, new object[] { workflowData, previousStepData })!;
                             _logger.LogTrace("Created CompensationContext: {ContextType}", evaluationContext.GetType().FullName);
+                            if (mapping.CompensationSource == CompensationInputSource.PreviousStep)
+                                evaluationContext = compensationPreviousStep
+                                    ?? throw new InvalidOperationException(
+                                        $"Compensation input '{mapping.TargetProperty}' has no saved previous step");
+                            else if (mapping.CompensationSource == CompensationInputSource.PreviousCompensation)
+                                evaluationContext = compensationPreviousChain
+                                    ?? throw new InvalidOperationException(
+                                        $"Compensation input '{mapping.TargetProperty}' has no previous compensation result");
+                            if (!mapping.SourceType.IsInstanceOfType(evaluationContext))
+                            {
+                                throw new InvalidOperationException(
+                                    $"Compensation input '{mapping.TargetProperty}' requires " +
+                                    $"{mapping.SourceType.Name}, but saved value is {evaluationContext.GetType().Name}");
+                            }
                         }
                         else
                         {

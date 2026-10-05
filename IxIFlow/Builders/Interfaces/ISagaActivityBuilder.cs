@@ -32,6 +32,12 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData> //: ISag
         Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
         where TResumeEvent : class;
 
+    ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
+        string key,
+        Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? matches = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class;
+
     /// <summary>
     /// Creates outcome-based branching based on a property value from the workflow context
     /// </summary>

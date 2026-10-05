@@ -291,7 +291,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         var sagaSteps = new List<SagaStepInfo>();
 
         // Create saga builder
-        var sagaBuilder = new SagaActivityBuilder<TWorkflowData, TPreviousStepData>(sagaStep.SequenceSteps, []);
+        var sagaBuilder = new SagaActivityBuilder<TWorkflowData, TPreviousStepData>(sagaStep.SequenceSteps, sagaSteps);
         configure(sagaBuilder);
 
         // Store saga configuration in step metadata

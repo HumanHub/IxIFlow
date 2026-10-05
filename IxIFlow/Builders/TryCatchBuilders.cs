@@ -148,6 +148,10 @@ public class CatchWorkflowBuilder<TWorkflowData, TException, TPreviousStepData>(
 {
     private readonly List<WorkflowStep> _steps = steps ?? throw new ArgumentNullException(nameof(steps));
 
+    public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> Saga(
+        Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure) =>
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(_steps).Saga(configure);
+
     public IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
         Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TException, TPreviousStepData>> configure)
         where TActivity : class, IAsyncActivity
