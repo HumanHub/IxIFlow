@@ -74,21 +74,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowEngine>();
-        var definition = Workflow.Create<TryData>("WaitInCatch")
-            .Step<StartActivity>()
-            .Try(body => body.Step<ThrowActivity>(_ => { }))
-            .Catch<InvalidOperationException>(body => body
-                .Step<ReadErrorActivity>(setup => setup
-                    .Input(activity => activity.Message).From(ctx => ctx.Exception.Message)
-                    .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error))
-                .WaitFor<Approval>("review")
-                .Step<CountActivity>(setup => setup
-                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Catch)
-                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch)))
-            .Finally(body => body.Step<CountActivity>(setup => setup
-                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
-                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
-            .Build();
+        var definition = CatchWaitWorkflow();
 
         var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
@@ -99,6 +85,87 @@ public class StructuredTryWaitTests
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, Data(completed).Catch);
         Assert.Equal(1, Data(completed).Finally);
+    }
+
+    [Fact]
+    public async Task WaitInsideCatch_RestoresItsPhaseAndExceptionAfterProviderRestart()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        string instanceId;
+        using (var firstProvider = CreateServices(repository))
+        {
+            var engine = firstProvider.GetRequiredService<IWorkflowEngine>();
+            var started = await engine.ExecuteWorkflowAsync(CatchWaitWorkflow(), new TryData());
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            instanceId = started.InstanceId;
+        }
+
+        using var secondProvider = CreateServices(repository);
+        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(CatchWaitWorkflow());
+        var completed = await secondProvider.GetRequiredService<IWorkflowEngine>()
+            .ResumeWorkflowAsync(instanceId, "review", new Approval());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Equal("boom", Data(completed).Error);
+        Assert.Equal(1, Data(completed).Catch);
+        Assert.Equal(1, Data(completed).Finally);
+    }
+
+    [Fact]
+    public async Task ParallelFailureIsCaughtByTheEnclosingTry()
+    {
+        using var services = CreateServices();
+        var definition = Workflow.Create<TryData>("ParallelFailureInTry")
+            .Step<StartActivity>()
+            .Try(body => body.Parallel(parallel => parallel
+                .Do(branch => branch.Step<ThrowActivity>(_ => { }))
+                .Do(branch => branch.WaitFor<Approval>("approval"))))
+            .Catch<InvalidOperationException>(body => body.Step<ReadErrorActivity>(setup => setup
+                .Input(activity => activity.Message).From(ctx => ctx.Exception.Message)
+                .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
+            .Finally(body => body.Step<CountActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new TryData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal("boom", Data(result).Error);
+        Assert.Equal(1, Data(result).Finally);
+        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(result.InstanceId);
+        Assert.DoesNotContain(saved!.ExecutionSnapshot!.Pointers, pointer => pointer.Status == "Waiting");
+    }
+
+    [Fact]
+    public async Task WaitAny_RunsLosingBranchFinallyBeforeContinuing()
+    {
+        using var services = CreateServices();
+        var definition = Workflow.Create<TryData>("WaitAnyCleanup")
+            .Step<StartActivity>()
+            .Parallel(parallel => parallel.WaitAny()
+                .Do(branch => branch
+                    .Try(body => body.WaitFor<Approval>("loser"))
+                    .Finally(body => body.Step<CountActivity>(setup => setup
+                        .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
+                        .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally))))
+                .Do(branch => branch.Step<CountActivity>(setup => setup
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Body)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Body))))
+            .Step<CountActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new TryData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(1, Data(result).Finally);
+        Assert.Equal(2, Data(result).After);
     }
 
     [Fact]
@@ -153,11 +220,29 @@ public class StructuredTryWaitTests
         Assert.Contains("boom", result.ErrorMessage);
     }
 
-    private static ServiceProvider CreateServices()
+    private static WorkflowDefinition CatchWaitWorkflow() => Workflow.Create<TryData>("WaitInCatch")
+        .Step<StartActivity>()
+        .Try(body => body.Step<ThrowActivity>(_ => { }))
+        .Catch<InvalidOperationException>(body => body
+            .Step<ReadErrorActivity>(setup => setup
+                .Input(activity => activity.Message).From(ctx => ctx.Exception.Message)
+                .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error))
+            .WaitFor<Approval>("review")
+            .Step<CountActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Catch)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch)))
+        .Finally(body => body.Step<CountActivity>(setup => setup
+            .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
+            .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
+        .Build();
+
+    private static ServiceProvider CreateServices(IWorkflowStateRepository? repository = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
+        if (repository != null)
+            services.AddSingleton(repository);
         return services.BuildServiceProvider();
     }
 
