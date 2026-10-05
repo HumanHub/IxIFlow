@@ -796,6 +796,17 @@ public class WorkflowStep
     public List<List<WorkflowStep>> ParallelBranches { get; set; } = new();
 
     /// <summary>
+    /// Determines when parallel branches join. The default waits for every branch.
+    /// </summary>
+    public ParallelJoinMode ParallelJoinMode { get; set; } = ParallelJoinMode.WaitAll;
+
+    /// <summary>
+    /// Evaluated after each branch completes when the join is conditional.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, bool>? ParallelCompletionCondition { get; set; }
+
+    /// <summary>
     ///     Catch blocks for try/catch error handling
     /// </summary>
     public List<WorkflowStep> CatchBlocks { get; set; } = new();
@@ -866,6 +877,8 @@ public class WorkflowStep
             ElseSteps = ElseSteps.Select(s => s.Clone()).ToList(),
             SequenceSteps = SequenceSteps.Select(s => s.Clone()).ToList(),
             ParallelBranches = ParallelBranches.Select(branch => branch.Select(s => s.Clone()).ToList()).ToList(),
+            ParallelJoinMode = ParallelJoinMode,
+            ParallelCompletionCondition = ParallelCompletionCondition,
             CatchBlocks = CatchBlocks.Select(s => s.Clone()).ToList(),
             FinallySteps = FinallySteps.Select(s => s.Clone()).ToList(),
             LoopBodySteps = LoopBodySteps.Select(s => s.Clone()).ToList(),

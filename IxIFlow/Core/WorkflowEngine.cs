@@ -205,6 +205,29 @@ public class WorkflowEngine : IWorkflowEngine
     /// </summary>
     public async Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(
         string instanceId,
+        string key,
+        TEventData @event,
+        CancellationToken cancellationToken = default)
+        where TEventData : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        var instance = await _stateRepository.GetWorkflowInstanceAsync(instanceId);
+        if (instance?.Status != WorkflowStatus.Suspended ||
+            instance.SuspensionInfo?.SuspendReason != key)
+        {
+            return new WorkflowExecutionResult
+            {
+                InstanceId = instanceId,
+                Status = WorkflowExecutionStatus.Faulted,
+                ErrorMessage = $"No active wait matches key '{key}'"
+            };
+        }
+
+        return await ResumeWorkflowAsync(instanceId, @event, cancellationToken);
+    }
+
+    public async Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(
+        string instanceId,
         TEventData @event,
         CancellationToken cancellationToken = default)
         where TEventData : class

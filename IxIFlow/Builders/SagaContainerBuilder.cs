@@ -211,6 +211,14 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         return _workflowBuilder.Suspend(suspendReason, resumeCondition, configure);
     }
 
+    public IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(string key,
+        Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class
+    {
+        return _workflowBuilder.WaitFor(key, matches, configure);
+    }
+
     public WorkflowDefinition Build()
     {
         return _workflowBuilder.Build();
