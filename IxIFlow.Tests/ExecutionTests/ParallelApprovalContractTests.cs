@@ -347,9 +347,13 @@ public class ParallelApprovalContractTests
             .Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.FinanceStarted)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.FinanceStarted))
-            .WhileDo(ctx => false, body => body.Step<StartActivity>(_ => { }))
             .WaitFor<ApprovalReply>("finance")
             .Build();
+        definition.Steps.Insert(1, new WorkflowStep
+        {
+            Name = "Unsupported invocation",
+            StepType = WorkflowStepType.WorkflowInvocation
+        });
         var data = new ApprovalData();
 
         await Assert.ThrowsAsync<NotSupportedException>(() => engine.ExecuteWorkflowAsync(definition, data));
