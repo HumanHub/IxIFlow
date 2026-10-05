@@ -464,157 +464,66 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         };
     }
 
-    /// <summary>
-    ///     Adds saga error handling for specific exception type
-    /// </summary>
+    /// <summary>Adds a saga error handler without exception properties.</summary>
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException>(
-        Action<ISagaErrorBuilder<TWorkflowData, TPreviousStepData>> configure)
+        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
+        where TException : Exception => OnError<TException, EmptyFault>(configure);
+
+    /// <summary>Adds a saga error handler with a checkpointable fault value.</summary>
+    public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException, TFault>(
+        Action<ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>> configure)
         where TException : Exception
     {
-        // Find the most recent saga step to add error handling to
-        var sagaStep = _steps.LastOrDefault(s => s.StepType == WorkflowStepType.Saga);
-        if (sagaStep == null) throw new InvalidOperationException("OnError can only be called after a Saga block");
-
-        // Create error handler block similar to catch blocks
-        var errorHandlerBlock = new WorkflowStep
+        ArgumentNullException.ThrowIfNull(configure);
+        Core.Runtime.FaultProjection.For(typeof(TException), typeof(TFault));
+        var sagaStep = _steps.LastOrDefault(step => step.StepType == WorkflowStepType.Saga)
+            ?? throw new InvalidOperationException("OnError can only be called after a Saga block");
+        var handlerBlock = new WorkflowStep
         {
-            Id = Guid.NewGuid().ToString(),
             Name = $"OnError<{typeof(TException).Name}>",
-            StepType = WorkflowStepType.CatchBlock, // Reuse catch block type for error handling
+            StepType = WorkflowStepType.CatchBlock,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             ExceptionType = typeof(TException),
+            FaultType = typeof(TFault),
             Order = sagaStep.CatchBlocks.Count
         };
-
-        // Get or create saga steps metadata
-        if (!sagaStep.StepMetadata.ContainsKey("SagaSteps"))
-            sagaStep.StepMetadata["SagaSteps"] = new List<SagaStepInfo>();
-        var sagaSteps = (List<SagaStepInfo>)sagaStep.StepMetadata["SagaSteps"];
-
-        // Create saga error builder and configure it - compile expressions at build time
-        var errorBuilder = new SagaErrorBuilder<TWorkflowData, TPreviousStepData>(
-            errorHandlerBlock.SequenceSteps,
-            sagaSteps,
-            typeof(TException) == typeof(Exception) ? null : Activator.CreateInstance(typeof(TException)) as Exception);
-        configure(errorBuilder);
-
-        // Extract SagaErrorConfiguration from configured error handlers
-        var configuredHandlers = errorBuilder.GetErrorHandlers();
-        foreach (var handler in configuredHandlers)
+        if (!sagaStep.StepMetadata.TryGetValue("SagaSteps", out var sagaStepsValue))
         {
-            // Check if handler has SagaErrorConfig and store it in step metadata
-            if (handler.Handler is TerminationErrorHandler termHandler && termHandler.SagaErrorConfig != null)
-            {
-                errorHandlerBlock.StepMetadata["SagaErrorConfig"] = termHandler.SagaErrorConfig;
-                break;
-            }
-
-            if (handler.Handler is ContinuationErrorHandler contHandler && contHandler.SagaErrorConfig != null)
-            {
-                errorHandlerBlock.StepMetadata["SagaErrorConfig"] = contHandler.SagaErrorConfig;
-                break;
-            }
-            
-            if (handler.Handler is RetryErrorHandler retryHandler)
-            {
-                // Create a SagaErrorConfiguration for retry handlers
-                var sagaErrorConfig = new SagaErrorConfiguration
-                {
-                    CompensationStrategy = CompensationStrategy.CompensateAll,
-                    ContinuationAction = SagaContinuationAction.Retry,
-                    RetryPolicy = retryHandler.RetryPolicy,
-                };
-                
-                errorHandlerBlock.StepMetadata["SagaErrorConfig"] = sagaErrorConfig;
-                break;
-            }
-
-            // Handle any SuspensionErrorHandler
-            if (handler.Handler.GetType().IsGenericType && 
-                handler.Handler.GetType().GetGenericTypeDefinition() == typeof(SuspensionErrorHandler<>))
-            {
-                // Extract properties from the suspension handler using reflection
-                var reasonProperty = handler.Handler.GetType().GetProperty("Reason");
-                var eventTypeProperty = handler.Handler.GetType().GetProperty("EventType");
-                var resumeConditionProperty = handler.Handler.GetType().GetProperty("ResumeCondition");
-                var postResumeActionProperty = handler.Handler.GetType().GetProperty("PostResumeAction");
-
-                var reason = reasonProperty?.GetValue(handler.Handler) as string ?? "Saga suspended due to error";
-                var eventType = eventTypeProperty?.GetValue(handler.Handler) as Type ?? typeof(object);
-                var resumeCondition = resumeConditionProperty?.GetValue(handler.Handler);
-                var postResumeAction = postResumeActionProperty?.GetValue(handler.Handler);
-
-                // Create a suspend/resume step that matches the regular Suspend method format
-                var suspensionStep = new WorkflowStep
-                {
-                    Id = Guid.NewGuid().ToString(),
-                    Name = "Suspend",
-                    StepType = WorkflowStepType.SuspendResume,
-                    WorkflowDataType = typeof(TWorkflowData),
-                    PreviousStepDataType = typeof(TPreviousStepData),
-                    ResumeEventType = eventType,
-                    Order = 0,
-                    StepMetadata = new Dictionary<string, object>
-                    {
-                        ["SuspendReason"] = reason
-                    }
-                };
-
-                // Store the resume condition
-                if (resumeCondition != null)
-                {
-                    suspensionStep.StepMetadata["ResumeCondition"] = resumeCondition;
-                }
-
-                // Store the post-resume action for execution after resumption
-                if (postResumeAction != null)
-                {
-                    suspensionStep.StepMetadata["PostResumeAction"] = postResumeAction;
-                }
-
-                // Add the suspension step to the error handler's sequence
-                errorHandlerBlock.SequenceSteps.Add(suspensionStep);
-
-                // Get SagaErrorConfig using reflection since we don't know the exact generic type
-                var sagaErrorConfigProperty = handler.Handler.GetType().GetProperty("SagaErrorConfig");
-
-                if (sagaErrorConfigProperty?.GetValue(handler.Handler) is SagaErrorConfiguration sagaErrorConfig)
-                {
-                    errorHandlerBlock.StepMetadata["SagaErrorConfig"] = sagaErrorConfig;
-                }
-                else
-                {
-                    // Create a default configuration for suspension using reflection
-                    var preExecuteProperty = handler.Handler.GetType().GetProperty("PreExecute");
-                    var preExecute = preExecuteProperty?.GetValue(handler.Handler) as CompensationErrorHandler;
-
-                    var defaultConfig = new SagaErrorConfiguration
-                    {
-                        CompensationStrategy = preExecute?.Strategy ?? CompensationStrategy.CompensateAll,
-                        ContinuationAction = SagaContinuationAction.Suspend,
-                        RetryPolicy = null,
-                        CompensationTargetType = preExecute?.CompensationTargetType
-                    };
-
-                    errorHandlerBlock.StepMetadata["SagaErrorConfig"] = defaultConfig;
-                }
-                break;
-            }
+            sagaStepsValue = new List<SagaStepInfo>();
+            sagaStep.StepMetadata["SagaSteps"] = sagaStepsValue;
         }
-
-        // Add to saga step's error handlers (reuse catch blocks)
-        sagaStep.CatchBlocks.Add(errorHandlerBlock);
-
-        // Return saga container builder for chaining
+        var handlers = new List<ErrorHandler>();
+        configure(new SagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>(
+            handlerBlock.SequenceSteps, (List<SagaStepInfo>)sagaStepsValue, handlers));
+        var configured = handlers.LastOrDefault()?.Handler;
+        var policy = configured switch
+        {
+            TerminationErrorHandler termination => termination.SagaErrorConfig,
+            ContinuationErrorHandler continuation => continuation.SagaErrorConfig,
+            RetryErrorHandler retry => new SagaErrorConfiguration
+            {
+                CompensationStrategy = retry.PreExecute?.Strategy ?? CompensationStrategy.CompensateAll,
+                CompensationTargetType = retry.PreExecute?.CompensationTargetType,
+                ContinuationAction = SagaContinuationAction.Retry,
+                RetryPolicy = retry.RetryPolicy
+            },
+            _ => null
+        };
+        if (policy != null)
+            handlerBlock.StepMetadata["SagaErrorConfig"] = policy;
+        else if (handlerBlock.SequenceSteps.Any(step =>
+                     step.StepMetadata.ContainsKey("WaitKey")))
+            throw new InvalidOperationException(
+                "A saga error handler with WaitFor must end with ThenContinue, ThenRetry, or ThenTerminate");
+        sagaStep.CatchBlocks.Add(handlerBlock);
         return new SagaContainerBuilder<TWorkflowData, TPreviousStepData>(_steps, name, workflowVersion);
     }
-
     /// <summary>
     ///     Adds saga error handling for any exception
     /// </summary>
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError(
-        Action<ISagaErrorBuilder<TWorkflowData, TPreviousStepData>> configure)
+        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
     {
         return OnError<Exception>(configure);
     }

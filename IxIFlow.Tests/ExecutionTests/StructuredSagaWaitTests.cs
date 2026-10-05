@@ -679,6 +679,188 @@ public class StructuredSagaWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed)))
         .Build();
 
+    [Fact]
+    public async Task SagaErrorHandler_RunsAfterCompensationAndBeforeContinuation()
+    {
+        using var services = CreateServices(new InMemoryWorkflowStateRepository());
+        var definition = Workflow.Create<SagaData>("SagaErrorHandlerOrder")
+            .Step<BeginActivity>()
+            .Saga(saga => saga
+                .Step<TraceActivity>(setup => setup
+                    .Input(activity => activity.Key).From(_ => "A")
+                    .Input(activity => activity.Trace).From(ctx => ctx.WorkflowData.Trace)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Trace)
+                    .CompensateWith<UndoTraceActivity>(comp => comp
+                        .Input(activity => activity.Key).From(_ => "B")
+                        .Input(activity => activity.Trace).From(ctx => ctx.WorkflowData.Trace)
+                        .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Trace)))
+                .Step<FailActivity>(_ => { }))
+            .OnError<InvalidOperationException, MessageFault>(error => error
+                .Step<HandlerMarkerActivity>()
+                .Step<ReadErrorActivity>(setup => setup
+                    .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
+                    .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error))
+                .Compensate().ThenContinue())
+            .Step<TraceActivity>(setup => setup
+                .Input(activity => activity.Key).From(_ => "D")
+                .Input(activity => activity.Trace).From(ctx => ctx.WorkflowData.Trace)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Trace))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal("ABHD", Data(result).Trace);
+        Assert.Equal("payment failed", Data(result).Error);
+    }
+
+    [Fact]
+    public async Task SagaErrorHandler_RestoresFaultAndPositionAfterWait()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var definition = SagaErrorWaitWorkflow();
+        string instanceId;
+        using (var firstProvider = CreateServices(repository))
+        {
+            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
+                .ExecuteWorkflowAsync(definition, new SagaData());
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            Assert.Equal("payment failed", Data(started).Error);
+            instanceId = started.InstanceId;
+        }
+
+        using var secondProvider = CreateServices(repository);
+        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(SagaErrorWaitWorkflow());
+        var resumed = await secondProvider.GetRequiredService<IWorkflowEngine>()
+            .ResumeWorkflowAsync(instanceId, "review", new Approval());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
+        Assert.Equal("payment failed", Data(resumed).Error);
+        Assert.Equal("payment failedH", Data(resumed).Trace);
+    }
+
+    [Fact]
+    public async Task SagaErrorHandlerFailure_FaultsTheWorkflow()
+    {
+        using var services = CreateServices(new InMemoryWorkflowStateRepository());
+        var definition = Workflow.Create<SagaData>("SagaHandlerFailure")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<FailActivity>(_ => { }))
+            .OnError<InvalidOperationException>(error => error
+                .Step<FailHandlerActivity>()
+                .CompensateNone().ThenContinue())
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("handler failed", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void SagaErrorHandler_RejectsFaultPropertiesThatCannotBeCheckpointed()
+    {
+        Assert.Throws<NotSupportedException>(() => Workflow.Create<SagaData>("InvalidSagaFault")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<FailActivity>(_ => { }))
+            .OnError<InvalidOperationException, InvalidFault>(error => error
+                .CompensateNone().ThenContinue())
+            .Build());
+    }
+
+    [Fact]
+    public void SagaErrorHandler_RequiresAnOutcomeWhenItWaits()
+    {
+        Assert.Throws<InvalidOperationException>(() => Workflow.Create<SagaData>("MissingSagaOutcome")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<FailActivity>(_ => { }))
+            .OnError<InvalidOperationException, MessageFault>(error => error
+                .WaitFor<Approval>("review"))
+            .Build());
+    }
+
+    [Fact]
+    public async Task SagaErrorHandler_CanRetryAfterWaitAndRestart()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var definition = SagaRetryAfterWaitWorkflow();
+        string instanceId;
+        using (var firstProvider = CreateServices(repository))
+        {
+            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
+                .ExecuteWorkflowAsync(definition, new SagaData());
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            instanceId = started.InstanceId;
+        }
+
+        using var secondProvider = CreateServices(repository);
+        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(SagaRetryAfterWaitWorkflow());
+        var resumed = await secondProvider.GetRequiredService<IWorkflowEngine>()
+            .ResumeWorkflowAsync(instanceId, "retry", new Approval());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
+        Assert.Equal(2, Data(resumed).Completed);
+    }
+
+    [Fact]
+    public async Task SagaErrorHandler_CanTerminateAfterWaitAndRestart()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var definition = SagaTerminateAfterWaitWorkflow();
+        string instanceId;
+        using (var firstProvider = CreateServices(repository))
+        {
+            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
+                .ExecuteWorkflowAsync(definition, new SagaData());
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            instanceId = started.InstanceId;
+        }
+
+        using var secondProvider = CreateServices(repository);
+        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(SagaTerminateAfterWaitWorkflow());
+        var resumed = await secondProvider.GetRequiredService<IWorkflowEngine>()
+            .ResumeWorkflowAsync(instanceId, "terminate", new Approval());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, resumed.Status);
+        Assert.Contains("Error policy requested termination", resumed.ErrorMessage);
+    }
+
+    private static WorkflowDefinition SagaRetryAfterWaitWorkflow() => Workflow.Create<SagaData>("SagaRetryAfterWait")
+        .Step<BeginActivity>()
+        .Saga(saga => saga.Step<FailOnceInDataActivity>(_ => { }))
+        .OnError<InvalidOperationException, MessageFault>(error => error
+            .WaitFor<Approval>("retry")
+            .CompensateNone().ThenRetry(1))
+        .Build();
+
+    private static WorkflowDefinition SagaTerminateAfterWaitWorkflow() => Workflow.Create<SagaData>("SagaTerminateAfterWait")
+        .Step<BeginActivity>()
+        .Saga(saga => saga.Step<FailActivity>(_ => { }))
+        .OnError<InvalidOperationException, MessageFault>(error => error
+            .WaitFor<Approval>("terminate")
+            .CompensateNone().ThenTerminate())
+        .Build();
+
+    private static WorkflowDefinition SagaErrorWaitWorkflow() => Workflow.Create<SagaData>("SagaErrorWait")
+        .Step<BeginActivity>()
+        .Saga(saga => saga.Step<FailActivity>(_ => { }))
+        .OnError<InvalidOperationException, MessageFault>(error => error
+            .Step<ReadErrorActivity>(setup => setup
+                .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
+                .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error))
+            .WaitFor<Approval>("review")
+            .Step<ReadErrorActivity>(setup => setup
+                .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
+                .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Trace))
+            .Step<HandlerMarkerActivity>()
+            .CompensateNone().ThenContinue())
+        .Build();
+
     private static ServiceProvider CreateServices(IWorkflowStateRepository repository)
     {
         var services = new ServiceCollection();
@@ -872,6 +1054,36 @@ public class StructuredSagaWaitTests
 
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+    }
+
+    public sealed class HandlerMarkerActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            ((SagaData)context.WorkflowData).Trace += "H";
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class FailHandlerActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("handler failed");
+    }
+
+    public sealed class InvalidFault
+    {
+        public Exception Error { get; set; } = new Exception();
+    }
+
+    public sealed class FailOnceInDataActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            if (++((SagaData)context.WorkflowData).Completed == 1)
+                throw new InvalidOperationException("retry after approval");
+            return Task.CompletedTask;
+        }
     }
 
     public sealed class FailCompensationActivity : IAsyncActivity

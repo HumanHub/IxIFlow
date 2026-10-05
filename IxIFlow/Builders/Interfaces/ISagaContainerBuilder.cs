@@ -12,12 +12,15 @@ public interface ISagaContainerBuilder<TWorkflowData, TPreviousStepData> : IWork
     /// <typeparam name="TException">Type of exception to handle</typeparam>
     /// <param name="configure">Configuration for the error handler</param>
     ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException>(
-        Action<ISagaErrorBuilder<TWorkflowData, TPreviousStepData>> configure) where TException : Exception;
+        Action<ISagaErrorBuilder<TWorkflowData, Core.EmptyFault, TPreviousStepData>> configure) where TException : Exception;
+
+    ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException, TFault>(
+        Action<ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>> configure) where TException : Exception;
 
     /// <summary>
     /// Configures general error handling for the saga container
     /// </summary>
     /// <param name="configure">Configuration for the error handler</param>
     ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError(
-        Action<ISagaErrorBuilder<TWorkflowData, TPreviousStepData>> configure);
+        Action<ISagaErrorBuilder<TWorkflowData, Core.EmptyFault, TPreviousStepData>> configure);
 }

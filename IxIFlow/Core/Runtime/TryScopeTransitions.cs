@@ -158,6 +158,9 @@ internal static class TryScopeTransitions
                 var state = continuation.Stack[index].TryState;
                 if (state?.Phase == TryPhase.Catch)
                     return state.Error?.Fault?.Read(services);
+                var saga = continuation.Stack[index].SagaState;
+                if (saga?.Phase == SagaPhase.Compensating && saga.ErrorHandlerStarted)
+                    return saga.Error?.Fault?.Read(services);
             }
             if (continuation.ParentJoinId == null)
                 return null;
@@ -175,7 +178,10 @@ internal static class TryScopeTransitions
             {
                 RejectUnrestorable(frame.TryState?.Error,
                     frame.TryState?.Phase == TryPhase.Catch);
-                RejectUnrestorable(frame.SagaState?.Error);
+                var saga = frame.SagaState;
+                RejectUnrestorable(saga?.Error,
+                    saga?.Phase == SagaPhase.Compensating && saga.ErrorHandlerStarted &&
+                    saga.ErrorAction != null);
             }
             if (continuation.ParentJoinId == null)
                 return;

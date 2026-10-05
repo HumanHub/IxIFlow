@@ -94,19 +94,17 @@ public class CompleteWorkflowSyntaxTests
                                 .OnError(handler => handler.ThenIgnore()) // Non-critical
                                 .CompensateWith<CancelShipmentAsyncActivity>());
                     })
-                    .OnError<PaymentException>(error =>
+                    .OnError<PaymentException, MessageFault>(error =>
                     {
                         error
                             .Step<LogPaymentException>(setup => setup
-                                .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                                .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                                 .Input(act => act.ErrorMessage).From(ctx => ctx.PreviousStep.ProductId)
-                                .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
-                                .OnError(handler => handler.ThenRetry(1)))
+                                .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled))
                             .Step<LogPaymentException>(setup => setup
-                                .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                                .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                                 .Input(act => act.ErrorMessage).From(ctx => ctx.PreviousStep.ErrorMessage)
-                                .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
-                                .OnError(handler => handler.ThenRetry(1)))
+                                .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled))
                             .CompensateUpTo<ChargePaymentAsyncActivity>() // Compensate up to specific step
                             .ThenTerminate(); // Throws SagaTerminatedException
                     })

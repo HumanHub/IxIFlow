@@ -25,7 +25,22 @@ internal static class SagaScopeTransitions
 
         if (state.CompensationCursor < state.CompensationFloor)
         {
-            var error = state.GetError();
+            if (!state.IsCancellationCleanup && state.ErrorHandlerIndex >= 0 &&
+                !state.ErrorHandlerStarted)
+            {
+                state.ErrorHandlerStarted = true;
+                continuation.Stack.Add(new ScopePosition
+                {
+                    ScopeId = scopes.CatchBodyScope(step.CatchBlocks[state.ErrorHandlerIndex]),
+                    EntryPrevious = continuation.Previous,
+                    RuntimeEntryPrevious = continuation.RuntimePrevious,
+                    RestorePreviousOnExit = true
+                });
+                return;
+            }
+
+            var error = state.ErrorAction == SagaContinuationAction.Continue &&
+                state.CompensationErrors.Count == 0 ? null : state.GetTerminalError();
             var compensationErrors = state.CompensationErrors;
             var isCancellationCleanup = state.IsCancellationCleanup;
             if (compensationErrors.Count == 0 && !isCancellationCleanup && state.ErrorAction is { } action)
@@ -248,6 +263,10 @@ internal static class SagaScopeTransitions
         var state = owner.SagaState;
         if (step.StepType != WorkflowStepType.Saga || state == null)
             return false;
+        if (state.Phase == SagaPhase.Compensating && state.ErrorHandlerStarted &&
+            state.ErrorHandlerIndex >= 0 &&
+            child.ScopeId == scopes.CatchBodyScope(step.CatchBlocks[state.ErrorHandlerIndex]))
+            return true;
         if (state.Phase == SagaPhase.Forward && child.ScopeId == scopes.SagaScope(step))
         {
             owner.SagaState = null;
@@ -278,7 +297,13 @@ internal static class SagaScopeTransitions
         var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
         var handlerIndex = saga.CatchBlocks.FindIndex(handler =>
             handler.ExceptionType?.IsAssignableFrom(error.GetType()) == true);
+        var savedError = handlerIndex < 0
+            ? SerializedException.From(error)
+            : SerializedException.FromForCatch(error,
+                saga.CatchBlocks[handlerIndex].ExceptionType!,
+                saga.CatchBlocks[handlerIndex].FaultType!);
         state.ErrorHandlerIndex = handlerIndex;
+        state.ErrorHandlerStarted = false;
         var configuration = handlerIndex < 0 ? null :
             saga.CatchBlocks[handlerIndex].StepMetadata.TryGetValue("SagaErrorConfig", out var value)
                 ? value as SagaErrorConfiguration
@@ -301,18 +326,24 @@ internal static class SagaScopeTransitions
         continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
         continuation.Previous = forward.EntryPrevious;
         continuation.RuntimePrevious = forward.RuntimeEntryPrevious;
-        state.SetError(error);
+        state.Error = savedError;
+        state.RuntimeError = error;
         state.Phase = SagaPhase.Compensating;
         state.CompensationCursor = state.CompletedSteps.Count - 1;
     }
 
-    public static bool SkipFailedCompensation(ContinuationState continuation, Exception error)
+    public static bool SkipFailedCompensation(WorkflowScopeCatalog scopes,
+        ContinuationState continuation, Exception error)
     {
         if (continuation.Stack.Count < 2)
             return false;
         var owner = continuation.Stack[^2];
         var state = owner.SagaState;
-        if (state?.Phase != SagaPhase.Compensating)
+        if (state?.Phase != SagaPhase.Compensating || state.CompensationCursor < 0)
+            return false;
+        var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
+        if (continuation.Stack[^1].ScopeId != scopes.CompensationScope(saga,
+                scopes.Step(state.CompletedSteps[state.CompensationCursor].StepId)))
             return false;
         state.CompensationErrors.Add(error.Message);
         state.PreviousCompensation = null;

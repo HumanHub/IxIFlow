@@ -4,109 +4,6 @@ using IxIFlow.Core;
 
 namespace IxIFlow.Builders;
 
-///// <summary>
-/////     Minimal saga container builder - basic compilation target
-///// </summary>
-//public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaContainerBuilder<TWorkflowData, TPreviousStepData>
-//    where TWorkflowData : class
-//    where TPreviousStepData : class
-//{
-//    public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException>(
-//        Action<ISagaErrorBuilder<TWorkflowData, TPreviousStepData>> configure)
-//        where TException : Exception
-//    {
-//        // Stub implementation
-//        return this;
-//    }
-
-//    public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError(
-//        Action<ISagaErrorBuilder<TWorkflowData, TPreviousStepData>> configure)
-//    {
-//        return this;
-//    }
-
-//    // IWorkflowBuilder implementation - minimal stubs
-//    public IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
-//        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>> configure)
-//        where TActivity : class, IAsyncActivity
-//    {
-//        throw new NotImplementedException("Use saga.Step() instead");
-//    }
-
-//    public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TWorkflow, TInvokedData>(
-//        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>> configure)
-//        where TWorkflow : IWorkflow<TInvokedData> where TInvokedData : class
-//    {
-//        throw new NotImplementedException("Not supported in saga");
-//    }
-
-//    public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version,
-//        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>> configure)
-//        where TInvokedData : class
-//    {
-//        throw new NotImplementedException("Not supported in saga");
-//    }
-
-//    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Sequence(
-//        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
-//    {
-//        throw new NotImplementedException("Not supported in saga");
-//    }
-
-//    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> If(
-//        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> condition,
-//        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> then,
-//        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>>? @else = null)
-//    {
-//        throw new NotImplementedException("Not supported in saga");
-//    }
-
-//    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Parallel(
-//        Action<IParallelBuilder<TWorkflowData, TPreviousStepData>> configure)
-//    {
-//        throw new NotImplementedException("Not supported in saga");
-//    }
-
-//    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> DoWhile(
-//        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
-//        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition)
-//    {
-//        throw new NotImplementedException("Not supported in saga");
-//    }
-
-//    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> WhileDo(
-//        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition,
-//        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
-//    {
-//        throw new NotImplementedException("Not supported in saga");
-//    }
-
-//    public ITryBuilder<TWorkflowData, TPreviousStepData> Try(
-//        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
-//    {
-//        throw new NotImplementedException("Not supported in saga");
-//    }
-
-//    public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> Saga(
-//        Action<ISagaBuilder<TWorkflowData, TPreviousStepData>> configure)
-//    {
-//        throw new NotImplementedException("Nested saga not supported");
-//    }
-
-//    public IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(string suspendReason,
-//        Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>? resumeCondition = null,
-//        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
-//        where TResumeEvent : class
-//    {
-//        throw new NotImplementedException("Use error handling with suspend");
-//    }
-
-//    public WorkflowDefinition Build()
-//    {
-//        throw new NotImplementedException("Build not supported on saga container");
-//    }
-//}
-
 /// <summary>
 ///     Saga container builder implementation that properly delegates to workflow builder
 /// </summary>
@@ -123,14 +20,18 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
 
     // ISagaContainerBuilder specific methods
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException>(
-        Action<ISagaErrorBuilder<TWorkflowData, TPreviousStepData>> configure)
+        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
         where TException : Exception
     {
         return _workflowBuilder.OnError<TException>(configure);
     }
 
+    public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException, TFault>(
+        Action<ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>> configure)
+        where TException : Exception => _workflowBuilder.OnError<TException, TFault>(configure);
+
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError(
-        Action<ISagaErrorBuilder<TWorkflowData, TPreviousStepData>> configure)
+        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
     {
         return _workflowBuilder.OnError(configure);
     }
