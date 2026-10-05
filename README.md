@@ -188,25 +188,37 @@ Run multiple tasks at the same time:
 
 ### Exception Handling
 
-Handle errors gracefully:
+Catch an exception and select the data the handler needs. The fault value must be a checkpointable DTO:
 
 ```csharp
+public sealed class PaymentFault
+{
+    public string Message { get; set; } = "";
+}
+
+public sealed class ErrorFault
+{
+    public string Message { get; set; } = "";
+}
+
 .Try(tryBlock =>
 {
     tryBlock.Step<ChargeCardActivity>(setup => setup
         .Input(step => step.Amount).From(data => data.WorkflowData.OrderTotal));
 })
-.Catch<PaymentDeclinedException>(catchBlock =>
+.Catch<PaymentDeclinedException, PaymentFault>(catchBlock =>
 {
     catchBlock.Step<NotifyPaymentFailureActivity>(setup => setup
-        .Input(step => step.Reason).From(data => data.Exception.Message));
+        .Input(step => step.Reason).From(ctx => ctx.Fault.Message));
 })
-.Catch<Exception>(catchBlock =>
+.Catch<Exception, ErrorFault>(catchBlock =>
 {
     catchBlock.Step<LogUnknownErrorActivity>(setup => setup
-        .Input(step => step.Error).From(data => data.Exception.ToString()));
+        .Input(step => step.Error).From(ctx => ctx.Fault.Message));
 })
 ```
+
+Each fault property must match a public property on the caught exception by name and type. The workflow builder rejects unsupported fault types before execution.
 
 ### Saga Transactions
 

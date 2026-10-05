@@ -44,7 +44,8 @@ internal enum ContinuationStatus
     Joining,
     Cancelling,
     Completed,
-    Cancelled
+    Cancelled,
+    WaitingResolution
 }
 
 internal sealed class ContinuationState
@@ -55,6 +56,8 @@ internal sealed class ContinuationState
     public bool CancellationUnwind { get; set; }
     public List<ScopePosition> Stack { get; set; } = [];
     public SerializedValue? Previous { get; set; }
+    public ActivityInvocationState? PendingActivity { get; set; }
+    public AcceptedWaitState? AcceptedWait { get; set; }
 
     [JsonIgnore]
     public object? RuntimePrevious { get; set; }
@@ -67,6 +70,85 @@ internal sealed class ContinuationState
         RuntimePrevious = value;
         Previous = null;
     }
+}
+
+/// <summary>
+/// A committed Start for one logical activity invocation. The continuation cannot advance
+/// until this invocation has a committed End or an explicit recovery decision.
+/// </summary>
+internal sealed class ActivityInvocationState
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string StepId { get; set; } = "";
+    public DateTime StartedAtUtc { get; set; } = DateTime.UtcNow;
+    public ActivityInputSnapshot Inputs { get; set; } = new();
+    public SerializedValue? RecoveryState { get; set; }
+    public List<ActivityAttemptState> Attempts { get; set; } = [];
+    public string? ResolutionReason { get; set; }
+}
+
+internal sealed class ActivityAttemptState
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public DateTime StartedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? EndedAtUtc { get; set; }
+    public string Kind { get; set; } = "Execute";
+    public string? Observation { get; set; }
+}
+
+internal sealed class ActivityInputSnapshot
+{
+    public Dictionary<string, ActivityInputValue> Properties { get; set; } = [];
+
+    public IReadOnlyCollection<string> CodeInputs => Properties
+        .Where(item => item.Value.RebindFromDefinition)
+        .Select(item => item.Key).ToArray();
+
+    public static ActivityInputSnapshot Capture(IAsyncActivity activity, WorkflowStep step)
+    {
+        var snapshot = new ActivityInputSnapshot();
+        foreach (var mapping in step.InputMappings.Where(item =>
+                     item.Direction == PropertyMappingDirection.Input))
+        {
+            var property = activity.GetType().GetProperty(mapping.TargetProperty)
+                ?? throw new InvalidOperationException(
+                    $"Mapped activity input '{mapping.TargetProperty}' was not found");
+            var value = property.GetValue(activity);
+            snapshot.Properties[property.Name] = value switch
+            {
+                Delegate => new ActivityInputValue { RebindFromDefinition = true },
+                Exception error => new ActivityInputValue
+                {
+                    Exception = SerializedException.From(error)
+                },
+                _ => new ActivityInputValue { Value = SerializedValue.From(value) }
+            };
+        }
+        return snapshot;
+    }
+
+    public void Restore(IAsyncActivity activity, IServiceProvider services)
+    {
+        foreach (var (name, saved) in Properties)
+        {
+            if (saved.RebindFromDefinition)
+                continue;
+            var property = activity.GetType().GetProperty(name)
+                ?? throw new InvalidOperationException(
+                    $"Saved activity input '{activity.GetType().Name}.{name}' is unavailable");
+            if (property.GetSetMethod(nonPublic: true) == null)
+                throw new InvalidOperationException(
+                    $"Saved activity input '{activity.GetType().Name}.{name}' cannot be restored");
+            property.SetValue(activity, saved.Exception?.Restore() ?? saved.Value?.Read(services));
+        }
+    }
+}
+
+internal sealed class ActivityInputValue
+{
+    public SerializedValue? Value { get; set; }
+    public SerializedException? Exception { get; set; }
+    public bool RebindFromDefinition { get; set; }
 }
 
 internal sealed class ScopePosition
@@ -158,7 +240,7 @@ internal sealed class SagaAcceptedWait
 
 internal sealed class SagaCompletedStep
 {
-    public int StepIndex { get; set; }
+    public string StepId { get; set; } = "";
     public SerializedValue? Output { get; set; }
     public SerializedValue? Previous { get; set; }
 }
@@ -182,6 +264,12 @@ internal sealed class WaitState
     public string Key { get; set; } = "";
     public string EventType { get; set; } = "";
     public DateTime RegisteredAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+internal sealed class AcceptedWaitState
+{
+    public string StepId { get; set; } = "";
+    public SerializedValue Event { get; set; } = new();
 }
 
 internal sealed class SerializedValue

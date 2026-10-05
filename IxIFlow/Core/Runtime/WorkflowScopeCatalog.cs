@@ -32,29 +32,12 @@ internal sealed class WorkflowScopeCatalog
     public string ElseScope(WorkflowStep step) => $"{Id(step)}/else";
     public string LoopScope(WorkflowStep step) => $"{Id(step)}/loop";
     public string SagaScope(WorkflowStep step) => SequenceScope(step);
-    public string CompensationScope(WorkflowStep step, int sourceIndex) =>
-        $"{Id(step)}/compensation/{sourceIndex}";
+    public string CompensationScope(WorkflowStep saga, WorkflowStep source) =>
+        $"{Id(saga)}/compensation/{Id(source)}";
     public string FinallyScope(WorkflowStep step) => $"{Id(step)}/finally";
     public string CatchBodyScope(WorkflowStep catchBlock) => SequenceScope(catchBlock);
     public string BranchScope(WorkflowStep step, int index) => $"{Id(step)}/branch/{index}";
     public string OutcomeScope(WorkflowStep step, int index) => $"{Id(step)}/outcome/{index}";
-
-    public static bool RequiresStructuredExecution(IReadOnlyList<WorkflowStep> steps)
-    {
-        foreach (var step in steps)
-        {
-            if (step.StepType == WorkflowStepType.SuspendResume && step.StepMetadata.ContainsKey("WaitKey"))
-                return true;
-            if (step.StepType == WorkflowStepType.Parallel && step.ParallelJoinMode != ParallelJoinMode.WaitAll)
-                return true;
-            if (RequiresStructuredExecution(step.SequenceSteps) || RequiresStructuredExecution(step.ThenSteps) ||
-                RequiresStructuredExecution(step.ElseSteps) || RequiresStructuredExecution(step.LoopBodySteps) ||
-                RequiresStructuredExecution(step.FinallySteps) || RequiresStructuredExecution(step.CatchBlocks) ||
-                step.ParallelBranches.Any(RequiresStructuredExecution))
-                return true;
-        }
-        return false;
-    }
 
     private void AddScope(string id, IReadOnlyList<WorkflowStep> steps)
     {
@@ -82,9 +65,8 @@ internal sealed class WorkflowScopeCatalog
 
     private void AddSagaCompensations(WorkflowStep saga)
     {
-        for (var sourceIndex = 0; sourceIndex < saga.SequenceSteps.Count; sourceIndex++)
+        foreach (var source in SagaActivities(saga.SequenceSteps))
         {
-            var source = saga.SequenceSteps[sourceIndex];
             var activities = source.StepMetadata.TryGetValue("CompensationActivities", out var value)
                 ? value as List<CompensationActivityInfo>
                 : null;
@@ -115,7 +97,20 @@ internal sealed class WorkflowScopeCatalog
                     ["IsCompensationActivity"] = true
                 }
             }).ToList() ?? [];
-            AddScope(CompensationScope(saga, sourceIndex), steps);
+            AddScope(CompensationScope(saga, source), steps);
+        }
+    }
+
+    private static IEnumerable<WorkflowStep> SagaActivities(IEnumerable<WorkflowStep> steps)
+    {
+        foreach (var step in steps)
+        {
+            if (step.StepType == WorkflowStepType.Activity &&
+                step.StepMetadata.ContainsKey("IsSagaStep"))
+                yield return step;
+            foreach (var branch in step.OutcomeBranches)
+                foreach (var nested in SagaActivities(branch.Steps))
+                    yield return nested;
         }
     }
 
@@ -129,7 +124,8 @@ internal sealed class WorkflowScopeCatalog
                 return string.Join('|', pair.Key, step.StepType,
                     WorkflowTypeIdentity.StableName(step.ActivityType),
                     WorkflowTypeIdentity.StableName(step.ResumeEventType), waitKey, step.ParallelJoinMode,
-                    step.LoopType, WorkflowTypeIdentity.StableName(step.ExceptionType));
+                    step.LoopType, WorkflowTypeIdentity.StableName(step.ExceptionType),
+                    WorkflowTypeIdentity.StableName(step.FaultType));
             }));
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature));
         return Convert.ToHexString(bytes);

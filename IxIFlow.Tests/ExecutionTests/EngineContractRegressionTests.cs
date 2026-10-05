@@ -107,7 +107,7 @@ public class EngineContractRegressionTests
     }
 
     [Fact]
-    public async Task ConcurrentResume_OnlyOneRequestExecutesTheContinuation()
+    public async Task ConcurrentResume_WaitsForTheFirstAndDoesNotRepeatTheContinuation()
     {
         var gate = new ResumeActivityGate();
         var services = new ServiceCollection();
@@ -133,10 +133,13 @@ public class EngineContractRegressionTests
         try
         {
             await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            var secondResume = await secondScope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+            var secondResumeTask = secondScope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
                 .ResumeWorkflowAsync(suspended.InstanceId, new RegressionApprovalEvent { Approved = true });
+            Assert.False(secondResumeTask.IsCompleted);
+            gate.Release.TrySetResult();
+            var secondResume = await secondResumeTask;
             Assert.Equal(WorkflowExecutionStatus.Faulted, secondResume.Status);
-            Assert.Contains("not suspended", secondResume.ErrorMessage);
+            Assert.Contains("not waiting", secondResume.ErrorMessage);
             Assert.Equal(1, gate.ExecutionCount);
         }
         finally

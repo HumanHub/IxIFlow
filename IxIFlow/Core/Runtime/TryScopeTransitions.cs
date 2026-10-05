@@ -86,10 +86,33 @@ internal static class TryScopeTransitions
         var state = owner.TryState!;
         var step = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
         var catchIndex = FindCatchIndex(step, state, error);
+        var selectedCatch = catchIndex >= 0 ? step.CatchBlocks[catchIndex] : null;
+        SerializedException savedError;
+        if (selectedCatch == null)
+            savedError = SerializedException.From(error);
+        else
+        {
+            try
+            {
+                savedError = SerializedException.FromForCatch(error,
+                    selectedCatch.ExceptionType!, selectedCatch.FaultType!);
+            }
+            catch (Exception projectionError)
+            {
+                // The handler cannot receive the fault it declared. Finish this Try's
+                // cleanup, then let an outer handler see the capture failure.
+                error = new InvalidOperationException(
+                    $"Fault projection for '{error.GetType().Name}' failed: " +
+                    projectionError.GetBaseException().Message);
+                savedError = SerializedException.From(error);
+                catchIndex = -1;
+            }
+        }
         continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
         continuation.Previous = state.EntryPrevious;
         continuation.RuntimePrevious = state.RuntimeEntryPrevious;
-        state.SetError(error);
+        state.RuntimeError = error;
+        state.Error = savedError;
         state.CatchIndex = catchIndex;
         state.Phase = catchIndex >= 0 ? TryPhase.Catch : TryPhase.Finally;
         return true;
@@ -125,7 +148,8 @@ internal static class TryScopeTransitions
         return -1;
     }
 
-    public static Exception? CatchException(ExecutionCheckpoint checkpoint, ContinuationState continuation)
+    public static object? CatchFault(ExecutionCheckpoint checkpoint, ContinuationState continuation,
+        IServiceProvider services)
     {
         while (true)
         {
@@ -133,7 +157,7 @@ internal static class TryScopeTransitions
             {
                 var state = continuation.Stack[index].TryState;
                 if (state?.Phase == TryPhase.Catch)
-                    return state.GetError();
+                    return state.Error?.Fault?.Read(services);
             }
             if (continuation.ParentJoinId == null)
                 return null;
@@ -144,18 +168,28 @@ internal static class TryScopeTransitions
 
     public static void EnsureCanWait(ExecutionCheckpoint checkpoint, ContinuationState continuation)
     {
+        RejectUnrestorable(checkpoint.UnhandledError);
         while (true)
         {
-            var error = continuation.Stack.Select(frame => frame.TryState?.Error)
-                .FirstOrDefault(saved => saved?.IsRestorable == false);
-            if (error != null)
-                throw new InvalidOperationException(
-                    $"Exception '{error.Type}' cannot be restored after a wait");
+            foreach (var frame in continuation.Stack)
+            {
+                RejectUnrestorable(frame.TryState?.Error,
+                    frame.TryState?.Phase == TryPhase.Catch);
+                RejectUnrestorable(frame.SagaState?.Error);
+            }
             if (continuation.ParentJoinId == null)
                 return;
             var join = checkpoint.Joins.Single(item => item.Id == continuation.ParentJoinId);
             continuation = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
         }
+    }
+
+    private static void RejectUnrestorable(SerializedException? error, bool caught = false)
+    {
+        if (error?.IsRestorable == false && !(caught && error.Fault != null))
+            throw new InvalidOperationException(
+                $"Exception '{error.Type}' cannot be restored after a wait: " +
+                (error.RestorationFailureReason ?? "constructor values were unavailable"));
     }
 
     public static bool IsInsideFinally(ContinuationState continuation) =>

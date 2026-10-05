@@ -43,5 +43,10 @@ public enum WorkflowExecutionStatus
     /// <summary>
     /// Workflow was cancelled by user request
     /// </summary>
-    Cancelled
+    Cancelled,
+
+    /// <summary>
+    /// An activity invocation has an unknown result and was not replayed automatically.
+    /// </summary>
+    NeedsResolution
 }
