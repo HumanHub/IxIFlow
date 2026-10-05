@@ -263,4 +263,14 @@ public interface IWorkflowEngine
         TEventData @event,
         CancellationToken cancellationToken = default)
         where TEventData : class;
+
+    /// <summary>
+    /// Resumes the wait identified by its correlation key.
+    /// </summary>
+    Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(
+        string instanceId,
+        string key,
+        TEventData @event,
+        CancellationToken cancellationToken = default)
+        where TEventData : class;
 }

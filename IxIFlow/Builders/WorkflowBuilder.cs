@@ -306,6 +306,16 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     /// <summary>
     ///     Creates a suspend/resume block
     /// </summary>
+    public IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(
+        string key,
+        Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        return Suspend(key, matches, configure);
+    }
+
     public IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>? resumeCondition = null,

@@ -17,8 +17,30 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
         _step = step ?? throw new ArgumentNullException(nameof(step));
         _step.ParallelBranches = new List<List<WorkflowStep>>();
 
-        // Always use WaitAll behavior
-        _step.StepMetadata["WaitAll"] = true;
+        _step.ParallelJoinMode = ParallelJoinMode.WaitAll;
+    }
+
+    public IParallelBuilder<TWorkflowData, TPreviousStepData> WaitAny()
+    {
+        SetJoinMode(ParallelJoinMode.WaitAny);
+        return this;
+    }
+
+    public IParallelBuilder<TWorkflowData, TPreviousStepData> WaitConditionally(
+        Func<TWorkflowData, bool> completeWhen)
+    {
+        ArgumentNullException.ThrowIfNull(completeWhen);
+        SetJoinMode(ParallelJoinMode.WaitConditionally);
+        _step.ParallelCompletionCondition = data => completeWhen((TWorkflowData)data);
+        return this;
+    }
+
+    private void SetJoinMode(ParallelJoinMode mode)
+    {
+        if (_step.ParallelJoinMode != ParallelJoinMode.WaitAll)
+            throw new InvalidOperationException("The parallel join mode has already been set");
+
+        _step.ParallelJoinMode = mode;
     }
 
     /// <summary>
