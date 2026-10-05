@@ -8,7 +8,8 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Try builder implementation for exception handling (with previous step data)
 /// </summary>
-public class TryBuilder<TWorkflowData, TPreviousStepData>(List<WorkflowStep> steps, WorkflowStep tryStep)
+public class TryBuilder<TWorkflowData, TPreviousStepData>(
+    List<WorkflowStep> steps, WorkflowStep tryStep, string name, int workflowVersion)
     : ITryBuilder<TWorkflowData, TPreviousStepData>
     where TWorkflowData : class
     where TPreviousStepData : class
@@ -41,7 +42,8 @@ public class TryBuilder<TWorkflowData, TPreviousStepData>(List<WorkflowStep> ste
         _tryStep.CatchBlocks.Add(catchBlock);
 
         // Return catch builder for chaining
-        return new CatchBuilder<TWorkflowData, TPreviousStepData>(_steps, _tryStep);
+        return new CatchBuilder<TWorkflowData, TPreviousStepData>(
+            _steps, _tryStep, name, workflowVersion);
     }
 
     public ICatchBuilder<TWorkflowData, TPreviousStepData> Catch(
@@ -68,7 +70,8 @@ public class TryBuilder<TWorkflowData, TPreviousStepData>(List<WorkflowStep> ste
         _tryStep.CatchBlocks.Add(catchBlock);
 
         // Return catch builder for chaining
-        return new CatchBuilder<TWorkflowData, TPreviousStepData>(_steps, _tryStep);
+        return new CatchBuilder<TWorkflowData, TPreviousStepData>(
+            _steps, _tryStep, name, workflowVersion);
     }
 
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Finally(
@@ -79,15 +82,18 @@ public class TryBuilder<TWorkflowData, TPreviousStepData>(List<WorkflowStep> ste
         configure(finallyBuilder);
 
         // Return original workflow builder to continue workflow
-        return new WorkflowBuilder<TWorkflowData, TPreviousStepData>(_steps);
+        return new WorkflowBuilder<TWorkflowData, TPreviousStepData>(
+            _steps, name, workflowVersion);
     }
 }
 
 /// <summary>
 ///     Catch builder implementation (with previous step data)
 /// </summary>
-public class CatchBuilder<TWorkflowData, TPreviousStepData>(List<WorkflowStep> steps, WorkflowStep tryStep)
-    : WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps), ICatchBuilder<TWorkflowData, TPreviousStepData>
+public class CatchBuilder<TWorkflowData, TPreviousStepData>(
+    List<WorkflowStep> steps, WorkflowStep tryStep, string name, int workflowVersion)
+    : WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, name, workflowVersion),
+        ICatchBuilder<TWorkflowData, TPreviousStepData>
     where TWorkflowData : class
     where TPreviousStepData : class
 {
@@ -133,7 +139,8 @@ public class CatchBuilder<TWorkflowData, TPreviousStepData>(List<WorkflowStep> s
         configure(finallyBuilder);
 
         // Return original workflow builder to continue workflow
-        return new WorkflowBuilder<TWorkflowData, TPreviousStepData>(_steps);
+        return new WorkflowBuilder<TWorkflowData, TPreviousStepData>(
+            _steps, name, workflowVersion);
     }
 }
 

@@ -570,6 +570,38 @@ public class StructuredTryWaitTests
     }
 
     [Fact]
+    public async Task CancellationCleanupRunsItsOwnCatchAndFinally()
+    {
+        using var services = CreateServices();
+        var definition = Workflow.Create<TryData>("HandledCleanupFailure")
+            .Step<StartActivity>()
+            .Parallel(parallel => parallel.WaitAny()
+                .Do(branch => branch
+                    .Try(body => body.WaitFor<Approval>("approval"))
+                    .Finally(body => body
+                        .Try(inner => inner.Step<ThrowActivity>(_ => { }))
+                        .Catch<InvalidOperationException>(inner => inner.Step<CountActivity>(setup => setup
+                            .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Catch)
+                            .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch)))
+                        .Finally(inner => inner.Step<CountActivity>(setup => setup
+                            .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
+                            .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
+                .Do(branch => branch.Step<StartActivity>(_ => { })))
+            .Step<CountActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.After)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new TryData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(1, Data(result).Catch);
+        Assert.Equal(1, Data(result).Finally);
+        Assert.Equal(1, Data(result).After);
+    }
+
+    [Fact]
     public async Task UncaughtParallelFailureCanWaitForSiblingCleanupBeforeFaulting()
     {
         using var services = CreateServices();

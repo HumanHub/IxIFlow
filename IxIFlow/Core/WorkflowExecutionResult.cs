@@ -13,6 +13,9 @@ public class WorkflowExecutionResult
     /// The execution status of the workflow
     /// </summary>
     public WorkflowExecutionStatus Status { get; set; }
+
+    /// <summary>True when a resume event was consumed by an active wait.</summary>
+    public bool EventAccepted { get; set; }
     
     /// <summary>
     /// Legacy property for backward compatibility. Returns true only if Status is Success.

@@ -87,7 +87,7 @@ public class WorkflowEngine : IWorkflowEngine
             StartedAt = DateTime.UtcNow,
             TotalSteps = definition.Steps.Count,
             WorkflowDataJson = JsonSerializer.Serialize(workflowData),
-            WorkflowDataType = typeof(TWorkflowData).AssemblyQualifiedName ?? "",
+            WorkflowDataType = workflowData.GetType().AssemblyQualifiedName ?? "",
             Properties = new Dictionary<string, object>(options.Properties)
         };
 
@@ -268,6 +268,7 @@ public class WorkflowEngine : IWorkflowEngine
         _logger.LogInformation("Resuming workflow {InstanceId} with event of type {EventType}",
             instanceId, typeof(TEventData).Name);
 
+        var eventClaimed = false;
         try
         {
             // Step 1: Validate and prepare resume using SuspendResumeExecutor
@@ -325,6 +326,7 @@ public class WorkflowEngine : IWorkflowEngine
                     ErrorMessage = "This suspension has already been claimed or replaced"
                 };
             }
+            eventClaimed = true;
 
             await _tracer.TraceAsync(instanceId, new ExecutionTraceEntry
             {
@@ -379,6 +381,7 @@ public class WorkflowEngine : IWorkflowEngine
                     if (sagaResumeResult != null)
                     {
                         _logger.LogInformation("Saga resume completed with status: {Status}", sagaResumeResult.Status);
+                        sagaResumeResult.EventAccepted = true;
                         return sagaResumeResult;
                     }
                     else
@@ -404,11 +407,14 @@ public class WorkflowEngine : IWorkflowEngine
                             {
                                 InstanceId = instanceId,
                                 Status = WorkflowExecutionStatus.Faulted,
+                                EventAccepted = true,
                                 ErrorMessage = $"Workflow definition not found: {instance.WorkflowName} v{instance.WorkflowVersion}"
                             };
                         }
 
-                        return await ContinueWorkflowExecutionAsync(workflowDefinition, instance, workflowData, restoredExecutionState, @event, cancellationToken);
+                        var retryResult = await ContinueWorkflowExecutionAsync(workflowDefinition, instance, workflowData, restoredExecutionState, @event, cancellationToken);
+                        retryResult.EventAccepted = true;
+                        return retryResult;
                     }
 
                     _logger.LogError(ex, "Saga resume failed: {ErrorMessage}", ex.Message);
@@ -417,6 +423,7 @@ public class WorkflowEngine : IWorkflowEngine
                     {
                         InstanceId = instanceId,
                         Status = WorkflowExecutionStatus.Faulted,
+                        EventAccepted = true,
                         ErrorMessage = ex.Message,
                         ErrorStackTrace = ex.StackTrace
                     };
@@ -456,6 +463,7 @@ public class WorkflowEngine : IWorkflowEngine
             _logger.LogInformation("Workflow resume completed: {InstanceId}, Status: {Status}", 
                 instanceId, result.Status);
 
+            result.EventAccepted = true;
             return result;
         }
         catch (Exception ex)
@@ -466,6 +474,7 @@ public class WorkflowEngine : IWorkflowEngine
             {
                 InstanceId = instanceId,
                 Status = WorkflowExecutionStatus.Faulted,
+                EventAccepted = eventClaimed,
                 ErrorMessage = ex.Message,
                 ErrorStackTrace = ex.StackTrace
             };
@@ -1646,7 +1655,7 @@ public class WorkflowEngine : IWorkflowEngine
         try
         {
             // Get the workflow data type
-            var workflowDataType = Type.GetType(instance.WorkflowDataType);
+            var workflowDataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType);
             if (workflowDataType == null)
             {
                 throw new InvalidOperationException($"Failed to get workflow data type: {instance.WorkflowDataType}");
@@ -1850,7 +1859,7 @@ public class WorkflowEngine : IWorkflowEngine
             return null;
         }
 
-        var type = Type.GetType(typeName)
+        var type = WorkflowTypeIdentity.Resolve(typeName)
             ?? throw new InvalidOperationException($"Saved exception type {typeName} is unavailable");
         if (!typeof(Exception).IsAssignableFrom(type))
         {
@@ -1883,7 +1892,7 @@ public class WorkflowEngine : IWorkflowEngine
             return null;
         }
 
-        var valueType = Type.GetType(typeName)
+        var valueType = WorkflowTypeIdentity.Resolve(typeName)
             ?? throw new InvalidOperationException($"Saved workflow value type {typeName} is unavailable");
         return JsonSerializer.Deserialize(json, valueType);
     }

@@ -1,3 +1,4 @@
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -188,7 +189,7 @@ public class WorkflowQueueService : BackgroundService
                 ?? throw new InvalidOperationException($"Workflow definition not found: {command.WorkflowName} v{command.WorkflowVersion}");
 
             // Deserialize workflow data
-            var workflowDataType = Type.GetType(command.WorkflowDataType);
+            var workflowDataType = WorkflowTypeIdentity.Resolve(command.WorkflowDataType);
             if (workflowDataType == null)
             {
                 throw new InvalidOperationException($"Could not resolve workflow data type: {command.WorkflowDataType}");
@@ -244,7 +245,7 @@ public class WorkflowQueueService : BackgroundService
         try
         {
             // Deserialize event data
-            var eventDataType = Type.GetType(command.EventDataType);
+            var eventDataType = WorkflowTypeIdentity.Resolve(command.EventDataType);
             if (eventDataType == null)
             {
                 throw new InvalidOperationException($"Could not resolve event data type: {command.EventDataType}");
@@ -256,7 +257,7 @@ public class WorkflowQueueService : BackgroundService
             var result = await workflowEngine.ResumeWorkflowAsync(command.InstanceId, eventData);
 
             // Publish completion event if workflow finished
-            if (result.Status != WorkflowExecutionStatus.Suspended)
+            if (result.EventAccepted && result.Status != WorkflowExecutionStatus.Suspended)
             {
                 await _messageBus.PublishAsync(new WorkflowExecutionCompletedEvent
                 {
@@ -275,17 +276,7 @@ public class WorkflowQueueService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to resume workflow {InstanceId}", command.InstanceId);
-
-            // Publish failure event
-            await _messageBus.PublishAsync(new WorkflowExecutionCompletedEvent
-            {
-                InstanceId = command.InstanceId,
-                HostId = _hostId,
-                Status = WorkflowExecutionStatus.Failed,
-                ErrorMessage = ex.Message,
-                CompletedAt = DateTime.UtcNow,
-                ExecutionTime = TimeSpan.Zero
-            });
+            throw;
         }
     }
 
