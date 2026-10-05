@@ -187,10 +187,10 @@ public class SagaExecutionTests
                     .OnError<PaymentProcessingException>(error =>
                         error.Compensate().ThenTerminate()); // NEW API: Compensate all and terminate
             })
-            .Catch<SagaTerminatedException>(catchBlock =>
+            .Catch<SagaTerminatedException, MessageFault>(catchBlock =>
             {
                 catchBlock.Step<HandleSagaFailureAsyncActivity>(setup => setup
-                    .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                     .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandlerExecuted));
             })
             .Step<UpdateAnalyticsAsyncActivity>(setup => setup
@@ -417,10 +417,10 @@ public class SagaExecutionTests
                 });
                 // NO explicit error handler - should use default behavior (Compensate + Terminate)
             })
-            .Catch<InvalidOperationException>(catchBlock =>
+            .Catch<InvalidOperationException, MessageFault>(catchBlock =>
             {
                 catchBlock.Step<HandleSagaFailureAsyncActivity>(setup => setup
-                    .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                     .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandlerExecuted));
             })
             .Step<UpdateAnalyticsAsyncActivity>(setup => setup
@@ -514,10 +514,10 @@ public class SagaExecutionTests
                         error.CompensateUpTo<SagaReserveInventoryAsyncActivity>()
                             .ThenTerminate()); // CompensateUpTo Step1 (INCLUSIVE) - should compensate Step2,Step1 only
             })
-            .Catch<SagaTerminatedException>(catchBlock =>
+            .Catch<SagaTerminatedException, MessageFault>(catchBlock =>
             {
                 catchBlock.Step<HandleSagaFailureAsyncActivity>(setup => setup
-                    .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                     .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandlerExecuted));
             })
             .Step<UpdateAnalyticsAsyncActivity>(setup => setup
@@ -1116,78 +1116,14 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
     /// <summary>
     ///     Mock implementation of IWorkflowStateRepository for testing
     /// </summary>
-    public class MockWorkflowStateRepository : IWorkflowStateRepository
+    public class MockWorkflowStateRepository : InMemoryWorkflowStateRepository
     {
-        private readonly Dictionary<string, WorkflowInstance> _instances = new();
-
-        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
+        public async Task<List<WorkflowInstance>> GetWorkflowInstancesAsync(string workflowName, int? version = null)
         {
-            _instances.TryGetValue(instanceId, out var instance);
-            return Task.FromResult(instance);
+            var instances = await GetWorkflowInstancesByNameAsync(workflowName);
+            return instances.Where(instance => !version.HasValue || instance.WorkflowVersion == version.Value).ToList();
         }
-
-        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
-        {
-            _instances[instance.InstanceId] = instance;
-            return Task.CompletedTask;
-        }
-
-        public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance)
-        {
-            lock (_instances)
-            {
-                if (!_instances.TryGetValue(instance.InstanceId, out var stored) ||
-                    stored.Status != WorkflowStatus.Suspended ||
-                    stored.SuspensionInfo?.SuspensionId != instance.SuspensionInfo?.SuspensionId)
-                {
-                    return Task.FromResult(false);
-                }
-
-                _instances[instance.InstanceId] = instance;
-                return Task.FromResult(true);
-            }
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName)
-        {
-            var instances = _instances.Values.Where(i => i.WorkflowName == workflowName);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status)
-        {
-            var instances = _instances.Values.Where(i => i.Status == status);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId)
-        {
-            var instances = _instances.Values.Where(i => i.CorrelationId == correlationId);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync()
-        {
-            var instances = _instances.Values.Where(i => i.Status == WorkflowStatus.Suspended);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task DeleteWorkflowInstanceAsync(string instanceId)
-        {
-            _instances.Remove(instanceId);
-            return Task.CompletedTask;
-        }
-
-        public Task<List<WorkflowInstance>> GetWorkflowInstancesAsync(string workflowName, int? version = null)
-        {
-            var instances = _instances.Values.Where(i => i.WorkflowName == workflowName);
-            if (version.HasValue)
-            {
-                instances = instances.Where(i => i.WorkflowVersion == version.Value);
-            }
-            return Task.FromResult(instances.ToList());
     }
-}
 
     /// <summary>
     ///     Mock implementation of IEventStore for testing

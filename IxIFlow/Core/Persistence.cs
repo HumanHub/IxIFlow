@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Security.Cryptography;
+using System.Text;
 using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
@@ -10,6 +12,14 @@ namespace IxIFlow.Core;
 /// </summary>
 public interface IWorkflowStateRepository
 {
+    /// <summary>
+    /// Atomically saves a snapshot at expectedRevision + 1. Revision zero also represents
+    /// an absent instance. Repeating a commit ID with the same payload returns its original
+    /// receipt, even after subsequent commits. Does not mutate the supplied instance.
+    /// </summary>
+    Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
+        WorkflowInstance instance, long expectedRevision, string commitId);
+
     /// <summary>
     ///     Save workflow instance state
     /// </summary>
@@ -307,11 +317,46 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 {
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
+    private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] PayloadHash, long Revision)> _commits = new();
+
+    public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
+        WorkflowInstance instance, long expectedRevision, string commitId)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(commitId);
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
+        if (commitId.Length > 100)
+            throw new ArgumentException("Commit IDs must be at most 100 characters", nameof(commitId));
+        var snapshot = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!;
+        snapshot.Revision = checked(expectedRevision + 1);
+        var payloadHash = SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(snapshot)));
+        lock (_claimLock)
+        {
+            var key = (instance.InstanceId, commitId);
+            if (_commits.TryGetValue(key, out var receipt))
+            {
+                if (receipt.ExpectedRevision != expectedRevision || !receipt.PayloadHash.SequenceEqual(payloadHash))
+                    throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision));
+            }
+
+            var revision = _instances.TryGetValue(instance.InstanceId, out var stored) ? stored.Revision : 0;
+            if (revision != expectedRevision)
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+            _instances[instance.InstanceId] = snapshot;
+            _commits.Add(key, (expectedRevision, payloadHash, snapshot.Revision));
+            return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision));
+        }
+    }
 
     public Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
     {
         lock (_claimLock)
         {
+            if (instance.Revision != 0 ||
+                (_instances.TryGetValue(instance.InstanceId, out var stored) && stored.Revision != 0))
+                throw new InvalidOperationException("Revisioned instances require an atomic commit");
             _instances[instance.InstanceId] = SnapshotStructured(instance);
         }
         return Task.CompletedTask;
@@ -329,6 +374,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
         {
             if (!_instances.TryGetValue(instance.InstanceId, out var stored) ||
+                stored.Revision != 0 || instance.Revision != 0 ||
                 stored.Status != WorkflowStatus.Suspended ||
                 stored.SuspensionInfo?.SuspensionId != instance.SuspensionInfo.SuspensionId)
             {
@@ -366,7 +412,12 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public Task DeleteWorkflowInstanceAsync(string instanceId)
     {
-        _instances.TryRemove(instanceId, out _);
+        lock (_claimLock)
+        {
+            _instances.TryRemove(instanceId, out _);
+            foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
+                _commits.Remove(key);
+        }
         return Task.CompletedTask;
     }
 
@@ -380,7 +431,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     }
 
     private static WorkflowInstance SnapshotStructured(WorkflowInstance instance) =>
-        ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
+        instance.Revision != 0 || ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
             ? JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!
             : instance;
 }

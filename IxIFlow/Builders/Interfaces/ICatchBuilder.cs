@@ -1,3 +1,5 @@
+using IxIFlow.Core;
+
 namespace IxIFlow.Builders.Interfaces;
 
 /// <summary>
@@ -11,7 +13,7 @@ public interface ICatchBuilder<TWorkflowData, TPreviousStepData> : IWorkflowBuil
     /// </summary>
     /// <param name="configure">Configuration for the catch block</param>
     ICatchBuilder<TWorkflowData, TPreviousStepData> Catch(
-        Action<ICatchWorkflowBuilder<TWorkflowData, Exception, TPreviousStepData>> configure);
+        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure);
         //where Exception : Exception;
 
 
@@ -21,7 +23,11 @@ public interface ICatchBuilder<TWorkflowData, TPreviousStepData> : IWorkflowBuil
     /// <typeparam name="TException">Type of exception to catch</typeparam>
     /// <param name="configure">Configuration for the catch block</param>
     ICatchBuilder<TWorkflowData, TPreviousStepData> Catch<TException>(
-        Action<ICatchWorkflowBuilder<TWorkflowData, TException, TPreviousStepData>> configure)
+        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
+        where TException : Exception;
+
+    ICatchBuilder<TWorkflowData, TPreviousStepData> Catch<TException, TFault>(
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure)
         where TException : Exception;
 
     /// <summary>

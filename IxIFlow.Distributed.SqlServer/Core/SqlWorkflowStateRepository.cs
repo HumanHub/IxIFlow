@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using Dapper;
 using Microsoft.Data.SqlClient;
 
@@ -23,19 +25,23 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
     public async Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
     {
         ArgumentNullException.ThrowIfNull(instance);
+        if (instance.Revision != 0)
+            throw new InvalidOperationException("Revisioned instances require an atomic commit");
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         await connection.ExecuteAsync("""
             MERGE dbo.IxIFlowWorkflowInstances WITH (HOLDLOCK) AS target
             USING (SELECT @InstanceId AS InstanceId) AS source
             ON target.InstanceId = source.InstanceId
-            WHEN MATCHED THEN UPDATE SET
+            WHEN MATCHED AND target.Revision = 0 THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
                 SuspensionId = @SuspensionId, StateJson = @StateJson
             WHEN NOT MATCHED THEN INSERT
                 (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt, SuspensionId, StateJson)
                 VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @SuspensionExpiresAt, @SuspensionId, @StateJson);
+            IF @@ROWCOUNT = 0
+                THROW 51000, 'Revisioned instances require an atomic commit', 1;
             """, new
         {
             instance.InstanceId,
@@ -48,6 +54,77 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
         });
     }
 
+    public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
+        WorkflowInstance instance, long expectedRevision, string commitId)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(commitId);
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
+        if (commitId.Length > 100)
+            throw new ArgumentException("Commit IDs must be at most 100 characters", nameof(commitId));
+        var snapshot = Deserialize(JsonSerializer.Serialize(instance));
+        snapshot.Revision = checked(expectedRevision + 1);
+        var json = JsonSerializer.Serialize(snapshot);
+        var payloadHash = SHA256.HashData(Encoding.UTF8.GetBytes(json));
+
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+        var currentRevision = await connection.QuerySingleOrDefaultAsync<long?>("""
+            SELECT Revision FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+            WHERE InstanceId = @InstanceId
+            """, new { instance.InstanceId }, transaction) ?? 0;
+        var receipt = await connection.QuerySingleOrDefaultAsync<CommitReceipt>("""
+            SELECT ExpectedRevision, Revision, PayloadHash FROM dbo.IxIFlowWorkflowCommits
+            WHERE InstanceId = @InstanceId AND CommitId = @CommitId
+            """, new { instance.InstanceId, CommitId = commitId }, transaction);
+        if (receipt != null)
+        {
+            if (receipt.ExpectedRevision != expectedRevision || !receipt.PayloadHash.SequenceEqual(payloadHash))
+                throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
+            await transaction.CommitAsync();
+            return new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision);
+        }
+        if (currentRevision != expectedRevision)
+        {
+            await transaction.CommitAsync();
+            return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
+        }
+
+        await connection.ExecuteAsync("""
+            MERGE dbo.IxIFlowWorkflowInstances AS target
+            USING (SELECT @InstanceId AS InstanceId) AS source
+            ON target.InstanceId = source.InstanceId
+            WHEN MATCHED THEN UPDATE SET
+                WorkflowName = @WorkflowName, Status = @Status,
+                CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
+                SuspensionId = @SuspensionId, StateJson = @StateJson, Revision = @Revision
+            WHEN NOT MATCHED THEN INSERT
+                (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt, SuspensionId, StateJson, Revision)
+                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @SuspensionExpiresAt, @SuspensionId, @StateJson, @Revision);
+            INSERT INTO dbo.IxIFlowWorkflowCommits (InstanceId, CommitId, ExpectedRevision, Revision, PayloadHash)
+            VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
+            """, new
+        {
+            instance.InstanceId, instance.WorkflowName, instance.CorrelationId,
+            Status = instance.Status.ToString(),
+            SuspensionExpiresAt = instance.SuspensionInfo?.ExpiresAt,
+            SuspensionId = instance.SuspensionInfo?.SuspensionId,
+            StateJson = json, snapshot.Revision,
+            ExpectedRevision = expectedRevision, CommitId = commitId, PayloadHash = payloadHash
+        }, transaction);
+        await transaction.CommitAsync();
+        return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision);
+    }
+
+    private sealed class CommitReceipt
+    {
+        public long ExpectedRevision { get; set; }
+        public long Revision { get; set; }
+        public byte[] PayloadHash { get; set; } = [];
+    }
+
     public async Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance)
     {
         ArgumentNullException.ThrowIfNull(instance);
@@ -56,13 +133,15 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
         {
             throw new ArgumentException("A running instance with a suspension ID is required", nameof(instance));
         }
+        if (instance.Revision != 0)
+            return false;
 
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var updated = await connection.ExecuteAsync("""
             UPDATE dbo.IxIFlowWorkflowInstances
             SET Status = @RunningStatus, StateJson = @StateJson
-            WHERE InstanceId = @InstanceId AND Status = @SuspendedStatus
+            WHERE InstanceId = @InstanceId AND Status = @SuspendedStatus AND Revision = 0
                 AND SuspensionId = @SuspensionId
             """, new
         {
@@ -156,7 +235,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                         CorrelationId NVARCHAR(100) NULL,
                         SuspensionExpiresAt DATETIME2 NULL,
                         SuspensionId NVARCHAR(100) NULL,
-                        StateJson NVARCHAR(MAX) NOT NULL
+                        StateJson NVARCHAR(MAX) NOT NULL,
+                        Revision BIGINT NOT NULL DEFAULT 0
                     );
                     CREATE INDEX IX_IxIFlowWorkflowInstances_Status
                         ON dbo.IxIFlowWorkflowInstances (Status, SuspensionExpiresAt);
@@ -167,14 +247,29 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                 END
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'SuspensionId') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD SuspensionId NVARCHAR(100) NULL;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'Revision') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD Revision BIGINT NOT NULL DEFAULT 0;
+                IF OBJECT_ID(N'dbo.IxIFlowWorkflowCommits', N'U') IS NULL
+                    CREATE TABLE dbo.IxIFlowWorkflowCommits (
+                        InstanceId NVARCHAR(100) NOT NULL,
+                        CommitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                        ExpectedRevision BIGINT NOT NULL,
+                        Revision BIGINT NOT NULL,
+                        PayloadHash BINARY(32) NOT NULL,
+                        CONSTRAINT PK_IxIFlowWorkflowCommits PRIMARY KEY (InstanceId, CommitId),
+                        CONSTRAINT FK_IxIFlowWorkflowCommits_Instance FOREIGN KEY (InstanceId)
+                            REFERENCES dbo.IxIFlowWorkflowInstances (InstanceId) ON DELETE CASCADE
+                    );
+                """);
+            await connection.ExecuteAsync("""
                 UPDATE dbo.IxIFlowWorkflowInstances
                 SET SuspensionId = COALESCE(
                     NULLIF(JSON_VALUE(StateJson, '$.SuspensionInfo.SuspensionId'), ''),
                     CONVERT(NVARCHAR(36), NEWID()))
-                WHERE Status = 'Suspended' AND SuspensionId IS NULL;
+                WHERE Revision = 0 AND Status = 'Suspended' AND SuspensionId IS NULL;
                 UPDATE dbo.IxIFlowWorkflowInstances
                 SET StateJson = JSON_MODIFY(StateJson, '$.SuspensionInfo.SuspensionId', SuspensionId)
-                WHERE Status = 'Suspended' AND SuspensionId IS NOT NULL
+                WHERE Revision = 0 AND Status = 'Suspended' AND SuspensionId IS NOT NULL
                     AND JSON_VALUE(StateJson, '$.SuspensionInfo.SuspensionId') IS NULL;
                 """);
             _schemaReady = true;
