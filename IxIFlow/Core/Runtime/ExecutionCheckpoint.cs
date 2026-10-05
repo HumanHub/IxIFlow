@@ -67,6 +67,7 @@ internal sealed class ScopePosition
     public string ScopeId { get; set; } = "";
     public string ActivationId { get; set; } = Guid.NewGuid().ToString("N");
     public int NextStepIndex { get; set; }
+    public int LoopIterationCount { get; set; }
     public SerializedValue? EntryPrevious { get; set; }
     public bool RestorePreviousOnExit { get; set; }
 

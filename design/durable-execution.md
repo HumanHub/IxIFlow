@@ -95,7 +95,7 @@ boundary tests. No snapshot conversion or long-term dual runtime is required.
 
 ## Current implementation boundary
 
-The structured runner now covers Activity, Sequence, If, Parallel, and
+The structured runner now covers Activity, Sequence, If, Parallel, loops, and
 `WaitFor<TEvent>`. It stores one continuation per branch, one wait per parked
 continuation, and a join for the parent. It writes a checkpoint at each
 transition and can recover a Running instance from that checkpoint. Saved
@@ -109,7 +109,7 @@ workflow data snapshot are not merged. A losing WaitAny or conditional branch
 receives cancellation, and the runner waits for its in-flight activity to
 settle before completing the instance.
 
-Try/Catch/Finally, Saga, loops, workflow invocation, and legacy Suspend are
+Try/Catch/Finally, Saga, workflow invocation, and legacy Suspend are
 not yet supported by the structured runner. It rejects a definition using
 them before executing any activity. Definitions without `WaitFor` or a
 non-default parallel join still use the previous runner while parity work
