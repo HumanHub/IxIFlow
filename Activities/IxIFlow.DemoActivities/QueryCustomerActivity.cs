@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.DemoActivities;
 
-[WorkflowActivity("demo.postgres.query-customer", Name = "Query customer", Category = "Database", Designer = "query-customer")]
+[WorkflowActivity("demo.postgres.query-customer", Name = "Query customer", Category = "Database", Icon = "database", Designer = "query-customer")]
 public sealed class QueryCustomerActivity : IAsyncActivity
 {
     [WorkflowInput(Label = "Connection", Control = "connection", Required = true, Help = "A named connection. Credentials stay outside the workflow.", Default = "customer-db")]

@@ -4,7 +4,7 @@ using IxIFlow.Core;
 
 namespace IxIFlow.DemoActivities;
 
-[WorkflowActivity("demo.json.write", Name = "Write JSON file", Category = "Files", Designer = "write-json")]
+[WorkflowActivity("demo.json.write", Name = "Write JSON file", Category = "Files", Icon = "file-output", Designer = "write-json")]
 public sealed class WriteJsonActivity : IAsyncActivity
 {
     [WorkflowInput(Label = "File path", Required = true, Default = "orders/result.json")]

@@ -1,5 +1,6 @@
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using System.Text.RegularExpressions;
 
 namespace IxIFlow.ActivitySdk;
 
@@ -49,6 +50,7 @@ public sealed class ActivityPackageManifest
                 string.IsNullOrWhiteSpace(activity.Version) ||
                 string.IsNullOrWhiteSpace(activity.Name) ||
                 string.IsNullOrWhiteSpace(activity.Category) ||
+                (activity.Icon != null && !Regex.IsMatch(activity.Icon, "^[a-z][a-z0-9-]*$")) ||
                 !keys.Add(activity.Key))
             {
                 throw new InvalidOperationException($"Activity package {PackageReference} has a missing or duplicate activity key or metadata");
@@ -93,6 +95,7 @@ public sealed class ActivityManifestEntry
     public string Version { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
+    public string? Icon { get; set; }
     public string? Designer { get; set; }
     public List<ActivityManifestField> Fields { get; set; } = [];
     public List<string> Outputs { get; set; } = [];

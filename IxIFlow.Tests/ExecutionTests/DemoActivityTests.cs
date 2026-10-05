@@ -17,6 +17,7 @@ public sealed class DemoActivityTests
         Assert.Equal(3, package.Activities.Count);
         var read = Assert.Single(package.Activities, activity => activity.Key == "demo.json.read");
         Assert.Equal("read-json", read.Designer);
+        Assert.Equal("file-input", read.Icon);
         Assert.Equal("Path", Assert.Single(read.Fields).Key);
         Assert.Contains("Content", read.Outputs);
         Assert.Equal(typeof(ReadJsonActivity), (await registry.FindAsync(read.Key))!.ActivityType);
