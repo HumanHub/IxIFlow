@@ -1,5 +1,6 @@
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -148,6 +149,8 @@ public static class WorkflowBuilderExtensions
         services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
         services.AddSingleton<ISuspendResumeExecutor, SuspendResumeExecutor>();
         services.AddSingleton<ISagaExecutor, SagaExecutor>();
+        services.AddSingleton<StructuredWorkflowRunner>();
+        services.AddSingleton(InProcessInstanceGate.Shared);
 
         // Add event management services
         services.AddSingleton<IEventCorrelator, EventCorrelator>();

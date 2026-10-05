@@ -1,5 +1,8 @@
 # Durable execution model
 
+The sections below describe the target model. The last section records what
+the current implementation supports and what remains to be built.
+
 ## Scope
 
 The workflow definition is a versioned, structured tree. A running workflow is a
@@ -89,3 +92,31 @@ alone cannot make arbitrary external systems exactly once.
 There are no live instances. The old execution driver can be removed once the
 new runner passes the existing behavior suite and the new multi-wait and crash
 boundary tests. No snapshot conversion or long-term dual runtime is required.
+
+## Current implementation boundary
+
+The structured runner now covers Activity, Sequence, If, Parallel, and
+`WaitFor<TEvent>`. It stores one continuation per branch, one wait per parked
+continuation, and a join for the parent. It writes a checkpoint at each
+transition and can recover a Running instance from that checkpoint. Saved
+positions are structural paths; a definition fingerprint rejects a rebuilt
+definition with a different shape or step type.
+
+Parallel activities start concurrently. Each branch receives a snapshot of
+workflow data; declared output mappings are applied to shared data by the
+single runner when an activity finishes. Direct mutations to the branch's
+workflow data snapshot are not merged. A losing WaitAny or conditional branch
+receives cancellation, and the runner waits for its in-flight activity to
+settle before completing the instance.
+
+Try/Catch/Finally, Saga, loops, workflow invocation, and legacy Suspend are
+not yet supported by the structured runner. It rejects a definition using
+them before executing any activity. Definitions without `WaitFor` or a
+non-default parallel join still use the previous runner while parity work
+continues.
+
+The instance gate currently protects only processes using this runtime.
+Shared-store revision checks, a distributed lease, an event inbox, and host
+wakeup integration are still required before multi-node approval delivery.
+Activity effects remain at-least-once across a crash boundary and need stable
+idempotency keys. The in-memory store provides no process-crash durability.
