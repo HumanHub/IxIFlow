@@ -42,11 +42,11 @@ internal sealed class SerializedException
         if (!IsRestorable)
             throw new InvalidOperationException(
                 $"Saved exception '{Type}' cannot be restored because its constructor values were unavailable");
-        var type = System.Type.GetType(Type);
+        var type = WorkflowTypeIdentity.Resolve(Type);
         if (type == null || !typeof(Exception).IsAssignableFrom(type))
             throw new InvalidOperationException($"Saved exception type '{Type}' is unavailable");
 
-        var parameterTypes = Arguments.Select(argument => System.Type.GetType(argument.Type)
+        var parameterTypes = Arguments.Select(argument => WorkflowTypeIdentity.Resolve(argument.Type)
             ?? throw new InvalidOperationException($"Saved constructor type '{argument.Type}' is unavailable"))
             .ToArray();
         var constructor = type.GetConstructor(parameterTypes)

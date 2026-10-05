@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Runtime.ExceptionServices;
 
 namespace IxIFlow.Core.Runtime;
 
@@ -36,7 +37,7 @@ internal sealed class StructuredWorkflowRunner(
             InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
-            WorkflowDataType = typeof(TData).AssemblyQualifiedName!,
+            WorkflowDataType = workflowData.GetType().AssemblyQualifiedName!,
             WorkflowDataJson = JsonSerializer.Serialize(workflowData),
             Status = WorkflowStatus.Running,
             CorrelationId = options.CorrelationId ?? Guid.NewGuid().ToString("N"),
@@ -81,34 +82,37 @@ internal sealed class StructuredWorkflowRunner(
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         var candidates = checkpoint.Waits.Where(wait =>
             (key == null || wait.Key == key) &&
-            Type.GetType(wait.EventType)?.IsAssignableFrom(@event.GetType()) == true).ToList();
-        if (candidates.Count != 1)
-            return Rejected(instanceId, candidates.Count == 0
-                ? "No active wait matches this event and key"
-                : "The event matches more than one wait; provide a unique key");
+            WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(@event.GetType()) == true).ToList();
+        if (candidates.Count == 0)
+            return Rejected(instanceId, "No active wait matches this event and key");
 
-        var wait = candidates[0];
         var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
         if (definition == null)
             return Rejected(instanceId, "The registered workflow definition is unavailable");
 
-        var dataType = Type.GetType(instance.WorkflowDataType)
+        var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
             ?? throw new InvalidOperationException($"Workflow data type '{instance.WorkflowDataType}' is unavailable");
         var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
             ?? throw new InvalidOperationException("Saved workflow data cannot be read");
         var scopes = new WorkflowScopeCatalog(definition);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
-        var step = scopes.Step(wait.StepId);
-        var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
-        if (!WorkflowValueBinding.Matches(step, @event, workflowData,
-                continuation.GetPrevious(services)))
+        var matching = StructuredWaitMatcher.FindMatches(checkpoint, scopes, workflowData,
+            @event, services, key);
+        if (matching.Count == 0)
             return new WorkflowExecutionResult
             {
                 InstanceId = instanceId,
                 Status = WorkflowExecutionStatus.Suspended,
-                WorkflowData = workflowData
+                WorkflowData = workflowData,
+                ErrorMessage = "The event did not satisfy any active wait"
             };
+        if (matching.Count > 1)
+            return Rejected(instanceId, "The event satisfies more than one wait; provide a unique key");
+
+        var wait = matching[0];
+        var step = scopes.Step(wait.StepId);
+        var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
 
         WorkflowValueBinding.ApplyEventOutputs(step, @event, workflowData);
         checkpoint.Waits.Remove(wait);
@@ -119,7 +123,10 @@ internal sealed class StructuredWorkflowRunner(
         instance.Status = WorkflowStatus.Running;
         await PersistAsync(instance, checkpoint, workflowData, scopes);
 
-        return await RunAndSaveAsync(definition, instance, checkpoint, workflowData, cancellationToken);
+        var resumed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
+            cancellationToken);
+        resumed.EventAccepted = true;
+        return resumed;
     }
 
     public async Task<WorkflowExecutionResult> RecoverAsync(string instanceId, CancellationToken cancellationToken)
@@ -132,7 +139,7 @@ internal sealed class StructuredWorkflowRunner(
         var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
         if (definition == null)
             return Rejected(instanceId, "The registered workflow definition is unavailable");
-        var dataType = Type.GetType(instance.WorkflowDataType)
+        var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
             ?? throw new InvalidOperationException($"Workflow data type '{instance.WorkflowDataType}' is unavailable");
         var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
             ?? throw new InvalidOperationException("Saved workflow data cannot be read");
@@ -322,6 +329,27 @@ internal sealed class StructuredWorkflowRunner(
                 WorkflowData = workflowData,
                 ExecutionTime = DateTime.UtcNow - instance.StartedAt!.Value
             };
+        }
+        catch (CheckpointPersistenceException ex)
+        {
+            foreach (var activity in inFlight.Values)
+                activity.Cancellation.Cancel();
+            try
+            {
+                await Task.WhenAll(inFlight.Values.Select(item => item.Task));
+            }
+            catch
+            {
+                // Activity outcomes are ignored after the checkpoint write failed.
+            }
+            finally
+            {
+                foreach (var activity in inFlight.Values)
+                    activity.Cancellation.Dispose();
+            }
+
+            ExceptionDispatchInfo.Capture(ex.InnerException!).Throw();
+            throw;
         }
         catch (Exception ex)
         {
@@ -640,8 +668,9 @@ internal sealed class StructuredWorkflowRunner(
             if (!children.All(item => item.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled))
                 continue;
             var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
-            if (checkpoint.UnhandledError != null && parent.ParentJoinId == null)
-                parent.Status = ContinuationStatus.Cancelled;
+            checkpoint.Joins.Remove(join);
+            if (checkpoint.UnhandledError != null)
+                CancelTree(checkpoint, parent);
             else if (parent.CancellationUnwind && !TryScopeTransitions.IsInsideFinally(parent) &&
                      !SagaScopeTransitions.IsInsideCompensation(parent))
                 parent.Status = ContinuationStatus.Cancelling;
@@ -651,13 +680,27 @@ internal sealed class StructuredWorkflowRunner(
                     parent.Stack[^1].NextStepIndex++;
                 parent.Status = ContinuationStatus.Active;
             }
-            checkpoint.Joins.Remove(join);
         }
     }
 
     private static bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, Exception error)
     {
+        if (continuation.CancellationUnwind)
+        {
+            if (SagaScopeTransitions.SkipFailedCompensation(continuation, error))
+                return true;
+            var cleanupBoundary = continuation.Stack.FindIndex(frame =>
+                frame.TryState?.Phase == TryPhase.Finally);
+            if (cleanupBoundary >= 0 &&
+                CaptureScopeFailure(scopes, continuation, error, cleanupBoundary))
+                return true;
+            checkpoint.UnhandledError ??= SerializedException.From(error);
+            checkpoint.RuntimeUnhandledError ??= error;
+            TryScopeTransitions.AbortFailedFinally(continuation);
+            TryScopeTransitions.ContinueCancellation(scopes, continuation);
+            return true;
+        }
         while (true)
         {
             if (SagaScopeTransitions.SkipFailedCompensation(continuation, error) ||
@@ -689,10 +732,14 @@ internal sealed class StructuredWorkflowRunner(
     }
 
     private static bool CaptureScopeFailure(WorkflowScopeCatalog scopes,
-        ContinuationState continuation, Exception error)
+        ContinuationState continuation, Exception error, int minimumHandlerIndex = -1)
     {
         var tryIndex = TryScopeTransitions.HandlerIndex(scopes, continuation, error);
         var sagaIndex = SagaScopeTransitions.HandlerIndex(continuation);
+        if (tryIndex <= minimumHandlerIndex)
+            tryIndex = -1;
+        if (sagaIndex <= minimumHandlerIndex)
+            sagaIndex = -1;
         if (sagaIndex > tryIndex)
         {
             SagaScopeTransitions.Capture(continuation, sagaIndex, error);
@@ -715,8 +762,18 @@ internal sealed class StructuredWorkflowRunner(
         instance.WorkflowDataJson = JsonSerializer.Serialize(workflowData, workflowData.GetType());
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes);
-        await repository.SaveWorkflowInstanceAsync(instance);
+        try
+        {
+            await repository.SaveWorkflowInstanceAsync(instance);
+        }
+        catch (Exception ex)
+        {
+            throw new CheckpointPersistenceException(ex);
+        }
     }
+
+    private sealed class CheckpointPersistenceException(Exception inner) : Exception(
+        "The workflow checkpoint could not be saved", inner);
 
     private static void PrepareCheckpoint(ExecutionCheckpoint checkpoint)
     {

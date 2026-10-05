@@ -100,7 +100,16 @@ Try/Catch/Finally, and `WaitFor<TEvent>`. It stores one continuation per branch,
 continuation, and a join for the parent. It writes a checkpoint at each
 transition and can recover a Running instance from that checkpoint. Saved
 positions are structural paths; a definition fingerprint rejects a rebuilt
-definition with a different shape or step type.
+definition with a different shape or step type. Type identities in that
+fingerprint ignore assembly versions, while saved types resolve against the
+currently loaded assembly.
+
+Event routing discovers every wait in a structured checkpoint, including
+parallel waits when the instance has no single `SuspensionInfo`. The runner
+evaluates each wait predicate before claiming an event and reports whether it
+consumed the event. A temporary checkpoint-store error leaves the last saved
+position available for recovery. The in-memory store snapshots structured
+instances at its save and read boundaries to preserve that behavior.
 
 Parallel activities start concurrently. Each branch receives a snapshot of
 workflow data; declared output mappings are applied to shared data by the
@@ -108,8 +117,12 @@ single runner when an activity finishes. Direct mutations to the branch's
 workflow data snapshot are not merged. A losing WaitAny or conditional branch
 receives cancellation, and the runner waits for its in-flight activity to
 settle before completing the instance. A cancelled branch runs its remaining
-Finally work before the parent proceeds; Finally may itself wait. An uncaught
+Finally work before the parent proceeds; Finally may itself wait and may contain
+its own Try/Catch/Finally. An uncaught
 parallel failure similarly waits for sibling cleanup before faulting.
+
+Saved activity output restoration honors property-level JSON names, converters,
+and number handling so a previous-step value survives a wait.
 
 Caught exceptions are saved using public constructor arguments read from public
 properties. A non-restorable exception can be handled during one uninterrupted

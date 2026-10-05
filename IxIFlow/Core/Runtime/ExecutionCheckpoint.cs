@@ -185,7 +185,7 @@ internal sealed class SerializedValue
 
     public object? Read(IServiceProvider services)
     {
-        var type = System.Type.GetType(Type)
+        var type = WorkflowTypeIdentity.Resolve(Type)
             ?? throw new InvalidOperationException($"Saved value type '{Type}' is unavailable");
         if (typeof(IAsyncActivity).IsAssignableFrom(type))
         {
@@ -199,7 +199,22 @@ internal sealed class SerializedValue
                 if (property?.GetSetMethod(nonPublic: true) == null)
                     throw new InvalidOperationException(
                         $"Saved activity output '{type.Name}.{value.Name}' cannot be restored");
-                property.SetValue(activity, value.Value.Deserialize(property.PropertyType));
+                var options = new JsonSerializerOptions();
+                var converterAttribute = property.GetCustomAttribute<JsonConverterAttribute>();
+                if (converterAttribute != null)
+                {
+                    var converter = converterAttribute.ConverterType is { } converterType
+                        ? Activator.CreateInstance(converterType) as JsonConverter
+                        : converterAttribute.CreateConverter(property.PropertyType);
+                    if (converter == null)
+                        throw new InvalidOperationException(
+                            $"Converter for saved activity output '{type.Name}.{property.Name}' is unavailable");
+                    options.Converters.Add(converter);
+                }
+                var numberHandling = property.GetCustomAttribute<JsonNumberHandlingAttribute>();
+                if (numberHandling != null)
+                    options.NumberHandling = numberHandling.Handling;
+                property.SetValue(activity, value.Value.Deserialize(property.PropertyType, options));
             }
             return activity;
         }
