@@ -210,6 +210,7 @@ internal sealed class SagaScopeState
     public int CompensationCursor { get; set; } = -1;
     public int CompensationFloor { get; set; }
     public int ErrorHandlerIndex { get; set; } = -1;
+    public bool ErrorHandlerStarted { get; set; }
     public SagaContinuationAction? ErrorAction { get; set; }
     public int RetryCount { get; set; }
     public int MaximumRetries { get; set; }
@@ -230,6 +231,10 @@ internal sealed class SagaScopeState
     }
 
     public Exception? GetError() => RuntimeError ??= Error?.Restore();
+
+    public Exception? GetTerminalError() => ErrorHandlerIndex >= 0 && ErrorAction != null && Error != null
+        ? new SagaFailureException(Error.Type, Error.Message)
+        : GetError();
 }
 
 internal sealed class SagaAcceptedWait

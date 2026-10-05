@@ -1116,7 +1116,7 @@ internal sealed class StructuredWorkflowRunner(
             return true;
         if (continuation.CancellationUnwind)
         {
-            if (SagaScopeTransitions.SkipFailedCompensation(continuation, error))
+            if (SagaScopeTransitions.SkipFailedCompensation(scopes, continuation, error))
                 return true;
             var cleanupBoundary = continuation.Stack.FindIndex(frame =>
                 frame.TryState?.Phase == TryPhase.Finally);
@@ -1132,7 +1132,7 @@ internal sealed class StructuredWorkflowRunner(
         }
         while (true)
         {
-            if (SagaScopeTransitions.SkipFailedCompensation(continuation, error) ||
+            if (SagaScopeTransitions.SkipFailedCompensation(scopes, continuation, error) ||
                 CaptureScopeFailure(scopes, continuation, error))
                 return true;
             TryScopeTransitions.AbortFailedFinally(continuation);
