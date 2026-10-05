@@ -95,8 +95,8 @@ boundary tests. No snapshot conversion or long-term dual runtime is required.
 
 ## Current implementation boundary
 
-The structured runner now covers Activity, Sequence, If, Parallel, loops, and
-`WaitFor<TEvent>`. It stores one continuation per branch, one wait per parked
+The structured runner now covers Activity, Sequence, If, Parallel, loops,
+Try/Catch/Finally, and `WaitFor<TEvent>`. It stores one continuation per branch, one wait per parked
 continuation, and a join for the parent. It writes a checkpoint at each
 transition and can recover a Running instance from that checkpoint. Saved
 positions are structural paths; a definition fingerprint rejects a rebuilt
@@ -107,9 +107,20 @@ workflow data; declared output mappings are applied to shared data by the
 single runner when an activity finishes. Direct mutations to the branch's
 workflow data snapshot are not merged. A losing WaitAny or conditional branch
 receives cancellation, and the runner waits for its in-flight activity to
-settle before completing the instance.
+settle before completing the instance. A cancelled branch runs its remaining
+Finally work before the parent proceeds; Finally may itself wait. An uncaught
+parallel failure similarly waits for sibling cleanup before faulting.
 
-Try/Catch/Finally, Saga, workflow invocation, and legacy Suspend are
+Caught exceptions are saved using public constructor arguments read from public
+properties. A non-restorable exception can be handled during one uninterrupted
+run. If its Catch or Finally tries to wait, the runner faults before saving an
+unrecoverable checkpoint and runs the remaining Finally work. Custom exception
+types that need to survive a wait must expose restorable constructor values.
+
+Caller cancellation unwinds active continuations through Finally. Cleanup
+activities may finish or wait for an event before the instance becomes Cancelled.
+
+Saga, workflow invocation, and legacy Suspend are
 not yet supported by the structured runner. It rejects a definition using
 them before executing any activity. Definitions without `WaitFor` or a
 non-default parallel join still use the previous runner while parity work

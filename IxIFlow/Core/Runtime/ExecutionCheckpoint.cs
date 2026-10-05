@@ -13,6 +13,11 @@ internal sealed class ExecutionCheckpoint
     public List<ContinuationState> Continuations { get; set; } = [];
     public List<ParallelJoinState> Joins { get; set; } = [];
     public List<WaitState> Waits { get; set; } = [];
+    public SerializedException? UnhandledError { get; set; }
+    public bool CancellationRequested { get; set; }
+
+    [JsonIgnore]
+    public Exception? RuntimeUnhandledError { get; set; }
 
     public static ExecutionCheckpoint Read(string json)
     {
@@ -37,6 +42,7 @@ internal enum ContinuationStatus
     Active,
     Waiting,
     Joining,
+    Cancelling,
     Completed,
     Cancelled
 }
@@ -46,6 +52,7 @@ internal sealed class ContinuationState
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string? ParentJoinId { get; set; }
     public ContinuationStatus Status { get; set; } = ContinuationStatus.Active;
+    public bool CancellationUnwind { get; set; }
     public List<ScopePosition> Stack { get; set; } = [];
     public SerializedValue? Previous { get; set; }
 
@@ -68,11 +75,42 @@ internal sealed class ScopePosition
     public string ActivationId { get; set; } = Guid.NewGuid().ToString("N");
     public int NextStepIndex { get; set; }
     public int LoopIterationCount { get; set; }
+    public TryScopeState? TryState { get; set; }
     public SerializedValue? EntryPrevious { get; set; }
     public bool RestorePreviousOnExit { get; set; }
 
     [JsonIgnore]
     public object? RuntimeEntryPrevious { get; set; }
+}
+
+internal enum TryPhase
+{
+    Try,
+    Catch,
+    Finally
+}
+
+internal sealed class TryScopeState
+{
+    public TryPhase Phase { get; set; } = TryPhase.Try;
+    public int CatchIndex { get; set; } = -1;
+    public bool IsCancellationCleanup { get; set; }
+    public SerializedValue? EntryPrevious { get; set; }
+    public SerializedException? Error { get; set; }
+
+    [JsonIgnore]
+    public object? RuntimeEntryPrevious { get; set; }
+
+    [JsonIgnore]
+    public Exception? RuntimeError { get; set; }
+
+    public Exception? GetError() => RuntimeError ??= Error?.Restore();
+
+    public void SetError(Exception error)
+    {
+        RuntimeError = error;
+        Error = SerializedException.From(error);
+    }
 }
 
 internal sealed class ParallelJoinState
@@ -82,6 +120,8 @@ internal sealed class ParallelJoinState
     public string ParentContinuationId { get; set; } = "";
     public List<string> ChildContinuationIds { get; set; } = [];
     public ParallelJoinMode Mode { get; set; }
+    public bool IsCompleting { get; set; }
+    public bool ResumeParentWithoutAdvance { get; set; }
 }
 
 internal sealed class WaitState
