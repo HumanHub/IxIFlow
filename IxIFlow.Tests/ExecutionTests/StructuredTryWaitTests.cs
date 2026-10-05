@@ -602,6 +602,35 @@ public class StructuredTryWaitTests
     }
 
     [Fact]
+    public async Task FailureInParallelCleanupBypassesOuterForwardCatch()
+    {
+        using var services = CreateServices();
+        var definition = Workflow.Create<TryData>("ParallelCleanupFailure")
+            .Step<StartActivity>()
+            .Try(body => body.Parallel(parallel => parallel.WaitAny()
+                .Do(branch => branch
+                    .Try(inner => inner.WaitFor<Approval>("approval"))
+                    .Finally(inner => inner.Parallel(cleanup => cleanup
+                        .Do(path => path.Step<ThrowActivity>(_ => { }))
+                        .Do(path => path.Step<StartActivity>(_ => { })))))
+                .Do(branch => branch.Step<StartActivity>(_ => { }))))
+            .Catch<InvalidOperationException>(body => body.Step<CountActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Catch)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch)))
+            .Finally(body => body.Step<CountActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new TryData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Equal(0, Data(result).Catch);
+        Assert.Equal(1, Data(result).Finally);
+    }
+
+    [Fact]
     public async Task UncaughtParallelFailureCanWaitForSiblingCleanupBeforeFaulting()
     {
         using var services = CreateServices();

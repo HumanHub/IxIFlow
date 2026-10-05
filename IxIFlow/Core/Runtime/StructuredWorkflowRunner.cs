@@ -723,6 +723,8 @@ internal sealed class StructuredWorkflowRunner(
             foreach (var childId in join.ChildContinuationIds)
                 CancelTree(checkpoint, checkpoint.Continuations.Single(item => item.Id == childId));
             continuation = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+            if (continuation.CancellationUnwind)
+                return CaptureFailure(scopes, checkpoint, continuation, error);
             if (TryScopeTransitions.Capture(scopes, continuation, error))
             {
                 continuation.Status = ContinuationStatus.Joining;
