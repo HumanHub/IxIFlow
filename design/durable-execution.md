@@ -120,9 +120,13 @@ types that need to survive a wait must expose restorable constructor values.
 Caller cancellation unwinds active continuations through Finally. Cleanup
 activities may finish or wait for an event before the instance becomes Cancelled.
 
-Saga, workflow invocation, and legacy Suspend are
-not yet supported by the structured runner. It rejects a definition using
-them before executing any activity. Definitions without `WaitFor` or a
+Saga runs as a checkpointed scope when the workflow uses `WaitFor`. It records
+successful forward activity results, waits within the Saga, and runs
+compensation in reverse forward-step order on failure or cancellation. A
+compensation can itself be checkpointed between activities. The structured
+runner currently rejects Saga `OnError` and step-level error policies before
+executing any activity. Legacy `Suspend` inside Saga and workflow invocation
+are also unsupported by this runner. Definitions without `WaitFor` or a
 non-default parallel join still use the previous runner while parity work
 continues.
 

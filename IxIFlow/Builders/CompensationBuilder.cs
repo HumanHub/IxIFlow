@@ -107,6 +107,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             SourceType = typeof(CompensationContext<TWorkflowData, TCurrentStepData>),
+            CompensationSource = CompensationInputSource.CurrentStepContext,
             TargetType = propertyType,
             Direction = PropertyMappingDirection.Input
         };
@@ -206,6 +207,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             SourceType = typeof(WorkflowContext<TWorkflowData>),
+            CompensationSource = CompensationInputSource.CurrentStepContext,
             TargetType = propertyType,
             Direction = PropertyMappingDirection.Input
         };
@@ -226,6 +228,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             SourceType = typeof(TPreviousStepData),
+            CompensationSource = CompensationInputSource.PreviousStep,
             TargetType = propertyType,
             Direction = PropertyMappingDirection.Input
         };
@@ -246,6 +249,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             SourceType = typeof(TPreviousChainActivity),
+            CompensationSource = CompensationInputSource.PreviousCompensation,
             TargetType = propertyType,
             Direction = PropertyMappingDirection.Input
         };
@@ -505,6 +509,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             SourceType = typeof(WorkflowContext<TWorkflowData>),
+            CompensationSource = CompensationInputSource.CurrentStepContext,
             TargetType = propertyType,
             Direction = PropertyMappingDirection.Input
         };

@@ -995,6 +995,8 @@ public class PropertyMapping
     /// </summary>
     public Type SourceType { get; set; } = typeof(object);
 
+    public CompensationInputSource CompensationSource { get; set; }
+
     /// <summary>
     ///     Target property type on activity
     /// </summary>
@@ -1017,10 +1019,18 @@ public class PropertyMapping
             SourceFunction = SourceFunction,
             TargetAssignmentFunction = TargetAssignmentFunction,
             SourceType = SourceType,
+            CompensationSource = CompensationSource,
             TargetType = TargetType,
             Direction = Direction
         };
     }
+}
+
+public enum CompensationInputSource
+{
+    CurrentStepContext,
+    PreviousStep,
+    PreviousCompensation
 }
 
 /// <summary>
