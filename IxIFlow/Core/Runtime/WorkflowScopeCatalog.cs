@@ -27,6 +27,7 @@ internal sealed class WorkflowScopeCatalog
     public string SequenceScope(WorkflowStep step) => $"{Id(step)}/sequence";
     public string ThenScope(WorkflowStep step) => $"{Id(step)}/then";
     public string ElseScope(WorkflowStep step) => $"{Id(step)}/else";
+    public string LoopScope(WorkflowStep step) => $"{Id(step)}/loop";
     public string BranchScope(WorkflowStep step, int index) => $"{Id(step)}/branch/{index}";
 
     public static bool RequiresStructuredExecution(IReadOnlyList<WorkflowStep> steps)
@@ -58,7 +59,7 @@ internal sealed class WorkflowScopeCatalog
             AddScope(SequenceScope(step), step.SequenceSteps);
             AddScope(ThenScope(step), step.ThenSteps);
             AddScope(ElseScope(step), step.ElseSteps);
-            AddScope($"{stepId}/loop", step.LoopBodySteps);
+            AddScope(LoopScope(step), step.LoopBodySteps);
             AddScope($"{stepId}/finally", step.FinallySteps);
             AddScope($"{stepId}/catch", step.CatchBlocks);
             for (var branchIndex = 0; branchIndex < step.ParallelBranches.Count; branchIndex++)
@@ -74,7 +75,8 @@ internal sealed class WorkflowScopeCatalog
                 var step = pair.Value;
                 var waitKey = step.StepMetadata.TryGetValue("WaitKey", out var key) ? key?.ToString() : "";
                 return string.Join('|', pair.Key, step.StepType, step.ActivityType?.AssemblyQualifiedName,
-                    step.ResumeEventType?.AssemblyQualifiedName, waitKey, step.ParallelJoinMode);
+                    step.ResumeEventType?.AssemblyQualifiedName, waitKey, step.ParallelJoinMode,
+                    step.LoopType);
             }));
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature));
         return Convert.ToHexString(bytes);
@@ -87,7 +89,7 @@ internal sealed class WorkflowScopeCatalog
             var supported = step.StepType switch
             {
                 WorkflowStepType.Activity or WorkflowStepType.Sequence or
-                    WorkflowStepType.Conditional or WorkflowStepType.Parallel => true,
+                    WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop => true,
                 WorkflowStepType.SuspendResume => step.StepMetadata.ContainsKey("WaitKey"),
                 _ => false
             };

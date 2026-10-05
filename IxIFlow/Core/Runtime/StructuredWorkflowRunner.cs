@@ -326,7 +326,11 @@ internal sealed class StructuredWorkflowRunner(
             }
             else
             {
-                continuation.Stack[^1].NextStepIndex++;
+                var parent = continuation.Stack[^1];
+                var currentStep = scopes.Steps(parent.ScopeId)[parent.NextStepIndex];
+                if (currentStep.StepType != WorkflowStepType.Loop ||
+                    position.ScopeId != scopes.LoopScope(currentStep))
+                    parent.NextStepIndex++;
             }
             return;
         }
@@ -362,6 +366,33 @@ internal sealed class StructuredWorkflowRunner(
 
             case WorkflowStepType.Parallel:
                 Fork(scopes, step, checkpoint, continuation);
+                break;
+
+            case WorkflowStepType.Loop:
+                var shouldRun = position.LoopIterationCount == 0 && step.LoopType == LoopType.DoWhile;
+                if (!shouldRun)
+                {
+                    var loopContext = WorkflowValueBinding.EvaluationContext(workflowData,
+                        step.PreviousStepDataType, continuation.GetPrevious(services));
+                    shouldRun = step.CompiledCondition?.Invoke(loopContext)
+                        ?? throw new InvalidOperationException($"Loop step '{step.Id}' has no condition");
+                }
+                if (!shouldRun)
+                {
+                    position.LoopIterationCount = 0;
+                    position.NextStepIndex++;
+                    break;
+                }
+                if (position.LoopIterationCount >= 1000)
+                    throw new InvalidOperationException("Loop exceeded maximum iterations (1000)");
+                position.LoopIterationCount++;
+                continuation.Stack.Add(new ScopePosition
+                {
+                    ScopeId = scopes.LoopScope(step),
+                    EntryPrevious = continuation.Previous,
+                    RuntimeEntryPrevious = continuation.RuntimePrevious,
+                    RestorePreviousOnExit = true
+                });
                 break;
 
             case WorkflowStepType.SuspendResume when step.StepMetadata.TryGetValue("WaitKey", out var keyValue):
