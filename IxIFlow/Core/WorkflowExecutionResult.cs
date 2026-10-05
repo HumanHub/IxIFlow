@@ -23,6 +23,7 @@ public class WorkflowExecutionResult
     public bool IsSuccess => Status == WorkflowExecutionStatus.Success;
     
     public string? ErrorMessage { get; set; }
+    public string? ErrorType { get; set; }
     public string? ErrorStackTrace { get; set; }
     public TimeSpan ExecutionTime { get; set; }
     public List<ExecutionTraceEntry> TraceEntries { get; set; } = new();

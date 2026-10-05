@@ -85,9 +85,7 @@ internal static class TryScopeTransitions
         var owner = continuation.Stack[index];
         var state = owner.TryState!;
         var step = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
-        var catchIndex = state.Phase == TryPhase.Try
-            ? step.CatchBlocks.FindIndex(block => block.ExceptionType?.IsAssignableFrom(error.GetType()) == true)
-            : -1;
+        var catchIndex = FindCatchIndex(step, state, error);
         continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
         continuation.Previous = state.EntryPrevious;
         continuation.RuntimePrevious = state.RuntimeEntryPrevious;
@@ -110,13 +108,20 @@ internal static class TryScopeTransitions
             if (step.StepType != WorkflowStepType.TryCatch)
                 continue;
 
-            var catchIndex = state.Phase == TryPhase.Try
-                ? step.CatchBlocks.FindIndex(block => block.ExceptionType?.IsAssignableFrom(error.GetType()) == true)
-                : -1;
+            var catchIndex = FindCatchIndex(step, state, error);
             if (catchIndex < 0 && step.FinallySteps.Count == 0)
                 continue;
             return index;
         }
+        return -1;
+    }
+
+    private static int FindCatchIndex(WorkflowStep step, TryScopeState state, Exception error)
+    {
+        var first = state.Phase == TryPhase.Catch ? state.CatchIndex + 1 : 0;
+        for (var index = first; index < step.CatchBlocks.Count; index++)
+            if (step.CatchBlocks[index].ExceptionType?.IsAssignableFrom(error.GetType()) == true)
+                return index;
         return -1;
     }
 

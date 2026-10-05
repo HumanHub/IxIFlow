@@ -23,16 +23,43 @@ internal static class SagaScopeTransitions
             return;
         }
 
-        if (state.CompensationCursor < 0)
+        if (state.CompensationCursor < state.CompensationFloor)
         {
             var error = state.GetError();
             var compensationErrors = state.CompensationErrors;
             var isCancellationCleanup = state.IsCancellationCleanup;
+            if (compensationErrors.Count == 0 && !isCancellationCleanup && state.ErrorAction is { } action)
+            {
+                if (action == SagaContinuationAction.Continue)
+                {
+                    owner.SagaState = null;
+                    owner.NextStepIndex++;
+                    return;
+                }
+                if (action == SagaContinuationAction.Retry)
+                {
+                    if (state.RetryCount >= state.MaximumRetries)
+                        throw new InvalidOperationException("Saga retry exhausted", error);
+                    state.RetryCount++;
+                    state.AcceptedWaitCursor = 0;
+                    state.CompletedSteps.Clear();
+                    state.CompensationErrors.Clear();
+                    state.Error = null;
+                    state.RuntimeError = null;
+                    state.Phase = SagaPhase.Forward;
+                    state.CompensationCursor = -1;
+                    state.CompensationFloor = 0;
+                    Enter(scopes, step, owner, continuation, services);
+                    return;
+                }
+            }
             owner.SagaState = null;
             owner.NextStepIndex++;
             if (compensationErrors.Count > 0)
                 throw new InvalidOperationException(
                     $"Saga compensation failed: {string.Join("; ", compensationErrors)}", error);
+            if (state.ErrorAction == SagaContinuationAction.Terminate && error != null)
+                throw new SagaTerminatedException("Error policy requested termination", error);
             if (error != null)
                 throw error;
             if (isCancellationCleanup)
@@ -97,6 +124,91 @@ internal static class SagaScopeTransitions
             continuation.Stack[^1].ScopeId == scopes.SagaScope(saga);
     }
 
+    public static IDictionary<string, object>? ActivityMetadata(WorkflowScopeCatalog scopes,
+        ContinuationState continuation, WorkflowStep activity)
+    {
+        if (!IsForwardActivity(scopes, continuation, activity))
+            return null;
+        var state = continuation.Stack[^2].SagaState!;
+        var position = continuation.Stack[^1];
+        position.StepRetryCounts.TryGetValue(position.NextStepIndex, out var stepAttempt);
+        var metadata = new Dictionary<string, object>
+        {
+            ["Saga:CurrentAttempt"] = state.RetryCount,
+            ["CurrentAttempt"] = stepAttempt
+        };
+        if (activity.StepMetadata.TryGetValue("StepErrorHandlers", out var value) &&
+            value is List<StepErrorHandlerInfo> handlers)
+            metadata["MaxAttempts"] = handlers.FirstOrDefault(handler =>
+                handler.HandlerAction == StepErrorAction.Retry)?.RetryPolicy?.MaximumAttempts ?? 0;
+        return metadata;
+    }
+
+    public static bool HandleStepFailure(WorkflowScopeCatalog scopes,
+        ContinuationState continuation, Exception error)
+    {
+        if (continuation.Stack.Count < 2)
+            return false;
+        var position = continuation.Stack[^1];
+        var step = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
+        if (step?.StepType != WorkflowStepType.Activity ||
+            !IsForwardActivity(scopes, continuation, step) ||
+            !step.StepMetadata.TryGetValue("StepErrorHandlers", out var value) ||
+            value is not List<StepErrorHandlerInfo> handlers)
+            return false;
+        var handler = handlers.FirstOrDefault(candidate =>
+            candidate.ExceptionType.IsAssignableFrom(error.GetType()));
+        if (handler == null)
+            return false;
+        if (handler.HandlerAction == StepErrorAction.Ignore)
+        {
+            position.StepRetryCounts.Remove(position.NextStepIndex);
+            position.NextStepIndex++;
+            continuation.SetPrevious(null);
+            return true;
+        }
+        if (handler.HandlerAction != StepErrorAction.Retry)
+            return false;
+        position.StepRetryCounts.TryGetValue(position.NextStepIndex, out var attempts);
+        if (attempts >= (handler.RetryPolicy?.MaximumAttempts ?? 0))
+            return false;
+        position.StepRetryCounts[position.NextStepIndex] = attempts + 1;
+        return true;
+    }
+
+    public static void RecordAcceptedWait(ContinuationState continuation, string stepId,
+        object @event)
+    {
+        var state = ForwardState(continuation);
+        if (state == null)
+            return;
+        state.AcceptedWaits.Add(new SagaAcceptedWait
+        {
+            StepId = stepId,
+            Event = SerializedValue.From(@event)!
+        });
+    }
+
+    public static bool TryReuseAcceptedWait(ContinuationState continuation, string stepId,
+        IServiceProvider services, out object? @event)
+    {
+        @event = null;
+        var state = ForwardState(continuation);
+        if (state is not { RetryCount: > 0 } ||
+            state.AcceptedWaitCursor >= state.AcceptedWaits.Count)
+            return false;
+        var saved = state.AcceptedWaits[state.AcceptedWaitCursor];
+        if (saved.StepId != stepId)
+            return false;
+        state.AcceptedWaitCursor++;
+        @event = saved.Event.Read(services);
+        return true;
+    }
+
+    private static SagaScopeState? ForwardState(ContinuationState continuation) =>
+        continuation.Stack.Select(frame => frame.SagaState)
+            .LastOrDefault(state => state?.Phase == SagaPhase.Forward);
+
     public static CompensationInputs? PrepareCompensationActivity(WorkflowScopeCatalog scopes,
         ContinuationState continuation, IServiceProvider services)
     {
@@ -127,7 +239,7 @@ internal static class SagaScopeTransitions
             owner.NextStepIndex++;
             return true;
         }
-        if (state.Phase != SagaPhase.Compensating || state.CompensationCursor < 0 ||
+        if (state.Phase != SagaPhase.Compensating || state.CompensationCursor < state.CompensationFloor ||
             child.ScopeId != scopes.CompensationScope(step,
                 state.CompletedSteps[state.CompensationCursor].StepIndex))
             return false;
@@ -143,10 +255,33 @@ internal static class SagaScopeTransitions
         return -1;
     }
 
-    public static void Capture(ContinuationState continuation, int index, Exception error)
+    public static void Capture(WorkflowScopeCatalog scopes, ContinuationState continuation,
+        int index, Exception error)
     {
         var owner = continuation.Stack[index];
         var state = owner.SagaState!;
+        var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
+        var handlerIndex = saga.CatchBlocks.FindIndex(handler =>
+            handler.ExceptionType?.IsAssignableFrom(error.GetType()) == true);
+        state.ErrorHandlerIndex = handlerIndex;
+        var configuration = handlerIndex < 0 ? null :
+            saga.CatchBlocks[handlerIndex].StepMetadata.TryGetValue("SagaErrorConfig", out var value)
+                ? value as SagaErrorConfiguration
+                : null;
+        state.ErrorAction = configuration?.ContinuationAction;
+        state.MaximumRetries = configuration?.RetryPolicy?.MaximumAttempts ?? 0;
+        state.CompensationFloor = 0;
+        if (configuration?.CompensationStrategy == CompensationStrategy.None)
+            state.CompensationFloor = state.CompletedSteps.Count;
+        else if (configuration?.CompensationStrategy == CompensationStrategy.CompensateUpTo &&
+                 configuration.CompensationTargetType != null)
+        {
+            var target = state.CompletedSteps.FindLastIndex(completed =>
+                scopes.Steps(scopes.SagaScope(saga))[completed.StepIndex].ActivityType ==
+                configuration.CompensationTargetType);
+            if (target >= 0)
+                state.CompensationFloor = target;
+        }
         continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
         state.SetError(error);
         state.Phase = SagaPhase.Compensating;

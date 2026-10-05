@@ -339,7 +339,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             StepMetadata =
             {
                 // Store suspend reason in metadata
-                ["SuspendReason"] = suspendReason
+                ["SuspendReason"] = suspendReason,
+                ["WaitKey"] = suspendReason
             }
         };
 

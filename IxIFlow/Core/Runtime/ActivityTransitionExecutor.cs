@@ -15,13 +15,14 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
         object? previous,
         Exception? catchException,
         CancellationToken cancellationToken,
-        CompensationInputs? compensationInputs = null)
+        CompensationInputs? compensationInputs = null,
+        IDictionary<string, object>? metadata = null)
     {
         var method = GetType().GetMethod(nameof(ExecuteTypedAsync), BindingFlags.Instance | BindingFlags.NonPublic)!
             .MakeGenericMethod(workflowData.GetType(), step.PreviousStepDataType ?? typeof(object));
         var task = (Task<object?>)method.Invoke(this,
             [step, definition, instance, workflowData, previous, catchException, cancellationToken,
-                compensationInputs])!;
+                compensationInputs, metadata])!;
         return await task;
     }
 
@@ -33,7 +34,8 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
         object? previous,
         Exception? catchException,
         CancellationToken cancellationToken,
-        CompensationInputs? compensationInputs)
+        CompensationInputs? compensationInputs,
+        IDictionary<string, object>? metadata)
     {
         var request = new TypedActivityExecutionRequest<TData, TPrevious>
         {
@@ -50,6 +52,7 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
             InputMappings = step.InputMappings,
             OutputMappings = step.OutputMappings,
             Step = step,
+            StepMetadata = metadata,
             ExecutionContext = new StepExecutionContext<TData>
             {
                 WorkflowInstance = instance,
