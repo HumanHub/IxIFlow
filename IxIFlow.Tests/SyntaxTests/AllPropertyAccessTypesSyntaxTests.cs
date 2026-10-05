@@ -10,7 +10,7 @@ namespace IxIFlow.Tests.SyntaxTests;
 /// .Input(act => act.Level2Input).From(ctx => ctx.PreviousStep.Level1Output)
 /// 
 /// All four access types are tested in each construct:
-/// 1. From(Exception access) - ctx.Exception.Message
+/// 1. From(Fault access) - ctx.Fault.Message
 /// 2. From(CurrentStep access) - ctx.CurrentStep.Property  
 /// 3. From(PreviousStep access) - ctx.PreviousStep.Property <-- THE ISSUE
 /// 4. From(Workflow access) - ctx.WorkflowData.Property

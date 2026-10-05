@@ -1,9 +1,9 @@
 ---
 title: Sagas and compensation
-description: Current saga behavior, the process boundary, and resume limits.
+description: Compensation, error handlers, and saved saga progress.
 ---
 
-A saga groups steps that need compensating actions when later work fails. IxIFlow's `SagaExecutor` runs those activities through the local `ActivityExecutor`. Compensation is also local to that workflow execution.
+A saga groups steps that need compensating actions when later work fails. The checkpointed runner records completed steps and runs their compensations in reverse order. The error handler is a saved sequence: its activities and waits resume at the saved position.
 
 An activity may call a remote service, but IxIFlow does not dispatch each saga step to a durable remote worker. The current saga is an in-process orchestration pattern.
 
@@ -21,14 +21,30 @@ The fluent API lets a saga step name a compensation activity:
             .Input(x => x.Amount).From(ctx => ctx.WorkflowData.TotalAmount)
             .CompensateWith<RefundCustomerActivity>());
 })
-.OnError<Exception>(error => error.Compensate())
+.OnError<Exception>(error => error.Compensate().ThenTerminate())
 ```
 
 Compensation is an application action, not an automatic rollback of another service or database. Design it to be safe when retried, and test its behavior when a later activity fails.
 
+## Read a saved fault in an error handler
+
+Declare a fault type with the exception properties the handler needs. Public property names and types must match the caught exception. IxIFlow checks the fault shape when building the workflow and captures its values when the exception occurs.
+
+```csharp
+public sealed record PaymentFault(string Message);
+
+.OnError<PaymentException, PaymentFault>(error => error
+    .Step<LogPaymentFailure>(step => step
+        .Input(x => x.Message).From(ctx => ctx.Fault.Message))
+    .WaitFor<ReviewResponse>("payment-review")
+    .Compensate().ThenContinue())
+```
+
+The handler can also read `ctx.WorkflowData` and `ctx.PreviousStep`. It does not receive the live exception object. `WaitFor` saves the fault and the handler position, so a new provider can resume the same handler when the state repository survives a restart.
+
 ## Current resume limits
 
-Direct waits inside a saga now resume the remaining saga activities. Completed activity results are saved at suspension and restored for compensation if later work fails. Regression tests cover repeated waits, an outcome-branch wait, transient failure followed by retry success, and permanent failure followed by retry exhaustion. More complex error-handler and nested resume paths need coverage. A process crash is not recoverable with the default memory state repository.
+Direct waits inside a saga resume the remaining saga activities. Completed activity results are saved at suspension and restored for compensation if later work fails. The default memory state repository loses those checkpoints when the process exits.
 
 The default state repository is process memory. It can retain an instance across request scopes in the same process, but not across a restart or another host. The optional SQL Server host stores instance state in SQL and atomically claims one matching suspended instance for resume. Definitions must still be registered on the resuming host, and a claim has no worker lease for crash recovery.
 
