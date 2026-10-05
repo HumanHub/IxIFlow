@@ -33,6 +33,7 @@ public sealed record WorkflowImportsDocument
 public sealed record ActivityTemplateDocument
 {
     public string Activity { get; init; } = string.Empty;
+    public string ActivityVersion { get; init; } = string.Empty;
     public Dictionary<string, JsonElement> Defaults { get; init; } = new();
     public List<InputMappingDocument> Input { get; init; } = [];
     public List<OutputMappingDocument> Output { get; init; } = [];
@@ -79,6 +80,7 @@ public abstract record WorkflowStepDocument
 public sealed record ActivityStepDocument : WorkflowStepDocument
 {
     public string Activity { get; init; } = string.Empty;
+    public string ActivityVersion { get; init; } = string.Empty;
     public List<InputMappingDocument> Input { get; init; } = [];
     public List<OutputMappingDocument> Output { get; init; } = [];
 }

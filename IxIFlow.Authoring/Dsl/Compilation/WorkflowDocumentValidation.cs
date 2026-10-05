@@ -50,7 +50,7 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
 
         foreach (var activityTemplate in document.Activities)
         {
-            await ValidateActivityTemplateAsync(activityTemplate.Key, activityTemplate.Value, diagnostics, context, cancellationToken);
+            await ValidateActivityTemplateAsync(activityTemplate.Key, activityTemplate.Value, document, diagnostics, context, cancellationToken);
         }
 
         foreach (var stepTemplate in document.Steps)
@@ -88,9 +88,17 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
                     {
                         diagnostics.Add(new WorkflowDiagnostic("STEP002", "Activity step requires an activity key", WorkflowDiagnosticSeverity.Error, $"{stepPath}.activity"));
                     }
-                    else if (await context.ActivityRegistry.FindAsync(activityStep.Activity, cancellationToken) is null)
+                    else
                     {
-                        diagnostics.Add(new WorkflowDiagnostic("STEP003", $"Unknown activity '{activityStep.Activity}'", WorkflowDiagnosticSeverity.Error, $"{stepPath}.activity"));
+                        var descriptor = await context.ActivityRegistry.FindAsync(activityStep.Activity, cancellationToken);
+                        if (descriptor is null)
+                        {
+                            diagnostics.Add(new WorkflowDiagnostic("STEP003", $"Unknown activity '{activityStep.Activity}'", WorkflowDiagnosticSeverity.Error, $"{stepPath}.activity"));
+                        }
+                        else
+                        {
+                            ValidateActivityDependency(activityStep.ActivityVersion, descriptor, document, diagnostics, stepPath);
+                        }
                     }
 
                     ValidateInputMappings(activityStep.Input, diagnostics, $"{stepPath}.input", allowEventRoot: false);
@@ -168,6 +176,7 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
     private async Task ValidateActivityTemplateAsync(
         string templateKey,
         ActivityTemplateDocument template,
+        WorkflowDocument document,
         List<WorkflowDiagnostic> diagnostics,
         WorkflowValidationContext context,
         CancellationToken cancellationToken)
@@ -176,13 +185,45 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
         {
             diagnostics.Add(new WorkflowDiagnostic("ACT001", "Activity template requires an activity key", WorkflowDiagnosticSeverity.Error, $"activities.{templateKey}.activity"));
         }
-        else if (await context.ActivityRegistry.FindAsync(template.Activity, cancellationToken) is null)
+        else
         {
-            diagnostics.Add(new WorkflowDiagnostic("ACT002", $"Unknown activity '{template.Activity}'", WorkflowDiagnosticSeverity.Error, $"activities.{templateKey}.activity"));
+            var descriptor = await context.ActivityRegistry.FindAsync(template.Activity, cancellationToken);
+            if (descriptor is null)
+            {
+                diagnostics.Add(new WorkflowDiagnostic("ACT002", $"Unknown activity '{template.Activity}'", WorkflowDiagnosticSeverity.Error, $"activities.{templateKey}.activity"));
+            }
+            else
+            {
+                ValidateActivityDependency(template.ActivityVersion, descriptor, document, diagnostics, $"activities.{templateKey}");
+            }
         }
 
         ValidateInputMappings(template.Input, diagnostics, $"activities.{templateKey}.input", allowEventRoot: false);
         ValidateOutputMappings(template.Output, diagnostics, $"activities.{templateKey}.output");
+    }
+
+    private static void ValidateActivityDependency(
+        string requestedVersion,
+        ActivityDescriptor descriptor,
+        WorkflowDocument document,
+        List<WorkflowDiagnostic> diagnostics,
+        string path)
+    {
+        if (!string.IsNullOrWhiteSpace(descriptor.Version) && requestedVersion != descriptor.Version)
+        {
+            diagnostics.Add(new WorkflowDiagnostic("ACT003",
+                $"Activity '{descriptor.Key}' requires version '{descriptor.Version}' but the workflow declares '{requestedVersion}'",
+                WorkflowDiagnosticSeverity.Error, $"{path}.activityVersion"));
+        }
+
+        if (!string.IsNullOrWhiteSpace(descriptor.PackageName) &&
+            !string.IsNullOrWhiteSpace(descriptor.PackageVersion) &&
+            !document.Imports.Catalogs.Contains($"{descriptor.PackageName}@{descriptor.PackageVersion}", StringComparer.Ordinal))
+        {
+            diagnostics.Add(new WorkflowDiagnostic("ACT004",
+                $"Activity '{descriptor.Key}' requires package '{descriptor.PackageName}@{descriptor.PackageVersion}' in imports.catalogs",
+                WorkflowDiagnosticSeverity.Error, "imports.catalogs"));
+        }
     }
 
     private static void ValidateInputMappings(
