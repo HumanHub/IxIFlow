@@ -17,7 +17,7 @@ IxIFlow includes infrastructure for selecting a host and routing a **whole workf
 
 ## What the SQL overload does not provide
 
-`AddIxIFlowHost(connectionString)` replaces the memory workflow state repository with `SqlWorkflowStateRepository`. The `IEventStore` and `IWorkflowVersionRegistry` still use memory. A saved instance needs its exact definition registered on the resuming host. There is no atomic instance claim, so concurrent resume requests can still race.
+`AddIxIFlowHost(connectionString)` replaces the memory workflow state repository with `SqlWorkflowStateRepository`. The `IEventStore` and `IWorkflowVersionRegistry` still use memory. A saved instance needs its exact definition registered on the resuming host. The SQL repository atomically claims a matching suspended instance before resume. General saves still lack checkpoint versions, and a worker that dies after claiming an instance leaves no recoverable lease.
 
 The SQL bus claims a message and marks it processed only after the queue handler acknowledges it. An unacknowledged delivery is released when its consumer stops; an abandoned claim expires after five minutes. The queued execution command carries a workflow name and version, which the receiving host resolves locally. The HTTP host client's immediate and queue request bodies still contain a `WorkflowDefinition` and need the same reference-based transport design.
 
@@ -25,4 +25,4 @@ The SQL bus claims a message and marks it processed only after the queue handler
 
 The host selection, registry, and queue code are useful infrastructure, but the end-to-end distributed path is experimental. Treat it as a development surface, not a production reliability guarantee. The coordinator does not turn an in-process saga into a distributed saga.
 
-The next steps are durable published definitions, atomic instance claims, command idempotency, claim renewal for long handlers, and host-loss integration tests. SQL state persistence and message redelivery have been tested against a disposable SQL Server container. See [status and roadmap](/docs/status-and-roadmap/).
+The next steps are durable published definitions, versioned checkpoints and recoverable instance leases, command idempotency, claim renewal for long handlers, and host-loss integration tests. SQL state persistence and message redelivery have been tested against a disposable SQL Server container. See [status and roadmap](/docs/status-and-roadmap/).
