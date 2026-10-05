@@ -151,6 +151,12 @@ internal sealed class StructuredWorkflowRunner(
         CancellationToken cancellationToken)
     {
         var inFlight = new Dictionary<string, RunningActivity>();
+        var cancellationWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellationRegistration = cancellationToken.Register(
+            () => cancellationWake.TrySetResult());
+        var callerCancellation = cancellationToken.CanBeCanceled
+            ? cancellationWake.Task
+            : null;
         try
         {
             var scopes = new WorkflowScopeCatalog(definition);
@@ -158,20 +164,36 @@ internal sealed class StructuredWorkflowRunner(
                 throw new InvalidOperationException("The registered workflow definition differs from the saved version");
             while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested && !checkpoint.CancellationRequested)
+                {
+                    checkpoint.CancellationRequested = true;
+                    CancelTree(checkpoint, checkpoint.Continuations[0]);
+                    await PersistAsync(instance, checkpoint, workflowData, scopes);
+                }
                 foreach (var activity in inFlight.Values.Where(item =>
-                             item.Continuation.Status == ContinuationStatus.Cancelled))
+                             item.Continuation.Status == ContinuationStatus.Cancelling))
                     activity.Cancellation.Cancel();
 
-                // A join cannot leave an activity running in a cancelled branch.
+                // Let cancelled activities settle before running their Finally blocks.
                 var cancelled = inFlight.Values.FirstOrDefault(item =>
-                    item.Continuation.Status == ContinuationStatus.Cancelled);
+                    item.Continuation.Status == ContinuationStatus.Cancelling);
                 if (cancelled != null)
                 {
                     await SettleAsync(cancelled, inFlight, workflowData);
                     await PersistAsync(instance, checkpoint, workflowData, scopes);
                     continue;
                 }
+
+                var unwinding = checkpoint.Continuations.FirstOrDefault(item =>
+                    item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id));
+                if (unwinding != null)
+                {
+                    TryScopeTransitions.ContinueCancellation(scopes, unwinding);
+                    await PersistAsync(instance, checkpoint, workflowData, scopes);
+                    continue;
+                }
+
+                FinishCompletingJoins(checkpoint);
 
                 // Advance every runnable branch to its next asynchronous boundary.
                 // This lets a sibling start even when another activity is awaiting it.
@@ -192,35 +214,76 @@ internal sealed class StructuredWorkflowRunner(
                                 JsonSerializer.Serialize(workflowData, workflowData.GetType()),
                                 workflowData.GetType())!;
                         var sourceIsIsolated = !ReferenceEquals(sourceData, workflowData);
-                        var activityCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        var activityCancellation = new CancellationTokenSource();
                         var task = _activities.ExecuteAsync(next, definition, instance, sourceData,
-                            runnable.GetPrevious(services), activityCancellation.Token);
+                            runnable.GetPrevious(services), TryScopeTransitions.CatchException(checkpoint, runnable),
+                            activityCancellation.Token);
                         inFlight.Add(runnable.Id, new RunningActivity(runnable, next, task,
                             activityCancellation, sourceIsIsolated));
                     }
                     else
                     {
-                        Advance(scopes, checkpoint, runnable, workflowData);
+                        try
+                        {
+                            Advance(scopes, checkpoint, runnable, workflowData);
+                        }
+                        catch (Exception error)
+                        {
+                            if (!CaptureFailure(scopes, checkpoint, runnable, error))
+                                throw;
+                        }
                         await PersistAsync(instance, checkpoint, workflowData, scopes);
-                        if (inFlight.Values.Any(item => item.Continuation.Status == ContinuationStatus.Cancelled))
+                        if (inFlight.Values.Any(item => item.Continuation.Status == ContinuationStatus.Cancelling))
                             break;
                     }
                 }
 
                 if (inFlight.Count == 0)
+                {
+                    if (checkpoint.Continuations.Any(item => item.Status == ContinuationStatus.Cancelling) ||
+                        checkpoint.Joins.Any(item => item.IsCompleting &&
+                            checkpoint.Continuations.Where(child => item.ChildContinuationIds.Contains(child.Id))
+                                .All(child => child.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)))
+                        continue;
                     break;
+                }
 
                 foreach (var activity in inFlight.Values.Where(item =>
-                             item.Continuation.Status == ContinuationStatus.Cancelled))
+                             item.Continuation.Status == ContinuationStatus.Cancelling))
                     activity.Cancellation.Cancel();
 
-                var finished = await Task.WhenAny(inFlight.Values.Select(item => item.Task));
+                var runningTasks = inFlight.Values.Select(item => (Task)item.Task).ToList();
+                if (!checkpoint.CancellationRequested && callerCancellation != null)
+                    runningTasks.Add(callerCancellation);
+                var finished = await Task.WhenAny(runningTasks);
+                if (finished == callerCancellation)
+                    continue;
                 var completedActivity = inFlight.Values.First(item => item.Task == finished);
-                await SettleAsync(completedActivity, inFlight, workflowData);
+                try
+                {
+                    await SettleAsync(completedActivity, inFlight, workflowData);
+                }
+                catch (Exception error)
+                {
+                    if (!CaptureFailure(scopes, checkpoint, completedActivity.Continuation, error))
+                        throw;
+                }
                 await PersistAsync(instance, checkpoint, workflowData, scopes);
             }
 
-            if (checkpoint.Continuations[0].Status == ContinuationStatus.Completed)
+            if (checkpoint.UnhandledError != null && checkpoint.Waits.Count == 0 && checkpoint.Joins.Count == 0)
+                throw checkpoint.RuntimeUnhandledError
+                      ?? (checkpoint.UnhandledError.IsRestorable
+                          ? checkpoint.UnhandledError.Restore()
+                          : new InvalidOperationException(checkpoint.UnhandledError.Message));
+
+            if (checkpoint.CancellationRequested &&
+                checkpoint.Continuations[0].Status == ContinuationStatus.Cancelled)
+            {
+                instance.Status = WorkflowStatus.Cancelled;
+                instance.CompletedAt = DateTime.UtcNow;
+            }
+            else if (checkpoint.Continuations[0].Status == ContinuationStatus.Completed)
             {
                 instance.Status = WorkflowStatus.Completed;
                 instance.CompletedAt = DateTime.UtcNow;
@@ -247,9 +310,12 @@ internal sealed class StructuredWorkflowRunner(
             return new WorkflowExecutionResult
             {
                 InstanceId = instance.InstanceId,
-                Status = instance.Status == WorkflowStatus.Completed
-                    ? WorkflowExecutionStatus.Success
-                    : WorkflowExecutionStatus.Suspended,
+                Status = instance.Status switch
+                {
+                    WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
+                    WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
+                    _ => WorkflowExecutionStatus.Suspended
+                },
                 WorkflowData = workflowData,
                 ExecutionTime = DateTime.UtcNow - instance.StartedAt!.Value
             };
@@ -328,8 +394,12 @@ internal sealed class StructuredWorkflowRunner(
             {
                 var parent = continuation.Stack[^1];
                 var currentStep = scopes.Steps(parent.ScopeId)[parent.NextStepIndex];
-                if (currentStep.StepType != WorkflowStepType.Loop ||
-                    position.ScopeId != scopes.LoopScope(currentStep))
+                if (currentStep.StepType == WorkflowStepType.Loop &&
+                    position.ScopeId == scopes.LoopScope(currentStep))
+                {
+                    // Revisit the loop guard with the completed iteration recorded on its parent.
+                }
+                else if (!TryScopeTransitions.Exit(scopes, parent, position, currentStep, continuation))
                     parent.NextStepIndex++;
             }
             return;
@@ -368,6 +438,10 @@ internal sealed class StructuredWorkflowRunner(
                 Fork(scopes, step, checkpoint, continuation);
                 break;
 
+            case WorkflowStepType.TryCatch:
+                TryScopeTransitions.Enter(scopes, step, position, continuation);
+                break;
+
             case WorkflowStepType.Loop:
                 var shouldRun = position.LoopIterationCount == 0 && step.LoopType == LoopType.DoWhile;
                 if (!shouldRun)
@@ -396,6 +470,7 @@ internal sealed class StructuredWorkflowRunner(
                 break;
 
             case WorkflowStepType.SuspendResume when step.StepMetadata.TryGetValue("WaitKey", out var keyValue):
+                TryScopeTransitions.EnsureCanWait(checkpoint, continuation);
                 var key = keyValue as string
                     ?? throw new InvalidOperationException($"Wait step '{step.Id}' has an invalid key");
                 checkpoint.Waits.Add(new WaitState
@@ -423,7 +498,7 @@ internal sealed class StructuredWorkflowRunner(
         try
         {
             var output = await activity.Task;
-            if (activity.Continuation.Status == ContinuationStatus.Cancelled)
+            if (activity.Continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled)
                 return;
 
             if (activity.SourceIsIsolated)
@@ -431,7 +506,8 @@ internal sealed class StructuredWorkflowRunner(
             activity.Continuation.SetPrevious(output);
             activity.Continuation.Stack[^1].NextStepIndex++;
         }
-        catch (OperationCanceledException) when (activity.Continuation.Status == ContinuationStatus.Cancelled)
+        catch (Exception) when (activity.Continuation.Status is
+            ContinuationStatus.Cancelling or ContinuationStatus.Cancelled)
         {
             // The parent join has cancelled this branch.
         }
@@ -488,6 +564,8 @@ internal sealed class StructuredWorkflowRunner(
             return;
 
         var join = checkpoint.Joins.Single(item => item.Id == child.ParentJoinId);
+        if (join.IsCompleting)
+            return;
         var children = checkpoint.Continuations.Where(item => join.ChildContinuationIds.Contains(item.Id)).ToList();
         var allCompleted = children.All(item => item.Status == ContinuationStatus.Completed);
         var shouldJoin = join.Mode switch
@@ -503,24 +581,84 @@ internal sealed class StructuredWorkflowRunner(
         if (!shouldJoin)
             return;
 
+        join.IsCompleting = true;
         foreach (var sibling in children.Where(item => item.Status != ContinuationStatus.Completed))
             CancelTree(checkpoint, sibling);
-
-        var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
-        parent.Stack[^1].NextStepIndex++;
-        parent.Status = ContinuationStatus.Active;
-        checkpoint.Joins.Remove(join);
     }
 
     private static void CancelTree(ExecutionCheckpoint checkpoint, ContinuationState continuation)
     {
-        continuation.Status = ContinuationStatus.Cancelled;
+        if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
+            return;
+        continuation.CancellationUnwind = true;
+        if (TryScopeTransitions.IsInsideFinally(continuation))
+        {
+            TryScopeTransitions.PreserveExistingFinally(continuation);
+            return;
+        }
         checkpoint.Waits.RemoveAll(wait => wait.ContinuationId == continuation.Id);
         foreach (var join in checkpoint.Joins.Where(item => item.ParentContinuationId == continuation.Id).ToList())
         {
+            join.IsCompleting = true;
             foreach (var childId in join.ChildContinuationIds)
                 CancelTree(checkpoint, checkpoint.Continuations.Single(item => item.Id == childId));
+        }
+        continuation.Status = checkpoint.Joins.Any(item => item.ParentContinuationId == continuation.Id)
+            ? ContinuationStatus.Joining
+            : ContinuationStatus.Cancelling;
+    }
+
+    private static void FinishCompletingJoins(ExecutionCheckpoint checkpoint)
+    {
+        foreach (var join in checkpoint.Joins.Where(item => item.IsCompleting).ToList())
+        {
+            var children = checkpoint.Continuations.Where(item => join.ChildContinuationIds.Contains(item.Id));
+            if (!children.All(item => item.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled))
+                continue;
+            var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+            if (checkpoint.UnhandledError != null && parent.ParentJoinId == null)
+                parent.Status = ContinuationStatus.Cancelled;
+            else if (parent.CancellationUnwind && !TryScopeTransitions.IsInsideFinally(parent))
+                parent.Status = ContinuationStatus.Cancelling;
+            else
+            {
+                if (!join.ResumeParentWithoutAdvance)
+                    parent.Stack[^1].NextStepIndex++;
+                parent.Status = ContinuationStatus.Active;
+            }
             checkpoint.Joins.Remove(join);
+        }
+    }
+
+    private static bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, Exception error)
+    {
+        while (true)
+        {
+            if (TryScopeTransitions.Capture(scopes, continuation, error))
+                return true;
+            TryScopeTransitions.AbortFailedFinally(continuation);
+            if (continuation.ParentJoinId == null)
+            {
+                if (!checkpoint.Joins.Any(join => join.IsCompleting))
+                    return false;
+                checkpoint.UnhandledError = SerializedException.From(error);
+                checkpoint.RuntimeUnhandledError = error;
+                continuation.Status = ContinuationStatus.Joining;
+                return true;
+            }
+
+            var join = checkpoint.Joins.Single(item => item.Id == continuation.ParentJoinId);
+            join.IsCompleting = true;
+            join.ResumeParentWithoutAdvance = true;
+            foreach (var childId in join.ChildContinuationIds)
+                CancelTree(checkpoint, checkpoint.Continuations.Single(item => item.Id == childId));
+            continuation = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+            if (TryScopeTransitions.Capture(scopes, continuation, error))
+            {
+                continuation.Status = ContinuationStatus.Joining;
+                return true;
+            }
         }
     }
 
@@ -557,6 +695,8 @@ internal sealed class StructuredWorkflowRunner(
             {
                 if (frame.RuntimeEntryPrevious != null)
                     frame.EntryPrevious = SerializedValue.From(frame.RuntimeEntryPrevious);
+                if (frame.TryState?.RuntimeEntryPrevious != null)
+                    frame.TryState.EntryPrevious = SerializedValue.From(frame.TryState.RuntimeEntryPrevious);
             }
         }
     }
