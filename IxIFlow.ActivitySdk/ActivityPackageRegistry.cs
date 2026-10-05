@@ -56,6 +56,7 @@ public sealed class ActivityPackageRegistry : IActivityRegistry
                     Version = attribute.Version,
                     Name = attribute.Name ?? entry.Type.Name,
                     Category = attribute.Category ?? "Activities",
+                    Icon = attribute.Icon,
                     Designer = attribute.Designer,
                     Fields = fields,
                     Defaults = defaults,

@@ -14,7 +14,7 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 | Conditions, parallel work, and exceptions | Implemented, with execution tests for waits in `Catch`, `Finally`, and a single waiting parallel branch. Loop failure propagation and nested `PreviousStep` pass-through have regression tests. |
 | In-process saga compensation | Direct and outcome-branch waits resume with saved compensation results. A direct wait followed by a transient failure can retry to success; a permanent failure exhausts its retry limit. |
 | SQL host and state | Shared SQL Server workflow instance state, atomic suspended-instance claims, host registry, and acknowledged message delivery are implemented. Cross-host recovery remains unfinished. |
-| Studio designer exercise | Vue Flow canvas with an `If` node, a custom database node, manifest-driven fields, and draft YAML editing. It does not execute workflows. |
+| Workflow editor exercise | Structured, collapsible activity frames with inline fields, editable titles and annotations, manifest-driven icons, and draft YAML editing. It does not execute workflows. The earlier Vue Flow canvas remains a Flowchart reference. |
 | Custom activity prototype | A .NET package registry matches manifest activity keys to installed `IAsyncActivity` types. The YAML document compiler checks package and activity versions. Studio can load a local manifest into its toolbox. |
 
 ## Known gaps
