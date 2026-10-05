@@ -39,7 +39,10 @@ internal static class SagaScopeTransitions
                 if (action == SagaContinuationAction.Retry)
                 {
                     if (state.RetryCount >= state.MaximumRetries)
+                    {
+                        owner.SagaState = null;
                         throw new InvalidOperationException("Saga retry exhausted", error);
+                    }
                     state.RetryCount++;
                     state.AcceptedWaitCursor = 0;
                     state.CompletedSteps.Clear();
@@ -74,7 +77,7 @@ internal static class SagaScopeTransitions
         continuation.SetPrevious(completed.Output?.Read(services));
         continuation.Stack.Add(new ScopePosition
         {
-            ScopeId = scopes.CompensationScope(step, completed.StepIndex),
+            ScopeId = scopes.CompensationScope(step, scopes.Step(completed.StepId)),
             EntryPrevious = prior,
             RuntimeEntryPrevious = runtimePrior,
             RestorePreviousOnExit = true
@@ -85,12 +88,12 @@ internal static class SagaScopeTransitions
         ContinuationState continuation, WorkflowStep activity, object? output,
         IServiceProvider services)
     {
-        if (!IsForwardActivity(scopes, continuation, activity))
+        var owner = ForwardOwner(scopes, continuation, activity);
+        if (owner == null)
             return;
-        var owner = continuation.Stack[^2];
         owner.SagaState!.CompletedSteps.Add(new SagaCompletedStep
         {
-            StepIndex = continuation.Stack[^1].NextStepIndex,
+            StepId = scopes.Id(activity),
             Output = SerializedValue.From(output),
             Previous = SerializedValue.From(continuation.GetPrevious(services))
         });
@@ -107,29 +110,42 @@ internal static class SagaScopeTransitions
             return;
         var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
         if (continuation.Stack[^1].ScopeId == scopes.CompensationScope(saga,
-                state.CompletedSteps[state.CompensationCursor].StepIndex))
+                scopes.Step(state.CompletedSteps[state.CompensationCursor].StepId)))
             state.PreviousCompensation = SerializedValue.From(output);
     }
 
     public static bool IsForwardActivity(WorkflowScopeCatalog scopes,
         ContinuationState continuation, WorkflowStep activity)
     {
-        if (continuation.Stack.Count < 2 || !activity.StepMetadata.ContainsKey("IsSagaStep"))
-            return false;
-        var owner = continuation.Stack[^2];
-        if (owner.SagaState?.Phase != SagaPhase.Forward)
-            return false;
-        var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
-        return saga.StepType == WorkflowStepType.Saga &&
-            continuation.Stack[^1].ScopeId == scopes.SagaScope(saga);
+        return ForwardOwner(scopes, continuation, activity) != null;
+    }
+
+    private static ScopePosition? ForwardOwner(WorkflowScopeCatalog scopes,
+        ContinuationState continuation, WorkflowStep activity)
+    {
+        if (!activity.StepMetadata.ContainsKey("IsSagaStep"))
+            return null;
+        var activityId = scopes.Id(activity);
+        for (var index = continuation.Stack.Count - 2; index >= 0; index--)
+        {
+            var owner = continuation.Stack[index];
+            if (owner.SagaState?.Phase != SagaPhase.Forward)
+                continue;
+            var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
+            if (saga.StepType == WorkflowStepType.Saga &&
+                activityId.StartsWith(scopes.SagaScope(saga) + "/", StringComparison.Ordinal))
+                return owner;
+        }
+        return null;
     }
 
     public static IDictionary<string, object>? ActivityMetadata(WorkflowScopeCatalog scopes,
         ContinuationState continuation, WorkflowStep activity)
     {
-        if (!IsForwardActivity(scopes, continuation, activity))
+        var owner = ForwardOwner(scopes, continuation, activity);
+        if (owner == null)
             return null;
-        var state = continuation.Stack[^2].SagaState!;
+        var state = owner.SagaState!;
         var position = continuation.Stack[^1];
         position.StepRetryCounts.TryGetValue(position.NextStepIndex, out var stepAttempt);
         var metadata = new Dictionary<string, object>
@@ -147,12 +163,10 @@ internal static class SagaScopeTransitions
     public static bool HandleStepFailure(WorkflowScopeCatalog scopes,
         ContinuationState continuation, Exception error)
     {
-        if (continuation.Stack.Count < 2)
-            return false;
         var position = continuation.Stack[^1];
         var step = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
         if (step?.StepType != WorkflowStepType.Activity ||
-            !IsForwardActivity(scopes, continuation, step) ||
+            ForwardOwner(scopes, continuation, step) == null ||
             !step.StepMetadata.TryGetValue("StepErrorHandlers", out var value) ||
             value is not List<StepErrorHandlerInfo> handlers)
             return false;
@@ -220,7 +234,8 @@ internal static class SagaScopeTransitions
             return null;
         var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
         var completed = state.CompletedSteps[state.CompensationCursor];
-        if (continuation.Stack[^1].ScopeId != scopes.CompensationScope(saga, completed.StepIndex))
+        if (continuation.Stack[^1].ScopeId != scopes.CompensationScope(saga,
+                scopes.Step(completed.StepId)))
             return null;
         continuation.SetPrevious(completed.Output?.Read(services));
         return new CompensationInputs(completed.Previous?.Read(services),
@@ -241,7 +256,7 @@ internal static class SagaScopeTransitions
         }
         if (state.Phase != SagaPhase.Compensating || state.CompensationCursor < state.CompensationFloor ||
             child.ScopeId != scopes.CompensationScope(step,
-                state.CompletedSteps[state.CompensationCursor].StepIndex))
+                scopes.Step(state.CompletedSteps[state.CompensationCursor].StepId)))
             return false;
         state.CompensationCursor--;
         return true;
@@ -277,12 +292,15 @@ internal static class SagaScopeTransitions
                  configuration.CompensationTargetType != null)
         {
             var target = state.CompletedSteps.FindLastIndex(completed =>
-                scopes.Steps(scopes.SagaScope(saga))[completed.StepIndex].ActivityType ==
+                scopes.Step(completed.StepId).ActivityType ==
                 configuration.CompensationTargetType);
             if (target >= 0)
                 state.CompensationFloor = target;
         }
+        var forward = continuation.Stack[index + 1];
         continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+        continuation.Previous = forward.EntryPrevious;
+        continuation.RuntimePrevious = forward.RuntimeEntryPrevious;
         state.SetError(error);
         state.Phase = SagaPhase.Compensating;
         state.CompensationCursor = state.CompletedSteps.Count - 1;
@@ -318,7 +336,10 @@ internal static class SagaScopeTransitions
         var state = continuation.Stack[index].SagaState;
         if (state?.Phase != SagaPhase.Forward)
             return false;
+        var forward = continuation.Stack[index + 1];
         continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+        continuation.Previous = forward.EntryPrevious;
+        continuation.RuntimePrevious = forward.RuntimeEntryPrevious;
         state.Phase = SagaPhase.Compensating;
         state.CompensationCursor = state.CompletedSteps.Count - 1;
         state.IsCancellationCleanup = true;

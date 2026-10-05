@@ -18,9 +18,6 @@ internal sealed class StructuredWorkflowRunner(
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
     private readonly WorkflowInvocationTransitionExecutor _invocations = new(workflowInvoker);
 
-    public static bool UsesStructuredExecution(WorkflowDefinition definition) =>
-        WorkflowScopeCatalog.RequiresStructuredExecution(definition.Steps);
-
     public static bool HasStructuredCheckpoint(WorkflowInstance? instance) =>
         instance != null && ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson);
 
@@ -66,7 +63,7 @@ internal sealed class StructuredWorkflowRunner(
         if (options.PersistState)
         {
             await registry.RegisterWorkflowAsync(definition);
-            await repository.SaveWorkflowInstanceAsync(instance);
+            await PersistAsync(instance, checkpoint, workflowData, scopes, true);
         }
         return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
             options.PersistState, cancellationToken);
@@ -81,7 +78,15 @@ internal sealed class StructuredWorkflowRunner(
     {
         using var lease = await gate.EnterAsync(instanceId, cancellationToken);
         var instance = await repository.GetWorkflowInstanceAsync(instanceId);
-        if (instance?.Status != WorkflowStatus.Suspended || !HasStructuredCheckpoint(instance))
+        if (instance?.Status == WorkflowStatus.Running && HasStructuredCheckpoint(instance))
+            return new WorkflowExecutionResult
+            {
+                InstanceId = instanceId,
+                Status = WorkflowExecutionStatus.Running,
+                ErrorMessage = "The workflow instance is executing; retry the event after it becomes idle"
+            };
+        if (instance?.Status is not (WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) ||
+            !HasStructuredCheckpoint(instance))
             return Rejected(instanceId, "The workflow instance is not waiting");
 
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
@@ -116,14 +121,14 @@ internal sealed class StructuredWorkflowRunner(
             return Rejected(instanceId, "The event satisfies more than one wait; provide a unique key");
 
         var wait = matching[0];
-        var step = scopes.Step(wait.StepId);
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
 
-        SagaScopeTransitions.RecordAcceptedWait(continuation, wait.StepId, @event);
-        WorkflowValueBinding.ApplyEventOutputs(step, @event, workflowData);
+        continuation.AcceptedWait = new AcceptedWaitState
+        {
+            StepId = wait.StepId,
+            Event = SerializedValue.From(@event)!
+        };
         checkpoint.Waits.Remove(wait);
-        continuation.SetPrevious(@event);
-        continuation.Stack[^1].NextStepIndex++;
         continuation.Status = ContinuationStatus.Active;
 
         instance.Status = WorkflowStatus.Running;
@@ -139,7 +144,8 @@ internal sealed class StructuredWorkflowRunner(
     {
         using var lease = await gate.EnterAsync(instanceId, cancellationToken);
         var instance = await repository.GetWorkflowInstanceAsync(instanceId);
-        if (instance?.Status != WorkflowStatus.Running || !HasStructuredCheckpoint(instance))
+        if (instance?.Status is not (WorkflowStatus.Running or WorkflowStatus.NeedsResolution) ||
+            !HasStructuredCheckpoint(instance))
             return Rejected(instanceId, "The workflow instance has no interrupted execution to recover");
 
         var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
@@ -153,6 +159,11 @@ internal sealed class StructuredWorkflowRunner(
         var scopes = new WorkflowScopeCatalog(definition);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
+        foreach (var continuation in checkpoint.Continuations.Where(item =>
+                     item.PendingActivity != null && item.Status is
+                         ContinuationStatus.WaitingResolution or ContinuationStatus.Cancelling))
+            continuation.Status = ContinuationStatus.Active;
+        instance.Status = WorkflowStatus.Running;
         return await RunAndSaveAsync(definition, instance, checkpoint,
             workflowData, true, cancellationToken);
     }
@@ -194,7 +205,7 @@ internal sealed class StructuredWorkflowRunner(
                     item.Continuation.Status == ContinuationStatus.Cancelling);
                 if (cancelled != null)
                 {
-                    await SettleAsync(scopes, cancelled, inFlight, workflowData);
+                    await SettleAsync(scopes, cancelled, inFlight, workflowData, instance);
                     await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
                     continue;
                 }
@@ -203,6 +214,14 @@ internal sealed class StructuredWorkflowRunner(
                     item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id));
                 if (unwinding != null)
                 {
+                    if (unwinding.PendingActivity != null)
+                    {
+                        // A committed Start must be resolved before cancellation can discard
+                        // the branch or run its compensation and Finally steps.
+                        unwinding.Status = ContinuationStatus.Active;
+                        await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
+                        continue;
+                    }
                     TryScopeTransitions.ContinueCancellation(scopes, unwinding);
                     await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
                     continue;
@@ -223,25 +242,25 @@ internal sealed class StructuredWorkflowRunner(
                     var next = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
                     if (next?.StepType is WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation)
                     {
-                        var compensationInputs = SagaScopeTransitions.PrepareCompensationActivity(
-                            scopes, runnable, services);
-                        var sourceData = runnable.ParentJoinId == null
-                            ? workflowData
-                            : JsonSerializer.Deserialize(
-                                JsonSerializer.Serialize(workflowData, workflowData.GetType()),
-                                workflowData.GetType())!;
-                        var sourceIsIsolated = !ReferenceEquals(sourceData, workflowData);
+                        var sourceData = workflowData;
                         var activityCancellation = new CancellationTokenSource();
-                        var task = next.StepType == WorkflowStepType.Activity
-                            ? _activities.ExecuteAsync(next, definition, instance, sourceData,
-                                runnable.GetPrevious(services),
-                                TryScopeTransitions.CatchException(checkpoint, runnable),
-                                activityCancellation.Token, compensationInputs,
-                                SagaScopeTransitions.ActivityMetadata(scopes, runnable, next))
-                            : _invocations.ExecuteAsync(next, definition, instance, sourceData,
-                                runnable.GetPrevious(services), activityCancellation.Token);
-                        inFlight.Add(runnable.Id, new RunningActivity(runnable, next, task,
-                            activityCancellation, sourceIsIsolated));
+                        RunningActivity? running;
+                        if (next.StepType == WorkflowStepType.Activity)
+                        {
+                            running = await StartActivityAsync(scopes, checkpoint, runnable, next,
+                                definition, instance, sourceData, workflowData, persistState,
+                                activityCancellation);
+                        }
+                        else
+                        {
+                            running = await StartInvocationAsync(scopes, checkpoint, runnable, next,
+                                definition, instance, sourceData, workflowData, persistState,
+                                activityCancellation);
+                        }
+                        if (running != null)
+                            inFlight.Add(runnable.Id, running);
+                        else
+                            activityCancellation.Dispose();
                     }
                     else
                     {
@@ -283,7 +302,11 @@ internal sealed class StructuredWorkflowRunner(
                 var completedActivity = inFlight.Values.First(item => item.Task == finished);
                 try
                 {
-                    await SettleAsync(scopes, completedActivity, inFlight, workflowData);
+                    await SettleAsync(scopes, completedActivity, inFlight, workflowData, instance);
+                }
+                catch (CheckpointPersistenceException)
+                {
+                    throw;
                 }
                 catch (Exception error)
                 {
@@ -309,6 +332,11 @@ internal sealed class StructuredWorkflowRunner(
             {
                 instance.Status = WorkflowStatus.Completed;
                 instance.CompletedAt = DateTime.UtcNow;
+            }
+            else if (checkpoint.Continuations.Any(item =>
+                         item.Status == ContinuationStatus.WaitingResolution))
+            {
+                instance.Status = WorkflowStatus.NeedsResolution;
             }
             else if (checkpoint.Waits.Count > 0)
             {
@@ -336,14 +364,21 @@ internal sealed class StructuredWorkflowRunner(
                 {
                     WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
                     WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
+                    WorkflowStatus.NeedsResolution => WorkflowExecutionStatus.NeedsResolution,
                     _ => WorkflowExecutionStatus.Suspended
                 },
                 WorkflowData = workflowData,
-                ErrorMessage = instance.Status == WorkflowStatus.Suspended
-                    ? checkpoint.Waits.Count == 1
-                        ? $"Workflow suspended: {checkpoint.Waits[0].Key}"
-                        : $"Workflow suspended with {checkpoint.Waits.Count} active waits"
-                    : null,
+                ErrorMessage = instance.Status switch
+                {
+                    WorkflowStatus.NeedsResolution => checkpoint.Continuations
+                        .First(item => item.Status == ContinuationStatus.WaitingResolution)
+                        .PendingActivity?.ResolutionReason,
+                    WorkflowStatus.Suspended when checkpoint.Waits.Count == 1 =>
+                        $"Workflow suspended: {checkpoint.Waits[0].Key}",
+                    WorkflowStatus.Suspended =>
+                        $"Workflow suspended with {checkpoint.Waits.Count} active waits",
+                    _ => null
+                },
                 ExecutionTime = DateTime.UtcNow - instance.StartedAt!.Value
             };
         }
@@ -406,7 +441,8 @@ internal sealed class StructuredWorkflowRunner(
                 instance.ExecutionSnapshot.Frames.Clear();
             }
             if (persistState)
-                await repository.SaveWorkflowInstanceAsync(instance);
+                await PersistAsync(instance, checkpoint, workflowData,
+                    new WorkflowScopeCatalog(definition), true);
             return new WorkflowExecutionResult
             {
                 InstanceId = instance.InstanceId,
@@ -425,6 +461,22 @@ internal sealed class StructuredWorkflowRunner(
         ContinuationState continuation,
         object workflowData)
     {
+        if (continuation.AcceptedWait is { } accepted)
+        {
+            var acceptedPosition = continuation.Stack[^1];
+            var acceptedStep = scopes.Steps(acceptedPosition.ScopeId)[acceptedPosition.NextStepIndex];
+            if (scopes.Id(acceptedStep) != accepted.StepId)
+                throw new InvalidOperationException("The accepted event does not match its saved wait");
+            continuation.AcceptedWait = null;
+            var @event = accepted.Event.Read(services)
+                ?? throw new InvalidOperationException("The accepted event could not be restored");
+            SagaScopeTransitions.RecordAcceptedWait(continuation, accepted.StepId, @event);
+            WorkflowValueBinding.ApplyEventOutputs(acceptedStep, @event, workflowData);
+            continuation.SetPrevious(@event);
+            acceptedPosition.NextStepIndex++;
+            return;
+        }
+
         var position = continuation.Stack[^1];
         var steps = scopes.Steps(position.ScopeId);
         if (position.NextStepIndex == steps.Count)
@@ -574,42 +626,305 @@ internal sealed class StructuredWorkflowRunner(
 
     }
 
+    private async Task<RunningActivity?> StartActivityAsync(
+        WorkflowScopeCatalog scopes,
+        ExecutionCheckpoint checkpoint,
+        ContinuationState continuation,
+        WorkflowStep step,
+        WorkflowDefinition definition,
+        WorkflowInstance instance,
+        object sourceData,
+        object workflowData,
+        bool persistState,
+        CancellationTokenSource activityCancellation)
+    {
+        var pending = continuation.PendingActivity;
+        var isRecovery = pending != null;
+        if (pending != null && pending.StepId != scopes.Id(step))
+            throw new InvalidOperationException("The saved activity does not match its continuation");
+
+        var invocationId = pending?.Id ?? NewInvocationId(instance, continuation, scopes.Id(step));
+        var attempt = new ActivityAttemptState
+        {
+            Kind = isRecovery ? "Recover" : "Execute"
+        };
+        PreparedActivity prepared;
+        object? recoveryState = null;
+        try
+        {
+            var compensationInputs = SagaScopeTransitions.PrepareCompensationActivity(
+                scopes, continuation, services);
+            prepared = await _activities.PrepareAsync(step, definition, instance, sourceData,
+                continuation.GetPrevious(services),
+                TryScopeTransitions.CatchFault(checkpoint, continuation, services),
+                activityCancellation.Token, invocationId, attempt.Id,
+                continuation.Stack[^1].NextStepIndex, !isRecovery,
+                pending?.Inputs.CodeInputs,
+                compensationInputs, SagaScopeTransitions.ActivityMetadata(scopes, continuation, step));
+            if (pending == null)
+            {
+                recoveryState = (prepared.Activity as IRecoverableActivity)?
+                    .CaptureRecoveryStateObject(prepared.Context);
+                if (prepared.Activity is IRecoverableActivity && recoveryState == null)
+                    throw new InvalidOperationException(
+                        $"Activity '{prepared.Activity.GetType().Name}' returned a null recovery state");
+                prepared.SetRecoveryState(recoveryState);
+                pending = new ActivityInvocationState
+                {
+                    Id = invocationId,
+                    StepId = scopes.Id(step),
+                    Inputs = ActivityInputSnapshot.Capture(prepared.Activity, step),
+                    RecoveryState = SerializedValue.From(recoveryState)
+                };
+                continuation.PendingActivity = pending;
+            }
+            else
+            {
+                pending.Inputs.Restore(prepared.Activity, services);
+                recoveryState = pending.RecoveryState?.Read(services);
+                prepared.SetRecoveryState(recoveryState);
+            }
+        }
+        catch (Exception error) when (!isRecovery)
+        {
+            return new RunningActivity(continuation, step,
+                Task.FromResult(ActivityRunResult.Threw(error)), activityCancellation,
+                null, continuation.Stack[^1].NextStepIndex);
+        }
+        catch (Exception error)
+        {
+            pending!.ResolutionReason = $"Activity recovery could not be prepared: {error.Message}";
+            continuation.Status = ContinuationStatus.WaitingResolution;
+            await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
+            return null;
+        }
+
+        if (isRecovery && prepared.Activity is not IRecoverableActivity)
+        {
+            pending!.ResolutionReason = "The activity has no recovery contract";
+            continuation.Status = ContinuationStatus.WaitingResolution;
+            await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
+            return null;
+        }
+
+        pending!.ResolutionReason = null;
+        pending.Attempts.Add(attempt);
+        instance.ExecutionHistory.Add(new ExecutionTraceEntry
+        {
+            EntryType = TraceEntryType.ActivityStarted,
+            ActivityName = step.ActivityType?.Name ?? "Activity",
+            StepNumber = continuation.Stack[^1].NextStepIndex,
+            Metadata = new Dictionary<string, object>
+            {
+                ["InvocationId"] = invocationId,
+                ["AttemptId"] = attempt.Id,
+                ["Kind"] = attempt.Kind
+            }
+        });
+        await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
+
+        var skipCancelledRecovery = isRecovery && continuation.CancellationUnwind &&
+            !TryScopeTransitions.IsInsideFinally(continuation) &&
+            !SagaScopeTransitions.IsInsideCompensation(continuation);
+        var task = ObserveActivityAsync(prepared, isRecovery, recoveryState,
+            skipCancelledRecovery, activityCancellation.Token);
+        return new RunningActivity(continuation, step, task, activityCancellation,
+            prepared, continuation.Stack[^1].NextStepIndex);
+    }
+
+    private static async Task<ActivityRunResult> ObserveActivityAsync(
+        PreparedActivity prepared,
+        bool isRecovery,
+        object? recoveryState,
+        bool skipCancelledRecovery,
+        CancellationToken cancellationToken)
+    {
+        if (isRecovery)
+        {
+            ActivityRecoveryResolution resolution;
+            try
+            {
+                resolution = await ((IRecoverableActivity)prepared.Activity)
+                    .RecoverObjectAsync(recoveryState, prepared.Context, cancellationToken);
+            }
+            catch (Exception error)
+            {
+                return ActivityRunResult.Unresolved(
+                    $"Recovery check failed: {error.Message}");
+            }
+
+            switch (resolution.Disposition)
+            {
+                case ActivityRecoveryDisposition.Completed:
+                    return ActivityRunResult.Returned(prepared.Activity);
+                case ActivityRecoveryDisposition.Unresolved:
+                    return ActivityRunResult.Unresolved(resolution.Reason ??
+                        "The activity outcome is not known");
+                case ActivityRecoveryDisposition.Faulted:
+                    return ActivityRunResult.Threw(resolution.Error ??
+                        new InvalidOperationException("Recovery did not provide an exception"));
+                case ActivityRecoveryDisposition.Execute:
+                    if (skipCancelledRecovery)
+                        return ActivityRunResult.Skipped();
+                    break;
+                default:
+                    return ActivityRunResult.Unresolved("Unknown recovery decision");
+            }
+        }
+
+        try
+        {
+            await prepared.Activity.ExecuteAsync(prepared.Context, cancellationToken);
+            return ActivityRunResult.Returned(prepared.Activity);
+        }
+        catch (Exception error)
+        {
+            return ActivityRunResult.Threw(error);
+        }
+    }
+
+    private static string NewInvocationId(WorkflowInstance instance,
+        ContinuationState continuation, string stepId)
+    {
+        var position = continuation.Stack[^1];
+        var identity = $"{instance.InstanceId}|{position.ActivationId}|{stepId}";
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(identity));
+        return Convert.ToHexString(hash.AsSpan(0, 16)).ToLowerInvariant();
+    }
+
+    private static async Task<ActivityRunResult> ObserveInvocationAsync(Task<object?> invocation)
+    {
+        try
+        {
+            return ActivityRunResult.Returned(await invocation);
+        }
+        catch (Exception error)
+        {
+            return ActivityRunResult.Threw(error);
+        }
+    }
+
+    private async Task<RunningActivity?> StartInvocationAsync(
+        WorkflowScopeCatalog scopes,
+        ExecutionCheckpoint checkpoint,
+        ContinuationState continuation,
+        WorkflowStep step,
+        WorkflowDefinition definition,
+        WorkflowInstance instance,
+        object sourceData,
+        object workflowData,
+        bool persistState,
+        CancellationTokenSource cancellation)
+    {
+        if (continuation.PendingActivity != null)
+        {
+            continuation.PendingActivity.ResolutionReason =
+                "The child workflow outcome is unknown; resolve it before continuing";
+            continuation.Status = ContinuationStatus.WaitingResolution;
+            await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
+            return null;
+        }
+
+        var pending = new ActivityInvocationState { StepId = scopes.Id(step) };
+        var attempt = new ActivityAttemptState { Kind = "InvokeWorkflow" };
+        pending.Attempts.Add(attempt);
+        continuation.PendingActivity = pending;
+        instance.ExecutionHistory.Add(new ExecutionTraceEntry
+        {
+            EntryType = TraceEntryType.ActivityStarted,
+            ActivityName = step.Name,
+            StepNumber = continuation.Stack[^1].NextStepIndex,
+            Metadata = new Dictionary<string, object>
+            {
+                ["InvocationId"] = pending.Id,
+                ["AttemptId"] = attempt.Id,
+                ["Kind"] = attempt.Kind
+            }
+        });
+        await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
+
+        var task = _invocations.ExecuteAsync(step, definition, instance, sourceData,
+            continuation.GetPrevious(services), cancellation.Token);
+        return new RunningActivity(continuation, step, ObserveInvocationAsync(task),
+            cancellation, null, continuation.Stack[^1].NextStepIndex);
+    }
+
     private async Task SettleAsync(
         WorkflowScopeCatalog scopes,
         RunningActivity activity,
         Dictionary<string, RunningActivity> inFlight,
-        object workflowData)
+        object workflowData,
+        WorkflowInstance instance)
     {
         try
         {
-            var output = await activity.Task;
-            if (activity.Continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled)
+            var outcome = await activity.Task;
+            if (outcome.Kind == ActivityRunKind.Unresolved)
             {
-                if (activity.Continuation.Status == ContinuationStatus.Cancelling &&
-                    SagaScopeTransitions.IsForwardActivity(scopes, activity.Continuation, activity.Step))
-                {
-                    if (activity.SourceIsIsolated)
-                        WorkflowValueBinding.ApplyActivityOutputs(activity.Step, output, workflowData);
-                    SagaScopeTransitions.CompleteForwardActivity(scopes, activity.Continuation,
-                        activity.Step, output, services);
-                }
+                var pending = activity.Continuation.PendingActivity
+                    ?? throw new InvalidOperationException("Unresolved activity has no saved Start");
+                pending.ResolutionReason = outcome.Reason;
+                pending.Attempts[^1].EndedAtUtc = DateTime.UtcNow;
+                pending.Attempts[^1].Observation = "Unresolved";
+                activity.Continuation.Status = ContinuationStatus.WaitingResolution;
                 return;
             }
 
-            if (activity.SourceIsIsolated)
-                WorkflowValueBinding.ApplyActivityOutputs(activity.Step, output, workflowData);
-            SagaScopeTransitions.CompleteForwardActivity(scopes, activity.Continuation, activity.Step,
-                output, services);
-            SagaScopeTransitions.CompleteCompensationActivity(scopes, activity.Continuation, output);
-            activity.Continuation.SetPrevious(output);
-            activity.Continuation.Stack[^1].StepRetryCounts.Remove(
-                activity.Continuation.Stack[^1].NextStepIndex);
-            activity.Continuation.Stack[^1].NextStepIndex++;
+            if (outcome.Kind == ActivityRunKind.Skipped)
+            {
+                MarkActivityEnd(activity, instance, "NotRun");
+                activity.Continuation.Status = ContinuationStatus.Cancelling;
+                return;
+            }
+
+            if (outcome.Kind == ActivityRunKind.Threw)
+            {
+                MarkActivityEnd(activity, instance, "Threw", outcome.Error);
+                throw outcome.Error ?? new InvalidOperationException("Activity failed without an exception");
+            }
+
+            var output = outcome.Output;
+            try
+            {
+                // The activity has returned successfully. Record it for saga compensation
+                // before applying mappings, which can fail after an external effect.
+                SagaScopeTransitions.CompleteForwardActivity(scopes, activity.Continuation,
+                    activity.Step, output, services);
+                if (activity.Prepared != null)
+                    await activity.Prepared.ApplyOutputsAsync();
+                if (activity.Continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
+                    activity.Continuation.CancellationUnwind &&
+                    !TryScopeTransitions.IsInsideFinally(activity.Continuation) &&
+                    !SagaScopeTransitions.IsInsideCompensation(activity.Continuation))
+                {
+                    MarkActivityEnd(activity, instance, "Returned");
+                    activity.Continuation.Status = ContinuationStatus.Cancelling;
+                    return;
+                }
+
+                SagaScopeTransitions.CompleteCompensationActivity(scopes, activity.Continuation, output);
+                activity.Continuation.SetPrevious(output);
+                activity.Continuation.Stack[^1].StepRetryCounts.Remove(
+                    activity.Continuation.Stack[^1].NextStepIndex);
+                activity.Continuation.Stack[^1].NextStepIndex++;
+                MarkActivityEnd(activity, instance, "Returned");
+            }
+            catch (Exception error)
+            {
+                MarkActivityEnd(activity, instance, "OutputFailed", error);
+                throw;
+            }
         }
-        catch (Exception) when (activity.Continuation.Status is
-            ContinuationStatus.Cancelling or ContinuationStatus.Cancelled)
+        catch (Exception error) when (
+            error is not CheckpointPersistenceException &&
+            (activity.Continuation.Status is (ContinuationStatus.Cancelling or ContinuationStatus.Cancelled) ||
+             activity.Continuation.CancellationUnwind &&
+             !TryScopeTransitions.IsInsideFinally(activity.Continuation) &&
+             !SagaScopeTransitions.IsInsideCompensation(activity.Continuation)))
         {
             // The parent join has cancelled this branch.
+            activity.Continuation.Status = ContinuationStatus.Cancelling;
         }
         finally
         {
@@ -618,12 +933,58 @@ internal sealed class StructuredWorkflowRunner(
         }
     }
 
+    private static void MarkActivityEnd(RunningActivity running, WorkflowInstance instance,
+        string observation,
+        Exception? error = null)
+    {
+        var pending = running.Continuation.PendingActivity;
+        if (pending == null)
+            return;
+        var attempt = pending.Attempts[^1];
+        attempt.EndedAtUtc = DateTime.UtcNow;
+        attempt.Observation = observation;
+        running.Continuation.PendingActivity = null;
+        instance.ExecutionHistory.Add(new ExecutionTraceEntry
+        {
+            EntryType = error == null ? TraceEntryType.ActivityCompleted : TraceEntryType.ActivityFailed,
+            ActivityName = running.Step.ActivityType?.Name ?? running.Step.Name,
+            StepNumber = running.StepNumber,
+            Duration = attempt.EndedAtUtc - attempt.StartedAtUtc,
+            ErrorMessage = error?.Message,
+            StackTrace = error?.StackTrace,
+            Metadata = new Dictionary<string, object>
+            {
+                ["InvocationId"] = pending.Id,
+                ["AttemptId"] = attempt.Id,
+                ["Observation"] = observation
+            }
+        });
+    }
+
+    private enum ActivityRunKind { Returned, Threw, Unresolved, Skipped }
+
+    private sealed record ActivityRunResult(
+        ActivityRunKind Kind,
+        object? Output = null,
+        Exception? Error = null,
+        string? Reason = null)
+    {
+        public static ActivityRunResult Returned(object? output) =>
+            new(ActivityRunKind.Returned, Output: output);
+        public static ActivityRunResult Threw(Exception error) =>
+            new(ActivityRunKind.Threw, Error: error);
+        public static ActivityRunResult Unresolved(string reason) =>
+            new(ActivityRunKind.Unresolved, Reason: reason);
+        public static ActivityRunResult Skipped() => new(ActivityRunKind.Skipped);
+    }
+
     private sealed record RunningActivity(
         ContinuationState Continuation,
         WorkflowStep Step,
-        Task<object?> Task,
+        Task<ActivityRunResult> Task,
         CancellationTokenSource Cancellation,
-        bool SourceIsIsolated);
+        PreparedActivity? Prepared,
+        int StepNumber);
 
     private static void Fork(WorkflowScopeCatalog scopes, WorkflowStep step, ExecutionCheckpoint checkpoint,
         ContinuationState parent)
@@ -691,6 +1052,9 @@ internal sealed class StructuredWorkflowRunner(
         if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             return;
         continuation.CancellationUnwind = true;
+        if (continuation.PendingActivity != null &&
+            continuation.Status == ContinuationStatus.WaitingResolution)
+            return;
         if (TryScopeTransitions.IsInsideFinally(continuation) ||
             SagaScopeTransitions.IsInsideCompensation(continuation))
         {
@@ -699,6 +1063,7 @@ internal sealed class StructuredWorkflowRunner(
             return;
         }
         checkpoint.Waits.RemoveAll(wait => wait.ContinuationId == continuation.Id);
+        continuation.AcceptedWait = null;
         foreach (var join in checkpoint.Joins.Where(item => item.ParentContinuationId == continuation.Id).ToList())
         {
             join.IsCompleting = true;
@@ -720,7 +1085,17 @@ internal sealed class StructuredWorkflowRunner(
             var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
             checkpoint.Joins.Remove(join);
             if (checkpoint.UnhandledError != null)
+            {
+                var finishingCleanup = TryScopeTransitions.IsInsideFinally(parent) ||
+                    SagaScopeTransitions.IsInsideCompensation(parent);
                 CancelTree(checkpoint, parent);
+                if (finishingCleanup)
+                {
+                    if (!join.ResumeParentWithoutAdvance)
+                        parent.Stack[^1].NextStepIndex++;
+                    parent.Status = ContinuationStatus.Active;
+                }
+            }
             else if (parent.CancellationUnwind && !TryScopeTransitions.IsInsideFinally(parent) &&
                      !SagaScopeTransitions.IsInsideCompensation(parent))
                 parent.Status = ContinuationStatus.Cancelling;
@@ -752,6 +1127,7 @@ internal sealed class StructuredWorkflowRunner(
             checkpoint.RuntimeUnhandledError ??= error;
             TryScopeTransitions.AbortFailedFinally(continuation);
             TryScopeTransitions.ContinueCancellation(scopes, continuation);
+            CancelAncestorJoins(checkpoint, continuation);
             return true;
         }
         while (true)
@@ -767,6 +1143,7 @@ internal sealed class StructuredWorkflowRunner(
                 checkpoint.UnhandledError = SerializedException.From(error);
                 checkpoint.RuntimeUnhandledError = error;
                 continuation.Status = ContinuationStatus.Joining;
+                CancelAncestorJoins(checkpoint, continuation);
                 return true;
             }
 
@@ -780,6 +1157,8 @@ internal sealed class StructuredWorkflowRunner(
                 return CaptureFailure(scopes, checkpoint, continuation, error);
             if (TryScopeTransitions.Capture(scopes, continuation, error))
             {
+                checkpoint.UnhandledError = null;
+                checkpoint.RuntimeUnhandledError = null;
                 continuation.Status = ContinuationStatus.Joining;
                 return true;
             }
@@ -803,6 +1182,23 @@ internal sealed class StructuredWorkflowRunner(
         return tryIndex >= 0 && TryScopeTransitions.Capture(scopes, continuation, error);
     }
 
+    private static void CancelAncestorJoins(ExecutionCheckpoint checkpoint,
+        ContinuationState continuation)
+    {
+        while (continuation.ParentJoinId != null)
+        {
+            var join = checkpoint.Joins.SingleOrDefault(item => item.Id == continuation.ParentJoinId);
+            if (join == null)
+                return;
+            join.IsCompleting = true;
+            join.ResumeParentWithoutAdvance = true;
+            foreach (var siblingId in join.ChildContinuationIds.Where(id => id != continuation.Id))
+                CancelTree(checkpoint,
+                    checkpoint.Continuations.Single(item => item.Id == siblingId));
+            continuation = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+        }
+    }
+
     private static WorkflowExecutionResult Rejected(string instanceId, string reason) => new()
     {
         InstanceId = instanceId,
@@ -815,13 +1211,33 @@ internal sealed class StructuredWorkflowRunner(
     {
         if (!persistState)
             return;
-        PrepareCheckpoint(checkpoint, scopes);
-        instance.WorkflowDataJson = JsonSerializer.Serialize(workflowData, workflowData.GetType());
-        instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-        instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes);
         try
         {
-            await repository.SaveWorkflowInstanceAsync(instance);
+            PrepareCheckpoint(checkpoint, scopes);
+            instance.WorkflowDataJson = JsonSerializer.Serialize(workflowData, workflowData.GetType());
+            instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+            instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes);
+            var expectedRevision = instance.Revision;
+            var commitId = Guid.NewGuid().ToString("N");
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                WorkflowCommitResult result;
+                try
+                {
+                    result = await repository.CommitWorkflowInstanceAsync(
+                        instance, expectedRevision, commitId);
+                }
+                catch (Exception) when (attempt < 2)
+                {
+                    continue;
+                }
+
+                if (result.Status == WorkflowCommitStatus.Conflict)
+                    throw new InvalidOperationException(
+                        $"Workflow instance '{instance.InstanceId}' changed at revision {result.Revision}");
+                instance.Revision = result.Revision;
+                return;
+            }
         }
         catch (Exception ex)
         {
@@ -839,6 +1255,7 @@ internal sealed class StructuredWorkflowRunner(
             if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             {
                 continuation.Previous = null;
+                continuation.AcceptedWait = null;
                 continue;
             }
 

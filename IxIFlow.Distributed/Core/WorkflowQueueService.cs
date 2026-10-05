@@ -255,6 +255,9 @@ public class WorkflowQueueService : BackgroundService
 
             // Resume workflow
             var result = await workflowEngine.ResumeWorkflowAsync(command.InstanceId, eventData);
+            if (result.Status == WorkflowExecutionStatus.Running && !result.EventAccepted)
+                throw new InvalidOperationException(
+                    $"Workflow instance '{command.InstanceId}' is executing; keep the resume command for redelivery");
 
             // Publish completion event if workflow finished
             if (result.EventAccepted && result.Status != WorkflowExecutionStatus.Suspended)

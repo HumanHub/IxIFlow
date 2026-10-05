@@ -45,7 +45,11 @@ public enum WorkflowStatus
     /// <summary>
     ///     Workflow is terminated
     /// </summary>
-    Terminated
+    Terminated,
+    /// <summary>
+    /// At least one activity has a committed Start without a committed End and needs resolution.
+    /// </summary>
+    NeedsResolution
 }
 
 /// <summary>
@@ -215,6 +219,9 @@ public class WorkflowOptions
 /// </summary>
 public class WorkflowInstance
 {
+    /// <summary>The revision assigned by an atomic repository commit.</summary>
+    public long Revision { get; set; }
+
     internal WorkflowInstance CopyForResume() => (WorkflowInstance)MemberwiseClone();
 
     /// <summary>
@@ -846,6 +853,9 @@ public class WorkflowStep
     /// </summary>
     public Type? ExceptionType { get; set; }
 
+    /// <summary>The durable data type exposed to catch activities.</summary>
+    public Type? FaultType { get; set; }
+
     /// <summary>
     ///     Resume event type (for resume operations)
     /// </summary>
@@ -899,6 +909,7 @@ public class WorkflowStep
             WorkflowDataType = WorkflowDataType,
             PreviousStepDataType = PreviousStepDataType,
             ExceptionType = ExceptionType,
+            FaultType = FaultType,
             ResumeEventType = ResumeEventType,
             Order = Order,
             StepMetadata = new Dictionary<string, object>(StepMetadata)

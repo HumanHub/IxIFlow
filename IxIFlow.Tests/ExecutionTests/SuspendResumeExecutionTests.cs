@@ -455,9 +455,9 @@ public class SuspendResumeExecutionTests
                 .Step<CompleteOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.CompleteOrderCompleted).To(ctx => ctx.WorkflowData.CompleteOrderCompleted)))
-            .Catch<Exception>(catchBlock => catchBlock
+            .Catch<Exception, MessageFault>(catchBlock => catchBlock
                 .Step<LogErrorActivity>(setup => setup
-                    .Input(act => act.Message).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.Message).From(ctx => ctx.Fault.Message)
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.RequiresApproval)))
             .Build();
@@ -492,9 +492,9 @@ public class SuspendResumeExecutionTests
                 .Step<CompleteOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.CompleteOrderCompleted).To(ctx => ctx.WorkflowData.CompleteOrderCompleted)))
-            .Catch<Exception>(catchBlock => catchBlock
+            .Catch<Exception, MessageFault>(catchBlock => catchBlock
                 .Step<LogErrorActivity>(setup => setup
-                    .Input(act => act.Message).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.Message).From(ctx => ctx.Fault.Message)
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.RequiresApproval)))
             .Build();
@@ -706,76 +706,12 @@ public class SuspendResumeExecutionTests
     /// <summary>
     ///     Mock implementation of IWorkflowStateRepository for testing
     /// </summary>
-    private class MockWorkflowStateRepository : IWorkflowStateRepository
+    private class MockWorkflowStateRepository : InMemoryWorkflowStateRepository
     {
-        private readonly Dictionary<string, WorkflowInstance> _instances = new();
-
-        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
+        public async Task<List<WorkflowInstance>> GetWorkflowInstancesAsync(string workflowName, int? version = null)
         {
-            _instances.TryGetValue(instanceId, out var instance);
-            return Task.FromResult(instance);
-        }
-
-        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
-        {
-            _instances[instance.InstanceId] = instance;
-            return Task.CompletedTask;
-        }
-
-        public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance)
-        {
-            lock (_instances)
-            {
-                if (!_instances.TryGetValue(instance.InstanceId, out var stored) ||
-                    stored.Status != WorkflowStatus.Suspended ||
-                    stored.SuspensionInfo?.SuspensionId != instance.SuspensionInfo?.SuspensionId)
-                {
-                    return Task.FromResult(false);
-                }
-
-                _instances[instance.InstanceId] = instance;
-                return Task.FromResult(true);
-            }
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName)
-        {
-            var instances = _instances.Values.Where(i => i.WorkflowName == workflowName);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status)
-        {
-            var instances = _instances.Values.Where(i => i.Status == status);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId)
-        {
-            var instances = _instances.Values.Where(i => i.CorrelationId == correlationId);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync()
-        {
-            var instances = _instances.Values.Where(i => i.Status == WorkflowStatus.Suspended);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task DeleteWorkflowInstanceAsync(string instanceId)
-        {
-            _instances.Remove(instanceId);
-            return Task.CompletedTask;
-        }
-
-        public Task<List<WorkflowInstance>> GetWorkflowInstancesAsync(string workflowName, int? version = null)
-        {
-            var instances = _instances.Values.Where(i => i.WorkflowName == workflowName);
-            if (version.HasValue)
-            {
-                instances = instances.Where(i => i.WorkflowVersion == version.Value);
-            }
-            return Task.FromResult(instances.ToList());
+            var instances = await GetWorkflowInstancesByNameAsync(workflowName);
+            return instances.Where(instance => !version.HasValue || instance.WorkflowVersion == version.Value).ToList();
         }
     }
 

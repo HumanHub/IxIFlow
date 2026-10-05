@@ -2,6 +2,7 @@ using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
+using System.Text.Json.Serialization;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -108,8 +109,8 @@ public class StructuredSagaWaitTests
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Trace)))
                 .WaitFor<Approval>("approval")
                 .Step<FailActivity>(_ => { })))
-            .Catch<InvalidOperationException>(body => body.Step<ReadErrorActivity>(setup => setup
-                .Input(activity => activity.Message).From(ctx => ctx.Exception.Message)
+            .Catch<InvalidOperationException, MessageFault>(body => body.Step<ReadErrorActivity>(setup => setup
+                .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
@@ -167,7 +168,7 @@ public class StructuredSagaWaitTests
                         .Step<ReserveActivity>(setup => setup
                             .CompensateWith<FailCompensationActivity>())
                         .WaitFor<Approval>("loser")))
-                    .Catch<InvalidOperationException>(catchBody => catchBody
+                    .Catch<InvalidOperationException, MessageFault>(catchBody => catchBody
                         .Step<CompleteActivity>(setup => setup
                             .Input(activity => activity.Count).From(ctx => 10)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))))
@@ -374,7 +375,7 @@ public class StructuredSagaWaitTests
         var definition = Workflow.Create<SagaData>("SagaInsideCatch")
             .Step<BeginActivity>()
             .Try(body => body.WaitFor<Approval>("start").Step<FailActivity>(_ => { }))
-            .Catch<InvalidOperationException>(body => body.Saga(saga => saga
+            .Catch<InvalidOperationException, MessageFault>(body => body.Saga(saga => saga
                 .Step<ReserveActivity>(setup => setup
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved)
@@ -440,6 +441,60 @@ public class StructuredSagaWaitTests
     }
 
     [Fact]
+    public async Task SagaContinueRestoresThePreviousStepFromBeforeTheSaga()
+    {
+        using var services = CreateServices(new InMemoryWorkflowStateRepository());
+        var definition = Workflow.Create<SagaData>("ContinuePrevious")
+            .Step<SeedActivity>()
+            .Saga(saga => saga
+                .Step<ReserveActivity>(setup => setup
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved))
+                .Step<FailActivity>(_ => { }))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenContinue())
+            .Step<CompleteActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.PreviousStep.Result)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(8, Data(result).Completed);
+    }
+
+    [Fact]
+    public async Task SagaRetryRestoresThePreviousStepFromBeforeTheSaga()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<SagaRetryProbe>();
+        services.AddTransient<FailOnceSagaActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<SagaData>("RetryPrevious")
+            .Step<SeedActivity>()
+            .Saga(saga => saga
+                .Step<ReserveActivity>(setup => setup
+                    .Input(activity => activity.Count).From(ctx => ctx.PreviousStep.Result)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved))
+                .Step<FailOnceSagaActivity>(_ => { }))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
+            .Step<CompleteActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.PreviousStep.Result)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))
+            .Build();
+
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(2, provider.GetRequiredService<SagaRetryProbe>().Attempts);
+        Assert.Equal(8, Data(result).Reserved);
+        Assert.Equal(8, Data(result).Completed);
+    }
+
+    [Fact]
     public async Task StructuredSagaRunsOutcomeBranchBeforeWait()
     {
         using var services = CreateServices(new InMemoryWorkflowStateRepository());
@@ -463,6 +518,127 @@ public class StructuredSagaWaitTests
         Assert.Equal(1, data.Completed);
         var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
+    }
+
+    [Fact]
+    public async Task OutcomeBranchActivityCompensatesWhenLaterSagaStepFails()
+    {
+        using var services = CreateServices(new InMemoryWorkflowStateRepository());
+        var definition = Workflow.Create<SagaData>("OutcomeCompensation")
+            .Step<BeginActivity>()
+            .Saga(saga => saga
+                .OutcomeOn(ctx => ctx.WorkflowData.Method, outcomes => outcomes
+                    .Outcome("card", branch => branch.Step<ReserveActivity>(setup => setup
+                        .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
+                        .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved)
+                        .CompensateWith<ReleaseActivity>(compensation => compensation
+                            .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
+                            .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))))
+                .Step<FailActivity>(_ => { }))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData { Method = "card" });
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Equal(1, Data(result).Reserved);
+        Assert.Equal(1, Data(result).Compensated);
+    }
+
+    [Fact]
+    public async Task OutputMappingFailureCompensatesTheCompletedSagaActivity()
+    {
+        using var services = CreateServices(new InMemoryWorkflowStateRepository());
+        var definition = Workflow.Create<SagaData>("OutputMappingCompensation")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<ReserveActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.RejectedOutput)
+                .CompensateWith<ReleaseActivity>(compensation => compensation
+                    .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated))))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("output mapping failed", result.ErrorMessage);
+        Assert.Equal(1, Data(result).Compensated);
+    }
+
+    [Fact]
+    public async Task ExhaustedSagaRetryInParallelReachesParentCatch()
+    {
+        using var services = CreateServices(new InMemoryWorkflowStateRepository());
+        var definition = Workflow.Create<SagaData>("ParallelSagaRetry")
+            .Step<BeginActivity>()
+            .Try(body => body.Parallel(parallel => parallel
+                .Do(branch => branch.Saga(saga => saga.Step<FailActivity>(_ => { }))
+                    .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1)))
+                .Do(branch => branch.Step<BeginActivity>(_ => { }))))
+            .Catch<InvalidOperationException, MessageFault>(handler => handler.Step<ReadErrorActivity>(setup => setup
+                .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
+                .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Contains("Saga retry exhausted", Data(result).Error);
+    }
+
+    [Fact]
+    public async Task StepRetryKeepsItsInvocationId()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<RetryIdProbe>();
+        services.AddTransient<RetryIdActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<SagaData>("StableStepRetryId")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<RetryIdActivity>(setup => setup
+                .OnError<InvalidOperationException>(handler => handler.ThenRetry(1))))
+            .Build();
+
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        var ids = provider.GetRequiredService<RetryIdProbe>().InvocationIds;
+        Assert.Equal(2, ids.Count);
+        Assert.Equal(ids[0], ids[1]);
+    }
+
+    [Fact]
+    public async Task FullSagaRetryStartsANewInvocation()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<RetryIdProbe>();
+        services.AddSingleton<SagaRetryProbe>();
+        services.AddTransient<SagaAttemptIdActivity>();
+        services.AddTransient<FailOnceSagaActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<SagaData>("NewSagaRetryId")
+            .Step<BeginActivity>()
+            .Saga(saga => saga
+                .Step<SagaAttemptIdActivity>(_ => { })
+                .Step<FailOnceSagaActivity>(_ => { }))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
+            .Build();
+
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        var ids = provider.GetRequiredService<RetryIdProbe>().InvocationIds;
+        Assert.Equal(2, ids.Count);
+        Assert.NotEqual(ids[0], ids[1]);
     }
 
     private static WorkflowDefinition ForwardWorkflow() => Workflow.Create<SagaData>("SagaForwardWait")
@@ -516,11 +692,14 @@ public class StructuredSagaWaitTests
 
     public sealed class SagaData
     {
+        public string Method { get; set; } = "";
         public int Reserved { get; set; }
         public int Completed { get; set; }
         public int Compensated { get; set; }
         public string Trace { get; set; } = "";
         public string? Error { get; set; }
+        [JsonIgnore]
+        public int RejectedOutput { get => 0; set => throw new InvalidOperationException("output mapping failed"); }
     }
 
     public sealed class Approval
@@ -619,6 +798,46 @@ public class StructuredSagaWaitTests
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("payment failed");
+    }
+
+    public sealed class SagaRetryProbe
+    {
+        public int Attempts { get; set; }
+    }
+
+    public sealed class RetryIdProbe
+    {
+        public List<string> InvocationIds { get; } = [];
+    }
+
+    public sealed class RetryIdActivity(RetryIdProbe probe) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.InvocationIds.Add(context.InvocationId);
+            if (probe.InvocationIds.Count == 1)
+                throw new InvalidOperationException("retry once");
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class SagaAttemptIdActivity(RetryIdProbe probe) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.InvocationIds.Add(context.InvocationId);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class FailOnceSagaActivity(SagaRetryProbe probe) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            if (++probe.Attempts == 1)
+                throw new InvalidOperationException("retry once");
+            return Task.CompletedTask;
+        }
     }
 
     public sealed class TraceActivity : IAsyncActivity

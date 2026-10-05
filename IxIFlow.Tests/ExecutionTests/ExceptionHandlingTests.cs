@@ -51,9 +51,9 @@ public class ExceptionHandlingTests
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                     .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed)))
-            .Catch<BusinessValidationException>(catchBuilder => catchBuilder
+            .Catch<BusinessValidationException, MessageFault>(catchBuilder => catchBuilder
                 .Step<LogErrorActivity>(setup => setup
-                    .Input(act => act.Message).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.Message).From(ctx => ctx.Fault.Message)
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.Message).To(ctx => ctx.WorkflowData.ErrorMessage)))
@@ -100,9 +100,9 @@ public class ExceptionHandlingTests
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                     .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed)))
-            .Catch<BusinessValidationException>(catchBuilder => catchBuilder
+            .Catch<BusinessValidationException, MessageFault>(catchBuilder => catchBuilder
                 .Step<LogErrorActivity>(setup => setup
-                    .Input(act => act.Message).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.Message).From(ctx => ctx.Fault.Message)
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.Message).To(ctx => ctx.WorkflowData.ErrorMessage)))
@@ -150,17 +150,17 @@ public class ExceptionHandlingTests
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                     .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed)))
-            .Catch<BusinessValidationException>(catchBuilder => catchBuilder
+            .Catch<BusinessValidationException, MessageFault>(catchBuilder => catchBuilder
                 .Step<LogErrorActivity>(setup => setup
-                    .Input(act => act.Message).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.Message).From(ctx => ctx.Fault.Message)
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.Message).To(ctx => ctx.WorkflowData.ErrorMessage)))
-            .Catch<PaymentProcessingException>(catchBuilder => catchBuilder
+            .Catch<PaymentProcessingException, PaymentFault>(catchBuilder => catchBuilder
                 .Step<HandlePaymentErrorActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
-                    .Input(act => act.RefundAmount).From(ctx => ctx.Exception.PaymentAmount)
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
+                    .Input(act => act.RefundAmount).From(ctx => ctx.Fault.PaymentAmount)
                     .Output(act => act.Handled).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.RefundProcessed).To(ctx => ctx.WorkflowData.RefundProcessed)
                     .Output(act => act.RefundAmount).To(ctx => ctx.WorkflowData.RefundAmount) // Add this line
@@ -203,9 +203,9 @@ public class ExceptionHandlingTests
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)))
-            .Catch<BusinessValidationException>(catchBuilder => catchBuilder
+            .Catch<BusinessValidationException, MessageFault>(catchBuilder => catchBuilder
                 .Step<LogErrorActivity>(setup => setup
-                    .Input(act => act.Message).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.Message).From(ctx => ctx.Fault.Message)
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.Message).To(ctx => ctx.WorkflowData.ErrorMessage)))
@@ -274,17 +274,17 @@ public class ExceptionHandlingTests
                         .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                         .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                         .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed)))
-                .Catch<BusinessValidationException>(innerCatchBuilder => innerCatchBuilder
+                .Catch<BusinessValidationException, MessageFault>(innerCatchBuilder => innerCatchBuilder
                     .Step<LogErrorActivity>(setup => setup
-                        .Input(act => act.Message).From(ctx => "Inner catch: " + ctx.Exception.Message)
+                        .Input(act => act.Message).From(ctx => "Inner catch: " + ctx.Fault.Message)
                         .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                         .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
                         .Output(act => act.Message).To(ctx => ctx.WorkflowData.ErrorMessage))))
-            .Catch<PaymentProcessingException>(outerCatchBuilder => outerCatchBuilder
+            .Catch<PaymentProcessingException, PaymentFault>(outerCatchBuilder => outerCatchBuilder
                 .Step<HandlePaymentErrorActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.ErrorMessage).From(ctx => "Outer catch: " + ctx.Exception.Message)
-                    .Input(act => act.RefundAmount).From(ctx => ctx.Exception.PaymentAmount)
+                    .Input(act => act.ErrorMessage).From(ctx => "Outer catch: " + ctx.Fault.Message)
+                    .Input(act => act.RefundAmount).From(ctx => ctx.Fault.PaymentAmount)
                     .Output(act => act.Handled).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.RefundProcessed).To(ctx => ctx.WorkflowData.RefundProcessed)
                     .Output(act => act.ErrorMessage).To(ctx => ctx.WorkflowData.ErrorMessage)))
@@ -326,9 +326,9 @@ public class ExceptionHandlingTests
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                     .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed)))
-            .Catch<Exception>(catchBuilder => catchBuilder // Generic catch-all
+            .Catch<Exception, MessageFault>(catchBuilder => catchBuilder // Generic catch-all
                 .Step<LogErrorActivity>(setup => setup
-                    .Input(act => act.Message).From(ctx => "Catch-all: " + ctx.Exception.Message)
+                    .Input(act => act.Message).From(ctx => "Catch-all: " + ctx.Fault.Message)
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.Message).To(ctx => ctx.WorkflowData.ErrorMessage)))
@@ -370,11 +370,11 @@ public class ExceptionHandlingTests
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                     .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed)))
-            .Catch<PaymentProcessingException>(catchBuilder => catchBuilder
+            .Catch<PaymentProcessingException, PaymentFault>(catchBuilder => catchBuilder
                 .Step<HandlePaymentErrorActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
-                    .Input(act => act.RefundAmount).From(ctx => ctx.Exception.PaymentAmount) // Access specific property
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
+                    .Input(act => act.RefundAmount).From(ctx => ctx.Fault.PaymentAmount) // Access specific property
                     .Output(act => act.Handled).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.RefundProcessed).To(ctx => ctx.WorkflowData.RefundProcessed)
                     .Output(act => act.RefundAmount).To(ctx => ctx.WorkflowData.RefundAmount) // Store the amount
@@ -477,18 +477,18 @@ public class ExceptionHandlingTests
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)))
-            .Catch<BusinessValidationException>(catchBuilder => catchBuilder
+            .Catch<BusinessValidationException, MessageFault>(catchBuilder => catchBuilder
                 // This will throw a PaymentProcessingException when Amount >= 150
                 .Step<ProcessPaymentWithExceptionActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => 200m) // Force exception
                     .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                     .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed)))
-            .Catch<PaymentProcessingException>(catchBuilder => catchBuilder
+            .Catch<PaymentProcessingException, PaymentFault>(catchBuilder => catchBuilder
                 .Step<HandlePaymentErrorActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.ErrorMessage).From(ctx => "Outer catch: " + ctx.Exception.Message)
-                    .Input(act => act.RefundAmount).From(ctx => ctx.Exception.PaymentAmount)
+                    .Input(act => act.ErrorMessage).From(ctx => "Outer catch: " + ctx.Fault.Message)
+                    .Input(act => act.RefundAmount).From(ctx => ctx.Fault.PaymentAmount)
                     .Output(act => act.Handled).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.RefundProcessed).To(ctx => ctx.WorkflowData.RefundProcessed)
                     .Output(act => act.RefundAmount).To(ctx => ctx.WorkflowData.RefundAmount) // Add this line
@@ -537,9 +537,9 @@ public class ExceptionHandlingTests
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)))
-            .Catch<BusinessValidationException>(catchBuilder => catchBuilder
+            .Catch<BusinessValidationException, MessageFault>(catchBuilder => catchBuilder
                 .Step<LogErrorActivity>(setup => setup
-                    .Input(act => act.Message).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.Message).From(ctx => ctx.Fault.Message)
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.Message).To(ctx => ctx.WorkflowData.ErrorMessage)))
@@ -590,17 +590,17 @@ public class ExceptionHandlingTests
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                     .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed)))
-            .Catch<PaymentProcessingException>(catchBuilder => catchBuilder
+            .Catch<PaymentProcessingException, PaymentFault>(catchBuilder => catchBuilder
                 .Step<HandlePaymentErrorActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.ErrorMessage).From(ctx => "Specific catch: " + ctx.Exception.Message)
-                    .Input(act => act.RefundAmount).From(ctx => ctx.Exception.PaymentAmount)
+                    .Input(act => act.ErrorMessage).From(ctx => "Specific catch: " + ctx.Fault.Message)
+                    .Input(act => act.RefundAmount).From(ctx => ctx.Fault.PaymentAmount)
                     .Output(act => act.Handled).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.RefundProcessed).To(ctx => ctx.WorkflowData.RefundProcessed)
                     .Output(act => act.ErrorMessage).To(ctx => ctx.WorkflowData.ErrorMessage)))
-            .Catch<Exception>(catchBuilder => catchBuilder // Generic catch-all
+            .Catch<Exception, MessageFault>(catchBuilder => catchBuilder // Generic catch-all
                 .Step<LogErrorActivity>(setup => setup
-                    .Input(act => act.Message).From(ctx => "Generic catch: " + ctx.Exception.Message)
+                    .Input(act => act.Message).From(ctx => "Generic catch: " + ctx.Fault.Message)
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.Message).To(ctx => ctx.WorkflowData.ErrorMessage)))
@@ -643,9 +643,9 @@ public class ExceptionHandlingTests
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                     .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed)))
-            .Catch<BusinessValidationException>(catchBuilder => catchBuilder // Won't match PaymentProcessingException
+            .Catch<BusinessValidationException, MessageFault>(catchBuilder => catchBuilder // Won't match PaymentProcessingException
                 .Step<LogErrorActivity>(setup => setup
-                    .Input(act => act.Message).From(ctx => "Business validation error: " + ctx.Exception.Message)
+                    .Input(act => act.Message).From(ctx => "Business validation error: " + ctx.Fault.Message)
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
                     .Output(act => act.Message).To(ctx => ctx.WorkflowData.ErrorMessage)))

@@ -116,6 +116,32 @@ public class WorkflowInvocationTests
     }
 
     [Fact]
+    public async Task TypedChildWorkflowCanBeInvokedTwice()
+    {
+        var definition = Workflow.Create<ParentWorkflowData>("RepeatedChildInvocation")
+            .Step<PrepareDataActivity>(setup => setup
+                .Input(activity => activity.RawInput).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(activity => activity.PreparedOutput).To(ctx => ctx.WorkflowData.ProcessedData))
+            .Invoke<ChildWorkflow, ChildWorkflowData>(setup => setup
+                .Input(child => child.InputData).From(ctx => ctx.WorkflowData.ProcessedData)
+                .Input(child => child.ProcessingStep).From(ctx => ctx.WorkflowData.ProcessingCount)
+                .Output(child => child.ProcessedResult).To(ctx => ctx.WorkflowData.SubWorkflowOutput))
+            .Invoke<ChildWorkflow, ChildWorkflowData>(setup => setup
+                .Input(child => child.InputData).From(ctx => ctx.WorkflowData.ProcessedData)
+                .Input(child => child.ProcessingStep).From(ctx => ctx.WorkflowData.ProcessingCount)
+                .Output(child => child.ProcessedResult).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Build();
+
+        var result = await _workflowEngine.ExecuteWorkflowAsync(definition,
+            new ParentWorkflowData { OrderId = "ORD-004", ProcessingCount = 4 });
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        var data = Assert.IsType<ParentWorkflowData>(result.WorkflowData);
+        Assert.Equal("Processed[4]: Prepared: ORD-004", data.SubWorkflowOutput);
+        Assert.Equal(data.SubWorkflowOutput, data.ValidationResult);
+    }
+
+    [Fact]
     public async Task TestWorkflowInvocation_ContextPropagation()
     {
         // Arrange - Create a workflow that tests context propagation through invocation
