@@ -28,16 +28,22 @@ public sealed class ActivityPackageManifest
             throw new InvalidOperationException("Activity package manifest is invalid YAML", exception);
         }
 
-        if (manifest.SchemaVersion != "1.0" ||
-            string.IsNullOrWhiteSpace(manifest.Package?.Name) ||
-            string.IsNullOrWhiteSpace(manifest.Package.Version) ||
-            manifest.Activities is not { Count: > 0 })
+        manifest.Validate();
+        return manifest;
+    }
+
+    public void Validate()
+    {
+        if (SchemaVersion != "1.0" ||
+            string.IsNullOrWhiteSpace(Package?.Name) ||
+            string.IsNullOrWhiteSpace(Package.Version) ||
+            Activities is not { Count: > 0 })
         {
             throw new InvalidOperationException("Activity package manifest needs schemaVersion 1.0, package identity, and activities");
         }
 
         var keys = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var activity in manifest.Activities)
+        foreach (var activity in Activities)
         {
             if (string.IsNullOrWhiteSpace(activity.Key) ||
                 string.IsNullOrWhiteSpace(activity.Version) ||
@@ -45,7 +51,7 @@ public sealed class ActivityPackageManifest
                 string.IsNullOrWhiteSpace(activity.Category) ||
                 !keys.Add(activity.Key))
             {
-                throw new InvalidOperationException($"Activity package {manifest.PackageReference} has a missing or duplicate activity key or metadata");
+                throw new InvalidOperationException($"Activity package {PackageReference} has a missing or duplicate activity key or metadata");
             }
 
             var fieldKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -69,7 +75,6 @@ public sealed class ActivityPackageManifest
             }
         }
 
-        return manifest;
     }
 
     private static readonly HashSet<string> SupportedControls =
@@ -88,7 +93,9 @@ public sealed class ActivityManifestEntry
     public string Version { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
+    public string? Designer { get; set; }
     public List<ActivityManifestField> Fields { get; set; } = [];
+    public List<string> Outputs { get; set; } = [];
     public Dictionary<string, string> Defaults { get; set; } = new();
 }
 
