@@ -13,12 +13,13 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
         WorkflowInstance instance,
         object workflowData,
         object? previous,
+        Exception? catchException,
         CancellationToken cancellationToken)
     {
         var method = GetType().GetMethod(nameof(ExecuteTypedAsync), BindingFlags.Instance | BindingFlags.NonPublic)!
             .MakeGenericMethod(workflowData.GetType(), step.PreviousStepDataType ?? typeof(object));
         var task = (Task<object?>)method.Invoke(this,
-            [step, definition, instance, workflowData, previous, cancellationToken])!;
+            [step, definition, instance, workflowData, previous, catchException, cancellationToken])!;
         return await task;
     }
 
@@ -28,6 +29,7 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
         WorkflowInstance instance,
         object workflowData,
         object? previous,
+        Exception? catchException,
         CancellationToken cancellationToken)
     {
         var request = new TypedActivityExecutionRequest<TData, TPrevious>
@@ -36,6 +38,7 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
                 ?? throw new InvalidOperationException($"Activity step '{step.Id}' has no activity type"),
             WorkflowData = (TData)workflowData,
             PreviousStepData = previous is TPrevious typed ? typed : default,
+            CatchException = catchException,
             InputMappings = step.InputMappings,
             OutputMappings = step.OutputMappings,
             Step = step,
