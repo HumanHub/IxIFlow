@@ -49,7 +49,8 @@ public class WorkflowEngine : IWorkflowEngine
         _sagaExecutor = sagaExecutor ?? throw new ArgumentNullException(nameof(sagaExecutor));
         _versionRegistry = versionRegistry ?? throw new ArgumentNullException(nameof(versionRegistry));
         _structuredRunner = serviceProvider.GetService<StructuredWorkflowRunner>()
-            ?? new StructuredWorkflowRunner(serviceProvider, _activityExecutor, _stateRepository, _versionRegistry,
+            ?? new StructuredWorkflowRunner(serviceProvider, _activityExecutor, _workflowInvoker,
+                _stateRepository, _versionRegistry,
                 InProcessInstanceGate.Shared);
     }
 
@@ -67,8 +68,7 @@ public class WorkflowEngine : IWorkflowEngine
         if (workflowData == null) throw new ArgumentNullException(nameof(workflowData));
 
         options ??= new WorkflowOptions();
-        if (StructuredWorkflowRunner.UsesStructuredExecution(definition))
-            return await _structuredRunner.StartAsync(definition, workflowData, options, cancellationToken);
+        return await _structuredRunner.StartAsync(definition, workflowData, options, cancellationToken);
 
         var instanceId = Guid.NewGuid().ToString();
 

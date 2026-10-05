@@ -16,6 +16,7 @@ internal sealed class WorkflowScopeCatalog
     }
 
     public string Fingerprint { get; }
+    public bool ContainsWait => _steps.Values.Any(step => step.StepType == WorkflowStepType.SuspendResume);
 
     public IReadOnlyList<WorkflowStep> Steps(string scopeId) => _scopes.TryGetValue(scopeId, out var steps)
         ? steps
@@ -36,6 +37,7 @@ internal sealed class WorkflowScopeCatalog
     public string FinallyScope(WorkflowStep step) => $"{Id(step)}/finally";
     public string CatchBodyScope(WorkflowStep catchBlock) => SequenceScope(catchBlock);
     public string BranchScope(WorkflowStep step, int index) => $"{Id(step)}/branch/{index}";
+    public string OutcomeScope(WorkflowStep step, int index) => $"{Id(step)}/outcome/{index}";
 
     public static bool RequiresStructuredExecution(IReadOnlyList<WorkflowStep> steps)
     {
@@ -73,6 +75,8 @@ internal sealed class WorkflowScopeCatalog
                 AddSagaCompensations(step);
             for (var branchIndex = 0; branchIndex < step.ParallelBranches.Count; branchIndex++)
                 AddScope(BranchScope(step, branchIndex), step.ParallelBranches[branchIndex]);
+            for (var outcomeIndex = 0; outcomeIndex < step.OutcomeBranches.Count; outcomeIndex++)
+                AddScope(OutcomeScope(step, outcomeIndex), step.OutcomeBranches[outcomeIndex].Steps);
         }
     }
 
@@ -137,7 +141,7 @@ internal sealed class WorkflowScopeCatalog
         {
             var supported = step.StepType switch
             {
-                WorkflowStepType.Activity or WorkflowStepType.Sequence or
+                WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.Sequence or
                     WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop or
                     WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga => true,
                 WorkflowStepType.SuspendResume => step.StepMetadata.ContainsKey("WaitKey"),
@@ -146,16 +150,13 @@ internal sealed class WorkflowScopeCatalog
             if (!supported)
                 throw new NotSupportedException(
                     $"Structured execution does not support {step.StepType} at '{id}'");
-            if (step.StepType == WorkflowStepType.Saga && step.CatchBlocks.Count > 0)
-                throw new NotSupportedException(
-                    $"Structured execution does not yet support saga OnError at '{id}'");
-            if (step.StepMetadata.ContainsKey("OutcomeType"))
-                throw new NotSupportedException(
-                    $"Structured execution does not yet support saga outcome at '{id}'");
-            if (step.StepMetadata.ContainsKey("IsSagaStep") &&
-                step.StepMetadata.ContainsKey("StepErrorHandlers"))
-                throw new NotSupportedException(
-                    $"Structured execution does not yet support saga step error policy at '{id}'");
+            if (step.StepType == WorkflowStepType.WorkflowInvocation &&
+                step.WorkflowType == null &&
+                (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowVersion == null))
+                throw new InvalidOperationException($"Workflow invocation at '{id}' has no child workflow reference");
+            if (step.StepMetadata.ContainsKey("OutcomeType") &&
+                (step.OutcomeSelector == null || step.OutcomeBranches.Count == 0))
+                throw new InvalidOperationException($"Outcome step at '{id}' has no branches or selector");
             if (step.StepType == WorkflowStepType.Parallel &&
                 step.ParallelJoinMode == ParallelJoinMode.WaitConditionally &&
                 step.ParallelCompletionCondition == null)

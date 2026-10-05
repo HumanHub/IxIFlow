@@ -75,6 +75,7 @@ internal sealed class ScopePosition
     public string ActivationId { get; set; } = Guid.NewGuid().ToString("N");
     public int NextStepIndex { get; set; }
     public int LoopIterationCount { get; set; }
+    public Dictionary<int, int> StepRetryCounts { get; set; } = [];
     public TryScopeState? TryState { get; set; }
     public SagaScopeState? SagaState { get; set; }
     public SerializedValue? EntryPrevious { get; set; }
@@ -125,6 +126,13 @@ internal sealed class SagaScopeState
     public SagaPhase Phase { get; set; }
     public List<SagaCompletedStep> CompletedSteps { get; set; } = [];
     public int CompensationCursor { get; set; } = -1;
+    public int CompensationFloor { get; set; }
+    public int ErrorHandlerIndex { get; set; } = -1;
+    public SagaContinuationAction? ErrorAction { get; set; }
+    public int RetryCount { get; set; }
+    public int MaximumRetries { get; set; }
+    public List<SagaAcceptedWait> AcceptedWaits { get; set; } = [];
+    public int AcceptedWaitCursor { get; set; }
     public SerializedException? Error { get; set; }
     public List<string> CompensationErrors { get; set; } = [];
     public bool IsCancellationCleanup { get; set; }
@@ -140,6 +148,12 @@ internal sealed class SagaScopeState
     }
 
     public Exception? GetError() => RuntimeError ??= Error?.Restore();
+}
+
+internal sealed class SagaAcceptedWait
+{
+    public string StepId { get; set; } = "";
+    public SerializedValue Event { get; set; } = null!;
 }
 
 internal sealed class SagaCompletedStep

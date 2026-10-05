@@ -421,26 +421,26 @@ public class StructuredSagaWaitTests
     }
 
     [Fact]
-    public async Task StructuredSagaRejectsUnsupportedStepErrorPolicyBeforeRunning()
+    public async Task StructuredSagaIgnoresConfiguredStepFailureAndReachesWait()
     {
         using var services = CreateServices(new InMemoryWorkflowStateRepository());
         var definition = Workflow.Create<SagaData>("SagaStepPolicy")
             .Step<BeginActivity>()
             .Saga(saga => saga
-                .Step<ReserveActivity>(setup => setup
+                .Step<FailActivity>(setup => setup
                     .OnError<InvalidOperationException>(handler => handler.ThenIgnore()))
                 .WaitFor<Approval>("approval"))
             .Build();
 
-        var error = await Assert.ThrowsAsync<NotSupportedException>(() =>
-            services.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new SagaData()));
-
-        Assert.Contains("step error policy", error.Message);
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
     }
 
     [Fact]
-    public async Task StructuredSagaRejectsUnsupportedOutcomeBeforeRunning()
+    public async Task StructuredSagaRunsOutcomeBranchBeforeWait()
     {
         using var services = CreateServices(new InMemoryWorkflowStateRepository());
         var definition = Workflow.Create<SagaData>("SagaOutcomeWait")
@@ -450,17 +450,19 @@ public class StructuredSagaWaitTests
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved))
                 .OutcomeOn(ctx => ctx.WorkflowData.Reserved, outcomes => outcomes
-                    .Outcome(1, branch => branch.Step<CompleteActivity>(_ => { })))
+                    .Outcome(1, branch => branch.Step<CompleteActivity>(setup => setup
+                        .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))))
                 .WaitFor<Approval>("approval"))
             .Build();
         var data = new SagaData();
 
-        var error = await Assert.ThrowsAsync<NotSupportedException>(() =>
-            services.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, data));
-
-        Assert.Contains("saga outcome", error.Message);
-        Assert.Equal(0, data.Reserved);
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(definition, data);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        Assert.Equal(1, data.Reserved);
+        Assert.Equal(1, data.Completed);
+        var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
     }
 
     private static WorkflowDefinition ForwardWorkflow() => Workflow.Create<SagaData>("SagaForwardWait")

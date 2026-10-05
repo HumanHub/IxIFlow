@@ -148,7 +148,8 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
                 ["IsSagaStep"] = true,
                 ["SagaStepOrder"] = _sagaSteps.Count,
                 // Store suspend reason in metadata
-                ["SuspendReason"] = suspendReason
+                ["SuspendReason"] = suspendReason,
+                ["WaitKey"] = suspendReason
             }
         };
 
@@ -719,8 +720,8 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
     private readonly Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TProperty>> _propertySelector;
     private readonly List<WorkflowStep> _steps;
     private readonly List<SagaStepInfo> _sagaSteps;
-    private readonly List<OutcomeBranch> _outcomeBranches = new();
-    private OutcomeBranch? _defaultBranch;
+    private readonly List<WorkflowOutcomeBranch> _outcomeBranches = new();
+    private WorkflowOutcomeBranch? _defaultBranch;
 
     public SagaOutcomeBuilder(
         WorkflowStep outcomeStep,
@@ -747,7 +748,7 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
         configure(branchBuilder);
 
         // Create outcome branch
-        var outcomeBranch = new OutcomeBranch
+        var outcomeBranch = new WorkflowOutcomeBranch
         {
             Value = value,
             Steps = branchSteps,
@@ -755,6 +756,7 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
         };
 
         _outcomeBranches.Add(outcomeBranch);
+        StoreOutcomeConfiguration();
 
         return this;
     }
@@ -771,7 +773,7 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
         configure(branchBuilder);
 
         // Create default branch
-        _defaultBranch = new OutcomeBranch
+        _defaultBranch = new WorkflowOutcomeBranch
         {
             Value = default(TProperty),
             IsDefault = true,
@@ -802,13 +804,8 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
         _outcomeStep.StepMetadata["OutcomeBranches"] = _outcomeBranches;
         _outcomeStep.StepMetadata["DefaultBranch"] = _defaultBranch;
         _outcomeStep.StepMetadata["PropertyType"] = typeof(TProperty);
-    }
-
-    private class OutcomeBranch
-    {
-        public object? Value { get; set; }
-        public bool IsDefault { get; set; }
-        public List<WorkflowStep> Steps { get; set; } = new();
-        public List<SagaStepInfo> SagaSteps { get; set; } = new();
+        _outcomeStep.OutcomeSelector = selectorWrapper;
+        _outcomeStep.OutcomeBranches =
+            _defaultBranch == null ? [.. _outcomeBranches] : [.. _outcomeBranches, _defaultBranch];
     }
 }

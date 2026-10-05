@@ -464,7 +464,7 @@ public class ParallelApprovalContractTests
     }
 
     [Fact]
-    public async Task UnsupportedScopeIsRejectedBeforeAnActivityRuns()
+    public async Task IncompleteInvocationIsRejectedBeforeAnActivityRuns()
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowEngine>();
@@ -481,7 +481,7 @@ public class ParallelApprovalContractTests
         });
         var data = new ApprovalData();
 
-        await Assert.ThrowsAsync<NotSupportedException>(() => engine.ExecuteWorkflowAsync(definition, data));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => engine.ExecuteWorkflowAsync(definition, data));
         Assert.Equal(0, data.FinanceStarted);
     }
 
