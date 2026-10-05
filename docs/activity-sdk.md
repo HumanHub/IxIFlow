@@ -3,11 +3,13 @@ title: Custom activity SDK design
 description: Proposed runtime and Studio contracts for custom activity libraries.
 ---
 
-This page describes the proposed SDK contract. The current engine executes user-defined `IAsyncActivity` classes, and the preliminary document compiler resolves activity keys through `IActivityRegistry`. The catalog, Studio integration, and YAML authoring path below are still being designed.
+This page describes the activity package boundary and its current prototype. The engine executes user-defined `IAsyncActivity` classes. `IxIFlow.ActivitySdk` can register a package manifest and matching .NET activity types already installed on the host. The authoring compiler checks package and activity versions, and a YAML document can compile and run with the registered activity. Studio can load a manifest from a local file, but it still uses a separate draft workflow shape and cannot execute the workflow.
 
 ## One activity package, two parts
 
 An activity package should contain a .NET assembly for execution and a versioned activity manifest for authoring. The manifest names each activity, its category, input and output types, required properties, validation rules, and optional child slots. The management API can expose the manifest to Studio. The same keys and property rules must be used by the YAML compiler.
+
+The split follows the useful part of Windows Workflow Foundation's activity/designer model: an activity type runs on the host, while design metadata associates it with a designer. In IxIFlow, the stable activity key and version are the link. A host needs the matching .NET assembly; a browser needs the manifest and, when provided, a separately registered Vue designer extension. The browser never loads the .NET assembly. Current manifests describe simple fields and defaults; typed inputs, outputs, validation rules, child slots, custom Vue extension loading, and a NuGet package resolver are not implemented yet.
 
 Studio should render most nodes and property forms from this manifest. A package may also include a separately built Vue extension for a distinctive node or field editor. Studio loads only registered extensions. A .NET assembly cannot inject a Vue component into the browser on its own. The Vue component edits the same activity configuration that YAML stores; it does not execute the activity.
 
@@ -29,7 +31,7 @@ A database transaction scope is distinct from a connection scope. A live transac
 4. Compile through the same validator used by the fluent and YAML paths; show any property or expression error at the corresponding node.
 5. Execute with the memory provider in process. Later, repeat with a durable provider and resume on another host.
 
-The [Studio designer exercise](/studio-demo/) shows the canvas, a custom database node, manifest-driven properties, and YAML editing. It is an interactive authoring exercise; it does not yet run the workflow or load a .NET activity assembly.
+The [Studio designer exercise](/studio-demo/) shows the canvas, a custom database node, manifest-driven properties, local activity manifest loading, and local YAML file open/download. It accepts only its draft example shape, reformats YAML when applied, and does not yet run the workflow or load a .NET activity assembly.
 
 ## Package boundaries and embedding
 

@@ -18,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
     <ProjectReference Include="..\IxIFlow.Authoring\IxIFlow.Authoring.csproj" />
+    <ProjectReference Include="..\IxIFlow.ActivitySdk\IxIFlow.ActivitySdk.csproj" />
     <ProjectReference Include="..\IxIFlow.Distributed\IxIFlow.Distributed.csproj" />
     <ProjectReference Include="..\IxIFlow.Distributed.SqlServer\IxIFlow.Distributed.SqlServer.csproj" />
   </ItemGroup>

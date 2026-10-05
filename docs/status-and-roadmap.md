@@ -15,6 +15,7 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 | In-process saga compensation | Direct and outcome-branch waits resume with saved compensation results. A direct wait followed by a transient failure can retry to success; a permanent failure exhausts its retry limit. |
 | SQL host and state | Shared SQL Server workflow instance state, atomic suspended-instance claims, host registry, and acknowledged message delivery are implemented. Cross-host recovery remains unfinished. |
 | Studio designer exercise | Vue Flow canvas with an `If` node, a custom database node, manifest-driven fields, and draft YAML editing. It does not execute workflows. |
+| Custom activity prototype | A .NET package registry matches manifest activity keys to installed `IAsyncActivity` types. The YAML document compiler checks package and activity versions. Studio can load a local manifest into its toolbox. |
 
 ## Known gaps
 
@@ -27,7 +28,8 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 - Typed resume events and correlation exist, but there is no published start-trigger registry for HTTP, schedules, or messages. General event matching still scans suspended instances. Targeted event-template updates now resume only their specified instance, and the default memory template store survives DI scopes.
 - SQL messages are claimed and acknowledged after queue handling. Long-running handlers need claim renewal, and duplicate delivery still requires idempotent commands.
 - Named child-workflow invocation resolves the registered definition and version. Queued commands carry a name and version, but the HTTP host client still sends unserializable workflow definitions.
-- The document compiler now preserves conditionals, bindings, and a small Boolean expression set. Unsupported functions and external templates fail validation. YAML is not an executable authoring path, and a runtime-connected Studio is not built.
+- The document compiler preserves conditionals, bindings, and a small Boolean expression set. A basic YAML workflow can compile and execute with a registered custom activity. The document model still lacks several fluent constructs, and Studio's draft YAML shape is not the engine's canonical document. A runtime-connected Studio is not built.
+- Execution traces and suspension snapshots exist, but there is no debugger API for breakpoints, step controls, watch values, or a live Studio execution view. Snapshots are captured at suspension, not at every activity boundary.
 
 The current regression suite passes with an isolated SQL Server test database. Without `IXIFLOW_TEST_SQL_CONNECTION_STRING`, SQL integration tests are skipped.
 
@@ -57,6 +59,8 @@ The engine must remain useful as an in-process library. `AddIxIFlow()` uses memo
 The fluent API, YAML, and visual editor should produce the same versioned executable definition graph. YAML is the portable source format for document-authored workflows. The editor edits that document and stores optional layout information separately from execution meaning; it must not invent a private workflow format. The current JSON document model is only a starting point. Arbitrary C# lambdas in fluent definitions cannot be reconstructed as editable YAML or visual expressions, so the editor must show those as code-backed activities with a stable reference.
 
 The designer target is closer to the Windows Workflow Foundation editing experience than a generic node canvas: searchable activity toolbox, nested sequence and control-flow containers, editable conditions, typed variables and arguments, input/output mapping, activity properties, inline validation, and a view of the active node and execution history. Add `Try`/`Catch`/`Finally`, saga compensation, waits, and child workflows as first-class visual constructs. Assess flowcharts, state machines, and event races separately against runtime semantics before promising them in the editor.
+
+Debugger support belongs at the execution boundary, independent of Studio. Give every executable node a stable ID and emit ordered lifecycle events with its instance, branch, scope, input and output summaries, and failure details. A local debug controller should pause before or after a node and support continue, step into, step over, and step out. Studio can display those events and controls through an adapter. Durable and distributed debugging needs a persisted pause reason and lease-aware ownership; arbitrary activity code can use the normal .NET debugger in the host process. A workflow-level step command cannot step through lines inside a user activity.
 
 Use one expression contract for YAML and Studio. For a .NET audience, C# expressions for conditions and mappings are a strong candidate, with compiler diagnostics shown in the editor. Custom code activities should be versioned .NET artifacts available on every executing host. If inline C# editing is added, compilation and artifact distribution must be part of publishing; a text field containing code is not enough for durable or distributed execution.
 
