@@ -571,7 +571,7 @@ public class ExceptionHandlingTests
 
         // But finally block exception caused workflow failure
         Assert.False(finalData.FinallyExecuted);
-        Assert.Contains("CriticalSystemException", result.ErrorMessage);
+        Assert.Contains("CriticalSystemException", result.ErrorType);
         Assert.Contains("Exception thrown in finally block", result.ErrorMessage);
     }
 
@@ -678,7 +678,7 @@ public class ExceptionHandlingTests
         Assert.True(finalData.FinallyExecuted);
 
         // And error is in the workflow result
-        Assert.Contains("PaymentProcessingException", result.ErrorMessage);
+        Assert.Contains("PaymentProcessingException", result.ErrorType);
         Assert.Contains("Payment processing failed", result.ErrorMessage);
     }
 

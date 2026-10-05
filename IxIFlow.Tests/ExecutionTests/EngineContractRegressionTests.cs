@@ -515,7 +515,7 @@ public class EngineContractRegressionTests
     }
 
     [Fact]
-    public async Task ParallelWithTwoWaitingBranches_FaultsClearly()
+    public async Task ParallelWithTwoWaitingBranches_ResumesEachBranch()
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -532,10 +532,20 @@ public class EngineContractRegressionTests
             })
             .Build();
 
-        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new RegressionData());
-        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
-        Assert.Contains("multiple simultaneous waits", result.ErrorMessage);
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
+        var started = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
+        Assert.Equal(2, saved!.ExecutionSnapshot!.Pointers.Count(pointer => pointer.Status == "Waiting"));
+
+        var first = await engine.ResumeWorkflowAsync(started.InstanceId, "first",
+            new RegressionApprovalEvent { Approved = true });
+        Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
+
+        var second = await engine.ResumeWorkflowAsync(started.InstanceId, "second",
+            new RegressionApprovalEvent { Approved = true });
+        Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
     }
 
     [Fact]

@@ -775,6 +775,11 @@ public class WorkflowStep
     /// </summary>
     public Func<object, bool>? CompiledCondition { get; set; }
 
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, object?>? OutcomeSelector { get; set; }
+
+    public List<WorkflowOutcomeBranch> OutcomeBranches { get; set; } = new();
+
     /// <summary>
     ///     Steps to execute if condition is true
     /// </summary>
@@ -873,6 +878,14 @@ public class WorkflowStep
             InputMappings = InputMappings.Select(m => m.Clone()).ToList(),
             OutputMappings = OutputMappings.Select(m => m.Clone()).ToList(),
             CompiledCondition = CompiledCondition,
+            OutcomeSelector = OutcomeSelector,
+            OutcomeBranches = OutcomeBranches.Select(branch => new WorkflowOutcomeBranch
+            {
+                Value = branch.Value,
+                IsDefault = branch.IsDefault,
+                Steps = branch.Steps.Select(step => step.Clone()).ToList(),
+                SagaSteps = new List<IxIFlow.Builders.SagaStepInfo>(branch.SagaSteps)
+            }).ToList(),
             ThenSteps = ThenSteps.Select(s => s.Clone()).ToList(),
             ElseSteps = ElseSteps.Select(s => s.Clone()).ToList(),
             SequenceSteps = SequenceSteps.Select(s => s.Clone()).ToList(),
@@ -891,6 +904,14 @@ public class WorkflowStep
             StepMetadata = new Dictionary<string, object>(StepMetadata)
         };
     }
+}
+
+public class WorkflowOutcomeBranch
+{
+    public object? Value { get; set; }
+    public bool IsDefault { get; set; }
+    public List<WorkflowStep> Steps { get; set; } = new();
+    public List<IxIFlow.Builders.SagaStepInfo> SagaSteps { get; set; } = new();
 }
 
 /// <summary>

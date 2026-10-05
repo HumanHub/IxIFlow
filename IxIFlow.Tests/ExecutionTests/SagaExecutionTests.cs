@@ -417,7 +417,7 @@ public class SagaExecutionTests
                 });
                 // NO explicit error handler - should use default behavior (Compensate + Terminate)
             })
-            .Catch<SagaTerminatedException>(catchBlock =>
+            .Catch<InvalidOperationException>(catchBlock =>
             {
                 catchBlock.Step<HandleSagaFailureAsyncActivity>(setup => setup
                     .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)

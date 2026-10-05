@@ -23,7 +23,7 @@ internal static class ExecutionSnapshotFactory
             snapshot.Pointers.Add(new ExecutionPointer
             {
                 PointerId = continuation.Id,
-                StepId = next == null ? "" : scopes.Id(next),
+                StepId = next?.Id ?? "",
                 StepIndex = position.NextStepIndex,
                 Status = continuation.Status.ToString(),
                 FrameId = position.ActivationId
@@ -31,12 +31,15 @@ internal static class ExecutionSnapshotFactory
             for (var index = 0; index < continuation.Stack.Count; index++)
             {
                 var frame = continuation.Stack[index];
+                var parent = index == 0 ? null : continuation.Stack[index - 1];
+                var owner = parent == null ? null :
+                    scopes.Steps(parent.ScopeId).ElementAtOrDefault(parent.NextStepIndex);
                 snapshot.Frames.Add(new ExecutionFrame
                 {
                     FrameId = frame.ActivationId,
-                    Kind = frame.ScopeId,
+                    Kind = owner?.StepType.ToString() ?? frame.ScopeId,
                     StepId = frame.ScopeId,
-                    ParentFrameId = index == 0 ? null : continuation.Stack[index - 1].ActivationId,
+                    ParentFrameId = parent?.ActivationId,
                     State = new Dictionary<string, string>
                     {
                         ["NextStepIndex"] = frame.NextStepIndex.ToString()
