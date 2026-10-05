@@ -19,7 +19,7 @@ Conditions and parallel branches are represented as workflow steps with nested c
 
 The default `AddIxIFlow()` registration uses singleton `InMemoryWorkflowStateRepository` and `InMemoryEventStore`. They retain data across dependency injection scopes within one process. They are not shared or durable state stores: a process restart or another host loses access to those instances.
 
-At suspension, the engine saves current workflow data, the waiting step, and active frames. Resume finds the saved step in the definition and re-enters its enclosing scopes. A loop finishes the interrupted iteration and checks its condition again. A saga resumes its remaining steps and restores completed activity results for compensation. This is covered for direct waits and waits in saga outcome branches, including repeated suspensions. The saved step identifier still selects the path; a single pointer-and-frame interpreter for every control-flow type is unfinished. Concurrent resume is not guarded by an atomic claim. See [sagas](/docs/sagas/) for the practical effect.
+At suspension, the engine saves current workflow data, the waiting step, and active frames. Resume finds the saved step in the definition and re-enters its enclosing scopes. A loop finishes the interrupted iteration and checks its condition again. A saga resumes its remaining steps and restores completed activity results for compensation. This is covered for direct waits and waits in saga outcome branches, including repeated suspensions. The saved step identifier still selects the path; a single pointer-and-frame interpreter for every control-flow type is unfinished. Memory and SQL state repositories atomically claim a matching suspended instance before resume, but the claim has no recoverable worker lease. See [sagas](/docs/sagas/) for the practical effect.
 
 `Try/Catch` uses a stack for active nested handlers during local execution. A failure before a `Try` is no longer caught by that later block. Saved handler frames let waits inside `Catch` and `Finally` resume without rerunning completed handler steps. The frame currently saves the exception type and message; custom exception fields need an explicit durable representation.
 
@@ -29,7 +29,7 @@ Parallel branches run with `Task.WhenAll` and a separate `ExecutionState` per br
 
 `WorkflowHost` manages whole workflow executions on one host. `WorkflowCoordinator` selects a host using health, tags, capacity, and load. Once selected, the host's local engine runs the workflow's activities. The coordinator does not distribute individual saga steps across workers.
 
-The SQL host overload registers a SQL workflow state repository, host registry, and message bus. Queued commands use name and version references, and SQL deliveries require acknowledgement. The definition registry is still local memory, and instances have no atomic claim for concurrent resume. See [coordinator and hosts](/docs/coordinator-and-hosts/).
+The SQL host overload registers a SQL workflow state repository, host registry, and message bus. Queued commands use name and version references, and SQL deliveries require acknowledgement. The definition registry is still local memory. SQL can claim one suspended instance for resume, but general saves have no checkpoint version and an abandoned running claim has no lease recovery. See [coordinator and hosts](/docs/coordinator-and-hosts/).
 
 ## What is being built next
 
