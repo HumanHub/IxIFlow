@@ -100,7 +100,9 @@ internal sealed class StructuredWorkflowRunner(
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
         var step = scopes.Step(wait.StepId);
-        if (!WorkflowValueBinding.Matches(step, @event, workflowData))
+        var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
+        if (!WorkflowValueBinding.Matches(step, @event, workflowData,
+                continuation.GetPrevious(services)))
             return new WorkflowExecutionResult
             {
                 InstanceId = instanceId,
@@ -110,7 +112,6 @@ internal sealed class StructuredWorkflowRunner(
 
         WorkflowValueBinding.ApplyEventOutputs(step, @event, workflowData);
         checkpoint.Waits.Remove(wait);
-        var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
         continuation.SetPrevious(@event);
         continuation.Stack[^1].NextStepIndex++;
         continuation.Status = ContinuationStatus.Active;
@@ -179,7 +180,7 @@ internal sealed class StructuredWorkflowRunner(
                     item.Continuation.Status == ContinuationStatus.Cancelling);
                 if (cancelled != null)
                 {
-                    await SettleAsync(cancelled, inFlight, workflowData);
+                    await SettleAsync(scopes, cancelled, inFlight, workflowData);
                     await PersistAsync(instance, checkpoint, workflowData, scopes);
                     continue;
                 }
@@ -208,6 +209,8 @@ internal sealed class StructuredWorkflowRunner(
                     var next = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
                     if (next?.StepType == WorkflowStepType.Activity)
                     {
+                        var compensationInputs = SagaScopeTransitions.PrepareCompensationActivity(
+                            scopes, runnable, services);
                         var sourceData = runnable.ParentJoinId == null
                             ? workflowData
                             : JsonSerializer.Deserialize(
@@ -217,7 +220,7 @@ internal sealed class StructuredWorkflowRunner(
                         var activityCancellation = new CancellationTokenSource();
                         var task = _activities.ExecuteAsync(next, definition, instance, sourceData,
                             runnable.GetPrevious(services), TryScopeTransitions.CatchException(checkpoint, runnable),
-                            activityCancellation.Token);
+                            activityCancellation.Token, compensationInputs);
                         inFlight.Add(runnable.Id, new RunningActivity(runnable, next, task,
                             activityCancellation, sourceIsIsolated));
                     }
@@ -261,7 +264,7 @@ internal sealed class StructuredWorkflowRunner(
                 var completedActivity = inFlight.Values.First(item => item.Task == finished);
                 try
                 {
-                    await SettleAsync(completedActivity, inFlight, workflowData);
+                    await SettleAsync(scopes, completedActivity, inFlight, workflowData);
                 }
                 catch (Exception error)
                 {
@@ -399,7 +402,8 @@ internal sealed class StructuredWorkflowRunner(
                 {
                     // Revisit the loop guard with the completed iteration recorded on its parent.
                 }
-                else if (!TryScopeTransitions.Exit(scopes, parent, position, currentStep, continuation))
+                else if (!TryScopeTransitions.Exit(scopes, parent, position, currentStep, continuation) &&
+                         !SagaScopeTransitions.Exit(scopes, parent, position, currentStep, continuation))
                     parent.NextStepIndex++;
             }
             return;
@@ -440,6 +444,10 @@ internal sealed class StructuredWorkflowRunner(
 
             case WorkflowStepType.TryCatch:
                 TryScopeTransitions.Enter(scopes, step, position, continuation);
+                break;
+
+            case WorkflowStepType.Saga:
+                SagaScopeTransitions.Enter(scopes, step, position, continuation, services);
                 break;
 
             case WorkflowStepType.Loop:
@@ -490,7 +498,8 @@ internal sealed class StructuredWorkflowRunner(
 
     }
 
-    private static async Task SettleAsync(
+    private async Task SettleAsync(
+        WorkflowScopeCatalog scopes,
         RunningActivity activity,
         Dictionary<string, RunningActivity> inFlight,
         object workflowData)
@@ -499,10 +508,23 @@ internal sealed class StructuredWorkflowRunner(
         {
             var output = await activity.Task;
             if (activity.Continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled)
+            {
+                if (activity.Continuation.Status == ContinuationStatus.Cancelling &&
+                    SagaScopeTransitions.IsForwardActivity(scopes, activity.Continuation, activity.Step))
+                {
+                    if (activity.SourceIsIsolated)
+                        WorkflowValueBinding.ApplyActivityOutputs(activity.Step, output, workflowData);
+                    SagaScopeTransitions.CompleteForwardActivity(scopes, activity.Continuation,
+                        activity.Step, output, services);
+                }
                 return;
+            }
 
             if (activity.SourceIsIsolated)
                 WorkflowValueBinding.ApplyActivityOutputs(activity.Step, output, workflowData);
+            SagaScopeTransitions.CompleteForwardActivity(scopes, activity.Continuation, activity.Step,
+                output, services);
+            SagaScopeTransitions.CompleteCompensationActivity(scopes, activity.Continuation, output);
             activity.Continuation.SetPrevious(output);
             activity.Continuation.Stack[^1].NextStepIndex++;
         }
@@ -591,9 +613,11 @@ internal sealed class StructuredWorkflowRunner(
         if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             return;
         continuation.CancellationUnwind = true;
-        if (TryScopeTransitions.IsInsideFinally(continuation))
+        if (TryScopeTransitions.IsInsideFinally(continuation) ||
+            SagaScopeTransitions.IsInsideCompensation(continuation))
         {
             TryScopeTransitions.PreserveExistingFinally(continuation);
+            SagaScopeTransitions.PreserveCompensation(continuation);
             return;
         }
         checkpoint.Waits.RemoveAll(wait => wait.ContinuationId == continuation.Id);
@@ -618,7 +642,8 @@ internal sealed class StructuredWorkflowRunner(
             var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
             if (checkpoint.UnhandledError != null && parent.ParentJoinId == null)
                 parent.Status = ContinuationStatus.Cancelled;
-            else if (parent.CancellationUnwind && !TryScopeTransitions.IsInsideFinally(parent))
+            else if (parent.CancellationUnwind && !TryScopeTransitions.IsInsideFinally(parent) &&
+                     !SagaScopeTransitions.IsInsideCompensation(parent))
                 parent.Status = ContinuationStatus.Cancelling;
             else
             {
@@ -635,7 +660,8 @@ internal sealed class StructuredWorkflowRunner(
     {
         while (true)
         {
-            if (TryScopeTransitions.Capture(scopes, continuation, error))
+            if (SagaScopeTransitions.SkipFailedCompensation(continuation, error) ||
+                CaptureScopeFailure(scopes, continuation, error))
                 return true;
             TryScopeTransitions.AbortFailedFinally(continuation);
             if (continuation.ParentJoinId == null)
@@ -660,6 +686,19 @@ internal sealed class StructuredWorkflowRunner(
                 return true;
             }
         }
+    }
+
+    private static bool CaptureScopeFailure(WorkflowScopeCatalog scopes,
+        ContinuationState continuation, Exception error)
+    {
+        var tryIndex = TryScopeTransitions.HandlerIndex(scopes, continuation, error);
+        var sagaIndex = SagaScopeTransitions.HandlerIndex(continuation);
+        if (sagaIndex > tryIndex)
+        {
+            SagaScopeTransitions.Capture(continuation, sagaIndex, error);
+            return true;
+        }
+        return tryIndex >= 0 && TryScopeTransitions.Capture(scopes, continuation, error);
     }
 
     private static WorkflowExecutionResult Rejected(string instanceId, string reason) => new()

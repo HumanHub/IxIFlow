@@ -76,6 +76,7 @@ internal sealed class ScopePosition
     public int NextStepIndex { get; set; }
     public int LoopIterationCount { get; set; }
     public TryScopeState? TryState { get; set; }
+    public SagaScopeState? SagaState { get; set; }
     public SerializedValue? EntryPrevious { get; set; }
     public bool RestorePreviousOnExit { get; set; }
 
@@ -111,6 +112,41 @@ internal sealed class TryScopeState
         RuntimeError = error;
         Error = SerializedException.From(error);
     }
+}
+
+internal enum SagaPhase
+{
+    Forward,
+    Compensating
+}
+
+internal sealed class SagaScopeState
+{
+    public SagaPhase Phase { get; set; }
+    public List<SagaCompletedStep> CompletedSteps { get; set; } = [];
+    public int CompensationCursor { get; set; } = -1;
+    public SerializedException? Error { get; set; }
+    public List<string> CompensationErrors { get; set; } = [];
+    public bool IsCancellationCleanup { get; set; }
+    public SerializedValue? PreviousCompensation { get; set; }
+
+    [JsonIgnore]
+    public Exception? RuntimeError { get; set; }
+
+    public void SetError(Exception error)
+    {
+        RuntimeError = error;
+        Error = SerializedException.From(error);
+    }
+
+    public Exception? GetError() => RuntimeError ??= Error?.Restore();
+}
+
+internal sealed class SagaCompletedStep
+{
+    public int StepIndex { get; set; }
+    public SerializedValue? Output { get; set; }
+    public SerializedValue? Previous { get; set; }
 }
 
 internal sealed class ParallelJoinState

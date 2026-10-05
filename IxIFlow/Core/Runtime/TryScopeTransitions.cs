@@ -79,6 +79,26 @@ internal static class TryScopeTransitions
 
     public static bool Capture(WorkflowScopeCatalog scopes, ContinuationState continuation, Exception error)
     {
+        var index = HandlerIndex(scopes, continuation, error);
+        if (index < 0)
+            return false;
+        var owner = continuation.Stack[index];
+        var state = owner.TryState!;
+        var step = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
+        var catchIndex = state.Phase == TryPhase.Try
+            ? step.CatchBlocks.FindIndex(block => block.ExceptionType?.IsAssignableFrom(error.GetType()) == true)
+            : -1;
+        continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+        continuation.Previous = state.EntryPrevious;
+        continuation.RuntimePrevious = state.RuntimeEntryPrevious;
+        state.SetError(error);
+        state.CatchIndex = catchIndex;
+        state.Phase = catchIndex >= 0 ? TryPhase.Catch : TryPhase.Finally;
+        return true;
+    }
+
+    public static int HandlerIndex(WorkflowScopeCatalog scopes, ContinuationState continuation, Exception error)
+    {
         for (var index = continuation.Stack.Count - 1; index >= 0; index--)
         {
             var owner = continuation.Stack[index];
@@ -95,16 +115,9 @@ internal static class TryScopeTransitions
                 : -1;
             if (catchIndex < 0 && step.FinallySteps.Count == 0)
                 continue;
-
-            continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
-            continuation.Previous = state.EntryPrevious;
-            continuation.RuntimePrevious = state.RuntimeEntryPrevious;
-            state.SetError(error);
-            state.CatchIndex = catchIndex;
-            state.Phase = catchIndex >= 0 ? TryPhase.Catch : TryPhase.Finally;
-            return true;
+            return index;
         }
-        return false;
+        return -1;
     }
 
     public static Exception? CatchException(ExecutionCheckpoint checkpoint, ContinuationState continuation)
@@ -169,6 +182,8 @@ internal static class TryScopeTransitions
         for (var index = continuation.Stack.Count - 1; index >= 0; index--)
         {
             var owner = continuation.Stack[index];
+            if (SagaScopeTransitions.BeginCancellation(continuation, index))
+                return;
             var state = owner.TryState;
             if (state == null || state.Phase == TryPhase.Finally)
                 continue;

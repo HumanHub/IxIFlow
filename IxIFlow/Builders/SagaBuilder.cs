@@ -158,11 +158,18 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
             // Create wrapper function that takes object and returns bool
             Func<object, bool> conditionWrapper = context =>
             {
-                // The context should be a ResumeEventContext<TWorkflowData, TResumeEvent>
+                if (context is ResumeEventContext<TWorkflowData, TResumeEvent, TPreviousStepData> typed)
+                {
+                    var workflowContext = new WorkflowContext<TWorkflowData, TPreviousStepData>
+                    {
+                        WorkflowData = typed.WorkflowData,
+                        PreviousStep = typed.PreviousStep
+                    };
+                    return resumeCondition(typed.ResumeEvent, workflowContext);
+                }
                 if (context is ResumeEventContext<TWorkflowData, TResumeEvent> resumeContext)
                 {
-                    // Create WorkflowContext<TWorkflowData> for the resume condition
-                    var workflowContext = new WorkflowContext<TWorkflowData,TPreviousStepData>
+                    var workflowContext = new WorkflowContext<TWorkflowData, TPreviousStepData>
                     {
                         WorkflowData = resumeContext.WorkflowData
                     };
@@ -193,6 +200,20 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
 
         // Return a workflow builder with TResumeEvent as the previous step type
         return new SagaActivityBuilder<TWorkflowData, TResumeEvent>(_steps,sagaSteps);
+    }
+
+    public ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
+        string key,
+        Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? matches = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        var next = Suspend(key, matches, configure);
+        var waitStep = _steps[^1];
+        waitStep.Name = "WaitFor";
+        waitStep.StepMetadata["WaitKey"] = key;
+        return next;
     }
 
     public ISagaActivityBuilder<TWorkflowData, TPreviousStepData> OutcomeOn<TProperty>(

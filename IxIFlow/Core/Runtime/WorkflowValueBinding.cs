@@ -5,16 +5,25 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal static class WorkflowValueBinding
 {
-    public static bool Matches<TEvent>(WorkflowStep step, TEvent @event, object workflowData)
+    public static bool Matches<TEvent>(WorkflowStep step, TEvent @event, object workflowData,
+        object? previous = null)
         where TEvent : class
     {
         if (step.CompiledCondition == null)
             return true;
 
-        var contextType = typeof(ResumeEventContext<,>).MakeGenericType(workflowData.GetType(), step.ResumeEventType!);
+        var typedPrevious = step.StepMetadata.ContainsKey("IsSagaStep") &&
+            step.PreviousStepDataType != null && previous != null;
+        var contextType = typedPrevious
+            ? typeof(ResumeEventContext<,,>).MakeGenericType(workflowData.GetType(),
+                step.ResumeEventType!, step.PreviousStepDataType!)
+            : typeof(ResumeEventContext<,>).MakeGenericType(workflowData.GetType(), step.ResumeEventType!);
         var context = Activator.CreateInstance(contextType)!;
         contextType.GetProperty(nameof(WorkflowContext<object>.WorkflowData))!.SetValue(context, workflowData);
         contextType.GetProperty(nameof(ResumeEventContext<object, object>.ResumeEvent))!.SetValue(context, @event);
+        if (typedPrevious)
+            contextType.GetProperty(nameof(WorkflowContext<object, object>.PreviousStep))!
+                .SetValue(context, previous);
         return step.CompiledCondition(context);
     }
 

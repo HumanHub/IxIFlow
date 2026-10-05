@@ -1,3 +1,5 @@
+using IxIFlow.Builders;
+
 namespace IxIFlow.Core.Runtime;
 
 internal sealed class WorkflowScopeCatalog
@@ -28,6 +30,9 @@ internal sealed class WorkflowScopeCatalog
     public string ThenScope(WorkflowStep step) => $"{Id(step)}/then";
     public string ElseScope(WorkflowStep step) => $"{Id(step)}/else";
     public string LoopScope(WorkflowStep step) => $"{Id(step)}/loop";
+    public string SagaScope(WorkflowStep step) => SequenceScope(step);
+    public string CompensationScope(WorkflowStep step, int sourceIndex) =>
+        $"{Id(step)}/compensation/{sourceIndex}";
     public string FinallyScope(WorkflowStep step) => $"{Id(step)}/finally";
     public string CatchBodyScope(WorkflowStep catchBlock) => SequenceScope(catchBlock);
     public string BranchScope(WorkflowStep step, int index) => $"{Id(step)}/branch/{index}";
@@ -64,8 +69,49 @@ internal sealed class WorkflowScopeCatalog
             AddScope(LoopScope(step), step.LoopBodySteps);
             AddScope(FinallyScope(step), step.FinallySteps);
             AddScope($"{stepId}/catch", step.CatchBlocks);
+            if (step.StepType == WorkflowStepType.Saga)
+                AddSagaCompensations(step);
             for (var branchIndex = 0; branchIndex < step.ParallelBranches.Count; branchIndex++)
                 AddScope(BranchScope(step, branchIndex), step.ParallelBranches[branchIndex]);
+        }
+    }
+
+    private void AddSagaCompensations(WorkflowStep saga)
+    {
+        for (var sourceIndex = 0; sourceIndex < saga.SequenceSteps.Count; sourceIndex++)
+        {
+            var source = saga.SequenceSteps[sourceIndex];
+            var activities = source.StepMetadata.TryGetValue("CompensationActivities", out var value)
+                ? value as List<CompensationActivityInfo>
+                : null;
+            if (activities != null)
+            {
+                for (var index = 0; index < activities.Count; index++)
+                {
+                    var expected = activities[index].PreviousChainActivityType;
+                    if (expected != null && (index == 0 ||
+                            !expected.IsAssignableFrom(activities[index - 1].ActivityType)))
+                        throw new InvalidOperationException(
+                            $"Compensation '{activities[index].ActivityType.Name}' requires a preceding " +
+                            $"'{expected.Name}' compensation at '{Id(source)}'");
+                }
+            }
+            var steps = activities?.Select((activity, index) => new WorkflowStep
+            {
+                Id = $"{source.Id}/compensation/{index}",
+                Name = activity.ActivityType.Name,
+                StepType = WorkflowStepType.Activity,
+                ActivityType = activity.ActivityType,
+                WorkflowDataType = saga.WorkflowDataType,
+                PreviousStepDataType = source.ActivityType,
+                InputMappings = activity.InputMappings,
+                OutputMappings = activity.OutputMappings,
+                StepMetadata = new Dictionary<string, object>
+                {
+                    ["IsCompensationActivity"] = true
+                }
+            }).ToList() ?? [];
+            AddScope(CompensationScope(saga, sourceIndex), steps);
         }
     }
 
@@ -92,13 +138,20 @@ internal sealed class WorkflowScopeCatalog
             {
                 WorkflowStepType.Activity or WorkflowStepType.Sequence or
                     WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop or
-                    WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock => true,
+                    WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga => true,
                 WorkflowStepType.SuspendResume => step.StepMetadata.ContainsKey("WaitKey"),
                 _ => false
             };
             if (!supported)
                 throw new NotSupportedException(
                     $"Structured execution does not support {step.StepType} at '{id}'");
+            if (step.StepType == WorkflowStepType.Saga && step.CatchBlocks.Count > 0)
+                throw new NotSupportedException(
+                    $"Structured execution does not yet support saga OnError at '{id}'");
+            if (step.StepMetadata.ContainsKey("IsSagaStep") &&
+                step.StepMetadata.ContainsKey("StepErrorHandlers"))
+                throw new NotSupportedException(
+                    $"Structured execution does not yet support saga step error policy at '{id}'");
             if (step.StepType == WorkflowStepType.Parallel &&
                 step.ParallelJoinMode == ParallelJoinMode.WaitConditionally &&
                 step.ParallelCompletionCondition == null)
