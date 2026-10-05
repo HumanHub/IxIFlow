@@ -2,6 +2,7 @@ using System.Collections;
 using System.Reflection;
 using System.Text.Json;
 using IxIFlow.Builders;
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -23,6 +24,7 @@ public class WorkflowEngine : IWorkflowEngine
     private readonly ILogger<WorkflowEngine> _logger;
     private readonly IWorkflowTracer _tracer;
     private readonly IWorkflowVersionRegistry _versionRegistry;
+    private readonly StructuredWorkflowRunner _structuredRunner;
 
     public WorkflowEngine(
         IServiceProvider serviceProvider,
@@ -46,6 +48,9 @@ public class WorkflowEngine : IWorkflowEngine
         _suspendResumeExecutor = suspendResumeExecutor ?? throw new ArgumentNullException(nameof(suspendResumeExecutor));
         _sagaExecutor = sagaExecutor ?? throw new ArgumentNullException(nameof(sagaExecutor));
         _versionRegistry = versionRegistry ?? throw new ArgumentNullException(nameof(versionRegistry));
+        _structuredRunner = serviceProvider.GetService<StructuredWorkflowRunner>()
+            ?? new StructuredWorkflowRunner(serviceProvider, _activityExecutor, _stateRepository, _versionRegistry,
+                InProcessInstanceGate.Shared);
     }
 
     /// <summary>
@@ -62,6 +67,9 @@ public class WorkflowEngine : IWorkflowEngine
         if (workflowData == null) throw new ArgumentNullException(nameof(workflowData));
 
         options ??= new WorkflowOptions();
+        if (StructuredWorkflowRunner.UsesStructuredExecution(definition))
+            return await _structuredRunner.StartAsync(definition, workflowData, options, cancellationToken);
+
         var instanceId = Guid.NewGuid().ToString();
 
         _logger.LogInformation("Starting workflow execution. Instance: {InstanceId}, Workflow: {WorkflowName}",
@@ -203,6 +211,24 @@ public class WorkflowEngine : IWorkflowEngine
     /// <summary>
     ///     Resumes a suspended workflow with an event
     /// </summary>
+    public async Task<WorkflowExecutionResult> RecoverWorkflowAsync(
+        string instanceId,
+        CancellationToken cancellationToken = default)
+    {
+        var instance = await _stateRepository.GetWorkflowInstanceAsync(instanceId);
+        if (!StructuredWorkflowRunner.HasStructuredCheckpoint(instance))
+            return new WorkflowExecutionResult
+            {
+                InstanceId = instanceId,
+                Status = WorkflowExecutionStatus.Faulted,
+                ErrorMessage = "The workflow instance has no structured checkpoint"
+            };
+        return await _structuredRunner.RecoverAsync(instanceId, cancellationToken);
+    }
+
+    /// <summary>
+    ///     Resumes a suspended workflow with an event
+    /// </summary>
     public async Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(
         string instanceId,
         string key,
@@ -212,6 +238,9 @@ public class WorkflowEngine : IWorkflowEngine
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         var instance = await _stateRepository.GetWorkflowInstanceAsync(instanceId);
+        if (StructuredWorkflowRunner.HasStructuredCheckpoint(instance))
+            return await _structuredRunner.ResumeAsync(instanceId, key, @event, cancellationToken);
+
         if (instance?.Status != WorkflowStatus.Suspended ||
             instance.SuspensionInfo?.SuspendReason != key)
         {
@@ -232,6 +261,10 @@ public class WorkflowEngine : IWorkflowEngine
         CancellationToken cancellationToken = default)
         where TEventData : class
     {
+        var possibleStructuredInstance = await _stateRepository.GetWorkflowInstanceAsync(instanceId);
+        if (StructuredWorkflowRunner.HasStructuredCheckpoint(possibleStructuredInstance))
+            return await _structuredRunner.ResumeAsync(instanceId, null, @event, cancellationToken);
+
         _logger.LogInformation("Resuming workflow {InstanceId} with event of type {EventType}",
             instanceId, typeof(TEventData).Name);
 

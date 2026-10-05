@@ -313,7 +313,11 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         where TEvent : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        return Suspend(key, matches, configure);
+        var next = Suspend(key, matches, configure);
+        var waitStep = _steps[^1];
+        waitStep.Name = "WaitFor";
+        waitStep.StepMetadata["WaitKey"] = key;
+        return next;
     }
 
     public IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
