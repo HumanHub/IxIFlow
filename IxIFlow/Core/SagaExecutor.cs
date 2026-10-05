@@ -1,4 +1,5 @@
 using IxIFlow.Builders;
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 
@@ -300,7 +301,7 @@ public class SagaExecutor : ISagaExecutor
                 throw new InvalidOperationException($"Saga {sagaStep.Id} changed after its checkpoint was saved");
             }
 
-            var resultType = saved.ResultType == null ? null : Type.GetType(saved.ResultType)
+            var resultType = saved.ResultType == null ? null : WorkflowTypeIdentity.Resolve(saved.ResultType)
                 ?? throw new InvalidOperationException($"Saga result type {saved.ResultType} is unavailable");
             return new SagaExecutionStepInfo
             {

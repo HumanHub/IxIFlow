@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
 
@@ -311,7 +312,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     {
         lock (_claimLock)
         {
-            _instances[instance.InstanceId] = instance;
+            _instances[instance.InstanceId] = SnapshotStructured(instance);
         }
         return Task.CompletedTask;
     }
@@ -334,7 +335,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 return Task.FromResult(false);
             }
 
-            _instances[instance.InstanceId] = instance;
+            _instances[instance.InstanceId] = SnapshotStructured(instance);
             return Task.FromResult(true);
         }
     }
@@ -342,25 +343,25 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
     {
         _instances.TryGetValue(instanceId, out var instance);
-        return Task.FromResult(instance);
+        return Task.FromResult(instance == null ? null : SnapshotStructured(instance));
     }
 
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName)
     {
-        var instances = _instances.Values.Where(i => i.WorkflowName == workflowName);
-        return Task.FromResult(instances);
+        var instances = _instances.Values.Where(i => i.WorkflowName == workflowName).Select(SnapshotStructured).ToList();
+        return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
     }
 
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status)
     {
-        var instances = _instances.Values.Where(i => i.Status == status);
-        return Task.FromResult(instances);
+        var instances = _instances.Values.Where(i => i.Status == status).Select(SnapshotStructured).ToList();
+        return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
     }
 
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId)
     {
-        var instances = _instances.Values.Where(i => i.CorrelationId == correlationId);
-        return Task.FromResult(instances);
+        var instances = _instances.Values.Where(i => i.CorrelationId == correlationId).Select(SnapshotStructured).ToList();
+        return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
     }
 
     public Task DeleteWorkflowInstanceAsync(string instanceId)
@@ -373,9 +374,15 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     {
         var suspendedInstances = _instances.Values.Where(i =>
             i.Status == WorkflowStatus.Suspended &&
-            (i.SuspensionInfo?.ExpiresAt == null || i.SuspensionInfo.ExpiresAt <= DateTime.UtcNow));
-        return Task.FromResult(suspendedInstances);
+            (i.SuspensionInfo?.ExpiresAt == null || i.SuspensionInfo.ExpiresAt <= DateTime.UtcNow))
+            .Select(SnapshotStructured).ToList();
+        return Task.FromResult<IEnumerable<WorkflowInstance>>(suspendedInstances);
     }
+
+    private static WorkflowInstance SnapshotStructured(WorkflowInstance instance) =>
+        ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
+            ? JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!
+            : instance;
 }
 
 /// <summary>

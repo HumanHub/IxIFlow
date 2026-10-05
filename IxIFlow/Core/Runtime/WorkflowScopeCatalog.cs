@@ -122,9 +122,10 @@ internal sealed class WorkflowScopeCatalog
             {
                 var step = pair.Value;
                 var waitKey = step.StepMetadata.TryGetValue("WaitKey", out var key) ? key?.ToString() : "";
-                return string.Join('|', pair.Key, step.StepType, step.ActivityType?.AssemblyQualifiedName,
-                    step.ResumeEventType?.AssemblyQualifiedName, waitKey, step.ParallelJoinMode,
-                    step.LoopType, step.ExceptionType?.AssemblyQualifiedName);
+                return string.Join('|', pair.Key, step.StepType,
+                    WorkflowTypeIdentity.StableName(step.ActivityType),
+                    WorkflowTypeIdentity.StableName(step.ResumeEventType), waitKey, step.ParallelJoinMode,
+                    step.LoopType, WorkflowTypeIdentity.StableName(step.ExceptionType));
             }));
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature));
         return Convert.ToHexString(bytes);
@@ -148,6 +149,9 @@ internal sealed class WorkflowScopeCatalog
             if (step.StepType == WorkflowStepType.Saga && step.CatchBlocks.Count > 0)
                 throw new NotSupportedException(
                     $"Structured execution does not yet support saga OnError at '{id}'");
+            if (step.StepMetadata.ContainsKey("OutcomeType"))
+                throw new NotSupportedException(
+                    $"Structured execution does not yet support saga outcome at '{id}'");
             if (step.StepMetadata.ContainsKey("IsSagaStep") &&
                 step.StepMetadata.ContainsKey("StepErrorHandlers"))
                 throw new NotSupportedException(

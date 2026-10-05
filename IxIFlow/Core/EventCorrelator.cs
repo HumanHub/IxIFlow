@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
@@ -13,16 +14,19 @@ public class EventCorrelator : IEventCorrelator
     private readonly ILogger<EventCorrelator> _logger;
     private readonly IWorkflowStateRepository _stateRepository;
     private readonly IWorkflowVersionRegistry _versionRegistry;
+    private readonly IServiceProvider _services;
 
     public EventCorrelator(
         IWorkflowStateRepository stateRepository,
         IExpressionEvaluator expressionEvaluator,
         IWorkflowVersionRegistry versionRegistry,
+        IServiceProvider services,
         ILogger<EventCorrelator> logger)
     {
         _stateRepository = stateRepository ?? throw new ArgumentNullException(nameof(stateRepository));
         _expressionEvaluator = expressionEvaluator ?? throw new ArgumentNullException(nameof(expressionEvaluator));
         _versionRegistry = versionRegistry ?? throw new ArgumentNullException(nameof(versionRegistry));
+        _services = services ?? throw new ArgumentNullException(nameof(services));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -38,10 +42,13 @@ public class EventCorrelator : IEventCorrelator
         var suspendedWorkflows = await _stateRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended);
 
         // Filter workflows by event type
-        var eventTypeName = typeof(TEvent).AssemblyQualifiedName;
-        var matchingWorkflows = suspendedWorkflows
-            .Where(w => w.SuspensionInfo != null &&
-                        IsEventTypeMatch(w.SuspensionInfo.ResumeEventType, eventTypeName))
+        var eventType = @event.GetType();
+        var matchingWorkflows = suspendedWorkflows.Where(workflow =>
+            ExecutionCheckpoint.IsStructured(workflow.ExecutionStateJson)
+                ? ExecutionCheckpoint.Read(workflow.ExecutionStateJson).Waits.Any(wait =>
+                    WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(eventType) == true)
+                : workflow.SuspensionInfo != null &&
+                  IsEventTypeMatch(workflow.SuspensionInfo.ResumeEventType, eventType.AssemblyQualifiedName))
             .ToList();
 
         _logger.LogDebug("Found {Count} workflows with matching event type", matchingWorkflows.Count);
@@ -64,6 +71,34 @@ public class EventCorrelator : IEventCorrelator
         CancellationToken cancellationToken = default)
         where TEvent : class
     {
+        if (ExecutionCheckpoint.IsStructured(workflowInstance.ExecutionStateJson))
+        {
+            try
+            {
+                var checkpoint = ExecutionCheckpoint.Read(workflowInstance.ExecutionStateJson);
+                var definition = await _versionRegistry.GetWorkflowDefinitionAsync(
+                    workflowInstance.WorkflowName, workflowInstance.WorkflowVersion);
+                if (definition == null)
+                    return false;
+                var dataType = WorkflowTypeIdentity.Resolve(workflowInstance.WorkflowDataType);
+                if (dataType == null)
+                    return false;
+                var workflowData = JsonSerializer.Deserialize(workflowInstance.WorkflowDataJson, dataType);
+                if (workflowData == null)
+                    return false;
+                var scopes = new WorkflowScopeCatalog(definition);
+                return checkpoint.DefinitionFingerprint == scopes.Fingerprint &&
+                    StructuredWaitMatcher.FindMatches(checkpoint, scopes, workflowData,
+                        @event, _services).Count > 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error evaluating waits for workflow {InstanceId}",
+                    workflowInstance.InstanceId);
+                return false;
+            }
+        }
+
         if (workflowInstance.SuspensionInfo == null)
         {
             _logger.LogWarning("Cannot evaluate resume condition for workflow {InstanceId} - SuspensionInfo is null",
@@ -94,7 +129,7 @@ public class EventCorrelator : IEventCorrelator
                 return true;
             }
 
-            var workflowDataType = Type.GetType(workflowInstance.WorkflowDataType);
+            var workflowDataType = WorkflowTypeIdentity.Resolve(workflowInstance.WorkflowDataType);
             if (workflowDataType == null)
             {
                 _logger.LogWarning("Workflow data type {WorkflowDataType} could not be resolved for workflow {InstanceId}",
@@ -157,8 +192,8 @@ public class EventCorrelator : IEventCorrelator
         if (string.IsNullOrEmpty(expectedTypeName) || string.IsNullOrEmpty(actualTypeName)) return false;
 
         // Get the type from the type name
-        var expectedType = Type.GetType(expectedTypeName);
-        var actualType = Type.GetType(actualTypeName);
+        var expectedType = WorkflowTypeIdentity.Resolve(expectedTypeName);
+        var actualType = WorkflowTypeIdentity.Resolve(actualTypeName);
 
         if (expectedType == null || actualType == null) return false;
 

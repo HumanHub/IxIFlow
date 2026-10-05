@@ -99,7 +99,9 @@ public class SuspensionManager : ISuspensionManager
                     workflow.InstanceId, typeof(TEventData).Name);
 
                 // Resume the workflow with the event
-                await _workflowEngine.ResumeWorkflowAsync(workflow.InstanceId, @event, cancellationToken);
+                var result = await _workflowEngine.ResumeWorkflowAsync(workflow.InstanceId, @event, cancellationToken);
+                if (!result.EventAccepted)
+                    continue;
 
                 resumedWorkflowIds.Add(workflow.InstanceId);
 

@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -214,7 +215,7 @@ public class SuspendResumeExecutor(
             _logger.LogDebug("Validating event type. Expected: {ExpectedType}, Actual: {ActualType}",
                 instance.SuspensionInfo.ResumeEventType, typeof(TEvent).FullName);
 
-            var expectedEventType = Type.GetType(instance.SuspensionInfo.ResumeEventType);
+            var expectedEventType = WorkflowTypeIdentity.Resolve(instance.SuspensionInfo.ResumeEventType);
             if (expectedEventType == null)
             {
                 _logger.LogError("Failed to get expected resume event type: {ResumeEventType}", 
@@ -235,7 +236,7 @@ public class SuspendResumeExecutor(
             // Get the workflow data type and deserialize FIRST (needed for both condition and mappings)
             _logger.LogDebug("Deserializing workflow data. Type: {WorkflowDataType}", instance.WorkflowDataType);
 
-            var workflowDataType = Type.GetType(instance.WorkflowDataType);
+            var workflowDataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType);
             if (workflowDataType == null)
             {
                 _logger.LogError("Failed to get workflow data type: {WorkflowDataType}", instance.WorkflowDataType);
@@ -714,7 +715,7 @@ public class SuspendResumeExecutor(
             return null;
         }
 
-        var resultType = Type.GetType(state.LastStepResultType);
+        var resultType = WorkflowTypeIdentity.Resolve(state.LastStepResultType);
         return resultType == null ? null : JsonSerializer.Deserialize(state.LastStepResultJson, resultType);
     }
 

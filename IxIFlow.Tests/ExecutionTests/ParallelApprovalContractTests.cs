@@ -4,6 +4,7 @@ using IxIFlow.Core;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -75,6 +76,109 @@ public class ParallelApprovalContractTests
         Assert.Equal(1, data.FinanceCompleted);
         Assert.Equal(1, data.LegalCompleted);
         Assert.Equal(1, data.Finished);
+    }
+
+    [Fact]
+    public async Task WaitAll_RoutesSharedKeyByApprovalPredicate()
+    {
+        using var services = CreateServices();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var definition = Workflow.Create<ApprovalData>("SharedApprovalKey")
+            .Step<StartActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch.WaitFor<ApprovalReply>("approval", Matches("finance"))
+                    .Step<CompleteApprovalActivity>(setup => setup
+                        .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.FinanceCompleted)
+                        .Output(activity => activity.CompletedCount).To(ctx => ctx.WorkflowData.FinanceCompleted)))
+                .Do(branch => branch.WaitFor<ApprovalReply>("approval", Matches("legal"))
+                    .Step<CompleteApprovalActivity>(setup => setup
+                        .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.LegalCompleted)
+                        .Output(activity => activity.CompletedCount).To(ctx => ctx.WorkflowData.LegalCompleted))))
+            .Build();
+        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+
+        var first = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+            Reply("finance", approved: true));
+        Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
+        Assert.Equal(1, GetData(first).FinanceCompleted);
+        Assert.Equal(0, GetData(first).LegalCompleted);
+
+        var second = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+            Reply("legal", approved: true));
+        Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
+        Assert.Equal(1, GetData(second).FinanceCompleted);
+        Assert.Equal(1, GetData(second).LegalCompleted);
+    }
+
+    [Fact]
+    public async Task ResumeRestoresActivityOutputWithPropertyJsonConverter()
+    {
+        using var services = CreateServices();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var definition = Workflow.Create<ApprovalData>("ConvertedPrevious")
+            .Step<ConvertedOutputActivity>()
+            .If(ctx => true, then => then.WaitFor<ApprovalReply>("approval"))
+            .Step<CaptureConvertedOutputActivity>(setup => setup
+                .Input(activity => activity.Status).From(ctx => ctx.PreviousStep.Status)
+                .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.EntrySeen))
+            .Build();
+        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
+
+        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+            Reply("finance", approved: true));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Equal("Approved", GetData(completed).EntrySeen);
+    }
+
+    [Fact]
+    public async Task EventManager_RoutesParallelApprovalsWithoutSuspensionInfo()
+    {
+        using var services = CreateServices();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var manager = services.GetRequiredService<ISuspensionManager>();
+        var started = await engine.ExecuteWorkflowAsync(
+            CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false),
+            new ApprovalData { RequestId = "request-1" });
+        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(started.InstanceId);
+        Assert.Null(saved!.SuspensionInfo);
+
+        var routed = await manager.ProcessEventAsync(Reply("finance", approved: true));
+
+        Assert.Contains(started.InstanceId, routed);
+        saved = await services.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(started.InstanceId);
+        Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
+        Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceCompleted);
+    }
+
+    [Fact]
+    public async Task EventManager_DoesNotReportRejectedApprovalAsResumed()
+    {
+        using var services = CreateServices();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var manager = services.GetRequiredService<ISuspensionManager>();
+        var started = await engine.ExecuteWorkflowAsync(
+            CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false),
+            new ApprovalData { RequestId = "request-1" });
+
+        var correlator = services.GetRequiredService<IEventCorrelator>();
+        Assert.False(await correlator.CheckResumeConditionAsync(started.InstanceId,
+            new ApprovalReply { RequestId = "other-request", ApproverId = "finance" }));
+        Assert.True(await correlator.CheckResumeConditionAsync(started.InstanceId,
+            Reply("finance", approved: true)));
+
+        var routed = await manager.ProcessEventAsync(new ApprovalReply
+        {
+            RequestId = "other-request", ApproverId = "finance", Approved = true
+        });
+
+        Assert.Empty(routed);
+        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(started.InstanceId);
+        Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
+        Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceCompleted);
     }
 
     [Fact]
@@ -297,6 +401,27 @@ public class ParallelApprovalContractTests
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, GetData(completed).FinanceStarted);
         Assert.Equal(1, GetData(completed).Finished);
+    }
+
+    [Fact]
+    public async Task FailedCheckpointWritePreservesRecoverablePosition()
+    {
+        var repository = new RecordingRepository { FailOnFinanceStartOnce = true };
+        using var services = CreateServices(repository);
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            CreateRecoverWorkflow(), new ApprovalData { RequestId = "request-1" }));
+
+        var saved = (await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running)).Single();
+        Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceStarted);
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
+        Assert.Equal(1, GetData(recovered).FinanceStarted);
+        var completed = await engine.ResumeWorkflowAsync(saved.InstanceId, "finance",
+            Reply("finance", approved: true));
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
     }
 
     [Fact]
@@ -909,6 +1034,32 @@ public class ParallelApprovalContractTests
         }
     }
 
+    public enum ApprovalStatus { Approved, Rejected }
+
+    public sealed class ConvertedOutputActivity : IAsyncActivity
+    {
+        [JsonConverter(typeof(JsonStringEnumConverter))]
+        public ApprovalStatus Status { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Status = ApprovalStatus.Approved;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class CaptureConvertedOutputActivity : IAsyncActivity
+    {
+        public ApprovalStatus Status { get; set; }
+        public string Value { get; set; } = string.Empty;
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Value = Status.ToString();
+            return Task.CompletedTask;
+        }
+    }
+
     public sealed class CapturePreviousActivity : IAsyncActivity
     {
         public string Value { get; set; } = string.Empty;
@@ -1041,9 +1192,16 @@ public class ParallelApprovalContractTests
 
         public WorkflowInstance? Initial { get; private set; }
         public WorkflowInstance? AfterFinance { get; private set; }
+        public bool FailOnFinanceStartOnce { get; set; }
 
         public Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
         {
+            if (FailOnFinanceStartOnce && instance.Status == WorkflowStatus.Running &&
+                System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson)?.FinanceStarted == 1)
+            {
+                FailOnFinanceStartOnce = false;
+                throw new IOException("The checkpoint store is temporarily unavailable");
+            }
             if (instance.Status == WorkflowStatus.Running && !string.IsNullOrWhiteSpace(instance.ExecutionStateJson))
             {
                 var copy = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
