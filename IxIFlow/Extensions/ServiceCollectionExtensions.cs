@@ -2,6 +2,7 @@ using System.Reflection;
 using IxIFlow.Builders;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -25,6 +26,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowInvoker, WorkflowInvoker>();
         services.AddScoped<ISuspendResumeExecutor, SuspendResumeExecutor>();
         services.AddScoped<ISagaExecutor, SagaExecutor>();
+        services.AddScoped<StructuredWorkflowRunner>();
+        services.AddSingleton(InProcessInstanceGate.Shared);
         
         // Workflow state and persistence
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();

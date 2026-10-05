@@ -273,4 +273,11 @@ public interface IWorkflowEngine
         TEventData @event,
         CancellationToken cancellationToken = default)
         where TEventData : class;
+
+    /// <summary>
+    /// Continues an interrupted, checkpointed workflow instance without an external event.
+    /// </summary>
+    Task<WorkflowExecutionResult> RecoverWorkflowAsync(
+        string instanceId,
+        CancellationToken cancellationToken = default);
 }
