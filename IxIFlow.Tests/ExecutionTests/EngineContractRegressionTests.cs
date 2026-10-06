@@ -13,6 +13,33 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class EngineContractRegressionTests
 {
     [Fact]
+    public async Task DisablingTracingKeepsHistoryEmptyAcrossWaitAndResume()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.AddTransient<MarkChildActivity>();
+        using var provider = services.BuildServiceProvider();
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var repository = provider.GetRequiredService<IWorkflowStateRepository>();
+        var definition = Workflow.Create<RegressionData>("TraceOption")
+            .Step<MarkChildActivity>(_ => { })
+            .WaitFor<RegressionApprovalEvent>("approval")
+            .Step<MarkChildActivity>(_ => { })
+            .Build();
+
+        var started = await engine.ExecuteWorkflowAsync(definition, new RegressionData(),
+            new WorkflowOptions { EnableTracing = false });
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        Assert.Empty((await repository.GetWorkflowInstanceAsync(started.InstanceId))!.ExecutionHistory);
+
+        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+            new RegressionApprovalEvent());
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Empty((await repository.GetWorkflowInstanceAsync(started.InstanceId))!.ExecutionHistory);
+    }
+
+    [Fact]
     public async Task TerminatedInstanceReturnsTerminalStatusOnCancellation()
     {
         var services = new ServiceCollection();

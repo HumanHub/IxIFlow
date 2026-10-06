@@ -38,6 +38,7 @@ public sealed class WorkflowCompletionPublisher
                     {
                         WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
                         WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
+                        WorkflowStatus.TimedOut => WorkflowExecutionStatus.TimedOut,
                         WorkflowStatus.Terminated => WorkflowExecutionStatus.Failed,
                         _ => WorkflowExecutionStatus.Faulted
                     },

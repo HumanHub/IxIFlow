@@ -5,6 +5,7 @@ using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace IxIFlow.Extensions;
 
@@ -27,6 +28,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISuspendResumeExecutor, SuspendResumeExecutor>();
         services.AddScoped<ISagaExecutor, SagaExecutor>();
         services.AddScoped<StructuredWorkflowRunner>();
+        services.AddHostedService<WorkflowRecoveryService>();
         services.AddSingleton(InProcessInstanceGate.Shared);
         
         // Workflow state and persistence

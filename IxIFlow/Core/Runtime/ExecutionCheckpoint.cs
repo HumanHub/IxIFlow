@@ -13,6 +13,8 @@ internal sealed class ExecutionCheckpoint
     public List<ContinuationState> Continuations { get; set; } = [];
     public List<ParallelJoinState> Joins { get; set; } = [];
     public List<WaitState> Waits { get; set; } = [];
+    public DateTime? ExecutionDeadlineUtc { get; set; }
+    public bool TimedOut { get; set; }
     public Dictionary<string, string> AcceptedDeliveries { get; set; } = [];
     public SerializedException? UnhandledError { get; set; }
     public bool CancellationRequested { get; set; }
@@ -59,6 +61,7 @@ internal sealed class ContinuationState
     public SerializedValue? Previous { get; set; }
     public ActivityInvocationState? PendingActivity { get; set; }
     public AcceptedWaitState? AcceptedWait { get; set; }
+    public DateTime? RetryAfterUtc { get; set; }
 
     [JsonIgnore]
     public object? RuntimePrevious { get; set; }
@@ -174,6 +177,7 @@ internal sealed class ScopePosition
     public SagaScopeState? SagaState { get; set; }
     public SerializedValue? EntryPrevious { get; set; }
     public bool RestorePreviousOnExit { get; set; }
+    public bool ExitParentScopeOnExit { get; set; }
 
     [JsonIgnore]
     public object? RuntimeEntryPrevious { get; set; }
@@ -281,6 +285,7 @@ internal sealed class WaitState
     public string Key { get; set; } = "";
     public string EventType { get; set; } = "";
     public DateTime RegisteredAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? DeadlineUtc { get; set; }
 }
 
 internal sealed class AcceptedWaitState
