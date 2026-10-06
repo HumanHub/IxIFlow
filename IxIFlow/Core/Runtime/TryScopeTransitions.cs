@@ -89,20 +89,22 @@ internal static class TryScopeTransitions
         var selectedCatch = catchIndex >= 0 ? step.CatchBlocks[catchIndex] : null;
         SerializedException savedError;
         if (selectedCatch == null)
-            savedError = SerializedException.From(error);
+            savedError = SerializedException.From(error,
+                scopes.FaultProperties(SerializedException.CatchType(error)));
         else
         {
             try
             {
                 savedError = SerializedException.FromForCatch(error,
-                    selectedCatch.ExceptionType!, selectedCatch.FaultType!);
+                    selectedCatch.ExceptionType!, selectedCatch.FaultType!,
+                    scopes.FaultProperties(SerializedException.CatchType(error)));
             }
             catch (Exception projectionError)
             {
                 // The handler cannot receive the fault it declared. Finish this Try's
                 // cleanup, then let an outer handler see the capture failure.
                 error = new InvalidOperationException(
-                    $"Fault projection for '{error.GetType().Name}' failed: " +
+                    $"Fault projection for '{SerializedException.CatchType(error).Name}' failed: " +
                     projectionError.GetBaseException().Message);
                 savedError = SerializedException.From(error);
                 catchIndex = -1;
@@ -141,9 +143,11 @@ internal static class TryScopeTransitions
 
     private static int FindCatchIndex(WorkflowStep step, TryScopeState state, Exception error)
     {
-        var first = state.Phase == TryPhase.Catch ? state.CatchIndex + 1 : 0;
-        for (var index = first; index < step.CatchBlocks.Count; index++)
-            if (step.CatchBlocks[index].ExceptionType?.IsAssignableFrom(error.GetType()) == true)
+        if (state.Phase != TryPhase.Try)
+            return -1;
+        var errorType = SerializedException.CatchType(error);
+        for (var index = 0; index < step.CatchBlocks.Count; index++)
+            if (step.CatchBlocks[index].ExceptionType?.IsAssignableFrom(errorType) == true)
                 return index;
         return -1;
     }

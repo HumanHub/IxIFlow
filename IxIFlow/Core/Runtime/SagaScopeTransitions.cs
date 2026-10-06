@@ -39,8 +39,9 @@ internal static class SagaScopeTransitions
                 return;
             }
 
-            var error = state.ErrorAction == SagaContinuationAction.Continue &&
-                state.CompensationErrors.Count == 0 ? null : state.GetTerminalError();
+            var error = state.IsCancellationCleanup ||
+                (state.ErrorAction == SagaContinuationAction.Continue &&
+                 state.CompensationErrors.Count == 0) ? null : state.GetTerminalError();
             var compensationErrors = state.CompensationErrors;
             var isCancellationCleanup = state.IsCancellationCleanup;
             if (compensationErrors.Count == 0 && !isCancellationCleanup && state.ErrorAction is { } action)
@@ -296,12 +297,29 @@ internal static class SagaScopeTransitions
         var state = owner.SagaState!;
         var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
         var handlerIndex = saga.CatchBlocks.FindIndex(handler =>
-            handler.ExceptionType?.IsAssignableFrom(error.GetType()) == true);
-        var savedError = handlerIndex < 0
-            ? SerializedException.From(error)
-            : SerializedException.FromForCatch(error,
-                saga.CatchBlocks[handlerIndex].ExceptionType!,
-                saga.CatchBlocks[handlerIndex].FaultType!);
+            handler.ExceptionType?.IsAssignableFrom(SerializedException.CatchType(error)) == true);
+        SerializedException savedError;
+        if (handlerIndex < 0)
+            savedError = SerializedException.From(error,
+                scopes.FaultProperties(SerializedException.CatchType(error)));
+        else
+        {
+            try
+            {
+                savedError = SerializedException.FromForCatch(error,
+                    saga.CatchBlocks[handlerIndex].ExceptionType!,
+                    saga.CatchBlocks[handlerIndex].FaultType!,
+                    scopes.FaultProperties(SerializedException.CatchType(error)));
+            }
+            catch (Exception projectionError)
+            {
+                error = new InvalidOperationException(
+                    $"Fault projection for '{SerializedException.CatchType(error).Name}' failed: " +
+                    projectionError.GetBaseException().Message);
+                savedError = SerializedException.From(error);
+                handlerIndex = -1;
+            }
+        }
         state.ErrorHandlerIndex = handlerIndex;
         state.ErrorHandlerStarted = false;
         var configuration = handlerIndex < 0 ? null :

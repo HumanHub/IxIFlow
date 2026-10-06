@@ -188,7 +188,7 @@ internal sealed class TryScopeState
     [JsonIgnore]
     public Exception? RuntimeError { get; set; }
 
-    public Exception? GetError() => RuntimeError ??= Error?.Restore();
+    public Exception? GetError() => RuntimeError ??= Error?.ForPropagation();
 
     public void SetError(Exception error)
     {
@@ -230,7 +230,7 @@ internal sealed class SagaScopeState
         Error = SerializedException.From(error);
     }
 
-    public Exception? GetError() => RuntimeError ??= Error?.Restore();
+    public Exception? GetError() => RuntimeError ??= Error?.ForPropagation();
 
     public Exception? GetTerminalError() => ErrorHandlerIndex >= 0 && ErrorAction != null && Error != null
         ? new SagaFailureException(Error.Type, Error.Message)

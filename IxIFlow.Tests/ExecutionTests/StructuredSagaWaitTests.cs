@@ -430,6 +430,175 @@ public class StructuredSagaWaitTests
     }
 
     [Fact]
+    public async Task RecoveredNonRestorableSagaErrorMatchesOuterCatch()
+    {
+        var repository = new HandlerStartCrashStore();
+        using var services = CreateServices(repository);
+        var definition = Workflow.Create<SagaData>("RecoveredNonRestorableSagaError")
+            .Step<BeginActivity>()
+            .Try(body => body
+                .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>(_ => { }))
+                .OnError<NonRestorableSagaException, MessageFault>(error => error
+                    .Step<RecoverableHandlerActivity>()))
+            .Catch<NonRestorableSagaException, MessageFault>(handler => handler.Step<ReadErrorActivity>(setup => setup
+                .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
+                .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+        Assert.Equal("payment failed", Data(recovered).Error);
+    }
+
+    [Fact]
+    public async Task RecoveredSagaErrorProjectsASecondOuterFaultShape()
+    {
+        var repository = new HandlerStartCrashStore();
+        using var services = CreateServices(repository);
+        var definition = Workflow.Create<SagaData>("RecoveredSagaWithDifferentOuterFault")
+            .Step<BeginActivity>()
+            .Try(body => body
+                .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>(_ => { }))
+                .OnError<NonRestorableSagaException, MessageFault>(error => error
+                    .Step<RecoverableHandlerActivity>()))
+            .Catch<NonRestorableSagaException, MessageCodeFault>(handler => handler
+                .Step<ReadErrorActivity>(setup => setup
+                    .Input(activity => activity.Message).From(ctx => ctx.Fault.PublicCode)
+                    .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Trace))
+                .Step<ReadErrorActivity>(setup => setup
+                    .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
+                    .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+        Assert.Equal("private constructor value", Data(recovered).Trace);
+        Assert.Equal("payment failed", Data(recovered).Error);
+    }
+
+    [Fact]
+    public async Task UnusedOuterFaultProjectionDoesNotInterruptHandledSagaError()
+    {
+        using var services = CreateServices(new InMemoryWorkflowStateRepository());
+        var definition = Workflow.Create<SagaData>("UnusedOuterFaultProjection")
+            .Step<BeginActivity>()
+            .Try(body => body
+                .Saga(saga => saga.Step<ThrowFragileSagaActivity>(_ => { }))
+                .OnError<FragileSagaException, MessageFault>(error => error
+                    .CompensateNone().ThenContinue()))
+            .Catch<FragileSagaException, FragileSagaFault>(handler => handler
+                .Step<HandlerMarkerActivity>(_ => { }))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal("", Data(result).Trace);
+    }
+
+    [Fact]
+    public async Task RecoveredUnhandledSagaErrorReportsOriginalExceptionType()
+    {
+        var repository = new HandlerStartCrashStore();
+        using var services = CreateServices(repository);
+        var definition = Workflow.Create<SagaData>("RecoveredUnhandledSagaError")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>(_ => { }))
+            .OnError<NonRestorableSagaException, MessageFault>(handler => handler
+                .Step<RecoverableHandlerActivity>())
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, recovered.Status);
+        Assert.Equal(typeof(NonRestorableSagaException).FullName, recovered.ErrorType);
+    }
+
+    [Fact]
+    public async Task RecoveredOuterFaultReadsBasePropertyHiddenByInnerException()
+    {
+        var repository = new HandlerStartCrashStore();
+        using var services = CreateServices(repository);
+        var definition = Workflow.Create<SagaData>("RecoveredHiddenFaultProperty")
+            .Step<BeginActivity>()
+            .Try(body => body
+                .Saga(saga => saga.Step<ThrowHiddenPropertySagaActivity>(_ => { }))
+                .OnError<HiddenPropertySagaException, MessageCodeFault>(handler => handler
+                    .Step<RecoverableHandlerActivity>()))
+            .Catch<BaseCodeSagaException, MessageCodeFault>(handler => handler
+                .Step<ReadErrorActivity>(setup => setup
+                    .Input(activity => activity.Message).From(ctx => ctx.Fault.PublicCode)
+                    .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Trace)))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+        Assert.Equal("base value", Data(recovered).Trace);
+    }
+
+    [Fact]
+    public async Task SagaTerminationSurvivesAnEnclosingFinallyWait()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = CreateServices(repository);
+        var definition = Workflow.Create<SagaData>("SagaTerminationFinallyWait")
+            .Step<BeginActivity>()
+            .Try(outer => outer
+                .Try(inner => inner
+                    .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>(_ => { }))
+                    .OnError<NonRestorableSagaException, MessageFault>(handler => handler
+                        .CompensateNone().ThenTerminate()))
+                .Finally(cleanup => cleanup.WaitFor<Approval>("cleanup")))
+            .Catch<SagaTerminatedException, MessageFault>(handler => handler
+                .Step<ReadErrorActivity>(setup => setup
+                    .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
+                    .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+
+        var suspended = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
+
+        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId, "cleanup", new Approval());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
+        Assert.Contains("Saga terminated", Data(resumed).Error);
+    }
+
+    [Fact]
+    public void SagaTerminationExceptionCanBeRestoredFromCheckpoint()
+    {
+        var original = new SagaTerminatedException("policy", new InvalidOperationException("payment failed"));
+
+        var saved = IxIFlow.Core.Runtime.SerializedException.From(original);
+
+        Assert.True(saved.IsRestorable, saved.RestorationFailureReason);
+        var restored = Assert.IsType<SagaTerminatedException>(saved.Restore());
+        Assert.Equal(original.Message, restored.Message);
+        Assert.Equal("payment failed", restored.OriginalException.Message);
+    }
+
+    [Fact]
     public async Task SagaCompensationInsideCatchUsesItsCurrentStep()
     {
         using var services = CreateServices(new InMemoryWorkflowStateRepository());
@@ -1113,6 +1282,40 @@ public class StructuredSagaWaitTests
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             throw new FragileSagaException();
+    }
+
+    public sealed class NonRestorableSagaException(string secret) : Exception("payment failed")
+    {
+        public string PublicCode => secret;
+    }
+
+    public sealed class MessageCodeFault
+    {
+        public string Message { get; set; } = "";
+        public string PublicCode { get; set; } = "";
+    }
+
+    public sealed class ThrowNonRestorableSagaActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            throw new NonRestorableSagaException("private constructor value");
+    }
+
+    public class BaseCodeSagaException(string baseCode) : Exception("hidden property failed")
+    {
+        public string PublicCode => baseCode;
+    }
+
+    public sealed class HiddenPropertySagaException(string baseCode, string derivedCode)
+        : BaseCodeSagaException(baseCode)
+    {
+        public new string PublicCode => derivedCode;
+    }
+
+    public sealed class ThrowHiddenPropertySagaActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            throw new HiddenPropertySagaException("base value", "derived value");
     }
 
     public sealed class CompletedStepProbe
