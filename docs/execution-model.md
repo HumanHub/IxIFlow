@@ -19,6 +19,8 @@ Conditions and parallel branches are represented as workflow steps with nested c
 
 The default `AddIxIFlow()` registration uses singleton `InMemoryWorkflowStateRepository` and `InMemoryEventStore`. They retain data across dependency injection scopes within one process. They are not shared or durable state stores: a process restart or another host loses access to those instances.
 
+`WorkflowOptions.PersistState = false` runs without saving an instance. Use it for workflows that finish in one execution call. The engine rejects waits, delays, and child workflow invocation in this mode because each can leave work that needs a saved parent position.
+
 At suspension, the engine saves workflow data, active continuations and scope frames, and each waiting step. Resume matches an event to one saved wait and advances that continuation. A loop finishes the interrupted iteration and checks its condition again. A saga restores completed activity results for compensation. Memory and SQL repositories use revisioned checkpoints and renewable execution leases so another host can recover a stopped worker after its lease expires. An interrupted ordinary activity may still need manual resolution; external effects are not automatically exactly once. See [sagas](/docs/sagas/) for the practical effect.
 
 `Try/Catch` uses saved frames for active nested handlers. A failure before a `Try` is not caught by that later block. Waits inside `Catch` and `Finally` resume without rerunning completed handler steps. Custom exception data is exposed through a declared durable fault projection.

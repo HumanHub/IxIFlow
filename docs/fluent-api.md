@@ -5,6 +5,8 @@ description: Define typed IxIFlow workflows in C#.
 
 The fluent API builds a `WorkflowDefinition` from activities, data mappings, and control flow. Use `Workflow.Create<TData>(name, version)` for a builder or `Workflow.Build<TData>(configure, name, version)` for a configuration callback.
 
+The name is optional for direct execution. When an unnamed definition is registered or started, IxIFlow gives it a stable name based on its data type and step structure so its saved instances can recover. Use an explicit name and version when other workflows invoke it by name.
+
 ## Create a definition
 
 ```csharp
