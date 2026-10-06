@@ -797,6 +797,9 @@ public class WorkflowStep
     /// </summary>
     public Func<object, bool>? CompiledCondition { get; set; }
 
+    /// <summary>Stable source shape for expression-based conditions.</summary>
+    public string? ConditionExpressionSignature { get; set; }
+
     [System.Text.Json.Serialization.JsonIgnore]
     public Func<object, object?>? OutcomeSelector { get; set; }
 
@@ -845,6 +848,9 @@ public class WorkflowStep
 
     /// <summary>Maximum time to wait for the matching event.</summary>
     public TimeSpan? WaitTimeout { get; set; }
+
+    /// <summary>Duration of a timer step that advances without an event.</summary>
+    public TimeSpan? DelayDuration { get; set; }
 
     /// <summary>Alternative steps run when a wait deadline expires.</summary>
     public List<WorkflowStep> TimeoutSteps { get; set; } = new();
@@ -909,6 +915,7 @@ public class WorkflowStep
             InputMappings = InputMappings.Select(m => m.Clone()).ToList(),
             OutputMappings = OutputMappings.Select(m => m.Clone()).ToList(),
             CompiledCondition = CompiledCondition,
+            ConditionExpressionSignature = ConditionExpressionSignature,
             OutcomeSelector = OutcomeSelector,
             OutcomeBranches = OutcomeBranches.Select(branch => new WorkflowOutcomeBranch
             {
@@ -926,6 +933,7 @@ public class WorkflowStep
             CatchBlocks = CatchBlocks.Select(s => s.Clone()).ToList(),
             FinallySteps = FinallySteps.Select(s => s.Clone()).ToList(),
             WaitTimeout = WaitTimeout,
+            DelayDuration = DelayDuration,
             TimeoutSteps = TimeoutSteps.Select(s => s.Clone()).ToList(),
             LoopBodySteps = LoopBodySteps.Select(s => s.Clone()).ToList(),
             LoopType = LoopType,
@@ -1001,7 +1009,10 @@ public enum WorkflowStepType
     /// <summary>
     ///     Loop constructs (while/do-while)
     /// </summary>
-    Loop
+    Loop,
+
+    /// <summary>Park until a durable timer becomes due.</summary>
+    Delay
 }
 
 /// <summary>
@@ -1034,6 +1045,9 @@ public class PropertyMapping
     ///     Target property name on the activity
     /// </summary>
     public string TargetProperty { get; set; } = string.Empty;
+
+    /// <summary>Stable source or destination expression used to bind this property.</summary>
+    public string? ExpressionSignature { get; set; }
 
     /// <summary>
     ///     Compiled source function from context (fast execution)
@@ -1071,6 +1085,7 @@ public class PropertyMapping
         {
             Id = Id,
             TargetProperty = TargetProperty,
+            ExpressionSignature = ExpressionSignature,
             SourceFunction = SourceFunction,
             TargetAssignmentFunction = TargetAssignmentFunction,
             SourceType = SourceType,

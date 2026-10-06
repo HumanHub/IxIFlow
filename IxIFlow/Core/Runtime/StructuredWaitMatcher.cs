@@ -16,11 +16,15 @@ internal static class StructuredWaitMatcher
         var eventType = @event.GetType();
         return checkpoint.Waits.Where(wait =>
             (key == null || wait.Key == key) &&
+            checkpoint.Continuations.Any(item => item.Id == wait.ContinuationId &&
+                item.Status == ContinuationStatus.Waiting) &&
             WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(eventType) == true &&
             MatchesPredicate(wait)).ToList();
 
         bool MatchesPredicate(WaitState wait)
         {
+            if (wait.ChildWorkflowId != null)
+                return true;
             var step = scopes.Step(wait.StepId);
             var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
             return WorkflowValueBinding.Matches(step, @event, workflowData,

@@ -868,7 +868,8 @@ public sealed class ActivityRecoveryTests
 
         public Task<StepExecutionResult> ExecuteWorkflowInvocationAsync<TWorkflowData>(
             WorkflowStep step, StepExecutionContext<TWorkflowData> context,
-            ExecutionState executionState, CancellationToken cancellationToken)
+            ExecutionState executionState, string invocationId,
+            CancellationToken cancellationToken)
             where TWorkflowData : class
         {
             Calls++;

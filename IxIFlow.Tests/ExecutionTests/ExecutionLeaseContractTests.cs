@@ -724,6 +724,37 @@ public sealed class ExecutionLeaseContractTests
     }
 
     [Fact]
+    public async Task LostLeaseWaitsForAnInFlightActivityToStop()
+    {
+        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository())
+        {
+            PauseFirstRead = false
+        };
+        var probe = new ActivityProbe();
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true);
+        var definition = Workflow.Create<LeaseData>("LostLeaseActivity")
+            .Step<BlockingActivity>(_ => { })
+            .Build();
+        var executing = host.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData());
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        repository.LoseNextRenewal = 1;
+        await repository.LeaseLost.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await Task.Delay(150);
+            Assert.False(executing.IsCompleted);
+        }
+        finally
+        {
+            probe.Release.TrySetResult();
+        }
+
+        Assert.Equal(WorkflowExecutionStatus.Running,
+            (await executing.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+    }
+
+    [Fact]
     public async Task StaleResumeCannotApplyAnEventAfterAnotherHostFinishes()
     {
         var repository = new InMemoryWorkflowStateRepository();
@@ -1270,6 +1301,7 @@ public sealed class ExecutionLeaseContractTests
     {
         public int FailNextCancellationReads;
         public int FailNextRenewals;
+        public int LoseNextRenewal;
         public bool FailAllCancellationReads;
         public int CancelBeforeTerminalCommit;
         public int CancelBeforeFailedCommit;
@@ -1277,6 +1309,8 @@ public sealed class ExecutionLeaseContractTests
         public TaskCompletionSource CancellationReadFailed { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource RenewalFailed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource LeaseLost { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool CompleteOnCancellationRequest { get; set; }
         public bool PauseFirstRead { get; set; } = true;
@@ -1337,6 +1371,11 @@ public sealed class ExecutionLeaseContractTests
             inner.TryAcquireExecutionLeaseAsync(id, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
         {
+            if (Interlocked.Exchange(ref LoseNextRenewal, 0) > 0)
+            {
+                LeaseLost.TrySetResult();
+                return Task.FromResult(false);
+            }
             if (Interlocked.Exchange(ref FailNextRenewals, 0) > 0)
             {
                 RenewalFailed.TrySetResult();

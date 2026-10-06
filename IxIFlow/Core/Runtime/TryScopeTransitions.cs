@@ -180,8 +180,9 @@ internal static class TryScopeTransitions
         {
             foreach (var frame in continuation.Stack)
             {
-                RejectUnrestorable(frame.TryState?.Error,
-                    frame.TryState?.Phase == TryPhase.Catch);
+                var tryState = frame.TryState;
+                if (tryState?.Phase != TryPhase.Finally)
+                    RejectUnrestorable(tryState?.Error, tryState?.Phase == TryPhase.Catch);
                 var saga = frame.SagaState;
                 RejectUnrestorable(saga?.Error,
                     saga?.Phase == SagaPhase.Compensating && saga.ErrorHandlerStarted &&

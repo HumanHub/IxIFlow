@@ -11,23 +11,26 @@ namespace IxIFlow.Core;
 /// <summary>
 /// Handles workflow invocation operations with proper separation of concerns
 /// </summary>
-public class WorkflowInvoker : IWorkflowInvoker
+public class WorkflowInvoker : ICheckpointedWorkflowInvoker
 {
     private readonly IWorkflowTracer _tracer;
     private readonly ILogger<WorkflowInvoker> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly IWorkflowVersionRegistry _versionRegistry;
+    private readonly IWorkflowStateRepository _repository;
 
     public WorkflowInvoker(
         IWorkflowTracer tracer,
         ILogger<WorkflowInvoker> logger,
         IServiceProvider serviceProvider,
-        IWorkflowVersionRegistry versionRegistry)
+        IWorkflowVersionRegistry versionRegistry,
+        IWorkflowStateRepository repository)
     {
         _tracer = tracer ?? throw new ArgumentNullException(nameof(tracer));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         _versionRegistry = versionRegistry ?? throw new ArgumentNullException(nameof(versionRegistry));
+        _repository = repository ?? throw new ArgumentNullException(nameof(repository));
     }
 
     /// <summary>
@@ -37,6 +40,7 @@ public class WorkflowInvoker : IWorkflowInvoker
         WorkflowStep step,
         StepExecutionContext<TWorkflowData> context,
         ExecutionState executionState,
+        string invocationId,
         CancellationToken cancellationToken)
         where TWorkflowData : class
     {
@@ -74,16 +78,21 @@ public class WorkflowInvoker : IWorkflowInvoker
                     ?? throw new InvalidOperationException($"Workflow {step.WorkflowName} has no data type");
             }
 
-            // Create instance of child workflow data
-            childWorkflowData = Activator.CreateInstance(childWorkflowDataType)
-                                ?? throw new InvalidOperationException(
-                                    $"Failed to create instance of {childWorkflowDataType}");
-
-            _logger.LogDebug("Created child workflow data instance: {DataType}", childWorkflowDataType.Name);
-
-            // Apply input mappings to populate child workflow data
-            await ApplyInputMappingsAsync(childWorkflowData, step.InputMappings, context, context.PreviousStepData,
-                cancellationToken);
+            var savedChild = await _repository.GetWorkflowInstanceAsync(invocationId);
+            if (savedChild == null)
+            {
+                childWorkflowData = Activator.CreateInstance(childWorkflowDataType)
+                                    ?? throw new InvalidOperationException(
+                                        $"Failed to create instance of {childWorkflowDataType}");
+                await ApplyInputMappingsAsync(childWorkflowData, step.InputMappings, context,
+                    context.PreviousStepData, cancellationToken);
+            }
+            else
+            {
+                childWorkflowData = JsonSerializer.Deserialize(savedChild.WorkflowDataJson,
+                    childWorkflowDataType) ?? throw new InvalidOperationException(
+                    $"Saved child workflow data for '{invocationId}' cannot be read");
+            }
 
             // Create child workflow definition
             WorkflowDefinition childWorkflowDefinition;
@@ -115,6 +124,17 @@ public class WorkflowInvoker : IWorkflowInvoker
                     throw new InvalidOperationException($"Builder {builderType} does not have a Build method");
 
                 childWorkflowDefinition = (WorkflowDefinition)buildDefinitionMethod.Invoke(builder, null)!;
+                var published = await _versionRegistry.GetWorkflowDefinitionAsync(
+                    childWorkflowDefinition.Name, childWorkflowDefinition.Version);
+                if (published != null)
+                {
+                    if (new WorkflowScopeCatalog(published).Fingerprint !=
+                        new WorkflowScopeCatalog(childWorkflowDefinition).Fingerprint)
+                        throw new InvalidOperationException(
+                            $"Workflow {childWorkflowDefinition.Name} v{childWorkflowDefinition.Version} " +
+                            "differs from its registered definition");
+                    childWorkflowDefinition = published;
+                }
             }
             else
             {
@@ -140,9 +160,17 @@ public class WorkflowInvoker : IWorkflowInvoker
 
             var genericExecuteMethod = executeMethod.MakeGenericMethod(childWorkflowDataType);
             var childResult = await (Task<WorkflowExecutionResult>)genericExecuteMethod.Invoke(this,
-                [childWorkflowDefinition, childWorkflowData, cancellationToken])!;
+                [childWorkflowDefinition, childWorkflowData, invocationId, cancellationToken])!;
 
             var duration = DateTime.UtcNow - startTime;
+
+            if (childResult.Status == WorkflowExecutionStatus.Suspended)
+                return new StepExecutionResult
+                {
+                    IsSuccess = true,
+                    WorkflowStatus = WorkflowExecutionStatus.Suspended,
+                    ChildInstanceId = invocationId
+                };
 
             if (!childResult.IsSuccess)
             {
@@ -156,8 +184,13 @@ public class WorkflowInvoker : IWorkflowInvoker
                     StackTrace = childResult.ErrorStackTrace
                 }, cancellationToken);
 
-                // Set pending exception for propagation
-                executionState.PendingException = new Exception(childResult.ErrorMessage ?? "Child workflow failed");
+                var failedChild = await _repository.GetWorkflowInstanceAsync(invocationId);
+                var savedError = failedChild != null &&
+                    StructuredWorkflowRunner.HasStructuredCheckpoint(failedChild)
+                    ? ExecutionCheckpoint.Read(failedChild.ExecutionStateJson).UnhandledError
+                    : null;
+                executionState.PendingException = savedError?.ForPropagation() ??
+                    new InvalidOperationException(childResult.ErrorMessage ?? "Child workflow failed");
 
                 return new StepExecutionResult
                 {
@@ -190,7 +223,9 @@ public class WorkflowInvoker : IWorkflowInvoker
             return new StepExecutionResult
             {
                 IsSuccess = true,
-                OutputData = childResult.WorkflowData
+                OutputData = childResult.WorkflowData,
+                WorkflowStatus = childResult.Status,
+                ChildInstanceId = invocationId
             };
         }
         catch (Exception ex)
@@ -232,6 +267,7 @@ public class WorkflowInvoker : IWorkflowInvoker
     private async Task<WorkflowExecutionResult> ExecuteChildWorkflowAsync<TChildWorkflowData>(
         WorkflowDefinition childDefinition,
         TChildWorkflowData childData,
+        string invocationId,
         CancellationToken cancellationToken)
     where TChildWorkflowData : class
     {
@@ -242,7 +278,8 @@ public class WorkflowInvoker : IWorkflowInvoker
         // Create child workflow options
         var childOptions = new WorkflowOptions
         {
-            PersistState = false, // Child workflows typically don't persist state separately
+            PersistState = true,
+            InstanceId = invocationId,
             CorrelationId = Guid.NewGuid().ToString()
         };
 

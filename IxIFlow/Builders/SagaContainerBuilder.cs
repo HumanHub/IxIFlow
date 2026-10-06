@@ -37,6 +37,9 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
     }
 
     // Delegate all IWorkflowBuilder methods to the real workflow builder
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration) =>
+        _workflowBuilder.Delay(duration);
+
     public IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
         Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>> configure)
         where TActivity : class, IAsyncActivity

@@ -193,7 +193,7 @@ internal static class SagaScopeTransitions
             value is not List<StepErrorHandlerInfo> handlers)
             return false;
         var handler = handlers.FirstOrDefault(candidate =>
-            candidate.ExceptionType.IsAssignableFrom(error.GetType()));
+            candidate.ExceptionType.IsAssignableFrom(SerializedException.CatchType(error)));
         if (handler == null)
             return false;
         if (handler.HandlerAction == StepErrorAction.Ignore)

@@ -10,6 +10,38 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class WorkflowRecoveryServiceTests
 {
     [Fact]
+    public async Task SlowRecoveryDoesNotBlockAnotherDueInstance()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        for (var index = 0; index < 2; index++)
+            await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
+            {
+                InstanceId = Guid.NewGuid().ToString("N"),
+                WorkflowName = "IndependentRecovery",
+                Status = WorkflowStatus.Running
+            });
+        var engine = new BlockingRecoveryEngine();
+        var services = new ServiceCollection();
+        services.AddSingleton<IWorkflowEngine>(engine);
+        using var provider = services.BuildServiceProvider();
+        using var scanner = new WorkflowRecoveryService(
+            provider.GetRequiredService<IServiceScopeFactory>(), repository,
+            NullLogger<WorkflowRecoveryService>.Instance);
+        using var stopping = new CancellationTokenSource();
+        var scan = scanner.RecoverOnceAsync(stopping.Token);
+        try
+        {
+            await engine.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await engine.SecondStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            engine.ReleaseFirst.TrySetResult();
+            await scan;
+        }
+    }
+
+    [Fact]
     public async Task ScannerMovesAnInterruptedOrdinaryActivityToNeedsResolution()
     {
         var repository = new ActivityRecoveryTests.FaultStore
@@ -234,6 +266,55 @@ public sealed class WorkflowRecoveryServiceTests
             });
         }
 
+        public Task<WorkflowExecutionResult> ExecuteWorkflowAsync<TWorkflowData>(
+            WorkflowDefinition definition, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(
+            string instanceId, TEventData @event, CancellationToken cancellationToken = default)
+            where TEventData : class => throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(
+            string instanceId, string key, TEventData @event,
+            CancellationToken cancellationToken = default)
+            where TEventData : class => throw new NotSupportedException();
+    }
+
+    private sealed class BlockingRecoveryEngine : IWorkflowEngine
+    {
+        private int _calls;
+        public TaskCompletionSource FirstStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SecondStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseFirst { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<WorkflowExecutionResult> RecoverWorkflowAsync(string instanceId,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                FirstStarted.TrySetResult();
+                await ReleaseFirst.Task.WaitAsync(cancellationToken);
+            }
+            else
+                SecondStarted.TrySetResult();
+            return new WorkflowExecutionResult { InstanceId = instanceId,
+                Status = WorkflowExecutionStatus.NeedsResolution };
+        }
+
+        public Task<WorkflowExecutionResult> ResumeWorkflowDeliveryAsync<TEventData>(
+            string instanceId, string? key, TEventData @event, string deliveryId,
+            CancellationToken cancellationToken = default) where TEventData : class =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
+            throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ResolveActivityAsync(string instanceId,
+            string invocationId, ActivityResolution resolution,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> CancelWorkflowAsync(string instanceId,
+            CancellationReason reason, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
         public Task<WorkflowExecutionResult> ExecuteWorkflowAsync<TWorkflowData>(
             WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)

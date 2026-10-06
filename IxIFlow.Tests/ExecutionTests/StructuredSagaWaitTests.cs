@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
@@ -9,6 +10,52 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public class StructuredSagaWaitTests
 {
+    [Fact]
+    public void SagaStepErrorPolicyMatchesSavedOriginalExceptionType()
+    {
+        var definition = Workflow.Create<SagaData>("SavedSagaStepError")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>(step => step
+                .OnError<NonRestorableSagaException>(handler => handler.ThenIgnore())))
+            .Build();
+        var scopes = new WorkflowScopeCatalog(definition);
+        var saga = definition.Steps[1];
+        var continuation = new ContinuationState
+        {
+            Stack =
+            [
+                new ScopePosition { ScopeId = "root", NextStepIndex = 1,
+                    SagaState = new SagaScopeState() },
+                new ScopePosition { ScopeId = scopes.SagaScope(saga) }
+            ]
+        };
+        var saved = SerializedException.From(
+            new NonRestorableSagaException("private constructor value"));
+        Assert.False(saved.IsRestorable);
+
+        Assert.True(SagaScopeTransitions.HandleStepFailure(scopes, continuation,
+            saved.ForPropagation()));
+        Assert.Equal(1, continuation.Stack[^1].NextStepIndex);
+    }
+
+    [Fact]
+    public async Task SagaErrorHandlerWithoutContinuationRethrowsAfterHandler()
+    {
+        using var services = CreateServices(new InMemoryWorkflowStateRepository());
+        var definition = Workflow.Create<SagaData>("ImplicitSagaRethrow")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<FailActivity>(_ => { }))
+            .OnError<InvalidOperationException>(handler => handler.Step<HandlerMarkerActivity>())
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("payment failed", result.ErrorMessage);
+        Assert.Equal("H", Data(result).Trace);
+    }
+
     [Fact]
     public async Task SagaWait_ResumesAtTheNextStepAfterProviderRestart()
     {
