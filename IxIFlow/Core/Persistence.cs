@@ -20,6 +20,17 @@ public interface IWorkflowStateRepository
     Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
         WorkflowInstance instance, long expectedRevision, string commitId);
 
+    /// <summary>Acquires an absent or expired execution lease for one instance.</summary>
+    Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+        TimeSpan duration);
+
+    /// <summary>Extends a lease held by the same execution token.</summary>
+    Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
+        TimeSpan duration);
+
+    /// <summary>Releases a lease only when the caller still owns it.</summary>
+    Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token);
+
     /// <summary>
     ///     Save workflow instance state
     /// </summary>
@@ -318,6 +329,49 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] PayloadHash, long Revision)> _commits = new();
+    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _leases = new();
+
+    public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+        TimeSpan duration)
+    {
+        ValidateLeaseArguments(instanceId, token, duration);
+        lock (_claimLock)
+        {
+            var now = DateTime.UtcNow;
+            if (_leases.TryGetValue(instanceId, out var lease) && lease.ExpiresAtUtc > now)
+                return Task.FromResult(false);
+            _leases[instanceId] = (token, now.Add(duration));
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
+        TimeSpan duration)
+    {
+        ValidateLeaseArguments(instanceId, token, duration);
+        lock (_claimLock)
+        {
+            var now = DateTime.UtcNow;
+            if (!_leases.TryGetValue(instanceId, out var lease) ||
+                lease.Token != token || lease.ExpiresAtUtc <= now)
+                return Task.FromResult(false);
+            _leases[instanceId] = (token, now.Add(duration));
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(token);
+        lock (_claimLock)
+        {
+            if (!_leases.TryGetValue(instanceId, out var lease) || lease.Token != token)
+                return Task.FromResult(false);
+            _leases.Remove(instanceId);
+            return Task.FromResult(true);
+        }
+    }
 
     public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
         WorkflowInstance instance, long expectedRevision, string commitId)
@@ -334,18 +388,28 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
         {
             var key = (instance.InstanceId, commitId);
+            var revision = _instances.TryGetValue(instance.InstanceId, out var stored) ? stored.Revision : 0;
+            var hasLease = _leases.TryGetValue(instance.InstanceId, out var lease);
             if (_commits.TryGetValue(key, out var receipt))
             {
                 if (receipt.ExpectedRevision != expectedRevision || !receipt.PayloadHash.SequenceEqual(payloadHash))
                     throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
+                if (snapshot.Status == WorkflowStatus.Running && instance.ExecutionLeaseToken != null &&
+                    (!hasLease || lease.Token != instance.ExecutionLeaseToken ||
+                     lease.ExpiresAtUtc <= DateTime.UtcNow))
+                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision));
             }
 
-            var revision = _instances.TryGetValue(instance.InstanceId, out var stored) ? stored.Revision : 0;
-            if (revision != expectedRevision)
+            if (revision != expectedRevision ||
+                (hasLease && (lease.Token != instance.ExecutionLeaseToken ||
+                              lease.ExpiresAtUtc <= DateTime.UtcNow)) ||
+                (!hasLease && instance.ExecutionLeaseToken != null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
             _instances[instance.InstanceId] = snapshot;
             _commits.Add(key, (expectedRevision, payloadHash, snapshot.Revision));
+            if (snapshot.Status != WorkflowStatus.Running)
+                _leases.Remove(instance.InstanceId);
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision));
         }
     }
@@ -415,6 +479,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
         {
             _instances.TryRemove(instanceId, out _);
+            _leases.Remove(instanceId);
             foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
                 _commits.Remove(key);
         }
@@ -434,6 +499,14 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         instance.Revision != 0 || ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
             ? JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!
             : instance;
+
+    private static void ValidateLeaseArguments(string instanceId, string token, TimeSpan duration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(token);
+        if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(duration));
+    }
 }
 
 /// <summary>

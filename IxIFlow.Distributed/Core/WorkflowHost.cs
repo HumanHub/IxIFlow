@@ -134,7 +134,10 @@ public class WorkflowHost : IWorkflowHost, IDisposable
             throw new InvalidOperationException($"Host '{_options.HostId}' is at capacity and cannot accept more workflows");
         }
 
-        var instanceId = Guid.NewGuid().ToString();
+        options ??= new WorkflowOptions();
+        var instanceId = options.InstanceId ?? Guid.NewGuid().ToString("N");
+        if (options.PersistState)
+            options.InstanceId = instanceId;
         
         try
         {
@@ -282,6 +285,7 @@ public class WorkflowHost : IWorkflowHost, IDisposable
             // Create workflow options for immediate execution
             var workflowOptions = new WorkflowOptions
             {
+                InstanceId = instanceId,
                 ExecutionTimeout = options.ExecutionTimeout,
                 EnableTracing = true,
                 Priority = options.Priority,

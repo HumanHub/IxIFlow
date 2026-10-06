@@ -22,6 +22,55 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             : connectionString;
     }
 
+    public async Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+        TimeSpan duration)
+    {
+        var milliseconds = LeaseMilliseconds(instanceId, token, duration);
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var changed = await connection.ExecuteAsync("""
+            MERGE dbo.IxIFlowWorkflowLeases WITH (HOLDLOCK) AS target
+            USING (SELECT @InstanceId AS InstanceId) AS source
+            ON target.InstanceId = source.InstanceId
+            WHEN MATCHED AND target.ExpiresAtUtc <= SYSUTCDATETIME() THEN
+                UPDATE SET Token = @Token,
+                    ExpiresAtUtc = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME())
+            WHEN NOT MATCHED THEN
+                INSERT (InstanceId, Token, ExpiresAtUtc)
+                VALUES (@InstanceId, @Token,
+                    DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()));
+            """, new { InstanceId = instanceId, Token = token, Milliseconds = milliseconds });
+        return changed == 1;
+    }
+
+    public async Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
+        TimeSpan duration)
+    {
+        var milliseconds = LeaseMilliseconds(instanceId, token, duration);
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var changed = await connection.ExecuteAsync("""
+            UPDATE dbo.IxIFlowWorkflowLeases
+            SET ExpiresAtUtc = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME())
+            WHERE InstanceId = @InstanceId AND Token = @Token
+                AND ExpiresAtUtc > SYSUTCDATETIME()
+            """, new { InstanceId = instanceId, Token = token, Milliseconds = milliseconds });
+        return changed == 1;
+    }
+
+    public async Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(token);
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var changed = await connection.ExecuteAsync("""
+            DELETE FROM dbo.IxIFlowWorkflowLeases
+            WHERE InstanceId = @InstanceId AND Token = @Token
+            """, new { InstanceId = instanceId, Token = token });
+        return changed == 1;
+    }
+
     public async Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
     {
         ArgumentNullException.ThrowIfNull(instance);
@@ -79,14 +128,33 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             SELECT ExpectedRevision, Revision, PayloadHash FROM dbo.IxIFlowWorkflowCommits
             WHERE InstanceId = @InstanceId AND CommitId = @CommitId
             """, new { instance.InstanceId, CommitId = commitId }, transaction);
+        var lease = await connection.QuerySingleOrDefaultAsync<LeaseRecord>("""
+            SELECT Token,
+                CAST(CASE WHEN ExpiresAtUtc > SYSUTCDATETIME() THEN 1 ELSE 0 END AS BIT) AS IsActive
+            FROM dbo.IxIFlowWorkflowLeases WITH (UPDLOCK, HOLDLOCK)
+            WHERE InstanceId = @InstanceId
+            """, new { instance.InstanceId }, transaction);
         if (receipt != null)
         {
             if (receipt.ExpectedRevision != expectedRevision || !receipt.PayloadHash.SequenceEqual(payloadHash))
                 throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
+            if (snapshot.Status == WorkflowStatus.Running && instance.ExecutionLeaseToken != null &&
+                (lease == null || lease.Token != instance.ExecutionLeaseToken || !lease.IsActive))
+            {
+                await transaction.CommitAsync();
+                return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
+            }
             await transaction.CommitAsync();
             return new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision);
         }
         if (currentRevision != expectedRevision)
+        {
+            await transaction.CommitAsync();
+            return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
+        }
+
+        if (lease == null ? instance.ExecutionLeaseToken != null :
+            lease.Token != instance.ExecutionLeaseToken || !lease.IsActive)
         {
             await transaction.CommitAsync();
             return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
@@ -114,6 +182,10 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             StateJson = json, snapshot.Revision,
             ExpectedRevision = expectedRevision, CommitId = commitId, PayloadHash = payloadHash
         }, transaction);
+        if (snapshot.Status != WorkflowStatus.Running)
+            await connection.ExecuteAsync("""
+                DELETE FROM dbo.IxIFlowWorkflowLeases WHERE InstanceId = @InstanceId
+                """, new { instance.InstanceId }, transaction);
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision);
     }
@@ -123,6 +195,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
         public long ExpectedRevision { get; set; }
         public long Revision { get; set; }
         public byte[] PayloadHash { get; set; } = [];
+    }
+
+    private sealed class LeaseRecord
+    {
+        public string Token { get; set; } = "";
+        public bool IsActive { get; set; }
     }
 
     public async Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance)
@@ -177,6 +255,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
+        await connection.ExecuteAsync(
+            "DELETE FROM dbo.IxIFlowWorkflowLeases WHERE InstanceId = @InstanceId",
+            new { InstanceId = instanceId });
         await connection.ExecuteAsync(
             "DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId",
             new { InstanceId = instanceId });
@@ -273,6 +354,16 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                         CONSTRAINT FK_IxIFlowWorkflowCommits_Instance FOREIGN KEY (InstanceId)
                             REFERENCES dbo.IxIFlowWorkflowInstances (InstanceId) ON DELETE CASCADE
                     );
+                IF OBJECT_ID(N'dbo.IxIFlowWorkflowLeases', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE dbo.IxIFlowWorkflowLeases (
+                        InstanceId NVARCHAR(100) NOT NULL PRIMARY KEY,
+                        Token NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                        ExpiresAtUtc DATETIME2 NOT NULL
+                    );
+                    CREATE INDEX IX_IxIFlowWorkflowLeases_ExpiresAt
+                        ON dbo.IxIFlowWorkflowLeases (ExpiresAtUtc);
+                END
                 """, transaction: transaction);
             await connection.ExecuteAsync("""
                 UPDATE dbo.IxIFlowWorkflowInstances
@@ -297,4 +388,13 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
     private static WorkflowInstance Deserialize(string json) =>
         JsonSerializer.Deserialize<WorkflowInstance>(json)
         ?? throw new InvalidOperationException("A stored workflow instance could not be deserialized");
+
+    private static int LeaseMilliseconds(string instanceId, string token, TimeSpan duration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(token);
+        if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(duration));
+        return checked((int)Math.Ceiling(duration.TotalMilliseconds));
+    }
 }

@@ -14,14 +14,22 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
 {
     private readonly string _connectionString;
     private readonly TimeSpan _pollInterval;
+    private readonly TimeSpan _claimDuration;
+    private readonly TimeSpan _renewalInterval;
     private readonly CancellationTokenSource _cancellationTokenSource;
     private readonly SemaphoreSlim _schemaLock = new(1, 1);
     private bool _schemaReady;
     
-    public SqlMessageBus(string connectionString, TimeSpan? pollInterval = null)
+    public SqlMessageBus(string connectionString, TimeSpan? pollInterval = null,
+        TimeSpan? claimDuration = null, TimeSpan? renewalInterval = null)
     {
         _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(1);
+        _claimDuration = claimDuration ?? TimeSpan.FromMinutes(5);
+        _renewalInterval = renewalInterval ?? TimeSpan.FromMinutes(1);
+        if (_claimDuration <= TimeSpan.Zero || _renewalInterval <= TimeSpan.Zero ||
+            _renewalInterval >= _claimDuration || _claimDuration.TotalMilliseconds > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(claimDuration));
         _cancellationTokenSource = new CancellationTokenSource();
     }
 
@@ -100,6 +108,7 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             }
             finally
             {
+                await delivery.StopRenewalAsync();
                 if (!delivery.IsAcknowledged)
                 {
                     await ReleaseClaimAsync(delivery.MessageId, delivery.ClaimToken);
@@ -137,11 +146,12 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
                 ORDER BY Priority DESC, CreatedAt ASC
             )
             UPDATE message
-            SET ClaimToken = @ClaimToken, ClaimedUntil = DATEADD(SECOND, 300, SYSUTCDATETIME())
+            SET ClaimToken = @ClaimToken, ClaimedUntil = DATEADD(MILLISECOND, @ClaimMilliseconds, SYSUTCDATETIME())
             OUTPUT inserted.Id, inserted.Payload
             FROM dbo.WorkflowMessages AS message
             INNER JOIN next_message ON next_message.Id = message.Id;
-            """, new { MessageType = messageType, TargetHostId = targetHostId, ClaimToken = claimToken });
+            """, new { MessageType = messageType, TargetHostId = targetHostId,
+                ClaimToken = claimToken, ClaimMilliseconds = (int)Math.Ceiling(_claimDuration.TotalMilliseconds) });
         if (row == null)
         {
             return null;
@@ -160,11 +170,26 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             UPDATE dbo.WorkflowMessages
             SET ProcessedAt = SYSUTCDATETIME(), ClaimToken = NULL, ClaimedUntil = NULL
             WHERE Id = @MessageId AND ClaimToken = @ClaimToken AND ProcessedAt IS NULL
+                AND ClaimedUntil > SYSUTCDATETIME()
             """, new { MessageId = messageId, ClaimToken = claimToken });
         if (changed != 1)
         {
             throw new InvalidOperationException($"Message claim {messageId} is no longer owned by this consumer");
         }
+    }
+
+    private async Task<bool> RenewClaimAsync(string messageId, string claimToken)
+    {
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+        var changed = await connection.ExecuteAsync("""
+            UPDATE dbo.WorkflowMessages
+            SET ClaimedUntil = DATEADD(MILLISECOND, @ClaimMilliseconds, SYSUTCDATETIME())
+            WHERE Id = @MessageId AND ClaimToken = @ClaimToken AND ProcessedAt IS NULL
+                AND ClaimedUntil > SYSUTCDATETIME()
+            """, new { MessageId = messageId, ClaimToken = claimToken,
+                ClaimMilliseconds = (int)Math.Ceiling(_claimDuration.TotalMilliseconds) });
+        return changed == 1;
     }
 
     private async Task ReleaseClaimAsync(string messageId, string claimToken)
@@ -258,19 +283,63 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
         public int Priority { get; set; }
     }
 
-    private sealed class SqlMessageDelivery<T>(SqlMessageBus bus, string messageId, string claimToken, T message)
-        : IMessageDelivery<T> where T : class
+    private sealed class SqlMessageDelivery<T> : IMessageDelivery<T> where T : class
     {
-        public T Message => message;
-        public string MessageId => messageId;
-        public string ClaimToken => claimToken;
+        private readonly SqlMessageBus _bus;
+        private readonly string _messageId;
+        private readonly string _claimToken;
+        private readonly CancellationTokenSource _stop = new();
+        private readonly Task _renewal;
+        private int _stopped;
+        public T Message { get; }
+        public string MessageId => _messageId;
+        public string ClaimToken => _claimToken;
         public bool IsAcknowledged { get; private set; }
+
+        public SqlMessageDelivery(SqlMessageBus bus, string messageId, string claimToken, T message)
+        {
+            _bus = bus;
+            _messageId = messageId;
+            _claimToken = claimToken;
+            Message = message;
+            _renewal = RenewAsync();
+        }
 
         public async Task AcknowledgeAsync()
         {
             if (IsAcknowledged) return;
-            await bus.AcknowledgeAsync(messageId, claimToken);
+            await _bus.AcknowledgeAsync(_messageId, _claimToken);
             IsAcknowledged = true;
+            await StopRenewalAsync();
+        }
+
+        public async Task StopRenewalAsync()
+        {
+            if (Interlocked.Exchange(ref _stopped, 1) != 0)
+                return;
+            _stop.Cancel();
+            await _renewal;
+            _stop.Dispose();
+        }
+
+        private async Task RenewAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    await Task.Delay(_bus._renewalInterval, _stop.Token);
+                    if (!await _bus.RenewClaimAsync(_messageId, _claimToken))
+                        return;
+                }
+            }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+            {
+            }
+            catch
+            {
+                // The claim expires naturally if SQL cannot renew it.
+            }
         }
     }
 }

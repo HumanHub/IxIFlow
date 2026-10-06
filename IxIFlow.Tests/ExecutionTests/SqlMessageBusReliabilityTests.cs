@@ -8,6 +8,43 @@ public class SqlMessageBusReliabilityTests
 {
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
+    public async Task ActiveDeliveryKeepsItsClaimPastTheOriginalExpiry()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var token = Guid.NewGuid().ToString("N");
+        try
+        {
+            using var firstBus = new SqlMessageBus(connectionString, TimeSpan.FromMilliseconds(20),
+                TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(50));
+            using var secondBus = new SqlMessageBus(connectionString, TimeSpan.FromMilliseconds(20),
+                TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(50));
+            await firstBus.PublishAsync(new RenewingBusProbe { Token = token });
+            await using var firstConsumer = firstBus.ConsumeDeliveriesAsync<RenewingBusProbe>()
+                .GetAsyncEnumerator();
+            Assert.True(await firstConsumer.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(token, firstConsumer.Current.Message.Token);
+
+            await using var secondConsumer = secondBus.ConsumeDeliveriesAsync<RenewingBusProbe>()
+                .GetAsyncEnumerator();
+            var duplicate = secondConsumer.MoveNextAsync().AsTask();
+            await Task.Delay(600);
+            await secondBus.StopAsync();
+            Assert.False(await duplicate);
+            await firstConsumer.Current.AcknowledgeAsync();
+        }
+        finally
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                "DELETE FROM dbo.WorkflowMessages WHERE MessageType = @MessageType AND Payload LIKE @Payload",
+                new { MessageType = typeof(RenewingBusProbe).AssemblyQualifiedName,
+                    Payload = $"%{token}%" });
+        }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
     public async Task MessageWithoutHandlerAcknowledgement_IsRedelivered()
     {
         var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
@@ -96,6 +133,11 @@ public class SqlMessageBusReliabilityTests
 }
 
 public sealed class BusDeliveryProbe
+{
+    public string Token { get; set; } = string.Empty;
+}
+
+public sealed class RenewingBusProbe
 {
     public string Token { get; set; } = string.Empty;
 }

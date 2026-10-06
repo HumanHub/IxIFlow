@@ -176,6 +176,7 @@ public class WorkflowQueueService : BackgroundService
 
         try
         {
+            ArgumentException.ThrowIfNullOrWhiteSpace(command.InstanceId);
             // Publish started event
             await _messageBus.PublishAsync(new WorkflowExecutionStartedEvent
             {
@@ -204,7 +205,18 @@ public class WorkflowQueueService : BackgroundService
                 ?? throw new InvalidOperationException("Workflow data cannot be null");
 
             // Execute workflow
-            var result = await workflowEngine.ExecuteWorkflowAsync(definition, workflowData, command.Options);
+            var options = command.Options ?? new WorkflowOptions();
+            if (options.InstanceId != null && options.InstanceId != command.InstanceId)
+                throw new InvalidOperationException("The command and workflow options have different instance IDs");
+            options.InstanceId = command.InstanceId;
+            var result = await workflowEngine.ExecuteWorkflowAsync(definition, workflowData, options);
+            if (result.Status == WorkflowExecutionStatus.Running)
+            {
+                result = await workflowEngine.RecoverWorkflowAsync(command.InstanceId);
+                if (result.Status == WorkflowExecutionStatus.Running)
+                    throw new InvalidOperationException(
+                        $"Workflow instance '{command.InstanceId}' is executing; keep the command for redelivery");
+            }
 
             // Publish completion event
             await _messageBus.PublishAsync(new WorkflowExecutionCompletedEvent
@@ -223,21 +235,11 @@ public class WorkflowQueueService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to execute workflow {InstanceId}", command.InstanceId);
-
-            // Publish failure event
-            await _messageBus.PublishAsync(new WorkflowExecutionCompletedEvent
-            {
-                InstanceId = command.InstanceId,
-                HostId = _hostId,
-                Status = WorkflowExecutionStatus.Failed,
-                ErrorMessage = ex.Message,
-                CompletedAt = DateTime.UtcNow,
-                ExecutionTime = TimeSpan.Zero
-            });
+            throw;
         }
     }
 
-    private async Task ProcessResumeCommandAsync(ResumeWorkflowCommand command)
+    internal async Task ProcessResumeCommandAsync(ResumeWorkflowCommand command)
     {
         using var scope = _serviceProvider.CreateScope();
         var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
@@ -254,7 +256,9 @@ public class WorkflowQueueService : BackgroundService
             var eventData = System.Text.Json.JsonSerializer.Deserialize(command.EventDataJson, eventDataType);
 
             // Resume workflow
-            var result = await workflowEngine.ResumeWorkflowAsync(command.InstanceId, eventData);
+            var result = command.Key == null
+                ? await workflowEngine.ResumeWorkflowAsync(command.InstanceId, eventData)
+                : await workflowEngine.ResumeWorkflowAsync(command.InstanceId, command.Key, eventData);
             if (result.Status == WorkflowExecutionStatus.Running && !result.EventAccepted)
                 throw new InvalidOperationException(
                     $"Workflow instance '{command.InstanceId}' is executing; keep the resume command for redelivery");

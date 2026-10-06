@@ -13,10 +13,12 @@ internal sealed class StructuredWorkflowRunner(
     IWorkflowInvoker workflowInvoker,
     IWorkflowStateRepository repository,
     IWorkflowVersionRegistry registry,
-    InProcessInstanceGate gate)
+    InProcessInstanceGate gate,
+    ExecutionLeaseSettings? leaseSettings = null)
 {
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
     private readonly WorkflowInvocationTransitionExecutor _invocations = new(workflowInvoker);
+    private readonly ExecutionLeaseSettings _leaseSettings = leaseSettings ?? ExecutionLeaseSettings.Default;
 
     public static bool HasStructuredCheckpoint(WorkflowInstance? instance) =>
         instance != null && ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson);
@@ -28,9 +30,13 @@ internal sealed class StructuredWorkflowRunner(
         CancellationToken cancellationToken)
         where TData : class
     {
+        if (options.InstanceId != null && string.IsNullOrWhiteSpace(options.InstanceId))
+            throw new ArgumentException("An explicit workflow instance ID cannot be empty", nameof(options));
+        if (options.InstanceId != null && !options.PersistState)
+            throw new InvalidOperationException("An explicit workflow instance ID requires state persistence");
         var instance = new WorkflowInstance
         {
-            InstanceId = Guid.NewGuid().ToString("N"),
+            InstanceId = options.InstanceId ?? Guid.NewGuid().ToString("N"),
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
             WorkflowDataType = workflowData.GetType().AssemblyQualifiedName!,
@@ -58,6 +64,26 @@ internal sealed class StructuredWorkflowRunner(
         };
 
         using var lease = await gate.EnterAsync(instance.InstanceId, cancellationToken);
+        await using var owner = options.PersistState
+            ? await WorkflowExecutionLease.TryAcquireAsync(repository, instance, _leaseSettings)
+                ?? (options.InstanceId == null
+                    ? throw new InvalidOperationException("The new workflow instance could not acquire execution ownership")
+                    : null)
+            : null;
+        if (options.PersistState && owner == null)
+            return Busy(instance.InstanceId);
+        if (options.InstanceId != null)
+        {
+            var existing = await repository.GetWorkflowInstanceAsync(instance.InstanceId);
+            if (existing != null)
+            {
+                if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version ||
+                    ExecutionCheckpoint.Read(existing.ExecutionStateJson).DefinitionFingerprint != scopes.Fingerprint)
+                    throw new InvalidOperationException(
+                        $"Workflow instance '{instance.InstanceId}' belongs to a different definition");
+                return ExistingResult(existing);
+            }
+        }
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes);
         if (options.PersistState)
@@ -66,7 +92,7 @@ internal sealed class StructuredWorkflowRunner(
             await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
         }
         return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-            options.PersistState, cancellationToken);
+            options.PersistState, owner, cancellationToken);
     }
 
     public async Task<WorkflowExecutionResult> ResumeAsync<TEvent>(
@@ -120,6 +146,16 @@ internal sealed class StructuredWorkflowRunner(
         if (matching.Count > 1)
             return Rejected(instanceId, "The event satisfies more than one wait; provide a unique key");
 
+        await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
+            repository, instance, _leaseSettings);
+        if (owner == null)
+            return Busy(instanceId);
+        var current = await repository.GetWorkflowInstanceAsync(instanceId);
+        if (current?.Revision != instance.Revision || current.Status != instance.Status)
+            return current?.Status == WorkflowStatus.Running
+                ? Busy(instanceId)
+                : Rejected(instanceId, "The wait changed before this event could be accepted");
+
         var wait = matching[0];
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
 
@@ -135,7 +171,7 @@ internal sealed class StructuredWorkflowRunner(
         await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
 
         var resumed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-            true, cancellationToken);
+            true, owner, cancellationToken);
         resumed.EventAccepted = true;
         return resumed;
     }
@@ -159,13 +195,22 @@ internal sealed class StructuredWorkflowRunner(
         var scopes = new WorkflowScopeCatalog(definition);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
+        await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
+            repository, instance, _leaseSettings);
+        if (owner == null)
+            return Busy(instanceId);
+        var current = await repository.GetWorkflowInstanceAsync(instanceId);
+        if (current?.Revision != instance.Revision || current.Status != instance.Status)
+            return current?.Status == WorkflowStatus.Running
+                ? Busy(instanceId)
+                : Rejected(instanceId, "The workflow instance changed before recovery could start");
         foreach (var continuation in checkpoint.Continuations.Where(item =>
                      item.PendingActivity != null && item.Status is
                          ContinuationStatus.WaitingResolution or ContinuationStatus.Cancelling))
             continuation.Status = ContinuationStatus.Active;
         instance.Status = WorkflowStatus.Running;
         return await RunAndSaveAsync(definition, instance, checkpoint,
-            workflowData, true, cancellationToken);
+            workflowData, true, owner, cancellationToken);
     }
 
     private async Task<WorkflowExecutionResult> RunAndSaveAsync(
@@ -174,6 +219,7 @@ internal sealed class StructuredWorkflowRunner(
         ExecutionCheckpoint checkpoint,
         object workflowData,
         bool persistState,
+        WorkflowExecutionLease? owner,
         CancellationToken cancellationToken)
     {
         var inFlight = new Dictionary<string, RunningActivity>();
@@ -190,6 +236,7 @@ internal sealed class StructuredWorkflowRunner(
                 throw new InvalidOperationException("The registered workflow definition differs from the saved version");
             while (true)
             {
+                owner?.ThrowIfLost();
                 if (cancellationToken.IsCancellationRequested && !checkpoint.CancellationRequested)
                 {
                     checkpoint.CancellationRequested = true;
@@ -223,6 +270,7 @@ internal sealed class StructuredWorkflowRunner(
                 // This lets a sibling start even when another activity is awaiting it.
                 while (true)
                 {
+                    owner?.ThrowIfLost();
                     var runnable = checkpoint.Continuations.FirstOrDefault(item =>
                         item.Status == ContinuationStatus.Active && !inFlight.ContainsKey(item.Id));
                     if (runnable == null)
@@ -294,9 +342,12 @@ internal sealed class StructuredWorkflowRunner(
                 var runningTasks = inFlight.Values.Select(item => (Task)item.Task).ToList();
                 if (!checkpoint.CancellationRequested && callerCancellation != null)
                     runningTasks.Add(callerCancellation);
+                if (owner != null)
+                    runningTasks.Add(owner.Loss);
                 var finished = await Task.WhenAny(runningTasks);
                 if (finished == callerCancellation)
                     continue;
+                owner?.ThrowIfLost();
                 var completedActivity = inFlight.Values.First(item => item.Task == finished);
                 try
                 {
@@ -380,6 +431,14 @@ internal sealed class StructuredWorkflowRunner(
                 },
                 ExecutionTime = DateTime.UtcNow - instance.StartedAt!.Value
             };
+        }
+        catch (ExecutionLeaseLostException)
+        {
+            foreach (var activity in inFlight.Values)
+                activity.Cancellation.Cancel();
+            foreach (var activity in inFlight.Values)
+                activity.Cancellation.Dispose();
+            return Busy(instance.InstanceId);
         }
         catch (CheckpointPersistenceException ex)
         {
@@ -1218,6 +1277,32 @@ internal sealed class StructuredWorkflowRunner(
         InstanceId = instanceId,
         Status = WorkflowExecutionStatus.Faulted,
         ErrorMessage = reason
+    };
+
+    private static WorkflowExecutionResult Busy(string instanceId) => new()
+    {
+        InstanceId = instanceId,
+        Status = WorkflowExecutionStatus.Running,
+        ErrorMessage = "The workflow instance is executing on another host"
+    };
+
+    private static WorkflowExecutionResult ExistingResult(WorkflowInstance instance) => new()
+    {
+        InstanceId = instance.InstanceId,
+        Status = instance.Status switch
+        {
+            WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
+            WorkflowStatus.Suspended => WorkflowExecutionStatus.Suspended,
+            WorkflowStatus.NeedsResolution => WorkflowExecutionStatus.NeedsResolution,
+            WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
+            WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
+            _ => WorkflowExecutionStatus.Running
+        },
+        WorkflowData = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType) is { } dataType
+            ? JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
+            : null,
+        ErrorMessage = instance.LastError,
+        ErrorStackTrace = instance.LastErrorStackTrace
     };
 
     private async Task PersistUnwrappedAsync(WorkflowInstance instance,

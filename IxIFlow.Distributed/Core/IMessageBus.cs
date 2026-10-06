@@ -55,6 +55,7 @@ public class ResumeWorkflowCommand
 {
     public string InstanceId { get; set; } = "";
     public string TargetHostId { get; set; } = "";
+    public string? Key { get; set; }
     public string EventDataJson { get; set; } = "";
     public string EventDataType { get; set; } = "";
     public DateTime QueuedAt { get; set; } = DateTime.UtcNow;
