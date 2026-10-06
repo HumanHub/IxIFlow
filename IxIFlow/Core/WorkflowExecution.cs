@@ -134,6 +134,9 @@ public class WorkflowVersionInfo
 /// </summary>
 public class WorkflowOptions
 {
+    /// <summary>Stable instance ID for an idempotent start command.</summary>
+    public string? InstanceId { get; set; }
+
     /// <summary>
     ///     Maximum execution time for the workflow
     /// </summary>
@@ -221,6 +224,10 @@ public class WorkflowInstance
 {
     /// <summary>The revision assigned by an atomic repository commit.</summary>
     public long Revision { get; set; }
+
+    /// <summary>Runtime-only token used to fence checkpoint writes by a former owner.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? ExecutionLeaseToken { get; set; }
 
     internal WorkflowInstance CopyForResume() => (WorkflowInstance)MemberwiseClone();
 
