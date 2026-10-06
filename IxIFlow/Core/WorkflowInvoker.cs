@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using IxIFlow.Builders;
 using IxIFlow.Builders.Interfaces;
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -121,7 +122,7 @@ public class WorkflowInvoker : IWorkflowInvoker
             }
 
             // Add child workflow started trace
-            await _tracer.TraceAsync(context.WorkflowInstance.InstanceId, new ExecutionTraceEntry
+            await TraceInvocationAsync(context.WorkflowInstance, new ExecutionTraceEntry
             {
                 StepNumber = context.WorkflowInstance.CurrentStepNumber,
                 EntryType = TraceEntryType.ActivityStarted,
@@ -145,7 +146,7 @@ public class WorkflowInvoker : IWorkflowInvoker
 
             if (!childResult.IsSuccess)
             {
-                await _tracer.TraceAsync(context.WorkflowInstance.InstanceId, new ExecutionTraceEntry
+                await TraceInvocationAsync(context.WorkflowInstance, new ExecutionTraceEntry
                 {
                     StepNumber = context.WorkflowInstance.CurrentStepNumber,
                     EntryType = TraceEntryType.ActivityFailed,
@@ -170,7 +171,7 @@ public class WorkflowInvoker : IWorkflowInvoker
                 context.PreviousStepData, cancellationToken);
 
             // Add child workflow completed trace
-            await _tracer.TraceAsync(context.WorkflowInstance.InstanceId, new ExecutionTraceEntry
+            await TraceInvocationAsync(context.WorkflowInstance, new ExecutionTraceEntry
             {
                 StepNumber = context.WorkflowInstance.CurrentStepNumber,
                 EntryType = TraceEntryType.ActivityCompleted,
@@ -196,7 +197,7 @@ public class WorkflowInvoker : IWorkflowInvoker
         {
             _logger.LogError(ex, "Workflow invocation step failed: {StepId}", step.Id);
 
-            await _tracer.TraceAsync(context.WorkflowInstance.InstanceId, new ExecutionTraceEntry
+            await TraceInvocationAsync(context.WorkflowInstance, new ExecutionTraceEntry
             {
                 StepNumber = context.WorkflowInstance.CurrentStepNumber,
                 EntryType = TraceEntryType.ActivityFailed,
@@ -214,6 +215,15 @@ public class WorkflowInvoker : IWorkflowInvoker
                 OutputData = executionState.LastStepResult
             };
         }
+    }
+
+    private Task TraceInvocationAsync(WorkflowInstance instance, ExecutionTraceEntry entry,
+        CancellationToken cancellationToken)
+    {
+        // The structured runner writes invocation traces with the checkpoint revision.
+        if (StructuredWorkflowRunner.HasStructuredCheckpoint(instance))
+            return Task.CompletedTask;
+        return _tracer.TraceAsync(instance.InstanceId, entry, cancellationToken);
     }
 
     /// <summary>

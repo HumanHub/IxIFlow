@@ -1,151 +1,90 @@
 # Durable execution model
 
-The sections below describe the target model. The last section records what
-the current implementation supports and what remains to be built.
+## Execution state
 
-## Scope
+The fluent definition is a versioned tree. The runner saves a checkpoint with a
+continuation for each runnable branch, a stack of scope frames for each
+continuation, a join for each active parallel step, and a wait for each parked
+continuation. A definition fingerprint prevents recovery against a different
+tree. Fresh execution and recovery use the same runner.
 
-The workflow definition is a versioned, structured tree. A running workflow is a
-set of continuations over that tree. Each continuation owns a stack of scope
-frames. Parallel creates child continuations and a join; it does not flatten
-Try, Catch, Finally, loops, or Saga into unrelated step pointers.
+`WaitFor<TEvent>` parks only its continuation. Other parallel branches keep
+running. The instance becomes Suspended when no work is runnable and at least
+one wait remains. `WaitAll` is the default join. `WaitAny` joins when one branch
+completes; a conditional join evaluates its predicate after each branch
+completion. A losing branch receives cancellation, settles in-flight work, and
+runs required `Finally` work before the parent moves on.
 
-The same execution model runs with an in-memory store or a durable store. A
-distributed host changes how an instance is claimed and awakened, not how its
-steps execute.
+Parallel activities receive the same workflow data object. Their direct
+mutations can overlap. The engine applies declared output mappings as each
+activity finishes; workflow authors must synchronize conflicting shared
+mutations themselves.
 
-## Persisted state
+## Checkpoints and effects
 
-- A definition node has a stable ID within its name and version.
-- Every entry into a node has a fresh activation ID. Repeated loop iterations
-  therefore have distinct activations even when they use the same definition.
-- A continuation has a status, previous value, pending outcome, and an ordered
-  stack of frames. A frame records its node ID, activation ID, phase, and next
-  child index. Construct-specific state is typed, not an unstructured bag.
-- A parallel join owns its child continuation IDs, completion policy, completed
-  children, and cancellation progress. Its parent remains parked at the join.
-- A wait has an ID, owning continuation and activation, event type, correlation
-  key, and state. One instance can have any number of waits.
-- A checkpoint has a schema version and revision. The store rejects a save made
-  against an obsolete revision or by an obsolete owner.
+The runner saves an attempt before invoking an activity and saves its observed
+result afterward. A process can die after an external effect but before the
+result checkpoint. On recovery, `IRecoverableActivity` decides whether the
+effect completed, should execute, failed, or cannot be determined. An activity
+without that contract, or one whose recovery cannot establish the outcome,
+stops at `NeedsResolution`. An operator can record a completed or failed
+decision with the required outputs and an audit note. The engine does not
+promise exactly-once effects in an external system.
 
-Live C# stacks, delegates, exception objects, and activity instances are not
-persisted. A checkpoint refers to the registered definition and contains only
-serializable values and error descriptions.
+Saga uses the same checkpoints. It records each completed forward effect and
+compensates in reverse order on failure or business cancellation. A forward
+effect whose output cannot be saved stops for resolution; earlier effects are
+not compensated while that outcome is unknown. Cancellation of an interrupted
+parallel branch likewise keeps an unconfirmed activity at `NeedsResolution`.
 
-## Runner
+Caught exceptions crossing a checkpoint are projected into serializable fault
+data. A handler can use `Catch<TException, TFault>` and `ctx.Fault`; whole
+exception objects are not persisted. Workflow data, mapped activity outputs,
+and operator-provided values must be serializable. A caller's
+`CancellationToken` stops the current engine call and leaves a durable instance
+recoverable. `CancelWorkflowAsync` records a business cancellation request;
+the runner unwinds through `Finally` and saga compensation. If all work has
+already finished when the request arrives, the completed result wins.
 
-The runner is the only writer of one instance's state. It advances runnable
-continuations through short transitions. An activity may perform asynchronous
-work, but the runner applies its declared outputs to workflow data in a defined
-order. An activity cannot safely mutate the shared workflow data object while
-another branch runs.
+## Stores and hosting
 
-`WaitFor<TEvent>` registers a wait and parks its continuation. Other branches
-keep running. The instance is suspended when no continuation is runnable, no
-activity is in flight, and at least one valid wait or timer remains. It is
-completed when the root has finished and all required child work is settled.
-Unfinished work with no runnable continuation or wake source is a fault.
+`AddIxIFlow()` uses an in-memory state repository and runs in the host process.
+Memory checkpoints survive calls, not process loss. The optional SQL Server
+host shares instance state across processes. A renewable execution lease and
+revision-checked commit fence stale writers. Resume delivery has a stable ID
+recorded with the checkpoint, so redelivery cannot satisfy a later wait.
 
-An accepted event targets one wait by instance, event type, and correlation
-key or wait ID. Ambiguous matches are rejected. Event consumption, output
-mapping, wait removal, branch wakeup, join updates, and checkpoint revision are
-one state transition. Duplicate event IDs do not run a continuation twice.
+SQL commands are claimed, renewed, acknowledged after handling, delayed on
+transient failure, and dead-lettered after the configured failure limit. Busy
+instances defer a command without spending that limit. A completion outbox
+holds terminal results until publication succeeds. Publishers claim pending
+results so hosts do not routinely send the same completion. The SQL message
+bus uses a stable message ID for each instance's started and completed event.
+The SQL host registry creates its tables on first use under a database lock.
+Health reports remove unhealthy hosts from routing while preserving their last
+status for inspection. Background maintenance retires stale registrations and
+prunes old metric samples.
+An adapter without durable deduplication may still deliver a completion twice
+if publication succeeds and the host dies before recording its receipt;
+consumers should deduplicate by instance ID.
 
-## Scope behavior
+## Current limits
 
-- Sequence saves the index of the next child.
-- If saves the selected arm. Resume does not evaluate the condition again.
-- Loop saves its phase and iteration. Resume does not repeat prior children.
-- Try saves its Try, Catch, or Finally phase and the outcome that must propagate
-  after Finally. A failure unwinds the continuation's frames to its nearest
-  eligible handler.
-- Saga saves the forward or compensating phase, completed effect ledger,
-  compensation cursor, and retry state. Saga children use the same scheduler.
-- Parallel saves one join and one continuation per branch. A branch reaching a
-  wait does not complete the branch. WaitAll is the default. WaitAny joins on
-  the first completed branch. WaitConditionally evaluates its predicate after
-  each branch completion; when it becomes true, other branches are cancelled.
-  If every branch completes with a false predicate, the parallel step ends.
+- Invoked child workflows run in the parent call without their own persisted
+  checkpoint. A child definition containing a wait is rejected before its
+  activities run. Durable child waits need a stable child instance ID and a
+  saved parent-child completion link.
+- The SQL host still uses in-memory definition registration and event storage.
+  Every host must load the same code-defined workflow version and activities.
+- The structured runner writes traces into the instance checkpoint. The older
+  `IWorkflowTracer` save API is not a separate revision-safe trace store, and
+  growing history enlarges checkpoint writes.
+- The SQL bus indexes pending polling and prunes acknowledged rows after the
+  configured retention period. Dead letters are retained, but need an
+  inspection and requeue API.
+- Start triggers, a management API, a debugger, and a canonical YAML and editor
+  model with fluent parity remain separate product work. SQLite, PostgreSQL,
+  and broker adapters are not implemented.
 
-Cancellation removes outstanding waits, requests cancellation of in-flight
-activities, and runs required Finally and Saga transitions before the parent
-continues. External effects already performed by an activity need their own
-business-level reversal or idempotency rules.
-
-## Hosting and recovery
-
-In-process hosting uses a per-instance gate and can use an in-memory store.
-Multi-node hosting uses a shared inbox, an instance lease with fencing, and
-revision-checked commits. API nodes record events; one worker owns an instance
-at a time. The lease is released while the instance waits for external events.
-A broker message is a wakeup hint; the inbox and checkpoint are the source of
-truth. A repeated delivery is recognized by its event ID.
-
-After a crash, another owner reloads the last committed checkpoint. External
-side effects can have succeeded before the checkpoint; activity invocations
-need stable idempotency keys and documented retry behavior. A state transaction
-alone cannot make arbitrary external systems exactly once.
-
-## Migration
-
-There are no live instances. The old execution driver can be removed once the
-new runner passes the existing behavior suite and the new multi-wait and crash
-boundary tests. No snapshot conversion or long-term dual runtime is required.
-
-## Current implementation boundary
-
-The structured runner now covers Activity, Sequence, If, Parallel, loops,
-Try/Catch/Finally, and `WaitFor<TEvent>`. It stores one continuation per branch, one wait per parked
-continuation, and a join for the parent. It writes a checkpoint at each
-transition and can recover a Running instance from that checkpoint. Saved
-positions are structural paths; a definition fingerprint rejects a rebuilt
-definition with a different shape or step type. Type identities in that
-fingerprint ignore assembly versions, while saved types resolve against the
-currently loaded assembly.
-
-Event routing discovers every wait in a structured checkpoint, including
-parallel waits when the instance has no single `SuspensionInfo`. The runner
-evaluates each wait predicate before claiming an event and reports whether it
-consumed the event. A temporary checkpoint-store error leaves the last saved
-position available for recovery. The in-memory store snapshots structured
-instances at its save and read boundaries to preserve that behavior.
-
-Parallel activities start concurrently and receive the same workflow data
-object. The runner applies declared output mappings when activities finish.
-Direct mutations by activities may overlap, so workflow authors must
-synchronize access to shared mutable state when their branches require it.
-A losing WaitAny or conditional branch
-receives cancellation, and the runner waits for its in-flight activity to
-settle before completing the instance. A cancelled branch runs its remaining
-Finally work before the parent proceeds; Finally may itself wait and may contain
-its own Try/Catch/Finally. An uncaught
-parallel failure similarly waits for sibling cleanup before faulting.
-
-Saved activity output restoration honors property-level JSON names, converters,
-and number handling so a previous-step value survives a wait.
-
-Caught exceptions are saved using public constructor arguments read from public
-properties. A non-restorable exception can be handled during one uninterrupted
-run. If its Catch or Finally tries to wait, the runner faults before saving an
-unrecoverable checkpoint and runs the remaining Finally work. Custom exception
-types that need to survive a wait must expose restorable constructor values.
-
-Caller cancellation unwinds active continuations through Finally. Cleanup
-activities may finish or wait for an event before the instance becomes Cancelled.
-
-Saga runs as a checkpointed scope when the workflow uses `WaitFor`. It records
-successful forward activity results, waits within the Saga, and runs
-compensation in reverse forward-step order on failure or cancellation. A
-compensation can itself be checkpointed between activities. The structured
-runner currently rejects Saga `OnError` and step-level error policies before
-executing any activity. Legacy `Suspend` inside Saga and workflow invocation
-are also unsupported by this runner. Definitions without `WaitFor` or a
-non-default parallel join still use the previous runner while parity work
-continues.
-
-The instance gate currently protects only processes using this runtime.
-Shared-store revision checks, a distributed lease, an event inbox, and host
-wakeup integration are still required before multi-node approval delivery.
-Activity effects remain at-least-once across a crash boundary and need stable
-idempotency keys. The in-memory store provides no process-crash durability.
+There are no live instances to migrate from an older execution driver. The
+structured runner is the sole execution path in this branch.

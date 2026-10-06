@@ -212,6 +212,15 @@ public class WorkflowHostOptions
     /// Connection string for message bus
     /// </summary>
     public string MessageBusConnectionString { get; set; } = "";
+
+    /// <summary>How long acknowledged transport messages remain available for inspection.</summary>
+    public TimeSpan ProcessedMessageRetention { get; set; } = TimeSpan.FromDays(30);
+
+    /// <summary>How long historical host metric samples remain available.</summary>
+    public TimeSpan HostMetricsRetention { get; set; } = TimeSpan.FromDays(30);
+
+    /// <summary>How long an early resume or cancellation command can wait for its instance.</summary>
+    public TimeSpan UnmatchedCommandRetention { get; set; } = TimeSpan.FromHours(1);
 }
 
 /// <summary>

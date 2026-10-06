@@ -89,6 +89,17 @@ public interface IWorkflowStateRepository
     Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync();
 }
 
+/// <summary>Tracks terminal checkpoints whose completion event still needs publication.</summary>
+public interface IWorkflowCompletionOutbox
+{
+    Task<WorkflowInstance?> GetUnpublishedCompletionAsync(string instanceId);
+    Task<IEnumerable<WorkflowInstance>> GetUnpublishedCompletionsAsync();
+    Task<IEnumerable<WorkflowInstance>> ClaimUnpublishedCompletionsAsync(
+        string? instanceId, string token, TimeSpan duration);
+    Task<bool> MarkCompletionPublishedAsync(string instanceId, long revision, string token);
+    Task ReleaseCompletionClaimAsync(string instanceId, string token);
+}
+
 /// <summary>
 ///     Event store interface for workflow events
 /// </summary>
@@ -340,7 +351,7 @@ public class WorkflowSerializer
 /// <summary>
 ///     In-memory implementation of workflow state repository
 /// </summary>
-public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
+public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox
 {
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
@@ -348,6 +359,82 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _leases = new();
     private readonly Dictionary<string, CancellationReason> _cancellations = new();
     private readonly HashSet<string> _acknowledgedCancellations = new();
+    private readonly HashSet<string> _publishedCompletions = new();
+    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _completionClaims = new();
+
+    public Task<WorkflowInstance?> GetUnpublishedCompletionAsync(string instanceId)
+    {
+        lock (_claimLock)
+        {
+            return Task.FromResult(_instances.TryGetValue(instanceId, out var instance) &&
+                IsTerminal(instance.Status) && !_publishedCompletions.Contains(instanceId)
+                ? SnapshotStructured(instance) : null);
+        }
+    }
+
+    public Task<IEnumerable<WorkflowInstance>> GetUnpublishedCompletionsAsync()
+    {
+        lock (_claimLock)
+        {
+            var instances = _instances.Values
+                .Where(instance => IsTerminal(instance.Status) &&
+                    !_publishedCompletions.Contains(instance.InstanceId))
+                .Take(100)
+                .Select(SnapshotStructured)
+                .ToArray();
+            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
+        }
+    }
+
+    public Task<IEnumerable<WorkflowInstance>> ClaimUnpublishedCompletionsAsync(
+        string? instanceId, string token, TimeSpan duration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(token);
+        if (duration <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(duration));
+        lock (_claimLock)
+        {
+            var now = DateTime.UtcNow;
+            var instances = _instances.Values
+                .Where(instance => (instanceId == null || instance.InstanceId == instanceId) &&
+                    IsTerminal(instance.Status) && !_publishedCompletions.Contains(instance.InstanceId) &&
+                    (!_completionClaims.TryGetValue(instance.InstanceId, out var claim) ||
+                     claim.ExpiresAtUtc <= now))
+                .Take(100).ToArray();
+            foreach (var instance in instances)
+                _completionClaims[instance.InstanceId] = (token, now.Add(duration));
+            return Task.FromResult<IEnumerable<WorkflowInstance>>(
+                instances.Select(SnapshotStructured).ToArray());
+        }
+    }
+
+    public Task<bool> MarkCompletionPublishedAsync(string instanceId, long revision, string token)
+    {
+        lock (_claimLock)
+        {
+            if (!_instances.TryGetValue(instanceId, out var instance) ||
+                instance.Revision != revision || !IsTerminal(instance.Status) ||
+                !_completionClaims.TryGetValue(instanceId, out var claim) ||
+                claim.Token != token || claim.ExpiresAtUtc <= DateTime.UtcNow)
+                return Task.FromResult(false);
+            _completionClaims.Remove(instanceId);
+            return Task.FromResult(_publishedCompletions.Add(instanceId));
+        }
+    }
+
+    public Task ReleaseCompletionClaimAsync(string instanceId, string token)
+    {
+        lock (_claimLock)
+        {
+            if (_completionClaims.TryGetValue(instanceId, out var claim) && claim.Token == token)
+                _completionClaims.Remove(instanceId);
+        }
+        return Task.CompletedTask;
+    }
+
+    private static bool IsTerminal(WorkflowStatus status) => status is
+        WorkflowStatus.Completed or WorkflowStatus.Failed or
+        WorkflowStatus.Cancelled or WorkflowStatus.Terminated;
 
     public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
     {
@@ -471,7 +558,10 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             if (revision != expectedRevision ||
                 (hasLease && (lease.Token != instance.ExecutionLeaseToken ||
                               lease.ExpiresAtUtc <= DateTime.UtcNow)) ||
-                (!hasLease && instance.ExecutionLeaseToken != null))
+                (!hasLease && instance.ExecutionLeaseToken != null) ||
+                ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated) &&
+                 _cancellations.ContainsKey(instance.InstanceId) &&
+                 snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
             _instances[instance.InstanceId] = snapshot;
             _commits.Add(key, (expectedRevision, payloadHash, snapshot.Revision));
@@ -551,6 +641,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             _leases.Remove(instanceId);
             _cancellations.Remove(instanceId);
             _acknowledgedCancellations.Remove(instanceId);
+            _publishedCompletions.Remove(instanceId);
             foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
                 _commits.Remove(key);
         }

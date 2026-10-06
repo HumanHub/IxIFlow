@@ -498,7 +498,7 @@ public sealed class ActivityRecoveryTests
     [Theory]
     [InlineData(ActivityRecoveryDisposition.Execute)]
     [InlineData(ActivityRecoveryDisposition.Faulted)]
-    public async Task CancelledBranchRecoveryDoesNotExecuteAnUnstartedEffect(
+    public async Task CancelledBranchRecoveryKeepsAnUnconfirmedEffectForResolution(
         ActivityRecoveryDisposition disposition)
     {
         var repository = new InMemoryWorkflowStateRepository();
@@ -548,7 +548,9 @@ public sealed class ActivityRecoveryTests
 
         var recovered = await engine.RecoverWorkflowAsync(started.InstanceId);
 
-        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+        Assert.Equal(disposition == ActivityRecoveryDisposition.Execute
+            ? WorkflowExecutionStatus.NeedsResolution
+            : WorkflowExecutionStatus.Success, recovered.Status);
         Assert.Equal(1, probe.RecoveryCount);
         Assert.Equal(0, probe.ExecuteCount);
     }

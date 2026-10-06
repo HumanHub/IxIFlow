@@ -3,6 +3,9 @@ using Microsoft.Data.SqlClient;
 using System.Text.Json;
 using Dapper;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
 
@@ -10,7 +13,7 @@ namespace IxIFlow.Core;
 /// SQL Server-based message bus implementation for distributed workflow communication
 /// Uses polling-based approach for reliable message delivery with persistence
 /// </summary>
-public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
+public class SqlMessageBus : IAcknowledgingMessageBus, IMessageMaintenance, IDisposable
 {
     private readonly string _connectionString;
     private readonly TimeSpan _pollInterval;
@@ -18,13 +21,15 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
     private readonly TimeSpan _renewalInterval;
     private readonly TimeSpan _failureBackoff;
     private readonly int _maxDeliveryAttempts;
+    private readonly ILogger<SqlMessageBus>? _logger;
     private readonly CancellationTokenSource _cancellationTokenSource;
     private readonly SemaphoreSlim _schemaLock = new(1, 1);
     private bool _schemaReady;
     
     public SqlMessageBus(string connectionString, TimeSpan? pollInterval = null,
         TimeSpan? claimDuration = null, TimeSpan? renewalInterval = null,
-        TimeSpan? failureBackoff = null, int maxDeliveryAttempts = 8)
+        TimeSpan? failureBackoff = null, int maxDeliveryAttempts = 8,
+        ILogger<SqlMessageBus>? logger = null)
     {
         _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(1);
@@ -32,6 +37,7 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
         _renewalInterval = renewalInterval ?? TimeSpan.FromMinutes(1);
         _failureBackoff = failureBackoff ?? TimeSpan.FromSeconds(1);
         _maxDeliveryAttempts = maxDeliveryAttempts;
+        _logger = logger;
         if (_claimDuration <= TimeSpan.Zero || _renewalInterval <= TimeSpan.Zero ||
             _renewalInterval >= _claimDuration || _claimDuration.TotalMilliseconds > int.MaxValue ||
             _failureBackoff < TimeSpan.FromMilliseconds(1) ||
@@ -51,17 +57,61 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
 
+        var eventIdentity = message switch
+        {
+            WorkflowExecutionCompletedEvent completed when
+                !string.IsNullOrWhiteSpace(completed.InstanceId) =>
+                (Prefix: "completion-", completed.InstanceId),
+            WorkflowExecutionStartedEvent started when
+                !string.IsNullOrWhiteSpace(started.InstanceId) =>
+                (Prefix: "started-", started.InstanceId),
+            _ => (Prefix: "", InstanceId: "")
+        };
+        var id = eventIdentity.Prefix.Length == 0
+            ? Guid.NewGuid().ToString("N")
+            : eventIdentity.Prefix + Convert.ToHexString(SHA256.HashData(
+                Encoding.UTF8.GetBytes(eventIdentity.InstanceId)).AsSpan(0, 16)).ToLowerInvariant();
         await connection.ExecuteAsync(@"
             INSERT INTO WorkflowMessages (Id, MessageType, Payload, CreatedAt, ProcessedAt, Priority)
-            VALUES (@Id, @MessageType, @Payload, @CreatedAt, NULL, @Priority)",
+            SELECT @Id, @MessageType, @Payload, @CreatedAt, NULL, @Priority
+            WHERE NOT EXISTS (SELECT 1 FROM WorkflowMessages WITH (UPDLOCK, HOLDLOCK)
+                WHERE Id = @Id)",
             new
             {
-                Id = Guid.NewGuid().ToString(),
+                Id = id,
                 MessageType = typeof(T).AssemblyQualifiedName ?? typeof(T).Name,
                 Payload = JsonSerializer.Serialize(message),
                 CreatedAt = DateTime.UtcNow,
                 Priority = GetMessagePriority(message)
             });
+    }
+
+    public async Task<int> PruneExpiredAsync(TimeSpan retention, int batchSize,
+        CancellationToken cancellationToken = default)
+    {
+        if (retention <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(retention));
+        if (batchSize < 1 || batchSize > 10_000)
+            throw new ArgumentOutOfRangeException(nameof(batchSize));
+        await EnsureSchemaAsync();
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        return await connection.ExecuteAsync(new CommandDefinition("""
+            DELETE TOP (@BatchSize) FROM dbo.WorkflowMessages
+            WHERE ProcessedAt < @CutoffUtc
+               OR (CreatedAt < @CutoffUtc AND (
+                   MessageType LIKE @StartedType OR
+                   MessageType LIKE @CompletedType OR
+                   MessageType LIKE @HeartbeatType))
+            """, new
+            {
+                BatchSize = batchSize,
+                CutoffUtc = DateTime.UtcNow - retention,
+                StartedType = typeof(WorkflowExecutionStartedEvent).FullName + ",%",
+                CompletedType = typeof(WorkflowExecutionCompletedEvent).FullName + ",%",
+                HeartbeatType = typeof(HostHeartbeatEvent).FullName + ",%"
+            },
+            cancellationToken: cancellationToken));
     }
 
     /// <summary>
@@ -83,6 +133,7 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             cancellationToken, _cancellationTokenSource.Token);
         var token = linked.Token;
         var messageType = typeof(T).AssemblyQualifiedName ?? typeof(T).Name;
+        var consecutiveFailures = 0;
 
         while (!token.IsCancellationRequested)
         {
@@ -90,10 +141,19 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             try
             {
                 delivery = await ClaimMessageAsync<T>(messageType, targetHostId);
+                consecutiveFailures = 0;
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
                 yield break;
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                consecutiveFailures = Math.Min(consecutiveFailures + 1, 6);
+                _logger?.LogWarning(error,
+                    "Could not claim workflow message {MessageType}; retrying", messageType);
+                await Task.Delay(TimeSpan.FromSeconds(1 << (consecutiveFailures - 1)), token);
+                continue;
             }
 
             if (delivery == null)
@@ -118,7 +178,16 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
                 await delivery.StopRenewalAsync();
                 if (!delivery.IsAcknowledged && !delivery.IsRejected)
                 {
-                    await ReleaseClaimAsync(delivery.MessageId, delivery.ClaimToken);
+                    try
+                    {
+                        await ReleaseClaimAsync(delivery.MessageId, delivery.ClaimToken);
+                    }
+                    catch (Exception error) when (error is not OperationCanceledException)
+                    {
+                        _logger?.LogWarning(error,
+                            "Could not release workflow message {MessageId}; claim will expire",
+                            delivery.MessageId);
+                    }
                 }
             }
         }
@@ -151,7 +220,9 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
                   AND DeadLetteredAt IS NULL
                   AND (NextVisibleAt IS NULL OR NextVisibleAt <= SYSUTCDATETIME())
                   AND (ClaimedUntil IS NULL OR ClaimedUntil <= SYSUTCDATETIME())
-                  AND (@TargetHostId IS NULL OR JSON_VALUE(Payload, '$.TargetHostId') = @TargetHostId)
+                  AND (@TargetHostId IS NULL OR
+                       CASE WHEN ISJSON(Payload) = 1 THEN JSON_VALUE(Payload, '$.TargetHostId')
+                            ELSE @TargetHostId END = @TargetHostId)
                 ORDER BY Priority DESC, CreatedAt ASC
             )
             UPDATE message
@@ -191,11 +262,11 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             """, new { MessageId = messageId, ClaimToken = claimToken });
         if (changed != 1)
         {
-            throw new InvalidOperationException($"Message claim {messageId} is no longer owned by this consumer");
+            throw new MessageClaimLostException($"Message claim {messageId} is no longer owned by this consumer");
         }
     }
 
-    private async Task<bool> RenewClaimAsync(string messageId, string claimToken)
+    protected virtual async Task<bool> RenewClaimAsync(string messageId, string claimToken)
     {
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
@@ -246,7 +317,25 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
                 Description = description, MaxDeliveryAttempts = _maxDeliveryAttempts,
                 BaseBackoffMilliseconds = (int)Math.Ceiling(_failureBackoff.TotalMilliseconds) });
         if (changed != 1)
-            throw new InvalidOperationException($"Message claim {messageId} is no longer owned by this consumer");
+            throw new MessageClaimLostException($"Message claim {messageId} is no longer owned by this consumer");
+    }
+
+    private async Task DeferClaimAsync(string messageId, string claimToken, TimeSpan delay)
+    {
+        if (delay <= TimeSpan.Zero || delay.TotalMilliseconds > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(delay));
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+        var changed = await connection.ExecuteAsync("""
+            UPDATE dbo.WorkflowMessages
+            SET NextVisibleAt = DATEADD(MILLISECOND, @DelayMilliseconds, SYSUTCDATETIME()),
+                ClaimToken = NULL, ClaimedUntil = NULL
+            WHERE Id = @MessageId AND ClaimToken = @ClaimToken AND ProcessedAt IS NULL
+                AND ClaimedUntil > SYSUTCDATETIME()
+            """, new { MessageId = messageId, ClaimToken = claimToken,
+                DelayMilliseconds = (int)Math.Ceiling(delay.TotalMilliseconds) });
+        if (changed != 1)
+            throw new MessageClaimLostException($"Message claim {messageId} is no longer owned by this consumer");
     }
 
     private async Task EnsureSchemaAsync()
@@ -295,6 +384,26 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
                     ALTER TABLE dbo.WorkflowMessages ADD DeadLetteredAt DATETIME2 NULL;
                 IF COL_LENGTH(N'dbo.WorkflowMessages', N'LastError') IS NULL
                     ALTER TABLE dbo.WorkflowMessages ADD LastError NVARCHAR(2048) NULL;
+                IF NOT EXISTS (SELECT 1 FROM sys.indexes
+                    WHERE object_id = OBJECT_ID(N'dbo.WorkflowMessages')
+                      AND name = N'IX_WorkflowMessages_PendingPoll')
+                    EXEC(N'CREATE INDEX IX_WorkflowMessages_PendingPoll
+                        ON dbo.WorkflowMessages (MessageType, Priority DESC, CreatedAt ASC)
+                        INCLUDE (NextVisibleAt, ClaimedUntil)
+                        WHERE ProcessedAt IS NULL AND DeadLetteredAt IS NULL');
+                IF NOT EXISTS (SELECT 1 FROM sys.indexes
+                    WHERE object_id = OBJECT_ID(N'dbo.WorkflowMessages')
+                      AND name = N'IX_WorkflowMessages_ProcessedAt')
+                    CREATE INDEX IX_WorkflowMessages_ProcessedAt
+                        ON dbo.WorkflowMessages (ProcessedAt)
+                        WHERE ProcessedAt IS NOT NULL;
+                IF NOT EXISTS (SELECT 1 FROM sys.indexes
+                    WHERE object_id = OBJECT_ID(N'dbo.WorkflowMessages')
+                      AND name = N'IX_WorkflowMessages_CreatedAt')
+                    CREATE INDEX IX_WorkflowMessages_CreatedAt
+                        ON dbo.WorkflowMessages (CreatedAt)
+                        INCLUDE (MessageType)
+                        WHERE ProcessedAt IS NULL;
                 """, transaction: transaction);
             await transaction.CommitAsync();
             _schemaReady = true;
@@ -377,6 +486,14 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             await StopRenewalAsync();
         }
 
+        public async Task DeferAsync(TimeSpan delay)
+        {
+            if (IsRejected) return;
+            await _bus.DeferClaimAsync(_messageId, _claimToken, delay);
+            IsRejected = true;
+            await StopRenewalAsync();
+        }
+
         public async Task StopRenewalAsync()
         {
             if (Interlocked.Exchange(ref _stopped, 1) != 0)
@@ -388,13 +505,27 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
 
         private async Task RenewAsync()
         {
+            var expiresAtUtc = DateTime.UtcNow.Add(_bus._claimDuration);
             try
             {
                 while (true)
                 {
                     await Task.Delay(_bus._renewalInterval, _stop.Token);
-                    if (!await _bus.RenewClaimAsync(_messageId, _claimToken))
-                        return;
+                    while (true)
+                    {
+                        try
+                        {
+                            if (!await _bus.RenewClaimAsync(_messageId, _claimToken))
+                                return;
+                            expiresAtUtc = DateTime.UtcNow.Add(_bus._claimDuration);
+                            break;
+                        }
+                        catch (Exception) when (!_stop.IsCancellationRequested &&
+                                                DateTime.UtcNow < expiresAtUtc)
+                        {
+                            await Task.Delay(TimeSpan.FromMilliseconds(50), _stop.Token);
+                        }
+                    }
                 }
             }
             catch (OperationCanceledException) when (_stop.IsCancellationRequested)

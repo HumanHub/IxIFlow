@@ -106,7 +106,8 @@ internal sealed class StructuredWorkflowRunner(
         continuation.Status = ContinuationStatus.Active;
         instance.Status = WorkflowStatus.Running;
         var cancellationReason = await repository.GetCancellationRequestAsync(instanceId);
-        if (cancellationReason != null && !checkpoint.CancellationRequested)
+        if (cancellationReason != null && !checkpoint.CancellationRequested &&
+            checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
         {
             instance.CancellationReason = cancellationReason;
             checkpoint.CancellationRequested = true;
@@ -370,6 +371,18 @@ internal sealed class StructuredWorkflowRunner(
                     : Rejected(instanceId, "The wait changed before this event could be accepted");
             }
 
+            var cancellationReason = await repository.GetCancellationRequestAsync(instanceId);
+            if (cancellationReason != null && !checkpoint.CancellationRequested)
+            {
+                instance.CancellationReason = cancellationReason;
+                checkpoint.CancellationRequested = true;
+                CancelTree(checkpoint, checkpoint.Continuations[0]);
+                instance.Status = WorkflowStatus.Running;
+                await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+                return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
+                    true, owner, cancellationToken);
+            }
+
             var wait = matching[0];
             var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
 
@@ -438,14 +451,17 @@ internal sealed class StructuredWorkflowRunner(
                          ContinuationStatus.WaitingResolution or ContinuationStatus.Cancelling))
             continuation.Status = ContinuationStatus.Active;
         instance.Status = WorkflowStatus.Running;
-        if (cancellationReason != null && !checkpoint.CancellationRequested)
+        if (cancellationReason != null && !checkpoint.CancellationRequested &&
+            checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
         {
             instance.CancellationReason = cancellationReason;
             checkpoint.CancellationRequested = true;
+            checkpoint.UnhandledError = null;
+            checkpoint.RuntimeUnhandledError = null;
             CancelTree(checkpoint, checkpoint.Continuations[0]);
         }
         return await RunAndSaveAsync(definition, instance, checkpoint,
-            workflowData, true, owner, cancellationToken, stopOnCancellation: true);
+            workflowData, true, owner, cancellationToken);
     }
 
     private async Task<WorkflowExecutionResult> RunAndSaveAsync(
@@ -455,8 +471,7 @@ internal sealed class StructuredWorkflowRunner(
         object workflowData,
         bool persistState,
         WorkflowExecutionLease? owner,
-        CancellationToken cancellationToken,
-        bool stopOnCancellation = false)
+        CancellationToken cancellationToken)
     {
         var inFlight = new Dictionary<string, RunningActivity>();
         var cancellationWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -472,19 +487,10 @@ internal sealed class StructuredWorkflowRunner(
                 throw new InvalidOperationException("The registered workflow definition differs from the saved version");
             while (true)
             {
-                if (stopOnCancellation)
-                    cancellationToken.ThrowIfCancellationRequested();
+                cancellationToken.ThrowIfCancellationRequested();
                 owner?.ThrowIfLost();
-                if (((!stopOnCancellation && cancellationToken.IsCancellationRequested) ||
-                     owner?.Cancellation.IsCompleted == true) &&
-                    !checkpoint.CancellationRequested)
-                {
-                    if (owner?.Cancellation.IsCompletedSuccessfully == true)
-                        instance.CancellationReason = owner.Cancellation.Result;
-                    checkpoint.CancellationRequested = true;
-                    CancelTree(checkpoint, checkpoint.Continuations[0]);
-                    await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
-                }
+                await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
+                    scopes, persistState);
                 foreach (var activity in inFlight.Values.Where(item =>
                              item.Continuation.Status == ContinuationStatus.Cancelling))
                     activity.Cancellation.Cancel();
@@ -512,12 +518,13 @@ internal sealed class StructuredWorkflowRunner(
                 // This lets a sibling start even when another activity is awaiting it.
                 while (true)
                 {
-                    if (stopOnCancellation)
-                        cancellationToken.ThrowIfCancellationRequested();
+                    cancellationToken.ThrowIfCancellationRequested();
                     owner?.ThrowIfLost();
+                    await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
+                        scopes, persistState);
                     if (!checkpoint.CancellationRequested &&
-                        ((!stopOnCancellation && cancellationToken.IsCancellationRequested) ||
-                         owner?.Cancellation.IsCompleted == true))
+                        owner?.Cancellation.IsCompleted == true &&
+                        checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                         break;
                     var runnable = checkpoint.Continuations.FirstOrDefault(item =>
                         item.Status == ContinuationStatus.Active && !inFlight.ContainsKey(item.Id));
@@ -574,9 +581,8 @@ internal sealed class StructuredWorkflowRunner(
                     }
                 }
 
-                if (!checkpoint.CancellationRequested &&
-                    ((!stopOnCancellation && cancellationToken.IsCancellationRequested) ||
-                     owner?.Cancellation.IsCompleted == true))
+                if (!checkpoint.CancellationRequested && owner?.Cancellation.IsCompleted == true &&
+                    checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                     continue;
                 if (checkpoint.Continuations.Any(item =>
                         item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id)) ||
@@ -585,7 +591,12 @@ internal sealed class StructuredWorkflowRunner(
                             .All(child => child.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)))
                     continue;
                 if (inFlight.Count == 0)
+                {
+                    if (await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
+                            scopes, persistState))
+                        continue;
                     break;
+                }
 
                 foreach (var activity in inFlight.Values.Where(item =>
                              item.Continuation.Status == ContinuationStatus.Cancelling))
@@ -597,12 +608,12 @@ internal sealed class StructuredWorkflowRunner(
                 if (owner != null)
                 {
                     runningTasks.Add(owner.Loss);
-                    if (!checkpoint.CancellationRequested)
+                    if (!checkpoint.CancellationRequested &&
+                        checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                         runningTasks.Add(owner.Cancellation);
                 }
                 var finished = await Task.WhenAny(runningTasks);
-                if (stopOnCancellation)
-                    cancellationToken.ThrowIfCancellationRequested();
+                cancellationToken.ThrowIfCancellationRequested();
                 if (finished == callerCancellation || finished == owner?.Cancellation)
                     continue;
                 owner?.ThrowIfLost();
@@ -624,8 +635,7 @@ internal sealed class StructuredWorkflowRunner(
                 await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
             }
 
-            if (stopOnCancellation)
-                cancellationToken.ThrowIfCancellationRequested();
+            cancellationToken.ThrowIfCancellationRequested();
             if (checkpoint.UnhandledError != null && checkpoint.Waits.Count == 0 && checkpoint.Joins.Count == 0)
                 throw checkpoint.RuntimeUnhandledError
                       ?? (checkpoint.UnhandledError.IsRestorable
@@ -700,17 +710,35 @@ internal sealed class StructuredWorkflowRunner(
                 activity.Cancellation.Dispose();
             return Busy(instance.InstanceId);
         }
-        catch (OperationCanceledException) when (stopOnCancellation && cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             foreach (var activity in inFlight.Values)
                 activity.Cancellation.Cancel();
             try
             {
                 await Task.WhenAll(inFlight.Values.Select(item => item.Task));
-            }
-            catch (OperationCanceledException)
-            {
-                // The host stopped before these attempt results could be committed.
+                var scopes = new WorkflowScopeCatalog(definition);
+                foreach (var activity in inFlight.Values.ToArray())
+                {
+                    if (activity.Task.Result is { Kind: ActivityRunKind.Threw,
+                            Error: OperationCanceledException })
+                        continue;
+                    try
+                    {
+                        await SettleAsync(scopes, activity, inFlight, workflowData, instance);
+                    }
+                    catch (Exception error) when (error is not CheckpointPersistenceException)
+                    {
+                        if (!CaptureFailure(scopes, checkpoint, activity.Continuation,
+                                error, !activity.ActivityReturned))
+                        {
+                            checkpoint.UnhandledError = SerializedException.From(error);
+                            checkpoint.RuntimeUnhandledError = error;
+                            activity.Continuation.Status = ContinuationStatus.Completed;
+                        }
+                    }
+                    await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
+                }
             }
             finally
             {
@@ -802,6 +830,37 @@ internal sealed class StructuredWorkflowRunner(
                 ErrorStackTrace = ex.StackTrace
             };
         }
+    }
+
+    private async Task<bool> ApplyCancellationRequestAsync(WorkflowInstance instance,
+        ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes,
+        bool persistState)
+    {
+        if (!persistState || checkpoint.CancellationRequested)
+            return false;
+        CancellationReason? requested;
+        try
+        {
+            requested = await repository.GetCancellationRequestAsync(instance.InstanceId);
+        }
+        catch (Exception)
+        {
+            // The lease watcher tolerates a short store outage and detects a
+            // persistent one. Keep committed activity attempts in this owner.
+            return false;
+        }
+        if (requested == null)
+            return false;
+        var root = checkpoint.Continuations[0];
+        if (root.Status == ContinuationStatus.Completed)
+            return false;
+        instance.CancellationReason = requested;
+        checkpoint.CancellationRequested = true;
+        checkpoint.UnhandledError = null;
+        checkpoint.RuntimeUnhandledError = null;
+        CancelTree(checkpoint, root);
+        await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
+        return true;
     }
 
     private void Advance(
@@ -1135,7 +1194,8 @@ internal sealed class StructuredWorkflowRunner(
                         new InvalidOperationException("Recovery did not provide an exception"));
                 case ActivityRecoveryDisposition.Execute:
                     if (skipCancelledRecovery)
-                        return ActivityRunResult.Skipped();
+                        return ActivityRunResult.Unresolved(
+                            "Cancellation interrupted the activity before its outcome was confirmed");
                     break;
                 default:
                     return ActivityRunResult.Unresolved("Unknown recovery decision");
@@ -1249,12 +1309,7 @@ internal sealed class StructuredWorkflowRunner(
             var outcome = await activity.Task;
             if (outcome.Kind == ActivityRunKind.Unresolved)
             {
-                var pending = activity.Continuation.PendingActivity
-                    ?? throw new InvalidOperationException("Unresolved activity has no saved Start");
-                pending.ResolutionReason = outcome.Reason;
-                pending.Attempts[^1].EndedAtUtc = DateTime.UtcNow;
-                pending.Attempts[^1].Observation = "Unresolved";
-                activity.Continuation.Status = ContinuationStatus.WaitingResolution;
+                MarkActivityUnresolved(activity, outcome.Reason);
                 return;
             }
 
@@ -1277,8 +1332,17 @@ internal sealed class StructuredWorkflowRunner(
             {
                 // The activity has returned successfully. Record it for saga compensation
                 // before applying mappings, which can fail after an external effect.
-                SagaScopeTransitions.CompleteForwardActivity(scopes, activity.Continuation,
-                    activity.Step, output, services);
+                try
+                {
+                    SagaScopeTransitions.CompleteForwardActivity(scopes, activity.Continuation,
+                        activity.Step, output, services);
+                }
+                catch (Exception error)
+                {
+                    MarkActivityUnresolved(activity,
+                        $"Activity returned, but its saga output could not be saved: {error.Message}");
+                    return;
+                }
                 if (activity.Prepared != null)
                     await activity.Prepared.ApplyOutputsAsync();
                 else if (activity.Step.StepType == WorkflowStepType.WorkflowInvocation &&
@@ -1322,6 +1386,16 @@ internal sealed class StructuredWorkflowRunner(
             inFlight.Remove(activity.Continuation.Id);
             activity.Cancellation.Dispose();
         }
+    }
+
+    private static void MarkActivityUnresolved(RunningActivity activity, string? reason)
+    {
+        var pending = activity.Continuation.PendingActivity
+            ?? throw new InvalidOperationException("Unresolved activity has no saved Start");
+        pending.ResolutionReason = reason;
+        pending.Attempts[^1].EndedAtUtc = DateTime.UtcNow;
+        pending.Attempts[^1].Observation = "Unresolved";
+        activity.Continuation.Status = ContinuationStatus.WaitingResolution;
     }
 
     private static void MarkActivityEnd(RunningActivity running, WorkflowInstance instance,
@@ -1616,6 +1690,7 @@ internal sealed class StructuredWorkflowRunner(
             WorkflowStatus.NeedsResolution => WorkflowExecutionStatus.NeedsResolution,
             WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
             WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
+            WorkflowStatus.Terminated => WorkflowExecutionStatus.Failed,
             _ => WorkflowExecutionStatus.Running
         },
         WorkflowData = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType) is { } dataType

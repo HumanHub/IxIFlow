@@ -1,6 +1,7 @@
 using IxIFlow.Builders;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
+using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -30,6 +31,42 @@ public class WorkflowInvocationTests
 
         _serviceProvider = services.BuildServiceProvider();
         _workflowEngine = _serviceProvider.GetRequiredService<WorkflowEngine>();
+    }
+
+    [Fact]
+    public async Task StructuredInvocationUsesItsCheckpointTrace()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.AddSingleton<IWorkflowTracer, RejectingTracer>();
+        using var provider = services.BuildServiceProvider();
+        var builder = new WorkflowBuilder<ParentWorkflowData>("InvocationTrace");
+        new ParentWorkflow().Build(builder);
+
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(builder.Build(), new ParentWorkflowData { OrderId = "O-1" });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        var saved = await provider.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(result.InstanceId);
+        Assert.Contains(saved!.ExecutionHistory, entry =>
+            entry.EntryType == TraceEntryType.ActivityCompleted &&
+            entry.ActivityName.Contains("ChildWorkflow"));
+    }
+
+    private sealed class RejectingTracer : IWorkflowTracer
+    {
+        public Task TraceAsync(string workflowInstanceId, ExecutionTraceEntry traceEntry,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("The legacy tracer must not save a structured checkpoint");
+
+        public Task<IEnumerable<ExecutionTraceEntry>> GetTraceEntriesAsync(string workflowInstanceId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IEnumerable<ExecutionTraceEntry>>([]);
+
+        public Task ClearTracesAsync(string workflowInstanceId,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     [Fact]
