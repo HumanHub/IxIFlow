@@ -225,6 +225,19 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             }
 
             await using var connection = await OpenConnectionAsync();
+            await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+            // Separate hosts can initialize the same database at the same time.
+            var lockResult = await connection.ExecuteScalarAsync<int>("""
+                DECLARE @result INT;
+                EXEC @result = sys.sp_getapplock
+                    @Resource = N'IxIFlow.WorkflowSchema',
+                    @LockMode = N'Exclusive',
+                    @LockOwner = N'Transaction',
+                    @LockTimeout = 30000;
+                SELECT @result;
+                """, transaction: transaction);
+            if (lockResult < 0)
+                throw new InvalidOperationException($"Could not lock the workflow schema ({lockResult})");
             await connection.ExecuteAsync("""
                 IF OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NULL
                 BEGIN
@@ -260,7 +273,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                         CONSTRAINT FK_IxIFlowWorkflowCommits_Instance FOREIGN KEY (InstanceId)
                             REFERENCES dbo.IxIFlowWorkflowInstances (InstanceId) ON DELETE CASCADE
                     );
-                """);
+                """, transaction: transaction);
             await connection.ExecuteAsync("""
                 UPDATE dbo.IxIFlowWorkflowInstances
                 SET SuspensionId = COALESCE(
@@ -271,7 +284,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                 SET StateJson = JSON_MODIFY(StateJson, '$.SuspensionInfo.SuspensionId', SuspensionId)
                 WHERE Revision = 0 AND Status = 'Suspended' AND SuspensionId IS NOT NULL
                     AND JSON_VALUE(StateJson, '$.SuspensionInfo.SuspensionId') IS NULL;
-                """);
+                """, transaction: transaction);
+            await transaction.CommitAsync();
             _schemaReady = true;
         }
         finally

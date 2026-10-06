@@ -187,6 +187,19 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             if (_schemaReady) return;
             await using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
+            await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+            // Separate hosts can initialize the same database at the same time.
+            var lockResult = await connection.ExecuteScalarAsync<int>("""
+                DECLARE @result INT;
+                EXEC @result = sys.sp_getapplock
+                    @Resource = N'IxIFlow.MessageSchema',
+                    @LockMode = N'Exclusive',
+                    @LockOwner = N'Transaction',
+                    @LockTimeout = 30000;
+                SELECT @result;
+                """, transaction: transaction);
+            if (lockResult < 0)
+                throw new InvalidOperationException($"Could not lock the message schema ({lockResult})");
             await connection.ExecuteAsync("""
                 IF OBJECT_ID(N'dbo.WorkflowMessages', N'U') IS NULL
                 BEGIN
@@ -203,7 +216,8 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
                     ALTER TABLE dbo.WorkflowMessages ADD ClaimToken NVARCHAR(50) NULL;
                 IF COL_LENGTH(N'dbo.WorkflowMessages', N'ClaimedUntil') IS NULL
                     ALTER TABLE dbo.WorkflowMessages ADD ClaimedUntil DATETIME2 NULL;
-                """);
+                """, transaction: transaction);
+            await transaction.CommitAsync();
             _schemaReady = true;
         }
         finally
