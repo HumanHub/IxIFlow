@@ -6,11 +6,34 @@ using IxIFlow.Dsl.Documents;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
 public class EngineContractRegressionTests
 {
+    [Fact]
+    public async Task TerminatedInstanceReturnsTerminalStatusOnCancellation()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var instance = new WorkflowInstance
+        {
+            InstanceId = Guid.NewGuid().ToString("N"),
+            Status = WorkflowStatus.Terminated
+        };
+        await provider.GetRequiredService<IWorkflowStateRepository>()
+            .SaveWorkflowInstanceAsync(instance);
+
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .CancelWorkflowAsync(instance.InstanceId,
+                new CancellationReason { ReasonCode = "operator" });
+
+        Assert.Equal(WorkflowExecutionStatus.Failed, result.Status);
+    }
+
     [Fact]
     public async Task FluentBuilder_ExecutesInProcessWithoutHostRegistration()
     {
@@ -578,6 +601,8 @@ public class EngineContractRegressionTests
             ValidateScopes = true
         });
         Assert.NotNull(provider.GetRequiredService<IWorkflowHost>());
+        Assert.Contains(provider.GetServices<IHostedService>(), service =>
+            service is WorkflowRecoveryService);
     }
 
     [Fact]

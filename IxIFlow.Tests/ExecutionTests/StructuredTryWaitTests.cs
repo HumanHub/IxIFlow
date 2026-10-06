@@ -494,7 +494,7 @@ public class StructuredTryWaitTests
     }
 
     [Fact]
-    public async Task CallerCancellationRunsFinallyBeforeCancellingInstance()
+    public async Task BusinessCancellationRunsFinallyBeforeCancellingInstance()
     {
         var collection = new ServiceCollection();
         collection.AddLogging();
@@ -502,7 +502,6 @@ public class StructuredTryWaitTests
         collection.AddTransient<WaitForCancellationActivity>();
         collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
-        using var cancellation = new CancellationTokenSource();
         var definition = Workflow.Create<TryData>("CallerCancellationCleanup")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("begin")
@@ -515,9 +514,10 @@ public class StructuredTryWaitTests
         var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var running = engine.ResumeWorkflowAsync(started.InstanceId, "begin", new Approval(), cancellation.Token);
+        var running = engine.ResumeWorkflowAsync(started.InstanceId, "begin", new Approval());
         await services.GetRequiredService<CancellationProbe>().Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        cancellation.Cancel();
+        await engine.CancelWorkflowAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "operator" });
         var result = await running.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
@@ -575,7 +575,7 @@ public class StructuredTryWaitTests
     }
 
     [Fact]
-    public async Task CallerCancellationCanWaitForFinallyBeforeCancellingInstance()
+    public async Task BusinessCancellationCanWaitForFinallyBeforeCancellingInstance()
     {
         var collection = new ServiceCollection();
         collection.AddLogging();
@@ -583,7 +583,6 @@ public class StructuredTryWaitTests
         collection.AddTransient<WaitForCancellationActivity>();
         collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
-        using var cancellation = new CancellationTokenSource();
         var definition = Workflow.Create<TryData>("CallerCancellationWaitCleanup")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("begin")
@@ -595,9 +594,10 @@ public class StructuredTryWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
-        var resuming = engine.ResumeWorkflowAsync(started.InstanceId, "begin", new Approval(), cancellation.Token);
+        var resuming = engine.ResumeWorkflowAsync(started.InstanceId, "begin", new Approval());
         await services.GetRequiredService<CancellationProbe>().Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        cancellation.Cancel();
+        await engine.CancelWorkflowAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "operator" });
 
         var cleaning = await resuming.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(WorkflowExecutionStatus.Suspended, cleaning.Status);
@@ -607,7 +607,7 @@ public class StructuredTryWaitTests
     }
 
     [Fact]
-    public async Task CallerCancellationDoesNotInterruptAnActiveFinallyActivity()
+    public async Task BusinessCancellationDoesNotInterruptAnActiveFinallyActivity()
     {
         var collection = new ServiceCollection();
         collection.AddLogging();
@@ -615,7 +615,6 @@ public class StructuredTryWaitTests
         collection.AddTransient<ManualCleanupActivity>();
         collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
-        using var cancellation = new CancellationTokenSource();
         var definition = Workflow.Create<TryData>("CallerCancellationDuringFinally")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("begin"))
@@ -624,10 +623,11 @@ public class StructuredTryWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
-        var resuming = engine.ResumeWorkflowAsync(started.InstanceId, "begin", new Approval(), cancellation.Token);
+        var resuming = engine.ResumeWorkflowAsync(started.InstanceId, "begin", new Approval());
         var probe = services.GetRequiredService<ManualCleanupProbe>();
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        cancellation.Cancel();
+        await engine.CancelWorkflowAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "operator" });
         probe.Release.SetResult();
 
         var result = await resuming.WaitAsync(TimeSpan.FromSeconds(5));

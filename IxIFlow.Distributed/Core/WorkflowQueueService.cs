@@ -16,6 +16,7 @@ public class WorkflowQueueService : BackgroundService
     private readonly IMessageBus _messageBus;
     private readonly IWorkflowCoordinator _coordinator;
     private readonly string _hostId;
+    private readonly TimeSpan _unmatchedCommandRetention;
 
     public WorkflowQueueService(
         IServiceProvider serviceProvider,
@@ -29,6 +30,11 @@ public class WorkflowQueueService : BackgroundService
         _messageBus = messageBus ?? throw new ArgumentNullException(nameof(messageBus));
         _coordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
         _hostId = hostOptions?.HostId ?? Environment.MachineName;
+        _unmatchedCommandRetention = hostOptions?.UnmatchedCommandRetention
+            ?? TimeSpan.FromHours(1);
+        if (_unmatchedCommandRetention <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(hostOptions),
+                "Unmatched command retention must be positive");
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -77,14 +83,22 @@ public class WorkflowQueueService : BackgroundService
                 _logger.LogInformation("Processing execute command {InstanceId} for host {HostId}", 
                     command.InstanceId, _hostId);
 
-                await ProcessExecuteCommandAsync(command);
+                await ProcessExecuteCommandAsync(command, cancellationToken);
                 await delivery.AcknowledgeAsync();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (WorkflowInstanceBusyException error)
+            {
+                await DeferIfOwnedAsync(delivery, error);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing execute command {InstanceId} for host {HostId}", 
                     command.InstanceId, _hostId);
-                await delivery.RejectAsync(ex);
+                await RejectIfOwnedAsync(delivery, ex);
             }
         }
     }
@@ -105,14 +119,22 @@ public class WorkflowQueueService : BackgroundService
                 _logger.LogInformation("Processing resume command {InstanceId} for host {HostId}", 
                     command.InstanceId, _hostId);
 
-                await ProcessResumeCommandAsync(command);
+                await ProcessResumeCommandAsync(command, cancellationToken);
                 await delivery.AcknowledgeAsync();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (WorkflowInstanceBusyException error)
+            {
+                await DeferIfOwnedAsync(delivery, error);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing resume command {InstanceId} for host {HostId}", 
                     command.InstanceId, _hostId);
-                await delivery.RejectAsync(ex);
+                await RejectIfOwnedAsync(delivery, ex);
             }
         }
     }
@@ -133,14 +155,22 @@ public class WorkflowQueueService : BackgroundService
                 _logger.LogInformation("Processing cancel command {InstanceId} for host {HostId}", 
                     command.InstanceId, _hostId);
 
-                await ProcessCancelCommandAsync(command);
+                await ProcessCancelCommandAsync(command, cancellationToken);
                 await delivery.AcknowledgeAsync();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (WorkflowInstanceBusyException error)
+            {
+                await DeferIfOwnedAsync(delivery, error);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing cancel command {InstanceId} for host {HostId}", 
                     command.InstanceId, _hostId);
-                await delivery.RejectAsync(ex);
+                await RejectIfOwnedAsync(delivery, ex);
             }
         }
     }
@@ -170,9 +200,38 @@ public class WorkflowQueueService : BackgroundService
     {
         public T Message => message;
         public Task AcknowledgeAsync() => Task.CompletedTask;
+        public Task RejectAsync(Exception error) => Task.CompletedTask;
+        public Task DeferAsync(TimeSpan delay) => Task.CompletedTask;
     }
 
-    internal async Task ProcessExecuteCommandAsync(ExecuteWorkflowCommand command)
+    private async Task DeferIfOwnedAsync<T>(IMessageDelivery<T> delivery,
+        WorkflowInstanceBusyException error) where T : class
+    {
+        try
+        {
+            await delivery.DeferAsync(error.RetryDelay);
+        }
+        catch (MessageClaimLostException claimError)
+        {
+            _logger.LogWarning(claimError, "Message claim was lost before deferral");
+        }
+    }
+
+    private async Task RejectIfOwnedAsync<T>(IMessageDelivery<T> delivery, Exception error)
+        where T : class
+    {
+        try
+        {
+            await delivery.RejectAsync(error);
+        }
+        catch (MessageClaimLostException claimError)
+        {
+            _logger.LogWarning(claimError, "Message claim was lost before rejection");
+        }
+    }
+
+    internal async Task ProcessExecuteCommandAsync(ExecuteWorkflowCommand command,
+        CancellationToken cancellationToken = default)
     {
         using var scope = _serviceProvider.CreateScope();
         var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
@@ -182,15 +241,6 @@ public class WorkflowQueueService : BackgroundService
         try
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(command.InstanceId);
-            // Publish started event
-            await _messageBus.PublishAsync(new WorkflowExecutionStartedEvent
-            {
-                InstanceId = command.InstanceId,
-                HostId = _hostId,
-                WorkflowName = command.WorkflowName,
-                StartedAt = DateTime.UtcNow
-            });
-
             var definition = await versionRegistry.GetWorkflowDefinitionAsync(command.WorkflowName, command.WorkflowVersion)
                 ?? throw new InvalidOperationException($"Workflow definition not found: {command.WorkflowName} v{command.WorkflowVersion}");
 
@@ -214,22 +264,42 @@ public class WorkflowQueueService : BackgroundService
             if (options.InstanceId != null && options.InstanceId != command.InstanceId)
                 throw new InvalidOperationException("The command and workflow options have different instance IDs");
             options.InstanceId = command.InstanceId;
-            var result = await workflowEngine.ExecuteWorkflowAsync(definition, workflowData, options);
+            if (await repository.GetWorkflowInstanceAsync(command.InstanceId) == null)
+            {
+                await _messageBus.PublishAsync(new WorkflowExecutionStartedEvent
+                {
+                    InstanceId = command.InstanceId,
+                    HostId = _hostId,
+                    WorkflowName = command.WorkflowName,
+                    StartedAt = DateTime.UtcNow
+                });
+            }
+            var result = await workflowEngine.ExecuteWorkflowAsync(
+                definition, workflowData, options, cancellationToken);
             if (result.Status == WorkflowExecutionStatus.Running)
             {
                 var saved = await repository.GetWorkflowInstanceAsync(command.InstanceId);
                 if (saved?.Status != WorkflowStatus.Running)
-                    result = await workflowEngine.ExecuteWorkflowAsync(definition, workflowData, options);
+                    result = await workflowEngine.ExecuteWorkflowAsync(
+                        definition, workflowData, options, cancellationToken);
                 if (result.Status == WorkflowExecutionStatus.Running)
-                    throw new InvalidOperationException(
+                    throw new WorkflowInstanceBusyException(
                         $"Workflow instance '{command.InstanceId}' is executing; keep the command for redelivery");
             }
 
             if (IsTerminal(result.Status))
-                await PublishCompletionAsync(command.InstanceId, result);
+                await PublishCompletionAsync(command.InstanceId);
 
             _logger.LogInformation("Successfully executed workflow {InstanceId} with status {Status}", 
                 command.InstanceId, result.Status);
+        }
+        catch (WorkflowInstanceBusyException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -238,10 +308,15 @@ public class WorkflowQueueService : BackgroundService
         }
     }
 
-    internal async Task ProcessResumeCommandAsync(ResumeWorkflowCommand command)
+    internal async Task ProcessResumeCommandAsync(ResumeWorkflowCommand command,
+        CancellationToken cancellationToken = default)
     {
+        if (IsExpired(command.QueuedAt))
+            throw new InvalidOperationException(
+                $"Resume command for '{command.InstanceId}' expired without an accepting wait");
         using var scope = _serviceProvider.CreateScope();
         var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
 
         try
         {
@@ -252,21 +327,39 @@ public class WorkflowQueueService : BackgroundService
                 throw new InvalidOperationException($"Could not resolve event data type: {command.EventDataType}");
             }
 
-            var eventData = System.Text.Json.JsonSerializer.Deserialize(command.EventDataJson, eventDataType);
+            var eventData = System.Text.Json.JsonSerializer.Deserialize(command.EventDataJson, eventDataType)
+                ?? throw new InvalidOperationException("Resume event data cannot be null");
 
             // Resume workflow
             var result = await workflowEngine.ResumeWorkflowDeliveryAsync(
-                command.InstanceId, command.Key, eventData, command.CommandId);
-            if (result.Status == WorkflowExecutionStatus.Running && !result.EventAccepted)
+                command.InstanceId, command.Key, eventData, command.CommandId, cancellationToken);
+            if (!result.EventAccepted)
+            {
+                var saved = await repository.GetWorkflowInstanceAsync(command.InstanceId);
+                if (saved == null || saved.Status is WorkflowStatus.Running or
+                    WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution)
+                    throw new WorkflowInstanceBusyException(
+                        $"Workflow instance '{command.InstanceId}' has not accepted this event yet",
+                        TimeSpan.FromSeconds(10));
+                await PublishCompletionAsync(command.InstanceId);
                 throw new InvalidOperationException(
-                    $"Workflow instance '{command.InstanceId}' is executing; keep the resume command for redelivery");
+                    $"Workflow instance '{command.InstanceId}' ended without accepting this event");
+            }
 
             // Publish completion event if workflow finished
-            if (result.EventAccepted && IsTerminal(result.Status))
-                await PublishCompletionAsync(command.InstanceId, result);
+            if (IsTerminal(result.Status))
+                await PublishCompletionAsync(command.InstanceId);
 
             _logger.LogInformation("Successfully resumed workflow {InstanceId} with status {Status}", 
                 command.InstanceId, result.Status);
+        }
+        catch (WorkflowInstanceBusyException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -275,27 +368,37 @@ public class WorkflowQueueService : BackgroundService
         }
     }
 
-    internal async Task ProcessCancelCommandAsync(CancelWorkflowCommand command)
+    internal async Task ProcessCancelCommandAsync(CancelWorkflowCommand command,
+        CancellationToken cancellationToken = default)
     {
         using var scope = _serviceProvider.CreateScope();
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-        var result = await engine.CancelWorkflowAsync(command.InstanceId, command.Reason);
+        WorkflowExecutionResult result;
+        try
+        {
+            result = await engine.CancelWorkflowAsync(
+                command.InstanceId, command.Reason, cancellationToken);
+        }
+        catch (KeyNotFoundException) when (!IsExpired(command.QueuedAt))
+        {
+            throw new WorkflowInstanceBusyException(
+                $"Cancellation for '{command.InstanceId}' arrived before its execute command",
+                TimeSpan.FromSeconds(10));
+        }
         if (!IsTerminal(result.Status))
             return;
-        await PublishCompletionAsync(command.InstanceId, result);
+        await PublishCompletionAsync(command.InstanceId);
     }
 
-    private async Task PublishCompletionAsync(string instanceId, WorkflowExecutionResult result)
+    private bool IsExpired(DateTime queuedAt) =>
+        DateTime.UtcNow - queuedAt.ToUniversalTime() > _unmatchedCommandRetention;
+
+    private async Task PublishCompletionAsync(string instanceId)
     {
-        await _messageBus.PublishAsync(new WorkflowExecutionCompletedEvent
-        {
-            InstanceId = instanceId,
-            HostId = _hostId,
-            Status = result.Status,
-            ErrorMessage = result.ErrorMessage,
-            CompletedAt = DateTime.UtcNow,
-            ExecutionTime = result.ExecutionTime
-        });
+        using var scope = _serviceProvider.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
+        await new WorkflowCompletionPublisher(repository, _messageBus, _hostId)
+            .PublishPendingAsync(instanceId);
     }
 
     private static bool IsTerminal(WorkflowExecutionStatus status) => status is
@@ -308,4 +411,10 @@ public class WorkflowQueueService : BackgroundService
         _logger.LogInformation("Stopping Workflow Queue Service for host {HostId}", _hostId);
         await base.StopAsync(cancellationToken);
     }
+}
+
+internal sealed class WorkflowInstanceBusyException(string message, TimeSpan? retryDelay = null)
+    : Exception(message)
+{
+    public TimeSpan RetryDelay { get; } = retryDelay ?? TimeSpan.FromSeconds(1);
 }

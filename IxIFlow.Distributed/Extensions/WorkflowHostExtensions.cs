@@ -23,6 +23,9 @@ public static class WorkflowHostExtensions
         services.AddSingleton<IWorkflowCoordinator, WorkflowCoordinator>();
         services.AddSingleton<IWorkflowHostClient, HttpWorkflowHostClient>();
         services.AddHostedService<WorkflowQueueService>();
+        services.AddHostedService<WorkflowCompletionOutboxService>();
+        services.AddHostedService<WorkflowMessageCleanupService>();
+        services.AddHostedService<WorkflowRecoveryService>();
         services.AddHostedService<HostHealthService>();
 
         return services;

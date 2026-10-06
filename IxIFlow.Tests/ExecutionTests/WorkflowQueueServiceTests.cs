@@ -11,6 +11,82 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class WorkflowQueueServiceTests
 {
     [Fact]
+    public async Task HostStopCommitsAnActivityThatReturnedBeforeLeavingItsClaim()
+    {
+        var probe = new ExecutionLeaseContractTests.ActivityProbe();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.AddSingleton(probe);
+        services.AddTransient<ExecutionLeaseContractTests.BlockingActivity>();
+        services.AddTransient<NoopActivity>();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<QueueData>("GracefulStop")
+            .Step<ExecutionLeaseContractTests.BlockingActivity>(_ => { })
+            .Step<NoopActivity>(_ => { })
+            .Build();
+        await provider.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(definition);
+        var bus = new RecordingBus();
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, bus, coordinator);
+        var instanceId = Guid.NewGuid().ToString("N");
+        using var stopping = new CancellationTokenSource();
+        var processing = service.ProcessExecuteCommandAsync(new ExecuteWorkflowCommand
+        {
+            InstanceId = instanceId,
+            TargetHostId = "test-host",
+            WorkflowName = definition.Name,
+            WorkflowVersion = definition.Version,
+            WorkflowDataType = typeof(QueueData).AssemblyQualifiedName!,
+            WorkflowDataJson = "{}"
+        }, stopping.Token);
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        stopping.Cancel();
+        probe.Release.TrySetResult();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            processing.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        var saved = (await provider.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(instanceId))!;
+        Assert.Contains(saved.ExecutionHistory, entry =>
+            entry.EntryType == TraceEntryType.ActivityCompleted &&
+            entry.ActivityName.Contains("BlockingActivity"));
+        var recovered = await provider.GetRequiredService<IWorkflowEngine>()
+            .RecoverWorkflowAsync(instanceId);
+        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+    }
+
+    [Fact]
+    public async Task UnknownDefinitionDoesNotEmitAStartedEvent()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var bus = new RecordingBus();
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, bus, coordinator);
+        var instanceId = Guid.NewGuid().ToString("N");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ProcessExecuteCommandAsync(new ExecuteWorkflowCommand
+            {
+                InstanceId = instanceId,
+                TargetHostId = "test-host",
+                WorkflowName = "Unknown",
+                WorkflowVersion = 1,
+                WorkflowDataType = typeof(QueueData).AssemblyQualifiedName!,
+                WorkflowDataJson = "{}"
+            }));
+
+        Assert.Empty(bus.Starts);
+    }
+
+    [Fact]
     public async Task ExecuteCommandDoesNotPublishCompletionWhenWorkflowWaits()
     {
         var services = new ServiceCollection();
@@ -210,6 +286,7 @@ public sealed class WorkflowQueueServiceTests
         Assert.Equal(2, engine.ExecuteCalls);
         Assert.Equal(0, engine.RecoverCalls);
         Assert.Empty(bus.Completions);
+        Assert.Empty(bus.Starts);
     }
 
     [Fact]
@@ -311,7 +388,7 @@ public sealed class WorkflowQueueServiceTests
     }
 
     [Fact]
-    public async Task CancelCommandForUnknownInstanceStaysUnacknowledged()
+    public async Task CancelCommandCanWaitForItsExecuteCommand()
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -322,7 +399,7 @@ public sealed class WorkflowQueueServiceTests
             new InMemoryHostRegistry());
         using var service = new TestQueueService(provider, bus, coordinator);
 
-        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+        await Assert.ThrowsAsync<WorkflowInstanceBusyException>(() =>
             service.ProcessCancelCommandAsync(new CancelWorkflowCommand
             {
                 InstanceId = Guid.NewGuid().ToString("N"),
@@ -330,6 +407,44 @@ public sealed class WorkflowQueueServiceTests
                 Reason = new CancellationReason { ReasonCode = "withdrawn" }
             }));
         Assert.Empty(bus.Completions);
+    }
+
+    [Fact]
+    public async Task ExpiredUnmatchedResumeIsRejectedInsteadOfDeferredForever()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, new RecordingBus(), coordinator);
+        var command = ResumeCommand(Guid.NewGuid().ToString("N"));
+        command.QueuedAt = DateTime.UtcNow.AddHours(-2);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ProcessResumeCommandAsync(command));
+    }
+
+    [Fact]
+    public async Task ExpiredCancelForMissingInstanceIsRejected()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, new RecordingBus(), coordinator);
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+            service.ProcessCancelCommandAsync(new CancelWorkflowCommand
+            {
+                InstanceId = Guid.NewGuid().ToString("N"),
+                TargetHostId = "test-host",
+                Reason = new CancellationReason { ReasonCode = "withdrawn" },
+                QueuedAt = DateTime.UtcNow.AddHours(-2)
+            }));
     }
     [Fact]
     public async Task ConsumerFailureStopsTheQueueServiceWithTheOriginalError()
@@ -351,6 +466,166 @@ public sealed class WorkflowQueueServiceTests
         }
     }
 
+    [Fact]
+    public async Task LostMessageClaimDoesNotStopLaterDeliveries()
+    {
+        using var provider = new ServiceCollection().BuildServiceProvider();
+        var bus = new LostClaimBus();
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, bus, coordinator);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var running = service.RunAsync(stop.Token);
+        await bus.SecondRejected.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        stop.Cancel();
+        await running.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(2, bus.RejectedCount);
+    }
+
+    [Fact]
+    public async Task BusyResumeCommandIsClassifiedForDeferral()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowEngine>(new TransitionEngine()));
+        using var provider = services.BuildServiceProvider();
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, new RecordingBus(), coordinator);
+
+        await Assert.ThrowsAsync<WorkflowInstanceBusyException>(() =>
+            service.ProcessResumeCommandAsync(new ResumeWorkflowCommand
+            {
+                InstanceId = Guid.NewGuid().ToString("N"),
+                TargetHostId = "test-host",
+                Key = "approval",
+                EventDataType = typeof(QueueEvent).AssemblyQualifiedName!,
+                EventDataJson = "{}"
+            }));
+    }
+
+    [Theory]
+    [InlineData(WorkflowExecutionStatus.Faulted, null)]
+    [InlineData(WorkflowExecutionStatus.Suspended, WorkflowStatus.Suspended)]
+    public async Task UnacceptedResumeIsDeferredWhileTheInstanceMayStillWait(
+        WorkflowExecutionStatus resultStatus, WorkflowStatus? storedStatus)
+    {
+        var engine = new TransitionEngine { ResumeStatus = resultStatus };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowEngine>(engine));
+        using var provider = services.BuildServiceProvider();
+        var instanceId = Guid.NewGuid().ToString("N");
+        if (storedStatus != null)
+            await provider.GetRequiredService<IWorkflowStateRepository>()
+                .SaveWorkflowInstanceAsync(new WorkflowInstance
+                {
+                    InstanceId = instanceId,
+                    WorkflowName = "PendingWait",
+                    Status = storedStatus.Value
+                });
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, new RecordingBus(), coordinator);
+
+        await Assert.ThrowsAsync<WorkflowInstanceBusyException>(() =>
+            service.ProcessResumeCommandAsync(ResumeCommand(instanceId)));
+    }
+
+    [Fact]
+    public async Task UnacceptedResumeForTerminalInstanceIsRejected()
+    {
+        var engine = new TransitionEngine { ResumeStatus = WorkflowExecutionStatus.Faulted };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowEngine>(engine));
+        using var provider = services.BuildServiceProvider();
+        var instanceId = Guid.NewGuid().ToString("N");
+        await provider.GetRequiredService<IWorkflowStateRepository>()
+            .SaveWorkflowInstanceAsync(new WorkflowInstance
+            {
+                InstanceId = instanceId,
+                WorkflowName = "Finished",
+                Status = WorkflowStatus.Completed
+            });
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, new RecordingBus(), coordinator);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ProcessResumeCommandAsync(ResumeCommand(instanceId)));
+    }
+
+    private static ResumeWorkflowCommand ResumeCommand(string instanceId) => new()
+    {
+        InstanceId = instanceId,
+        TargetHostId = "test-host",
+        Key = "approval",
+        EventDataType = typeof(QueueEvent).AssemblyQualifiedName!,
+        EventDataJson = "{}"
+    };
+
+    private sealed class LostClaimBus : IAcknowledgingMessageBus
+    {
+        public TaskCompletionSource SecondRejected { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int RejectedCount;
+
+        public Task PublishAsync<T>(T message) where T : class => Task.CompletedTask;
+        public Task StopAsync() => Task.CompletedTask;
+        public async IAsyncEnumerable<T> ConsumeAsync<T>() where T : class
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public async IAsyncEnumerable<IMessageDelivery<T>> ConsumeDeliveriesAsync<T>(
+            string? targetHostId = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            where T : class
+        {
+            if (typeof(T) == typeof(ResumeWorkflowCommand))
+            {
+                yield return (IMessageDelivery<T>)(object)new LostClaimDelivery(this, true);
+                yield return (IMessageDelivery<T>)(object)new LostClaimDelivery(this, false);
+            }
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+        }
+
+        private sealed class LostClaimDelivery(LostClaimBus bus, bool loseClaim) :
+            IMessageDelivery<ResumeWorkflowCommand>
+        {
+            public ResumeWorkflowCommand Message { get; } = new()
+            {
+                InstanceId = Guid.NewGuid().ToString("N"),
+                TargetHostId = "test-host",
+                EventDataType = "missing type"
+            };
+            public Task AcknowledgeAsync() => Task.CompletedTask;
+            public Task DeferAsync(TimeSpan delay) => Task.CompletedTask;
+            public Task RejectAsync(Exception error)
+            {
+                var count = Interlocked.Increment(ref bus.RejectedCount);
+                if (loseClaim)
+                    throw new MessageClaimLostException("Another host owns this message");
+                if (count == 2)
+                    bus.SecondRejected.TrySetResult();
+                return Task.CompletedTask;
+            }
+        }
+    }
+
     private sealed class TestQueueService(IServiceProvider services, IMessageBus bus,
         IWorkflowCoordinator coordinator) : WorkflowQueueService(
             services, NullLogger<WorkflowQueueService>.Instance, bus, coordinator,
@@ -363,6 +638,7 @@ public sealed class WorkflowQueueServiceTests
     {
         public int ExecuteCalls { get; private set; }
         public int RecoverCalls { get; private set; }
+        public WorkflowExecutionStatus ResumeStatus { get; set; } = WorkflowExecutionStatus.Running;
 
         public Task<WorkflowExecutionResult> ExecuteWorkflowAsync<TWorkflowData>(
             WorkflowDefinition definition, TWorkflowData workflowData,
@@ -395,7 +671,12 @@ public sealed class WorkflowQueueServiceTests
         public Task<WorkflowExecutionResult> ResumeWorkflowDeliveryAsync<TEventData>(string instanceId,
             string? key, TEventData @event, string deliveryId,
             CancellationToken cancellationToken = default)
-            where TEventData : class => throw new NotSupportedException();
+            where TEventData : class => Task.FromResult(new WorkflowExecutionResult
+            {
+                InstanceId = instanceId,
+                Status = ResumeStatus,
+                EventAccepted = false
+            });
         public Task<WorkflowExecutionResult> CancelWorkflowAsync(string instanceId,
             CancellationReason reason, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
@@ -448,10 +729,13 @@ public sealed class WorkflowQueueServiceTests
     private sealed class RecordingBus : IMessageBus
     {
         public List<WorkflowExecutionCompletedEvent> Completions { get; } = [];
+        public List<WorkflowExecutionStartedEvent> Starts { get; } = [];
         public Task PublishAsync<T>(T message) where T : class
         {
             if (message is WorkflowExecutionCompletedEvent completion)
                 Completions.Add(completion);
+            if (message is WorkflowExecutionStartedEvent started)
+                Starts.Add(started);
             return Task.CompletedTask;
         }
         public async IAsyncEnumerable<T> ConsumeAsync<T>() where T : class
