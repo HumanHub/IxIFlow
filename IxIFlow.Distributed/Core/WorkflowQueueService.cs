@@ -46,8 +46,9 @@ public class WorkflowQueueService : BackgroundService
             // Process workflow cancellation commands
             var cancelCommandTask = ProcessCancelCommandsAsync(stoppingToken);
 
-            // Wait for any task to complete (should run indefinitely until cancellation)
-            await Task.WhenAny(executeCommandTask, resumeCommandTask, cancelCommandTask);
+            // A completed consumer is an error unless host shutdown requested it.
+            var completed = await Task.WhenAny(executeCommandTask, resumeCommandTask, cancelCommandTask);
+            await completed;
         }
         catch (OperationCanceledException)
         {
