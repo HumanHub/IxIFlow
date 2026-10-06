@@ -47,9 +47,24 @@ internal static class WorkflowCodeSignature
                 Convert.ToString(value, CultureInfo.InvariantCulture)}";
 
         var runtimeType = value.GetType();
-        if (!runtimeType.IsDefined(typeof(System.Runtime.CompilerServices.CompilerGeneratedAttribute)) ||
-            depth >= 8 || !visited.Add(value))
-            return WorkflowTypeIdentity.StableName(runtimeType);
+        if (!runtimeType.IsDefined(typeof(System.Runtime.CompilerServices.CompilerGeneratedAttribute)))
+        {
+            try
+            {
+                return WorkflowTypeIdentity.StableName(runtimeType) + ":" +
+                    System.Text.Json.JsonSerializer.Serialize(value, runtimeType);
+            }
+            catch (Exception error) when (error is NotSupportedException or
+                System.Text.Json.JsonException)
+            {
+                throw new NotSupportedException(
+                    $"Captured value of type '{runtimeType.FullName}' cannot be fingerprinted; " +
+                    "capture serializable values instead", error);
+            }
+        }
+        if (depth >= 8 || !visited.Add(value))
+            throw new NotSupportedException(
+                "Captured closure is recursive or too deep to fingerprint");
         try
         {
             var fields = runtimeType.GetFields(BindingFlags.Instance |
