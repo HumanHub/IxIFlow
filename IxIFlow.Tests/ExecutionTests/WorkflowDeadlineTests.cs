@@ -151,6 +151,22 @@ public sealed class WorkflowDeadlineTests
     }
 
     [Fact]
+    public async Task MemoryRecoveryScanIncludesDueInstanceNeedingResolution()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var instance = new WorkflowInstance
+        {
+            InstanceId = Guid.NewGuid().ToString("N"),
+            Status = WorkflowStatus.NeedsResolution,
+            NextDueAtUtc = DateTime.UtcNow.AddMinutes(-1)
+        };
+        await repository.SaveWorkflowInstanceAsync(instance);
+
+        Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            candidate => candidate.InstanceId == instance.InstanceId);
+    }
+
+    [Fact]
     public async Task TimeoutExitsOnlyItsContainingSequence()
     {
         using var services = Services();
@@ -201,6 +217,53 @@ public sealed class WorkflowDeadlineTests
         Assert.Equal(WorkflowExecutionStatus.TimedOut, result.Status);
         Assert.True(Assert.IsType<ApprovalData>(result.WorkflowData).After);
     }
+
+    [Fact]
+    public async Task TimedWaitInFinallyCompletesBusinessCancellation()
+    {
+        using var services = Services();
+        var definition = CleanupWaitWorkflow("CancelCleanupTimeout");
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
+        var cleaning = await engine.CancelWorkflowAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "operator" });
+        Assert.Equal(WorkflowExecutionStatus.Suspended, cleaning.Status);
+        await Task.Delay(160);
+
+        var result = await engine.RecoverWorkflowAsync(started.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.True(Assert.IsType<ApprovalData>(result.WorkflowData).After);
+    }
+
+    [Fact]
+    public async Task TimedWaitInFinallyCompletesExecutionTimeout()
+    {
+        using var services = Services();
+        var definition = CleanupWaitWorkflow("DeadlineCleanupTimeout");
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData(),
+            new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(80) });
+        await Task.Delay(160);
+        var cleaning = await engine.RecoverWorkflowAsync(started.InstanceId);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, cleaning.Status);
+        await Task.Delay(160);
+
+        var result = await engine.RecoverWorkflowAsync(started.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.TimedOut, result.Status);
+        Assert.True(Assert.IsType<ApprovalData>(result.WorkflowData).After);
+    }
+
+    private static WorkflowDefinition CleanupWaitWorkflow(string name) =>
+        Workflow.Create<ApprovalData>(name)
+            .Step<SeedActivity>()
+            .Try(body => body.WaitFor<Approval>("start"))
+            .Finally(body => body.WaitFor<Approval>("cleanup", configure: wait => wait
+                .TimeoutAfter(TimeSpan.FromMilliseconds(80))
+                .OnTimeout(path => path.Step<AfterActivity>(step => step
+                    .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After)))))
+            .Build();
 
     private static WorkflowDefinition ApprovalWorkflow(string name) =>
         Workflow.Create<ApprovalData>(name)

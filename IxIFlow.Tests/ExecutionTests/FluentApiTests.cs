@@ -18,8 +18,6 @@ public class FluentApiTests
         services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
         services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
         services.AddSingleton<IActivityExecutor, ActivityExecutor>();
-        services.AddSingleton<ISuspendResumeExecutor, SuspendResumeExecutor>();
-        services.AddSingleton<ISagaExecutor, SagaExecutor>();
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
         services.AddSingleton<IEventCorrelator, EventCorrelator>();
         services.AddSingleton<IWorkflowTracer, WorkflowTracer>();

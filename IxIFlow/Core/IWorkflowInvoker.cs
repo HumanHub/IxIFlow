@@ -20,6 +20,13 @@ public interface IWorkflowInvoker
         WorkflowStep step,
         StepExecutionContext<TWorkflowData> context,
         ExecutionState executionState,
+        string invocationId,
         CancellationToken cancellationToken)
         where TWorkflowData : class;
 }
+
+/// <summary>
+/// Guarantees that a child workflow commits its initial checkpoint before any child activity
+/// runs. A saved parent invocation without a child record can then be started after recovery.
+/// </summary>
+public interface ICheckpointedWorkflowInvoker : IWorkflowInvoker;

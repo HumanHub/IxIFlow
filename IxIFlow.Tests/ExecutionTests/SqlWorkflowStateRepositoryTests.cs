@@ -27,6 +27,11 @@ public class SqlWorkflowStateRepositoryTests
             await repository.SaveWorkflowInstanceAsync(instance);
             Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
                 candidate => candidate.InstanceId == instanceId);
+
+            instance.Status = WorkflowStatus.NeedsResolution;
+            await repository.SaveWorkflowInstanceAsync(instance);
+            Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+                candidate => candidate.InstanceId == instanceId);
         }
         finally
         {

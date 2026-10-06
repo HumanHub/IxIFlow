@@ -114,6 +114,7 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         {
             TargetProperty = propertyName,
             SourceFunction = wrappedFunction,
+            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Input
@@ -190,6 +191,7 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         {
             TargetProperty = propertyName,
             SourceFunction = wrappedFunction,
+            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Input
@@ -293,6 +295,7 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
             TargetProperty = propertyName,
             SourceFunction = dummySourceFunction, // Not used for outputs
             TargetAssignmentFunction = assignmentFunction,
+            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Output

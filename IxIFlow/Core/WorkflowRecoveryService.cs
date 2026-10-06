@@ -13,19 +13,22 @@ public sealed class WorkflowRecoveryService(
     internal async Task RecoverOnceAsync(CancellationToken cancellationToken)
     {
         var instances = await repository.GetWorkflowsRequiringRecoveryAsync();
-        foreach (var instance in instances)
+        await Parallel.ForEachAsync(instances, new ParallelOptions
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            MaxDegreeOfParallelism = 8,
+            CancellationToken = cancellationToken
+        }, async (instance, token) =>
+        {
             try
             {
                 using var scope = scopes.CreateScope();
                 var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-                    .RecoverWorkflowAsync(instance.InstanceId, cancellationToken);
+                    .RecoverWorkflowAsync(instance.InstanceId, token);
                 if (result.Status == WorkflowExecutionStatus.Faulted)
                     logger.LogWarning("Recovery of workflow {InstanceId} was rejected: {Reason}",
                         instance.InstanceId, result.ErrorMessage);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
                 throw;
             }
@@ -33,7 +36,7 @@ public sealed class WorkflowRecoveryService(
             {
                 logger.LogError(error, "Could not recover workflow {InstanceId}", instance.InstanceId);
             }
-        }
+        });
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

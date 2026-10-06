@@ -87,6 +87,7 @@ internal sealed class ActivityInvocationState
     public DateTime StartedAtUtc { get; set; } = DateTime.UtcNow;
     public ActivityInputSnapshot Inputs { get; set; } = new();
     public SerializedValue? RecoveryState { get; set; }
+    public string? ChildWorkflowId { get; set; }
     public List<ActivityAttemptState> Attempts { get; set; } = [];
     public string? ResolutionReason { get; set; }
     public ActivityResolutionState? Resolution { get; set; }
@@ -286,12 +287,20 @@ internal sealed class WaitState
     public string EventType { get; set; } = "";
     public DateTime RegisteredAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? DeadlineUtc { get; set; }
+    public string? ChildWorkflowId { get; set; }
+    public string? ChildWaitId { get; set; }
 }
 
 internal sealed class AcceptedWaitState
 {
     public string StepId { get; set; } = "";
     public SerializedValue Event { get; set; } = new();
+    public string? Key { get; set; }
+    public string? DeliveryId { get; set; }
+    public string? DeliveryHash { get; set; }
+
+    [JsonIgnore]
+    public bool? EventAccepted { get; set; }
 }
 
 internal sealed class SerializedValue

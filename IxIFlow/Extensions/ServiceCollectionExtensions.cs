@@ -25,8 +25,6 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowEngine, WorkflowEngine>();
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
         services.AddScoped<IWorkflowInvoker, WorkflowInvoker>();
-        services.AddScoped<ISuspendResumeExecutor, SuspendResumeExecutor>();
-        services.AddScoped<ISagaExecutor, SagaExecutor>();
         services.AddScoped<StructuredWorkflowRunner>();
         services.AddHostedService<WorkflowRecoveryService>();
         services.AddSingleton(InProcessInstanceGate.Shared);

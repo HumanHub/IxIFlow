@@ -13,6 +13,20 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
 {
     private readonly List<WorkflowStep> _steps = new();
 
+    public IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
+        _steps.Add(new WorkflowStep
+        {
+            Name = "Delay",
+            StepType = WorkflowStepType.Delay,
+            WorkflowDataType = typeof(TWorkflowData),
+            DelayDuration = duration,
+            Order = _steps.Count
+        });
+        return this;
+    }
+
     /// <summary>
     ///     Builds the final workflow definition
     /// </summary>
@@ -68,6 +82,21 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     where TPreviousStepData : class
 {
     protected readonly List<WorkflowStep> _steps = steps;
+
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
+        _steps.Add(new WorkflowStep
+        {
+            Name = "Delay",
+            StepType = WorkflowStepType.Delay,
+            WorkflowDataType = typeof(TWorkflowData),
+            PreviousStepDataType = typeof(TPreviousStepData),
+            DelayDuration = duration,
+            Order = _steps.Count
+        });
+        return this;
+    }
 
     /// <summary>
     ///     Adds an activity step to the workflow
@@ -201,6 +230,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             CompiledCondition = conditionWrapper,
+            ConditionExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(condition),
             Order = _steps.Count
         };
 
@@ -440,7 +470,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         var sequenceBuilder = new SequenceBuilder<TWorkflowData, TPreviousStepData>(loopStep.LoopBodySteps);
         configure(sequenceBuilder);
 
-        loopStep.StepMetadata["LoopType"] = LoopType.DoWhile;
+        loopStep.StepMetadata["LoopType"] = LoopType.WhileDo;
 
         _steps.Add(loopStep);
 

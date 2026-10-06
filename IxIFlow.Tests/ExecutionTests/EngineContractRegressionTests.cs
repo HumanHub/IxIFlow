@@ -1,6 +1,7 @@
 using System.Text.Json;
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using IxIFlow.Dsl.Compilation;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Extensions;
@@ -12,6 +13,205 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public class EngineContractRegressionTests
 {
+    [Fact]
+    public void DefinitionFingerprintIncludesOutcomeLabelsAndErrorPolicies()
+    {
+        WorkflowDefinition Outcome(string label) => new()
+        {
+            Name = "OutcomeVersion",
+            WorkflowDataType = typeof(RegressionData),
+            Steps =
+            [
+                new WorkflowStep
+                {
+                    Name = "Outcome",
+                    StepType = WorkflowStepType.Conditional,
+                    WorkflowDataType = typeof(RegressionData),
+                    OutcomeSelector = _ => "fixed",
+                    OutcomeBranches = [new WorkflowOutcomeBranch { Value = label }]
+                }
+            ]
+        };
+
+        WorkflowDefinition Policy(StepErrorAction action) => new()
+        {
+            Name = "SagaPolicyVersion",
+            WorkflowDataType = typeof(RegressionData),
+            Steps =
+            [
+                new WorkflowStep
+                {
+                    Name = "Saga step",
+                    StepType = WorkflowStepType.Activity,
+                    ActivityType = typeof(MarkChildActivity),
+                    WorkflowDataType = typeof(RegressionData),
+                    StepMetadata = new Dictionary<string, object>
+                    {
+                        ["StepErrorHandlers"] = new List<StepErrorHandlerInfo>
+                        {
+                            new() { ExceptionType = typeof(Exception), HandlerAction = action }
+                        }
+                    }
+                }
+            ]
+        };
+
+        WorkflowDefinition SagaPolicy(SagaContinuationAction action) => new()
+        {
+            Name = "SagaContinuationVersion",
+            WorkflowDataType = typeof(RegressionData),
+            Steps =
+            [
+                new WorkflowStep
+                {
+                    Name = "Saga",
+                    StepType = WorkflowStepType.Saga,
+                    WorkflowDataType = typeof(RegressionData),
+                    CatchBlocks =
+                    [
+                        new WorkflowStep
+                        {
+                            Name = "Handler",
+                            StepType = WorkflowStepType.CatchBlock,
+                            WorkflowDataType = typeof(RegressionData),
+                            ExceptionType = typeof(Exception),
+                            FaultType = typeof(EmptyFault),
+                            StepMetadata = new Dictionary<string, object>
+                            {
+                                ["SagaErrorConfig"] = new SagaErrorConfiguration
+                                {
+                                    ContinuationAction = action
+                                }
+                            }
+                        }
+                    ]
+                }
+            ]
+        };
+
+        Assert.NotEqual(new WorkflowScopeCatalog(Outcome("approve")).Fingerprint,
+            new WorkflowScopeCatalog(Outcome("reject")).Fingerprint);
+        Assert.NotEqual(new WorkflowScopeCatalog(Policy(StepErrorAction.Retry)).Fingerprint,
+            new WorkflowScopeCatalog(Policy(StepErrorAction.Terminate)).Fingerprint);
+        Assert.NotEqual(new WorkflowScopeCatalog(SagaPolicy(SagaContinuationAction.Retry)).Fingerprint,
+            new WorkflowScopeCatalog(SagaPolicy(SagaContinuationAction.Terminate)).Fingerprint);
+    }
+
+    [Fact]
+    public async Task UnsupportedExecutionOptionsFailBeforeAnInstanceStarts()
+    {
+        using var provider = new ServiceCollection()
+            .AddLogging()
+            .AddIxIFlow()
+            .BuildServiceProvider();
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var definition = Workflow.Create<RegressionData>("OptionsMustBeHonest")
+            .Step<MarkChildActivity>(_ => { }).Build();
+
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            engine.ExecuteWorkflowAsync(definition, new RegressionData(),
+                new WorkflowOptions { EnableDebugging = true }));
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            engine.ExecuteWorkflowAsync(definition, new RegressionData(),
+                new WorkflowOptions { WorkflowRetryPolicy = new RetryPolicy(2) }));
+        Assert.Empty(await provider.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstancesByNameAsync(definition.Name));
+    }
+
+    [Fact]
+    public void DefinitionFingerprintChangesWhenOnlyConditionChanges()
+    {
+        var always = Workflow.Create<RegressionData>("ChangedCondition")
+            .Step<MarkChildActivity>()
+            .If(ctx => true, then => then.Step<MarkChildActivity>(_ => { }))
+            .Build();
+        var never = Workflow.Create<RegressionData>("ChangedCondition")
+            .Step<MarkChildActivity>()
+            .If(ctx => false, then => then.Step<MarkChildActivity>(_ => { }))
+            .Build();
+
+        Assert.NotEqual(new WorkflowScopeCatalog(always).Fingerprint,
+            new WorkflowScopeCatalog(never).Fingerprint);
+    }
+
+    [Fact]
+    public void DefinitionFingerprintChangesWhenInputMappingChanges()
+    {
+        var fromData = Workflow.Create<RegressionData>("ChangedMapping")
+            .Step<MarkChildActivity>(step => step
+                .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Value))
+            .Build();
+        var fromLiteral = Workflow.Create<RegressionData>("ChangedMapping")
+            .Step<MarkChildActivity>(step => step
+                .Input(activity => activity.Value).From(ctx => "fixed"))
+            .Build();
+
+        Assert.NotEqual(new WorkflowScopeCatalog(fromData).Fingerprint,
+            new WorkflowScopeCatalog(fromLiteral).Fingerprint);
+    }
+
+    [Fact]
+    public void DefinitionFingerprintChangesWhenCapturedConditionValueChanges()
+    {
+        WorkflowDefinition Build(bool allow) => Workflow.Create<RegressionData>("CapturedCondition")
+            .Step<MarkChildActivity>()
+            .If(ctx => allow, then => then.Step<MarkChildActivity>(_ => { }))
+            .Build();
+
+        Assert.NotEqual(new WorkflowScopeCatalog(Build(true)).Fingerprint,
+            new WorkflowScopeCatalog(Build(false)).Fingerprint);
+    }
+
+    [Fact]
+    public void DefinitionFingerprintChangesWhenCapturedMappingValueChanges()
+    {
+        WorkflowDefinition Build(string value) => Workflow.Create<RegressionData>("CapturedMapping")
+            .Step<MarkChildActivity>(step => step
+                .Input(activity => activity.Value).From(ctx => value))
+            .Build();
+
+        Assert.NotEqual(new WorkflowScopeCatalog(Build("one")).Fingerprint,
+            new WorkflowScopeCatalog(Build("two")).Fingerprint);
+    }
+
+    [Fact]
+    public async Task EquivalentRebuiltWorkflowCanRunTwiceInOneHost()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.AddTransient<MarkChildActivity>();
+        using var provider = services.BuildServiceProvider();
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        WorkflowDefinition Build() => Workflow.Create<RegressionData>("RepeatedDefinition")
+            .Step<MarkChildActivity>(step => step
+                .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Value))
+            .Build();
+
+        var first = await engine.ExecuteWorkflowAsync(Build(), new RegressionData { Value = "one" });
+        var second = await engine.ExecuteWorkflowAsync(Build(), new RegressionData { Value = "two" });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, first.Status);
+        Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
+    }
+
+    [Fact]
+    public async Task ExecutionResultReturnsRecordedTraceEntries()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.AddTransient<MarkChildActivity>();
+        using var provider = services.BuildServiceProvider();
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(Workflow.Create<RegressionData>("TraceResult")
+                .Step<MarkChildActivity>(_ => { }).Build(), new RegressionData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Contains(result.TraceEntries, entry => entry.EntryType == TraceEntryType.ActivityStarted);
+        Assert.Contains(result.TraceEntries, entry => entry.EntryType == TraceEntryType.ActivityCompleted);
+    }
+
     [Fact]
     public async Task DisablingTracingKeepsHistoryEmptyAcrossWaitAndResume()
     {

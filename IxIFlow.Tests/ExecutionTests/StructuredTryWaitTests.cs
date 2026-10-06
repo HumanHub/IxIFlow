@@ -423,6 +423,39 @@ public class StructuredTryWaitTests
     }
 
     [Fact]
+    public async Task OpaqueExceptionSurvivesWaitInFinallyAndStillFaultsWorkflow()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var definition = Workflow.Create<TryData>("OpaqueFinallyWait")
+            .Step<StartActivity>()
+            .Try(body => body.Step<ThrowOpaqueActivity>(_ => { }))
+            .Finally(body => body.WaitFor<Approval>("cleanup")
+                .Step<CountActivity>(setup => setup
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
+            .Build();
+
+        string instanceId;
+        using (var firstProvider = CreateServices(repository))
+        {
+            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
+                .ExecuteWorkflowAsync(definition, new TryData());
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            instanceId = started.InstanceId;
+        }
+
+        using var secondProvider = CreateServices(repository);
+        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(definition);
+        var completed = await secondProvider.GetRequiredService<IWorkflowEngine>()
+            .ResumeWorkflowAsync(instanceId, "cleanup", new Approval());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, completed.Status);
+        Assert.Contains("opaque 17", completed.ErrorMessage);
+        Assert.Equal(1, Data(completed).Finally);
+    }
+
+    [Fact]
     public async Task OpaqueExceptionCanParkInsideCatchWhenNoPropertiesAreSelected()
     {
         using var services = CreateServices();
