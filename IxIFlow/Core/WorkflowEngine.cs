@@ -56,4 +56,17 @@ public sealed class WorkflowEngine : IWorkflowEngine
         string instanceId,
         CancellationToken cancellationToken = default) =>
         _runner.RecoverAsync(instanceId, cancellationToken);
+
+    public Task<WorkflowExecutionResult> CancelWorkflowAsync(
+        string instanceId, CancellationReason reason,
+        CancellationToken cancellationToken = default) =>
+        _runner.CancelAsync(instanceId, reason, cancellationToken);
+
+    public Task<WorkflowExecutionResult> ResolveActivityAsync(
+        string instanceId, string invocationId, ActivityResolution resolution,
+        CancellationToken cancellationToken = default) =>
+        _runner.ResolveAsync(instanceId, invocationId, resolution, cancellationToken);
+
+    public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
+        _runner.GetPendingActivitiesAsync(instanceId);
 }

@@ -9,7 +9,10 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly TaskCompletionSource<Exception> _loss =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<CancellationReason> _cancellation =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _renewal;
+    private readonly Task _cancellationWatch;
 
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
         string token, ExecutionLeaseSettings settings)
@@ -18,9 +21,12 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         _instanceId = instanceId;
         _token = token;
         _renewal = RenewUntilStoppedAsync(settings);
+        _cancellationWatch = WatchCancellationAsync(
+            TimeSpan.FromMilliseconds(Math.Min(settings.RenewalInterval.TotalMilliseconds, 250)));
     }
 
     public Task Loss => _loss.Task;
+    public Task<CancellationReason> Cancellation => _cancellation.Task;
 
     public static async Task<WorkflowExecutionLease?> TryAcquireAsync(
         IWorkflowStateRepository repository, WorkflowInstance instance,
@@ -70,10 +76,34 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         }
     }
 
+    private async Task WatchCancellationAsync(TimeSpan interval)
+    {
+        try
+        {
+            while (true)
+            {
+                var reason = await _repository.GetCancellationRequestAsync(_instanceId);
+                if (reason != null)
+                {
+                    _cancellation.TrySetResult(reason);
+                    return;
+                }
+                await Task.Delay(interval, _stop.Token);
+            }
+        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+        {
+        }
+        catch (Exception error)
+        {
+            _loss.TrySetResult(error);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         _stop.Cancel();
-        await _renewal;
+        await Task.WhenAll(_renewal, _cancellationWatch);
         _stop.Dispose();
         try
         {

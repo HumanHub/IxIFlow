@@ -22,6 +22,48 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             : connectionString;
     }
 
+    public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentNullException.ThrowIfNull(reason);
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var changed = await connection.ExecuteAsync("""
+            UPDATE dbo.IxIFlowWorkflowInstances
+            SET CancellationJson = COALESCE(CancellationJson, @ReasonJson)
+            WHERE InstanceId = @InstanceId AND Status IN ('Running', 'Suspended', 'NeedsResolution')
+            """, new { InstanceId = instanceId, ReasonJson = JsonSerializer.Serialize(reason) });
+        return changed == 1;
+    }
+
+    public async Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var json = await connection.QuerySingleOrDefaultAsync<string>("""
+            SELECT CancellationJson FROM dbo.IxIFlowWorkflowInstances
+            WHERE InstanceId = @InstanceId
+            """, new { InstanceId = instanceId });
+        return json == null ? null : JsonSerializer.Deserialize<CancellationReason>(json);
+    }
+
+    public async Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync()
+    {
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var rows = await connection.QueryAsync<string>("""
+            SELECT instance.StateJson FROM dbo.IxIFlowWorkflowInstances AS instance
+            LEFT JOIN dbo.IxIFlowWorkflowLeases AS lease
+                ON lease.InstanceId = instance.InstanceId
+            WHERE (instance.Status = 'Running' AND
+                   (lease.InstanceId IS NULL OR lease.ExpiresAtUtc <= SYSUTCDATETIME()))
+               OR (instance.Status = 'Suspended' AND
+                   instance.CancellationJson IS NOT NULL)
+            """);
+        return rows.Select(Deserialize).ToArray();
+    }
+
     public async Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration)
     {
@@ -330,6 +372,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                         SuspensionExpiresAt DATETIME2 NULL,
                         SuspensionId NVARCHAR(100) NULL,
                         StateJson NVARCHAR(MAX) NOT NULL,
+                        CancellationJson NVARCHAR(MAX) NULL,
                         Revision BIGINT NOT NULL DEFAULT 0
                     );
                     CREATE INDEX IX_IxIFlowWorkflowInstances_Status
@@ -343,6 +386,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD SuspensionId NVARCHAR(100) NULL;
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'Revision') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD Revision BIGINT NOT NULL DEFAULT 0;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CancellationJson') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD CancellationJson NVARCHAR(MAX) NULL;
                 IF OBJECT_ID(N'dbo.IxIFlowWorkflowCommits', N'U') IS NULL
                     CREATE TABLE dbo.IxIFlowWorkflowCommits (
                         InstanceId NVARCHAR(100) NOT NULL,

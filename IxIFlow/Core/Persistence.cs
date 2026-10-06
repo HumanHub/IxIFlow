@@ -13,6 +13,22 @@ namespace IxIFlow.Core;
 public interface IWorkflowStateRepository
 {
     /// <summary>
+    /// Records a cancellation request outside the revisioned checkpoint so a remote
+    /// caller never overwrites the running owner's state. The first request wins.
+    /// Returns false when the instance is absent or terminal.
+    /// </summary>
+    Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason);
+
+    /// <summary>Reads a durable cancellation request for an instance.</summary>
+    Task<CancellationReason?> GetCancellationRequestAsync(string instanceId);
+
+    /// <summary>
+    /// Lists running instances without a live owner and suspended instances whose
+    /// durable cancellation request still needs to be unwound.
+    /// </summary>
+    Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync();
+
+    /// <summary>
     /// Atomically saves a snapshot at expectedRevision + 1. Revision zero also represents
     /// an absent instance. Repeating a commit ID with the same payload returns its original
     /// receipt, even after subsequent commits. Does not mutate the supplied instance.
@@ -330,6 +346,51 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly object _claimLock = new();
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] PayloadHash, long Revision)> _commits = new();
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _leases = new();
+    private readonly Dictionary<string, CancellationReason> _cancellations = new();
+
+    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentNullException.ThrowIfNull(reason);
+        lock (_claimLock)
+        {
+            if (!_instances.TryGetValue(instanceId, out var instance) ||
+                instance.Status is not (WorkflowStatus.Running or WorkflowStatus.Suspended or
+                    WorkflowStatus.NeedsResolution))
+                return Task.FromResult(false);
+            _cancellations.TryAdd(instanceId,
+                JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!);
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        lock (_claimLock)
+        {
+            return Task.FromResult(_cancellations.TryGetValue(instanceId, out var reason)
+                ? JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))
+                : null);
+        }
+    }
+
+    public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync()
+    {
+        lock (_claimLock)
+        {
+            var now = DateTime.UtcNow;
+            var instances = _instances.Values
+                .Where(instance =>
+                    (instance.Status == WorkflowStatus.Running &&
+                     (!_leases.TryGetValue(instance.InstanceId, out var lease) || lease.ExpiresAtUtc <= now)) ||
+                    (instance.Status == WorkflowStatus.Suspended &&
+                     _cancellations.ContainsKey(instance.InstanceId)))
+                .Select(SnapshotStructured)
+                .ToArray();
+            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
+        }
+    }
 
     public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration)
@@ -480,6 +541,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         {
             _instances.TryRemove(instanceId, out _);
             _leases.Remove(instanceId);
+            _cancellations.Remove(instanceId);
             foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
                 _commits.Remove(key);
         }

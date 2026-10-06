@@ -12,7 +12,7 @@ public sealed class WorkflowRecoveryService(
 {
     internal async Task RecoverOnceAsync(CancellationToken cancellationToken)
     {
-        var instances = await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running);
+        var instances = await repository.GetWorkflowsRequiringRecoveryAsync();
         foreach (var instance in instances)
         {
             cancellationToken.ThrowIfCancellationRequested();
