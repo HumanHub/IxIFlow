@@ -22,7 +22,8 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         _token = token;
         _renewal = RenewUntilStoppedAsync(settings);
         _cancellationWatch = WatchCancellationAsync(
-            TimeSpan.FromMilliseconds(Math.Min(settings.RenewalInterval.TotalMilliseconds, 250)));
+            TimeSpan.FromMilliseconds(Math.Min(settings.RenewalInterval.TotalMilliseconds, 250)),
+            settings.Duration);
     }
 
     public Task Loss => _loss.Task;
@@ -53,16 +54,28 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
     private async Task RenewUntilStoppedAsync(ExecutionLeaseSettings settings)
     {
+        var expiresAtUtc = DateTime.UtcNow.Add(settings.Duration);
         try
         {
             while (true)
             {
                 await Task.Delay(settings.RenewalInterval, _stop.Token);
-                if (!await _repository.RenewExecutionLeaseAsync(_instanceId, _token,
-                        settings.Duration))
+                try
                 {
-                    _loss.TrySetResult(new InvalidOperationException(
-                        $"Execution lease for workflow instance '{_instanceId}' was lost"));
+                    if (!await _repository.RenewExecutionLeaseAsync(_instanceId, _token,
+                            settings.Duration))
+                    {
+                        _loss.TrySetResult(new InvalidOperationException(
+                            $"Execution lease for workflow instance '{_instanceId}' was lost"));
+                        return;
+                    }
+                    expiresAtUtc = DateTime.UtcNow.Add(settings.Duration);
+                }
+                catch (Exception error)
+                {
+                    if (DateTime.UtcNow < expiresAtUtc)
+                        continue;
+                    _loss.TrySetResult(error);
                     return;
                 }
             }
@@ -76,17 +89,30 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         }
     }
 
-    private async Task WatchCancellationAsync(TimeSpan interval)
+    private async Task WatchCancellationAsync(TimeSpan interval, TimeSpan leaseDuration)
     {
+        var lastSuccessfulReadUtc = DateTime.UtcNow;
         try
         {
             while (true)
             {
-                var reason = await _repository.GetCancellationRequestAsync(_instanceId);
-                if (reason != null)
+                try
                 {
-                    _cancellation.TrySetResult(reason);
-                    return;
+                    var reason = await _repository.GetCancellationRequestAsync(_instanceId);
+                    lastSuccessfulReadUtc = DateTime.UtcNow;
+                    if (reason != null)
+                    {
+                        _cancellation.TrySetResult(reason);
+                        return;
+                    }
+                }
+                catch (Exception error)
+                {
+                    if (DateTime.UtcNow - lastSuccessfulReadUtc >= leaseDuration)
+                    {
+                        _loss.TrySetResult(error);
+                        return;
+                    }
                 }
                 await Task.Delay(interval, _stop.Token);
             }

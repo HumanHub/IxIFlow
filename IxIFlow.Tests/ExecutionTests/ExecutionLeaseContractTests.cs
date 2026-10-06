@@ -342,6 +342,39 @@ public sealed class ExecutionLeaseContractTests
         }
     }
 
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task SqlScannerDoesNotRepeatCancellationWhileFinallyWaits()
+    {
+        var repository = SqlRepository();
+        var probe = new ActivityProbe();
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
+        var definition = Workflow.Create<LeaseData>("SqlCancelFinallyWait")
+            .Step<RecordActivity>(_ => { })
+            .Try(body => body.WaitFor<LeaseEvent>("approval"))
+            .Finally(body => body.WaitFor<LeaseEvent>("cleanup"))
+            .Build();
+        var started = await host.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData());
+        try
+        {
+            Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
+                new CancellationReason { ReasonCode = "withdrawn" }));
+            using var scanner = new WorkflowRecoveryService(
+                host.GetRequiredService<IServiceScopeFactory>(), repository,
+                NullLogger<WorkflowRecoveryService>.Instance);
+            await scanner.RecoverOnceAsync(CancellationToken.None);
+            var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
+            Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
+            Assert.DoesNotContain(await repository.GetWorkflowsRequiringRecoveryAsync(),
+                item => item.InstanceId == started.InstanceId);
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(started.InstanceId);
+        }
+    }
+
     [Fact]
     public async Task LiveOwnerCannotBeRecoveredByAnotherHost()
     {
@@ -412,6 +445,52 @@ public sealed class ExecutionLeaseContractTests
     }
 
     [Fact]
+    public async Task OneCancellationReadErrorDoesNotForfeitAnActiveLease()
+    {
+        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository())
+        {
+            PauseFirstRead = false
+        };
+        var probe = new ActivityProbe();
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true);
+        var definition = Workflow.Create<LeaseData>("TransientCancellationRead")
+            .Step<BlockingActivity>(_ => { })
+            .Build();
+        var executing = host.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData());
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        repository.FailNextCancellationReads = 1;
+        await Task.Delay(150);
+        probe.Release.TrySetResult();
+
+        Assert.Equal(WorkflowExecutionStatus.Success,
+            (await executing.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+    }
+
+    [Fact]
+    public async Task OneRenewalErrorDoesNotForfeitAnActiveLease()
+    {
+        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository())
+        {
+            PauseFirstRead = false
+        };
+        var probe = new ActivityProbe();
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true);
+        var definition = Workflow.Create<LeaseData>("TransientRenewal")
+            .Step<BlockingActivity>(_ => { })
+            .Build();
+        var executing = host.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData());
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        repository.FailNextRenewals = 1;
+        await Task.Delay(150);
+        probe.Release.TrySetResult();
+
+        Assert.Equal(WorkflowExecutionStatus.Success,
+            (await executing.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+    }
+
+    [Fact]
     public async Task StaleResumeCannotApplyAnEventAfterAnotherHostFinishes()
     {
         var repository = new InMemoryWorkflowStateRepository();
@@ -442,6 +521,38 @@ public sealed class ExecutionLeaseContractTests
         Assert.Equal(WorkflowStatus.Completed,
             (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
         Assert.Equal(2, probe.Recorded);
+    }
+
+    [Fact]
+    public async Task ConcurrentResumesOfDifferentWaitsBothApply()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var staleReader = new PausedReadRepository(repository);
+        var registry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(repository, registry, probe);
+        using var secondHost = CreateHost(staleReader, registry, probe);
+        var definition = Workflow.Create<LeaseData>("ConcurrentWaits")
+            .Step<RecordActivity>(_ => { })
+            .Parallel(parallel => parallel
+                .Do(branch => branch.WaitFor<LeaseEvent>("first"))
+                .Do(branch => branch.WaitFor<LeaseEvent>("second")))
+            .Build();
+        var started = await firstHost.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
+        var secondResume = secondHost.GetRequiredService<IWorkflowEngine>()
+            .ResumeWorkflowAsync(started.InstanceId, "second", new LeaseEvent());
+        await staleReader.ReadCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var first = await firstHost.GetRequiredService<IWorkflowEngine>()
+            .ResumeWorkflowAsync(started.InstanceId, "first", new LeaseEvent());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
+        staleReader.Continue.TrySetResult();
+
+        var second = await secondResume.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(second.EventAccepted, second.ErrorMessage);
+        Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
     }
 
     [Fact]
@@ -902,6 +1013,8 @@ public sealed class ExecutionLeaseContractTests
 
     private sealed class PausedReadRepository(InMemoryWorkflowStateRepository inner) : IWorkflowStateRepository
     {
+        public int FailNextCancellationReads;
+        public int FailNextRenewals;
         public bool CompleteOnCancellationRequest { get; set; }
         public bool PauseFirstRead { get; set; } = true;
         public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
@@ -915,8 +1028,12 @@ public sealed class ExecutionLeaseContractTests
             }
             return accepted;
         }
-        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
-            inner.GetCancellationRequestAsync(instanceId);
+        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
+        {
+            if (Interlocked.Exchange(ref FailNextCancellationReads, 0) > 0)
+                throw new IOException("Cancellation read unavailable");
+            return inner.GetCancellationRequestAsync(instanceId);
+        }
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
             inner.GetWorkflowsRequiringRecoveryAsync();
         private int _reads;
@@ -939,8 +1056,12 @@ public sealed class ExecutionLeaseContractTests
 
         public Task<bool> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration) =>
             inner.TryAcquireExecutionLeaseAsync(id, token, duration);
-        public Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration) =>
-            inner.RenewExecutionLeaseAsync(id, token, duration);
+        public Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
+        {
+            if (Interlocked.Exchange(ref FailNextRenewals, 0) > 0)
+                throw new IOException("Lease renewal unavailable");
+            return inner.RenewExecutionLeaseAsync(id, token, duration);
+        }
         public Task<bool> ReleaseExecutionLeaseAsync(string id, string token) =>
             FailRelease ? throw new IOException("Release acknowledgment unavailable") :
                 inner.ReleaseExecutionLeaseAsync(id, token);

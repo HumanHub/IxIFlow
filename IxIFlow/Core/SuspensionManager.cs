@@ -75,8 +75,9 @@ public class SuspensionManager : ISuspensionManager
         CancellationToken cancellationToken = default) where TEventData : class
     {
         var result = await _workflowEngine.ResumeWorkflowAsync(instanceId, @event, cancellationToken);
-        if (result.Status == WorkflowExecutionStatus.Faulted)
-            throw new InvalidOperationException(result.ErrorMessage ?? $"Failed to resume workflow {instanceId}");
+        if (!result.EventAccepted)
+            throw new InvalidOperationException(result.ErrorMessage ??
+                $"Workflow {instanceId} did not accept the event; retry after it becomes idle");
     }
 
     /// <inheritdoc />
@@ -92,6 +93,7 @@ public class SuspensionManager : ISuspensionManager
 
         // Resume each matching workflow
         var resumedWorkflowIds = new List<string>();
+        var pendingWorkflowIds = new List<string>();
         foreach (var workflow in matchingWorkflows)
             try
             {
@@ -101,18 +103,29 @@ public class SuspensionManager : ISuspensionManager
                 // Resume the workflow with the event
                 var result = await _workflowEngine.ResumeWorkflowAsync(workflow.InstanceId, @event, cancellationToken);
                 if (!result.EventAccepted)
+                {
+                    pendingWorkflowIds.Add(workflow.InstanceId);
                     continue;
+                }
 
                 resumedWorkflowIds.Add(workflow.InstanceId);
 
                 _logger.LogInformation("Successfully resumed workflow {InstanceId} with event of type {EventType}",
                     workflow.InstanceId, typeof(TEventData).Name);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to resume workflow {InstanceId} with event of type {EventType}",
                     workflow.InstanceId, typeof(TEventData).Name);
+                pendingWorkflowIds.Add(workflow.InstanceId);
             }
+
+        if (pendingWorkflowIds.Count > 0)
+            throw new WorkflowEventDeliveryException(resumedWorkflowIds, pendingWorkflowIds);
 
         _logger.LogDebug("Resumed {Count} workflows with event of type {EventType}",
             resumedWorkflowIds.Count, typeof(TEventData).Name);
@@ -289,6 +302,15 @@ public interface IWorkflowEngine
         string instanceId,
         string key,
         TEventData @event,
+        CancellationToken cancellationToken = default)
+        where TEventData : class;
+
+    /// <summary>Resumes a wait once for a durable message delivery ID.</summary>
+    Task<WorkflowExecutionResult> ResumeWorkflowDeliveryAsync<TEventData>(
+        string instanceId,
+        string? key,
+        TEventData @event,
+        string deliveryId,
         CancellationToken cancellationToken = default)
         where TEventData : class;
 

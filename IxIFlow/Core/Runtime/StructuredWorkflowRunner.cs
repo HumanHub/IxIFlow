@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using System.Runtime.ExceptionServices;
 using IxIFlow.Builders.Interfaces;
 
@@ -292,81 +294,113 @@ internal sealed class StructuredWorkflowRunner(
         string instanceId,
         string? key,
         TEvent @event,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? deliveryId = null)
         where TEvent : class
     {
         using var lease = await gate.EnterAsync(instanceId, cancellationToken);
-        var instance = await repository.GetWorkflowInstanceAsync(instanceId);
-        if (instance?.Status == WorkflowStatus.Running && HasStructuredCheckpoint(instance))
-            return new WorkflowExecutionResult
-            {
-                InstanceId = instanceId,
-                Status = WorkflowExecutionStatus.Running,
-                ErrorMessage = "The workflow instance is executing; retry the event after it becomes idle"
-            };
-        if (instance?.Status is not (WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) ||
-            !HasStructuredCheckpoint(instance))
-            return Rejected(instanceId, "The workflow instance is not waiting");
-
-        var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
-        var candidates = checkpoint.Waits.Where(wait =>
-            (key == null || wait.Key == key) &&
-            WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(@event.GetType()) == true).ToList();
-        if (candidates.Count == 0)
-            return Rejected(instanceId, "No active wait matches this event and key");
-
-        var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
-        if (definition == null)
-            return Rejected(instanceId, "The registered workflow definition is unavailable");
-
-        var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
-            ?? throw new InvalidOperationException($"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-        var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
-            ?? throw new InvalidOperationException("Saved workflow data cannot be read");
-        var scopes = new WorkflowScopeCatalog(definition);
-        if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
-            return Rejected(instanceId, "The registered workflow definition differs from the saved version");
-        var matching = StructuredWaitMatcher.FindMatches(checkpoint, scopes, workflowData,
-            @event, services, key);
-        if (matching.Count == 0)
-            return new WorkflowExecutionResult
-            {
-                InstanceId = instanceId,
-                Status = WorkflowExecutionStatus.Suspended,
-                WorkflowData = workflowData,
-                ErrorMessage = "The event did not satisfy any active wait"
-            };
-        if (matching.Count > 1)
-            return Rejected(instanceId, "The event satisfies more than one wait; provide a unique key");
-
-        await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-            repository, instance, _leaseSettings);
-        if (owner == null)
-            return Busy(instanceId);
-        var current = await repository.GetWorkflowInstanceAsync(instanceId);
-        if (current?.Revision != instance.Revision || current.Status != instance.Status)
-            return current?.Status == WorkflowStatus.Running
-                ? Busy(instanceId)
-                : Rejected(instanceId, "The wait changed before this event could be accepted");
-
-        var wait = matching[0];
-        var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
-
-        continuation.AcceptedWait = new AcceptedWaitState
+        var deliveryHash = deliveryId == null ? null : ComputeDeliveryHash(key, @event);
+        for (var attempt = 0; attempt < 5; attempt++)
         {
-            StepId = wait.StepId,
-            Event = SerializedValue.From(@event)!
-        };
-        checkpoint.Waits.Remove(wait);
-        continuation.Status = ContinuationStatus.Active;
+            var instance = await repository.GetWorkflowInstanceAsync(instanceId);
+            if (deliveryId != null && HasStructuredCheckpoint(instance) &&
+                ExecutionCheckpoint.Read(instance!.ExecutionStateJson).AcceptedDeliveries
+                    .TryGetValue(deliveryId, out var acceptedHash))
+            {
+                if (acceptedHash != deliveryHash)
+                    throw new InvalidOperationException(
+                        $"Delivery ID '{deliveryId}' was already used with a different event");
+                var accepted = ExistingResult(instance);
+                accepted.EventAccepted = true;
+                return accepted;
+            }
+            if (instance?.Status == WorkflowStatus.Running && HasStructuredCheckpoint(instance))
+                return new WorkflowExecutionResult
+                {
+                    InstanceId = instanceId,
+                    Status = WorkflowExecutionStatus.Running,
+                    ErrorMessage = "The workflow instance is executing; retry the event after it becomes idle"
+                };
+            if (instance?.Status is not (WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) ||
+                !HasStructuredCheckpoint(instance))
+                return Rejected(instanceId, "The workflow instance is not waiting");
 
-        instance.Status = WorkflowStatus.Running;
-        await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+            var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+            var candidates = checkpoint.Waits.Where(wait =>
+                (key == null || wait.Key == key) &&
+                WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(@event.GetType()) == true).ToList();
+            if (candidates.Count == 0)
+                return Rejected(instanceId, "No active wait matches this event and key");
 
-        var resumed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-            true, owner, cancellationToken);
-        resumed.EventAccepted = true;
-        return resumed;
+            var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
+            if (definition == null)
+                return Rejected(instanceId, "The registered workflow definition is unavailable");
+
+            var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
+                ?? throw new InvalidOperationException($"Workflow data type '{instance.WorkflowDataType}' is unavailable");
+            var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
+                ?? throw new InvalidOperationException("Saved workflow data cannot be read");
+            var scopes = new WorkflowScopeCatalog(definition);
+            if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
+                return Rejected(instanceId, "The registered workflow definition differs from the saved version");
+            var matching = StructuredWaitMatcher.FindMatches(checkpoint, scopes, workflowData,
+                @event, services, key);
+            if (matching.Count == 0)
+                return new WorkflowExecutionResult
+                {
+                    InstanceId = instanceId,
+                    Status = WorkflowExecutionStatus.Suspended,
+                    WorkflowData = workflowData,
+                    ErrorMessage = "The event did not satisfy any active wait"
+                };
+            if (matching.Count > 1)
+                return Rejected(instanceId, "The event satisfies more than one wait; provide a unique key");
+
+            await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
+                repository, instance, _leaseSettings);
+            if (owner == null)
+                return Busy(instanceId);
+            var current = await repository.GetWorkflowInstanceAsync(instanceId);
+            if (current?.Revision != instance.Revision || current.Status != instance.Status)
+            {
+                if (current?.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution)
+                    continue;
+                return current?.Status == WorkflowStatus.Running
+                    ? Busy(instanceId)
+                    : Rejected(instanceId, "The wait changed before this event could be accepted");
+            }
+
+            var wait = matching[0];
+            var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
+
+            continuation.AcceptedWait = new AcceptedWaitState
+            {
+                StepId = wait.StepId,
+                Event = SerializedValue.From(@event)!
+            };
+            checkpoint.Waits.Remove(wait);
+            if (deliveryId != null)
+                checkpoint.AcceptedDeliveries.Add(deliveryId, deliveryHash!);
+            continuation.Status = ContinuationStatus.Active;
+
+            instance.Status = WorkflowStatus.Running;
+            await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+
+            var resumed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
+                true, owner, cancellationToken);
+            resumed.EventAccepted = true;
+            return resumed;
+        }
+        return Busy(instanceId);
+    }
+
+    private static string ComputeDeliveryHash<TEvent>(string? key, TEvent @event)
+        where TEvent : class
+    {
+        var type = @event.GetType();
+        var payload = $"{WorkflowTypeIdentity.StableName(type)}\n{key}\n" +
+            JsonSerializer.Serialize(@event, type);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
     }
 
     public async Task<WorkflowExecutionResult> RecoverAsync(string instanceId, CancellationToken cancellationToken)
@@ -411,7 +445,7 @@ internal sealed class StructuredWorkflowRunner(
             CancelTree(checkpoint, checkpoint.Continuations[0]);
         }
         return await RunAndSaveAsync(definition, instance, checkpoint,
-            workflowData, true, owner, cancellationToken);
+            workflowData, true, owner, cancellationToken, stopOnCancellation: true);
     }
 
     private async Task<WorkflowExecutionResult> RunAndSaveAsync(
@@ -421,7 +455,8 @@ internal sealed class StructuredWorkflowRunner(
         object workflowData,
         bool persistState,
         WorkflowExecutionLease? owner,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool stopOnCancellation = false)
     {
         var inFlight = new Dictionary<string, RunningActivity>();
         var cancellationWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -437,8 +472,11 @@ internal sealed class StructuredWorkflowRunner(
                 throw new InvalidOperationException("The registered workflow definition differs from the saved version");
             while (true)
             {
+                if (stopOnCancellation)
+                    cancellationToken.ThrowIfCancellationRequested();
                 owner?.ThrowIfLost();
-                if ((cancellationToken.IsCancellationRequested || owner?.Cancellation.IsCompleted == true) &&
+                if (((!stopOnCancellation && cancellationToken.IsCancellationRequested) ||
+                     owner?.Cancellation.IsCompleted == true) &&
                     !checkpoint.CancellationRequested)
                 {
                     if (owner?.Cancellation.IsCompletedSuccessfully == true)
@@ -474,9 +512,12 @@ internal sealed class StructuredWorkflowRunner(
                 // This lets a sibling start even when another activity is awaiting it.
                 while (true)
                 {
+                    if (stopOnCancellation)
+                        cancellationToken.ThrowIfCancellationRequested();
                     owner?.ThrowIfLost();
                     if (!checkpoint.CancellationRequested &&
-                        (cancellationToken.IsCancellationRequested || owner?.Cancellation.IsCompleted == true))
+                        ((!stopOnCancellation && cancellationToken.IsCancellationRequested) ||
+                         owner?.Cancellation.IsCompleted == true))
                         break;
                     var runnable = checkpoint.Continuations.FirstOrDefault(item =>
                         item.Status == ContinuationStatus.Active && !inFlight.ContainsKey(item.Id));
@@ -534,7 +575,8 @@ internal sealed class StructuredWorkflowRunner(
                 }
 
                 if (!checkpoint.CancellationRequested &&
-                    (cancellationToken.IsCancellationRequested || owner?.Cancellation.IsCompleted == true))
+                    ((!stopOnCancellation && cancellationToken.IsCancellationRequested) ||
+                     owner?.Cancellation.IsCompleted == true))
                     continue;
                 if (checkpoint.Continuations.Any(item =>
                         item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id)) ||
@@ -559,6 +601,8 @@ internal sealed class StructuredWorkflowRunner(
                         runningTasks.Add(owner.Cancellation);
                 }
                 var finished = await Task.WhenAny(runningTasks);
+                if (stopOnCancellation)
+                    cancellationToken.ThrowIfCancellationRequested();
                 if (finished == callerCancellation || finished == owner?.Cancellation)
                     continue;
                 owner?.ThrowIfLost();
@@ -580,6 +624,8 @@ internal sealed class StructuredWorkflowRunner(
                 await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
             }
 
+            if (stopOnCancellation)
+                cancellationToken.ThrowIfCancellationRequested();
             if (checkpoint.UnhandledError != null && checkpoint.Waits.Count == 0 && checkpoint.Joins.Count == 0)
                 throw checkpoint.RuntimeUnhandledError
                       ?? (checkpoint.UnhandledError.IsRestorable
@@ -653,6 +699,25 @@ internal sealed class StructuredWorkflowRunner(
             foreach (var activity in inFlight.Values)
                 activity.Cancellation.Dispose();
             return Busy(instance.InstanceId);
+        }
+        catch (OperationCanceledException) when (stopOnCancellation && cancellationToken.IsCancellationRequested)
+        {
+            foreach (var activity in inFlight.Values)
+                activity.Cancellation.Cancel();
+            try
+            {
+                await Task.WhenAll(inFlight.Values.Select(item => item.Task));
+            }
+            catch (OperationCanceledException)
+            {
+                // The host stopped before these attempt results could be committed.
+            }
+            finally
+            {
+                foreach (var activity in inFlight.Values)
+                    activity.Cancellation.Dispose();
+            }
+            throw;
         }
         catch (CheckpointPersistenceException ex)
         {

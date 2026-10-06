@@ -84,6 +84,7 @@ public class WorkflowQueueService : BackgroundService
             {
                 _logger.LogError(ex, "Error processing execute command {InstanceId} for host {HostId}", 
                     command.InstanceId, _hostId);
+                await delivery.RejectAsync(ex);
             }
         }
     }
@@ -111,6 +112,7 @@ public class WorkflowQueueService : BackgroundService
             {
                 _logger.LogError(ex, "Error processing resume command {InstanceId} for host {HostId}", 
                     command.InstanceId, _hostId);
+                await delivery.RejectAsync(ex);
             }
         }
     }
@@ -138,6 +140,7 @@ public class WorkflowQueueService : BackgroundService
             {
                 _logger.LogError(ex, "Error processing cancel command {InstanceId} for host {HostId}", 
                     command.InstanceId, _hostId);
+                await delivery.RejectAsync(ex);
             }
         }
     }
@@ -174,6 +177,7 @@ public class WorkflowQueueService : BackgroundService
         using var scope = _serviceProvider.CreateScope();
         var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
         var versionRegistry = scope.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>();
+        var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
 
         try
         {
@@ -213,7 +217,9 @@ public class WorkflowQueueService : BackgroundService
             var result = await workflowEngine.ExecuteWorkflowAsync(definition, workflowData, options);
             if (result.Status == WorkflowExecutionStatus.Running)
             {
-                result = await workflowEngine.RecoverWorkflowAsync(command.InstanceId);
+                var saved = await repository.GetWorkflowInstanceAsync(command.InstanceId);
+                if (saved?.Status != WorkflowStatus.Running)
+                    result = await workflowEngine.ExecuteWorkflowAsync(definition, workflowData, options);
                 if (result.Status == WorkflowExecutionStatus.Running)
                     throw new InvalidOperationException(
                         $"Workflow instance '{command.InstanceId}' is executing; keep the command for redelivery");
@@ -249,9 +255,8 @@ public class WorkflowQueueService : BackgroundService
             var eventData = System.Text.Json.JsonSerializer.Deserialize(command.EventDataJson, eventDataType);
 
             // Resume workflow
-            var result = command.Key == null
-                ? await workflowEngine.ResumeWorkflowAsync(command.InstanceId, eventData)
-                : await workflowEngine.ResumeWorkflowAsync(command.InstanceId, command.Key, eventData);
+            var result = await workflowEngine.ResumeWorkflowDeliveryAsync(
+                command.InstanceId, command.Key, eventData, command.CommandId);
             if (result.Status == WorkflowExecutionStatus.Running && !result.EventAccepted)
                 throw new InvalidOperationException(
                     $"Workflow instance '{command.InstanceId}' is executing; keep the resume command for redelivery");
