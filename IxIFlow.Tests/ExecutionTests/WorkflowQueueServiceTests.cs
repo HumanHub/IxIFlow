@@ -3,6 +3,7 @@ using IxIFlow.Builders;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -75,6 +76,140 @@ public sealed class WorkflowQueueServiceTests
         });
 
         Assert.Equal(WorkflowExecutionStatus.Success, Assert.Single(bus.Completions).Status);
+    }
+
+    [Fact]
+    public async Task RedeliveredResumeCommandDoesNotSatisfyTheNextWait()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.AddTransient<NoopActivity>();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<QueueData>("RepeatedApprovalWait")
+            .Step<NoopActivity>()
+            .WaitFor<QueueEvent>("approval")
+            .WaitFor<QueueEvent>("approval")
+            .Build();
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(definition, new QueueData());
+        var bus = new RecordingBus();
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, bus, coordinator);
+        var first = new ResumeWorkflowCommand
+        {
+            InstanceId = started.InstanceId,
+            TargetHostId = "test-host",
+            Key = "approval",
+            EventDataType = typeof(QueueEvent).AssemblyQualifiedName!,
+            EventDataJson = "{}"
+        };
+        await service.ProcessResumeCommandAsync(first);
+        var repository = provider.GetRequiredService<IWorkflowStateRepository>();
+        var afterFirst = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
+        Assert.Equal(WorkflowStatus.Suspended, afterFirst.Status);
+
+        await service.ProcessResumeCommandAsync(first);
+
+        var afterRedelivery = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
+        Assert.Equal(WorkflowStatus.Suspended, afterRedelivery.Status);
+        Assert.Equal(afterFirst.Revision, afterRedelivery.Revision);
+
+        await service.ProcessResumeCommandAsync(new ResumeWorkflowCommand
+        {
+            InstanceId = started.InstanceId,
+            TargetHostId = "test-host",
+            Key = "approval",
+            EventDataType = typeof(QueueEvent).AssemblyQualifiedName!,
+            EventDataJson = "{}"
+        });
+        Assert.Equal(WorkflowStatus.Completed,
+            (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+    }
+
+    [Fact]
+    public async Task DeliveryIdCannotBeReusedForDifferentEventData()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.AddTransient<NoopActivity>();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<QueueData>("ConflictingDelivery")
+            .Step<NoopActivity>()
+            .WaitFor<QueueEvent>("approval")
+            .WaitFor<QueueEvent>("approval")
+            .Build();
+        var started = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new QueueData());
+        var bus = new RecordingBus();
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, bus, coordinator);
+        var first = new ResumeWorkflowCommand
+        {
+            InstanceId = started.InstanceId,
+            TargetHostId = "test-host",
+            Key = "approval",
+            EventDataType = typeof(QueueEvent).AssemblyQualifiedName!,
+            EventDataJson = "{\"Value\":1}"
+        };
+        await service.ProcessResumeCommandAsync(first);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ProcessResumeCommandAsync(new ResumeWorkflowCommand
+            {
+                CommandId = first.CommandId,
+                InstanceId = first.InstanceId,
+                TargetHostId = first.TargetHostId,
+                Key = first.Key,
+                EventDataType = first.EventDataType,
+                EventDataJson = "{\"Value\":2}"
+            }));
+    }
+
+    [Fact]
+    public async Task DuplicateExecuteCommandDoesNotReportRecoveryRejectionAsCompletion()
+    {
+        var engine = new TransitionEngine();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowEngine>(engine));
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<QueueData>("DuplicateExecute")
+            .Step<NoopActivity>()
+            .WaitFor<QueueEvent>("approval")
+            .Build();
+        await provider.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(definition);
+        var instanceId = Guid.NewGuid().ToString("N");
+        await provider.GetRequiredService<IWorkflowStateRepository>()
+            .SaveWorkflowInstanceAsync(new WorkflowInstance
+            {
+                InstanceId = instanceId,
+                WorkflowName = definition.Name,
+                Status = WorkflowStatus.Suspended
+            });
+        var bus = new RecordingBus();
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, bus, coordinator);
+
+        await service.ProcessExecuteCommandAsync(new ExecuteWorkflowCommand
+        {
+            InstanceId = instanceId,
+            TargetHostId = "test-host",
+            WorkflowName = definition.Name,
+            WorkflowVersion = definition.Version,
+            WorkflowDataType = typeof(QueueData).AssemblyQualifiedName!,
+            WorkflowDataJson = "{}"
+        });
+
+        Assert.Equal(2, engine.ExecuteCalls);
+        Assert.Equal(0, engine.RecoverCalls);
+        Assert.Empty(bus.Completions);
     }
 
     [Fact]
@@ -224,6 +359,53 @@ public sealed class WorkflowQueueServiceTests
         public Task RunAsync(CancellationToken token) => ExecuteAsync(token);
     }
 
+    private sealed class TransitionEngine : IWorkflowEngine
+    {
+        public int ExecuteCalls { get; private set; }
+        public int RecoverCalls { get; private set; }
+
+        public Task<WorkflowExecutionResult> ExecuteWorkflowAsync<TWorkflowData>(
+            WorkflowDefinition definition, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => Task.FromResult(new WorkflowExecutionResult
+            {
+                InstanceId = options?.InstanceId ?? "",
+                Status = ++ExecuteCalls == 1
+                    ? WorkflowExecutionStatus.Running : WorkflowExecutionStatus.Suspended
+            });
+
+        public Task<WorkflowExecutionResult> RecoverWorkflowAsync(string instanceId,
+            CancellationToken cancellationToken = default)
+        {
+            RecoverCalls++;
+            return Task.FromResult(new WorkflowExecutionResult
+            {
+                InstanceId = instanceId,
+                Status = WorkflowExecutionStatus.Faulted,
+                ErrorMessage = "The instance is no longer running"
+            });
+        }
+
+        public Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(string instanceId,
+            TEventData @event, CancellationToken cancellationToken = default)
+            where TEventData : class => throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(string instanceId,
+            string key, TEventData @event, CancellationToken cancellationToken = default)
+            where TEventData : class => throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ResumeWorkflowDeliveryAsync<TEventData>(string instanceId,
+            string? key, TEventData @event, string deliveryId,
+            CancellationToken cancellationToken = default)
+            where TEventData : class => throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> CancelWorkflowAsync(string instanceId,
+            CancellationReason reason, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ResolveActivityAsync(string instanceId,
+            string invocationId, ActivityResolution resolution,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
+            throw new NotSupportedException();
+    }
+
     private sealed class FailingBus : IMessageBus
     {
         private readonly CancellationTokenSource _stop = new();
@@ -252,7 +434,10 @@ public sealed class WorkflowQueueServiceTests
     }
 
     public sealed class QueueData;
-    public sealed class QueueEvent;
+    public sealed class QueueEvent
+    {
+        public int Value { get; set; }
+    }
 
     public sealed class NoopActivity : IAsyncActivity
     {

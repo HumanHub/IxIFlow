@@ -347,6 +347,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] PayloadHash, long Revision)> _commits = new();
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _leases = new();
     private readonly Dictionary<string, CancellationReason> _cancellations = new();
+    private readonly HashSet<string> _acknowledgedCancellations = new();
 
     public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
     {
@@ -358,8 +359,12 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 instance.Status is not (WorkflowStatus.Running or WorkflowStatus.Suspended or
                     WorkflowStatus.NeedsResolution))
                 return Task.FromResult(false);
-            _cancellations.TryAdd(instanceId,
-                JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!);
+            if (!_cancellations.ContainsKey(instanceId))
+            {
+                _cancellations.Add(instanceId,
+                    JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!);
+                _acknowledgedCancellations.Remove(instanceId);
+            }
             return Task.FromResult(true);
         }
     }
@@ -385,7 +390,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     (instance.Status == WorkflowStatus.Running &&
                      (!_leases.TryGetValue(instance.InstanceId, out var lease) || lease.ExpiresAtUtc <= now)) ||
                     (instance.Status == WorkflowStatus.Suspended &&
-                     _cancellations.ContainsKey(instance.InstanceId)))
+                     _cancellations.ContainsKey(instance.InstanceId) &&
+                     !_acknowledgedCancellations.Contains(instance.InstanceId)))
                 .Select(SnapshotStructured)
                 .ToArray();
             return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
@@ -469,6 +475,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
             _instances[instance.InstanceId] = snapshot;
             _commits.Add(key, (expectedRevision, payloadHash, snapshot.Revision));
+            if (snapshot.CancellationReason != null && _cancellations.ContainsKey(instance.InstanceId))
+                _acknowledgedCancellations.Add(instance.InstanceId);
             if (snapshot.Status != WorkflowStatus.Running)
                 _leases.Remove(instance.InstanceId);
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision));
@@ -542,6 +550,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             _instances.TryRemove(instanceId, out _);
             _leases.Remove(instanceId);
             _cancellations.Remove(instanceId);
+            _acknowledgedCancellations.Remove(instanceId);
             foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
                 _commits.Remove(key);
         }

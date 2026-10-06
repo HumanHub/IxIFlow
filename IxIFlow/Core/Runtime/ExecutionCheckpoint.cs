@@ -13,6 +13,7 @@ internal sealed class ExecutionCheckpoint
     public List<ContinuationState> Continuations { get; set; } = [];
     public List<ParallelJoinState> Joins { get; set; } = [];
     public List<WaitState> Waits { get; set; } = [];
+    public Dictionary<string, string> AcceptedDeliveries { get; set; } = [];
     public SerializedException? UnhandledError { get; set; }
     public bool CancellationRequested { get; set; }
 

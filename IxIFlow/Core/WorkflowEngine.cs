@@ -52,6 +52,15 @@ public sealed class WorkflowEngine : IWorkflowEngine
         return _runner.ResumeAsync(instanceId, key, @event, cancellationToken);
     }
 
+    public Task<WorkflowExecutionResult> ResumeWorkflowDeliveryAsync<TEventData>(
+        string instanceId, string? key, TEventData @event, string deliveryId,
+        CancellationToken cancellationToken = default)
+        where TEventData : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deliveryId);
+        return _runner.ResumeAsync(instanceId, key, @event, cancellationToken, deliveryId);
+    }
+
     public Task<WorkflowExecutionResult> RecoverWorkflowAsync(
         string instanceId,
         CancellationToken cancellationToken = default) =>

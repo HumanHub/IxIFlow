@@ -30,7 +30,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
         await using var connection = await OpenConnectionAsync();
         var changed = await connection.ExecuteAsync("""
             UPDATE dbo.IxIFlowWorkflowInstances
-            SET CancellationJson = COALESCE(CancellationJson, @ReasonJson)
+            SET CancellationJson = COALESCE(CancellationJson, @ReasonJson),
+                CancellationAcknowledged = CASE WHEN CancellationJson IS NULL
+                    THEN 0 ELSE CancellationAcknowledged END
             WHERE InstanceId = @InstanceId AND Status IN ('Running', 'Suspended', 'NeedsResolution')
             """, new { InstanceId = instanceId, ReasonJson = JsonSerializer.Serialize(reason) });
         return changed == 1;
@@ -59,7 +61,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             WHERE (instance.Status = 'Running' AND
                    (lease.InstanceId IS NULL OR lease.ExpiresAtUtc <= SYSUTCDATETIME()))
                OR (instance.Status = 'Suspended' AND
-                   instance.CancellationJson IS NOT NULL)
+                   instance.CancellationJson IS NOT NULL AND
+                   instance.CancellationAcknowledged = 0)
             """);
         return rows.Select(Deserialize).ToArray();
     }
@@ -209,7 +212,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             WHEN MATCHED THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
-                SuspensionId = @SuspensionId, StateJson = @StateJson, Revision = @Revision
+                SuspensionId = @SuspensionId, StateJson = @StateJson, Revision = @Revision,
+                CancellationAcknowledged = CASE WHEN @AcknowledgesCancellation = 1 AND
+                    target.CancellationJson IS NOT NULL THEN 1 ELSE target.CancellationAcknowledged END
             WHEN NOT MATCHED THEN INSERT
                 (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt, SuspensionId, StateJson, Revision)
                 VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @SuspensionExpiresAt, @SuspensionId, @StateJson, @Revision);
@@ -222,7 +227,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             SuspensionExpiresAt = instance.SuspensionInfo?.ExpiresAt,
             SuspensionId = instance.SuspensionInfo?.SuspensionId,
             StateJson = json, snapshot.Revision,
-            ExpectedRevision = expectedRevision, CommitId = commitId, PayloadHash = payloadHash
+            ExpectedRevision = expectedRevision, CommitId = commitId, PayloadHash = payloadHash,
+            AcknowledgesCancellation = snapshot.CancellationReason != null
         }, transaction);
         if (snapshot.Status != WorkflowStatus.Running)
             await connection.ExecuteAsync("""
@@ -373,6 +379,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                         SuspensionId NVARCHAR(100) NULL,
                         StateJson NVARCHAR(MAX) NOT NULL,
                         CancellationJson NVARCHAR(MAX) NULL,
+                        CancellationAcknowledged BIT NOT NULL DEFAULT 0,
                         Revision BIGINT NOT NULL DEFAULT 0
                     );
                     CREATE INDEX IX_IxIFlowWorkflowInstances_Status
@@ -388,6 +395,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD Revision BIGINT NOT NULL DEFAULT 0;
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CancellationJson') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD CancellationJson NVARCHAR(MAX) NULL;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CancellationAcknowledged') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances
+                        ADD CancellationAcknowledged BIT NOT NULL DEFAULT 0;
                 IF OBJECT_ID(N'dbo.IxIFlowWorkflowCommits', N'U') IS NULL
                     CREATE TABLE dbo.IxIFlowWorkflowCommits (
                         InstanceId NVARCHAR(100) NOT NULL,
