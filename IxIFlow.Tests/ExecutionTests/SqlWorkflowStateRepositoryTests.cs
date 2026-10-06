@@ -6,6 +6,36 @@ public class SqlWorkflowStateRepositoryTests
 {
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
+    public async Task SuspendedDeadlineAppearsInRecoveryScanWhenDue()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var instanceId = Guid.NewGuid().ToString("N");
+        var repository = new SqlWorkflowStateRepository(connectionString);
+        try
+        {
+            var instance = new WorkflowInstance
+            {
+                InstanceId = instanceId,
+                Status = WorkflowStatus.Suspended,
+                NextDueAtUtc = DateTime.UtcNow.AddMinutes(1)
+            };
+            await repository.SaveWorkflowInstanceAsync(instance);
+            Assert.DoesNotContain(await repository.GetWorkflowsRequiringRecoveryAsync(),
+                candidate => candidate.InstanceId == instanceId);
+
+            instance.NextDueAtUtc = DateTime.UtcNow.AddMinutes(-1);
+            await repository.SaveWorkflowInstanceAsync(instance);
+            Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+                candidate => candidate.InstanceId == instanceId);
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
     public async Task SuspendedInstance_HasOneClaimAcrossRepositories()
     {
         var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;

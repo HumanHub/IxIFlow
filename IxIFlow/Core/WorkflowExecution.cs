@@ -49,7 +49,9 @@ public enum WorkflowStatus
     /// <summary>
     /// At least one activity has a committed Start without a committed End and needs resolution.
     /// </summary>
-    NeedsResolution
+    NeedsResolution,
+    /// <summary>The whole-instance execution deadline expired.</summary>
+    TimedOut
 }
 
 /// <summary>
@@ -271,6 +273,9 @@ public class WorkflowInstance
     /// </summary>
     public DateTime? CompletedAt { get; set; }
 
+    /// <summary>Earliest persisted deadline that can wake an idle instance.</summary>
+    public DateTime? NextDueAtUtc { get; set; }
+
     /// <summary>
     ///     Current step number being executed
     /// </summary>
@@ -320,6 +325,9 @@ public class WorkflowInstance
     ///     Custom properties for this instance
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
+
+    /// <summary>Whether optional execution history entries are recorded.</summary>
+    public bool TracingEnabled { get; set; } = true;
 
     /// <summary>
     ///     Execution history entries
@@ -835,6 +843,12 @@ public class WorkflowStep
     /// </summary>
     public List<WorkflowStep> FinallySteps { get; set; } = new();
 
+    /// <summary>Maximum time to wait for the matching event.</summary>
+    public TimeSpan? WaitTimeout { get; set; }
+
+    /// <summary>Alternative steps run when a wait deadline expires.</summary>
+    public List<WorkflowStep> TimeoutSteps { get; set; } = new();
+
     /// <summary>
     ///     Steps within a loop body (for loop steps)
     /// </summary>
@@ -911,6 +925,8 @@ public class WorkflowStep
             ParallelCompletionCondition = ParallelCompletionCondition,
             CatchBlocks = CatchBlocks.Select(s => s.Clone()).ToList(),
             FinallySteps = FinallySteps.Select(s => s.Clone()).ToList(),
+            WaitTimeout = WaitTimeout,
+            TimeoutSteps = TimeoutSteps.Select(s => s.Clone()).ToList(),
             LoopBodySteps = LoopBodySteps.Select(s => s.Clone()).ToList(),
             LoopType = LoopType,
             WorkflowDataType = WorkflowDataType,

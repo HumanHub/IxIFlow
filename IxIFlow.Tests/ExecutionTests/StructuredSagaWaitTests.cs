@@ -2,6 +2,7 @@ using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -959,6 +960,148 @@ public class StructuredSagaWaitTests
     }
 
     [Fact]
+    public async Task StepRetryHonorsItsConfiguredDelay()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<RetryIdProbe>();
+        services.AddTransient<RetryIdActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<SagaData>("DelayedStepRetry")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<RetryIdActivity>(step => step
+                .OnError<InvalidOperationException>(handler => handler.ThenRetry(
+                    new RetryPolicy(TimeSpan.FromMilliseconds(180),
+                        TimeSpan.FromMilliseconds(180), 1, 1)))))
+            .Build();
+
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        var starts = provider.GetRequiredService<RetryIdProbe>().StartedTicks;
+        Assert.Equal(2, starts.Count);
+        Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(starts[0], starts[1]) >=
+            TimeSpan.FromMilliseconds(130));
+    }
+
+    [Fact]
+    public async Task SagaRetryHonorsItsConfiguredDelay()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<SagaRetryProbe>();
+        services.AddTransient<FailOnceSagaActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<SagaData>("DelayedSagaRetry")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<FailOnceSagaActivity>(_ => { }))
+            .OnError<InvalidOperationException>(handler => handler.CompensateNone().ThenRetry(
+                new RetryPolicy(TimeSpan.FromMilliseconds(180),
+                    TimeSpan.FromMilliseconds(180), 1, 1)))
+            .Build();
+
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        var starts = provider.GetRequiredService<SagaRetryProbe>().StartedTicks;
+        Assert.Equal(2, starts.Count);
+        Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(starts[0], starts[1]) >=
+            TimeSpan.FromMilliseconds(130));
+    }
+
+    [Fact]
+    public async Task InterruptedRetryKeepsItsDeadlineAcrossRecovery()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IWorkflowStateRepository>(repository);
+        services.AddSingleton<RetryIdProbe>();
+        services.AddTransient<RetryIdActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var definition = Workflow.Create<SagaData>("InterruptedStepRetry")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<RetryIdActivity>(step => step
+                .OnError<InvalidOperationException>(handler => handler.ThenRetry(
+                    new RetryPolicy(TimeSpan.FromMilliseconds(700),
+                        TimeSpan.FromMilliseconds(700), 1, 1)))))
+            .Build();
+        using var cancellation = new CancellationTokenSource();
+        var running = engine.ExecuteWorkflowAsync(definition, new SagaData(),
+            new WorkflowOptions { InstanceId = instanceId }, cancellation.Token);
+
+        await WaitForRetryCheckpointAsync(repository, instanceId);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running);
+
+        var recovered = await engine.RecoverWorkflowAsync(instanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+        var starts = provider.GetRequiredService<RetryIdProbe>().StartedTicks;
+        Assert.Equal(2, starts.Count);
+        Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(starts[0], starts[1]) >=
+            TimeSpan.FromMilliseconds(600));
+    }
+
+    [Fact]
+    public async Task CancellationInterruptsPendingRetry()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IWorkflowStateRepository>(repository);
+        services.AddSingleton<RetryIdProbe>();
+        services.AddTransient<RetryIdActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var definition = Workflow.Create<SagaData>("CancelPendingRetry")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<RetryIdActivity>(step => step
+                .OnError<InvalidOperationException>(handler => handler.ThenRetry(
+                    new RetryPolicy(TimeSpan.FromSeconds(10),
+                        TimeSpan.FromSeconds(10), 1, 1)))))
+            .Build();
+        var running = engine.ExecuteWorkflowAsync(definition, new SagaData(),
+            new WorkflowOptions { InstanceId = instanceId });
+
+        await WaitForRetryCheckpointAsync(repository, instanceId);
+        await engine.CancelWorkflowAsync(instanceId,
+            new CancellationReason { ReasonCode = "operator" });
+        var stopped = await running.WaitAsync(TimeSpan.FromSeconds(4));
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, stopped.Status);
+        Assert.Single(provider.GetRequiredService<RetryIdProbe>().StartedTicks);
+    }
+
+    private static async Task WaitForRetryCheckpointAsync(IWorkflowStateRepository repository,
+        string instanceId)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            var saved = await repository.GetWorkflowInstanceAsync(instanceId);
+            if (saved != null)
+            {
+                using var checkpoint = JsonDocument.Parse(saved.ExecutionStateJson);
+                if (checkpoint.RootElement.GetProperty("Continuations")[0]
+                        .GetProperty("RetryAfterUtc").ValueKind == JsonValueKind.String)
+                    return;
+            }
+            await Task.Delay(10);
+        }
+        throw new TimeoutException("The retry deadline was not saved");
+    }
+
+    [Fact]
     public async Task FullSagaRetryStartsANewInvocation()
     {
         var services = new ServiceCollection();
@@ -1474,11 +1617,13 @@ public class StructuredSagaWaitTests
     public sealed class SagaRetryProbe
     {
         public int Attempts { get; set; }
+        public List<long> StartedTicks { get; } = [];
     }
 
     public sealed class RetryIdProbe
     {
         public List<string> InvocationIds { get; } = [];
+        public List<long> StartedTicks { get; } = [];
     }
 
     public sealed class RetryIdActivity(RetryIdProbe probe) : IAsyncActivity
@@ -1486,6 +1631,7 @@ public class StructuredSagaWaitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.InvocationIds.Add(context.InvocationId);
+            probe.StartedTicks.Add(System.Diagnostics.Stopwatch.GetTimestamp());
             if (probe.InvocationIds.Count == 1)
                 throw new InvalidOperationException("retry once");
             return Task.CompletedTask;
@@ -1505,6 +1651,7 @@ public class StructuredSagaWaitTests
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
+            probe.StartedTicks.Add(System.Diagnostics.Stopwatch.GetTimestamp());
             if (++probe.Attempts == 1)
                 throw new InvalidOperationException("retry once");
             return Task.CompletedTask;

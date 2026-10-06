@@ -22,7 +22,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         var json = await connection.QuerySingleOrDefaultAsync<string>("""
             SELECT StateJson FROM dbo.IxIFlowWorkflowInstances
             WHERE InstanceId = @InstanceId
-              AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated')
+              AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
               AND CompletionPublished = 0
             """, new { InstanceId = instanceId });
         return json == null ? null : Deserialize(json);
@@ -34,7 +34,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await using var connection = await OpenConnectionAsync();
         var rows = await connection.QueryAsync<string>("""
             SELECT TOP (100) StateJson FROM dbo.IxIFlowWorkflowInstances
-            WHERE Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated')
+            WHERE Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
               AND CompletionPublished = 0
             ORDER BY InstanceId
             """);
@@ -54,7 +54,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 SELECT TOP (100) InstanceId
                 FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, READPAST, ROWLOCK)
                 WHERE (@InstanceId IS NULL OR InstanceId = @InstanceId)
-                  AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated')
+                  AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
                   AND CompletionPublished = 0
                   AND (CompletionClaimUntil IS NULL OR CompletionClaimUntil <= SYSUTCDATETIME())
                 ORDER BY InstanceId
@@ -79,7 +79,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             SET CompletionPublished = 1,
                 CompletionClaimToken = NULL, CompletionClaimUntil = NULL
             WHERE InstanceId = @InstanceId AND Revision = @Revision
-              AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated')
+              AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
               AND CompletionPublished = 0
               AND CompletionClaimToken = @Token
               AND CompletionClaimUntil > SYSUTCDATETIME()
@@ -146,6 +146,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                OR (instance.Status = 'Suspended' AND
                    instance.CancellationJson IS NOT NULL AND
                    instance.CancellationAcknowledged = 0)
+               OR (instance.Status = 'Suspended' AND
+                   instance.NextDueAtUtc <= SYSUTCDATETIME())
             """);
         return rows.Select(Deserialize).ToArray();
     }
@@ -213,10 +215,13 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             WHEN MATCHED AND target.Revision = 0 THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
-                SuspensionId = @SuspensionId, StateJson = @StateJson
+                SuspensionId = @SuspensionId, NextDueAtUtc = @NextDueAtUtc,
+                StateJson = @StateJson
             WHEN NOT MATCHED THEN INSERT
-                (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt, SuspensionId, StateJson)
-                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @SuspensionExpiresAt, @SuspensionId, @StateJson);
+                (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt,
+                 SuspensionId, NextDueAtUtc, StateJson)
+                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
+                        @SuspensionExpiresAt, @SuspensionId, @NextDueAtUtc, @StateJson);
             IF @@ROWCOUNT = 0
                 THROW 51000, 'Revisioned instances require an atomic commit', 1;
             """, new
@@ -227,6 +232,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             instance.CorrelationId,
             SuspensionExpiresAt = instance.SuspensionInfo?.ExpiresAt,
             SuspensionId = instance.SuspensionInfo?.SuspensionId,
+            instance.NextDueAtUtc,
             StateJson = JsonSerializer.Serialize(instance)
         });
     }
@@ -278,7 +284,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         }
         if (currentRevision != expectedRevision ||
             (current?.CancellationJson != null && snapshot.CancellationReason == null &&
-             snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated))
+             snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut))
         {
             await transaction.CommitAsync();
             return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
@@ -298,12 +304,15 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             WHEN MATCHED THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
-                SuspensionId = @SuspensionId, StateJson = @StateJson, Revision = @Revision,
+                SuspensionId = @SuspensionId, NextDueAtUtc = @NextDueAtUtc,
+                StateJson = @StateJson, Revision = @Revision,
                 CancellationAcknowledged = CASE WHEN @AcknowledgesCancellation = 1 AND
                     target.CancellationJson IS NOT NULL THEN 1 ELSE target.CancellationAcknowledged END
             WHEN NOT MATCHED THEN INSERT
-                (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt, SuspensionId, StateJson, Revision)
-                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @SuspensionExpiresAt, @SuspensionId, @StateJson, @Revision);
+                (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt,
+                 SuspensionId, NextDueAtUtc, StateJson, Revision)
+                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
+                        @SuspensionExpiresAt, @SuspensionId, @NextDueAtUtc, @StateJson, @Revision);
             INSERT INTO dbo.IxIFlowWorkflowCommits (InstanceId, CommitId, ExpectedRevision, Revision, PayloadHash)
             VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
             """, new
@@ -312,6 +321,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             Status = instance.Status.ToString(),
             SuspensionExpiresAt = instance.SuspensionInfo?.ExpiresAt,
             SuspensionId = instance.SuspensionInfo?.SuspensionId,
+            snapshot.NextDueAtUtc,
             StateJson = json, snapshot.Revision,
             ExpectedRevision = expectedRevision, CommitId = commitId, PayloadHash = payloadHash,
             AcknowledgesCancellation = snapshot.CancellationReason != null
@@ -468,6 +478,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                         Status NVARCHAR(50) NOT NULL,
                         CorrelationId NVARCHAR(100) NULL,
                         SuspensionExpiresAt DATETIME2 NULL,
+                        NextDueAtUtc DATETIME2 NULL,
                         SuspensionId NVARCHAR(100) NULL,
                         StateJson NVARCHAR(MAX) NOT NULL,
                         CancellationJson NVARCHAR(MAX) NULL,
@@ -486,6 +497,13 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 END
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'SuspensionId') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD SuspensionId NVARCHAR(100) NULL;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'NextDueAtUtc') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD NextDueAtUtc DATETIME2 NULL;
+                IF NOT EXISTS (SELECT 1 FROM sys.indexes
+                    WHERE name = N'IX_IxIFlowWorkflowInstances_Due'
+                      AND object_id = OBJECT_ID(N'dbo.IxIFlowWorkflowInstances'))
+                    CREATE INDEX IX_IxIFlowWorkflowInstances_Due
+                        ON dbo.IxIFlowWorkflowInstances (Status, NextDueAtUtc);
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'Revision') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD Revision BIGINT NOT NULL DEFAULT 0;
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CancellationJson') IS NULL
@@ -498,7 +516,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                     ALTER TABLE dbo.IxIFlowWorkflowInstances
                         ADD CompletionPublished BIT NOT NULL DEFAULT 0;
                     EXEC(N'UPDATE dbo.IxIFlowWorkflowInstances SET CompletionPublished = 1
-                        WHERE Status IN (''Completed'', ''Failed'', ''Cancelled'', ''Terminated'')');
+                        WHERE Status IN (''Completed'', ''Failed'', ''Cancelled'', ''Terminated'', ''TimedOut'')');
                 END
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CompletionClaimToken') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances

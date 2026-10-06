@@ -43,6 +43,7 @@ internal sealed class WorkflowScopeCatalog
     public string CompensationScope(WorkflowStep saga, WorkflowStep source) =>
         $"{Id(saga)}/compensation/{Id(source)}";
     public string FinallyScope(WorkflowStep step) => $"{Id(step)}/finally";
+    public string TimeoutScope(WorkflowStep step) => $"{Id(step)}/timeout";
     public string CatchBodyScope(WorkflowStep catchBlock) => SequenceScope(catchBlock);
     public string BranchScope(WorkflowStep step, int index) => $"{Id(step)}/branch/{index}";
     public string OutcomeScope(WorkflowStep step, int index) => $"{Id(step)}/outcome/{index}";
@@ -61,6 +62,7 @@ internal sealed class WorkflowScopeCatalog
             AddScope(ElseScope(step), step.ElseSteps);
             AddScope(LoopScope(step), step.LoopBodySteps);
             AddScope(FinallyScope(step), step.FinallySteps);
+            AddScope(TimeoutScope(step), step.TimeoutSteps);
             AddScope($"{stepId}/catch", step.CatchBlocks);
             if (step.StepType == WorkflowStepType.Saga)
                 AddSagaCompensations(step);
@@ -131,7 +133,8 @@ internal sealed class WorkflowScopeCatalog
                 var waitKey = step.StepMetadata.TryGetValue("WaitKey", out var key) ? key?.ToString() : "";
                 return string.Join('|', pair.Key, step.StepType,
                     WorkflowTypeIdentity.StableName(step.ActivityType),
-                    WorkflowTypeIdentity.StableName(step.ResumeEventType), waitKey, step.ParallelJoinMode,
+                    WorkflowTypeIdentity.StableName(step.ResumeEventType), waitKey,
+                    step.WaitTimeout?.Ticks, step.ParallelJoinMode,
                     step.LoopType, WorkflowTypeIdentity.StableName(step.ExceptionType),
                     WorkflowTypeIdentity.StableName(step.FaultType));
             }));
@@ -154,6 +157,11 @@ internal sealed class WorkflowScopeCatalog
             if (!supported)
                 throw new NotSupportedException(
                     $"Structured execution does not support {step.StepType} at '{id}'");
+            if (step.StepType == WorkflowStepType.SuspendResume &&
+                ((step.WaitTimeout == null) != (step.TimeoutSteps.Count == 0) ||
+                 step.WaitTimeout is { } timeout && timeout <= TimeSpan.Zero))
+                throw new InvalidOperationException(
+                    $"Wait at '{id}' requires a positive timeout and a timeout branch");
             if (step.StepType == WorkflowStepType.WorkflowInvocation &&
                 step.WorkflowType == null &&
                 (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowVersion == null))
