@@ -525,6 +525,56 @@ public class StructuredTryWaitTests
     }
 
     [Fact]
+    public async Task RemoteCancellationOfWaitRunsFinallyAndSkipsFollowingStep()
+    {
+        using var services = CreateServices();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var definition = Workflow.Create<TryData>("RemoteCancellationCleanup")
+            .Step<StartActivity>()
+            .Try(body => body.WaitFor<Approval>("approval"))
+            .Finally(body => body.Step<CountActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
+            .Step<CountActivity>(setup => setup
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.After)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
+            .Build();
+        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
+        var result = await engine.CancelWorkflowAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" });
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.Equal(1, Data(result).Finally);
+        Assert.Equal(0, Data(result).After);
+    }
+
+    [Fact]
+    public async Task RemoteCancellationCanWaitForFinallyBeforeEnding()
+    {
+        using var services = CreateServices();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var definition = Workflow.Create<TryData>("RemoteCancellationWaitCleanup")
+            .Step<StartActivity>()
+            .Try(body => body.WaitFor<Approval>("approval"))
+            .Finally(body => body.WaitFor<Approval>("cleanup")
+                .Step<CountActivity>(setup => setup
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
+            .Build();
+        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+
+        var cleaning = await engine.CancelWorkflowAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" });
+        Assert.Equal(WorkflowExecutionStatus.Suspended, cleaning.Status);
+        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "cleanup", new Approval());
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, completed.Status);
+        Assert.Equal(1, Data(completed).Finally);
+    }
+
+    [Fact]
     public async Task CallerCancellationCanWaitForFinallyBeforeCancellingInstance()
     {
         var collection = new ServiceCollection();
@@ -1462,6 +1512,12 @@ public class StructuredTryWaitTests
     public sealed class BoundedCheckpointStore : IWorkflowStateRepository
     {
         private readonly InMemoryWorkflowStateRepository _inner = new();
+        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
+            _inner.RequestCancellationAsync(instanceId, reason);
+        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
+            _inner.GetCancellationRequestAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
+            _inner.GetWorkflowsRequiringRecoveryAsync();
         public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>

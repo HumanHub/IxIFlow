@@ -241,6 +241,22 @@ public class WorkflowTimeoutEvent
 /// </summary>
 public interface IWorkflowEngine
 {
+    /// <summary>Lists the saved activity attempts awaiting an operator decision.</summary>
+    Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId);
+
+    /// <summary>
+    /// Resolves one committed activity Start whose external outcome is unknown.
+    /// The decision is saved before execution continues.
+    /// </summary>
+    Task<WorkflowExecutionResult> ResolveActivityAsync(
+        string instanceId, string invocationId, ActivityResolution resolution,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Requests durable cancellation and unwinds an idle workflow immediately.</summary>
+    Task<WorkflowExecutionResult> CancelWorkflowAsync(
+        string instanceId, CancellationReason reason,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     ///     Executes a workflow from start to completion
     /// </summary>

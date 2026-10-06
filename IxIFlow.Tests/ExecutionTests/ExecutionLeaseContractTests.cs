@@ -40,6 +40,10 @@ public sealed class ExecutionLeaseContractTests
     public Task MemoryRepeatedStartUsesOneInstance() =>
         VerifyRepeatedStart(new InMemoryWorkflowStateRepository());
 
+    [Fact]
+    public Task MemoryRecoveryQueryExcludesLiveOwnersAndFindsExpiredLeases() =>
+        VerifyRecoveryQuery(new InMemoryWorkflowStateRepository());
+
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlLeaseIsExclusive() => VerifyExclusiveLease(SqlRepository());
@@ -69,6 +73,11 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public Task SqlRepeatedStartUsesOneInstance() => VerifyRepeatedStart(SqlRepository());
 
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public Task SqlRecoveryQueryExcludesLiveOwnersAndFindsExpiredLeases() =>
+        VerifyRecoveryQuery(SqlRepository());
+
     [Fact]
     public async Task SuspendedInstanceCanResumeOnAnotherHost()
     {
@@ -92,6 +101,245 @@ public sealed class ExecutionLeaseContractTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         Assert.Equal(2, probe.Recorded);
+    }
+
+    [Fact]
+    public async Task CancellingSuspendedWaitPersistsCancellationAndPreventsResume()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var registry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(repository, registry, probe);
+        using var secondHost = CreateHost(repository, registry, probe);
+        var definition = Workflow.Create<LeaseData>("CancelWait")
+            .Step<RecordActivity>(_ => { })
+            .WaitFor<LeaseEvent>("approval")
+            .Step<RecordActivity>(_ => { })
+            .Build();
+        var started = await firstHost.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
+        var result = await secondHost.GetRequiredService<IWorkflowEngine>()
+            .CancelWorkflowAsync(started.InstanceId, new CancellationReason
+            {
+                ReasonCode = "withdrawn", Description = "Request withdrawn"
+            });
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
+        Assert.Equal(WorkflowStatus.Cancelled, saved.Status);
+        Assert.Equal("withdrawn", saved.CancellationReason?.ReasonCode);
+        Assert.Equal(1, probe.Recorded);
+        var resumed = await firstHost.GetRequiredService<IWorkflowEngine>()
+            .ResumeWorkflowAsync(started.InstanceId, "approval", new LeaseEvent());
+        Assert.False(resumed.EventAccepted);
+    }
+
+    [Fact]
+    public async Task OtherHostCanCancelRunningActivityThroughDurableRequest()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var registry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(repository, registry, probe, shortLease: true);
+        using var secondHost = CreateHost(repository, registry, probe, shortLease: true);
+        var definition = Workflow.Create<LeaseData>("CancelRunning")
+            .Step<CancellableBlockingActivity>(_ => { })
+            .Step<RecordActivity>(_ => { })
+            .Build();
+        var executing = firstHost.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData());
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+
+        var requested = await secondHost.GetRequiredService<IWorkflowEngine>()
+            .CancelWorkflowAsync(saved.InstanceId, new CancellationReason
+            {
+                ReasonCode = "operator", Description = "Stopped by operator"
+            });
+        Assert.Equal(WorkflowExecutionStatus.Running, requested.Status);
+
+        var result = await executing.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        var cancelled = (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!;
+        Assert.Equal(WorkflowStatus.Cancelled, cancelled.Status);
+        Assert.Equal("operator", cancelled.CancellationReason?.ReasonCode);
+        Assert.Equal(0, probe.Recorded);
+    }
+
+    [Fact]
+    public async Task CancellationReturnsCompletedWhenOwnerFinishesAfterRequest()
+    {
+        var inner = new InMemoryWorkflowStateRepository();
+        var instanceId = Guid.NewGuid().ToString("N");
+        await inner.SaveWorkflowInstanceAsync(new WorkflowInstance
+        {
+            InstanceId = instanceId,
+            WorkflowName = "CompletionRace",
+            Status = WorkflowStatus.Running
+        });
+        var repository = new PausedReadRepository(inner)
+        {
+            PauseFirstRead = false,
+            CompleteOnCancellationRequest = true
+        };
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
+
+        var result = await host.GetRequiredService<IWorkflowEngine>()
+            .CancelWorkflowAsync(instanceId, new CancellationReason { ReasonCode = "late" });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(WorkflowStatus.Completed,
+            (await inner.GetWorkflowInstanceAsync(instanceId))!.Status);
+    }
+
+    [Fact]
+    public async Task CancellationDuringSynchronousBranchStopsBeforeItsNextActivity()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var repository = new InMemoryWorkflowStateRepository();
+        var probe = new ActivityProbe();
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
+        var definition = Workflow.Create<LeaseData>("CancelDuringBranch")
+            .Step<RecordActivity>(_ => { })
+            .If(_ => CancelAndTrue(cancellation),
+                then => then.Step<RecordActivity>(_ => { }))
+            .Build();
+
+        var result = await host.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData(),
+                cancellationToken: cancellation.Token);
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.Equal(1, probe.Recorded);
+    }
+
+    private static bool CancelAndTrue(CancellationTokenSource cancellation)
+    {
+        cancellation.Cancel();
+        return true;
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task SqlCancellationRequestReachesRunningOwnerOnAnotherHost()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var firstRepository = new SqlWorkflowStateRepository(connectionString);
+        var secondRepository = new SqlWorkflowStateRepository(connectionString);
+        var registry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(firstRepository, registry, probe);
+        using var secondHost = CreateHost(secondRepository, registry, probe);
+        var definition = Workflow.Create<LeaseData>("SqlCancelRunning")
+            .Step<CancellableBlockingActivity>(_ => { })
+            .Step<RecordActivity>(_ => { })
+            .Build();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var executing = firstHost.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData(),
+                new WorkflowOptions { InstanceId = instanceId });
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WorkflowStatus.Running,
+            (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
+        try
+        {
+            var requested = await secondHost.GetRequiredService<IWorkflowEngine>()
+                .CancelWorkflowAsync(instanceId, new CancellationReason
+                {
+                    ReasonCode = "operator", Description = "Stopped by operator"
+                });
+            Assert.Equal(WorkflowExecutionStatus.Running, requested.Status);
+            Assert.Equal(WorkflowExecutionStatus.Cancelled,
+                (await executing.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+            var cancelled = (await secondRepository.GetWorkflowInstanceAsync(instanceId))!;
+            Assert.Equal(WorkflowStatus.Cancelled, cancelled.Status);
+            Assert.Equal("operator", cancelled.CancellationReason?.ReasonCode);
+            Assert.Equal(0, probe.Recorded);
+        }
+        finally
+        {
+            await firstRepository.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task SqlSuspendedWaitCanBeCancelledByAnotherHost()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var firstRepository = new SqlWorkflowStateRepository(connectionString);
+        var secondRepository = new SqlWorkflowStateRepository(connectionString);
+        var registry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(firstRepository, registry, probe);
+        using var secondHost = CreateHost(secondRepository, registry, probe);
+        var definition = Workflow.Create<LeaseData>("SqlCancelWait")
+            .Step<RecordActivity>(_ => { })
+            .WaitFor<LeaseEvent>("approval")
+            .Step<RecordActivity>(_ => { })
+            .Build();
+        var started = await firstHost.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData());
+        try
+        {
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            var result = await secondHost.GetRequiredService<IWorkflowEngine>()
+                .CancelWorkflowAsync(started.InstanceId, new CancellationReason
+                {
+                    ReasonCode = "withdrawn", Description = "Request withdrawn"
+                });
+            Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+            Assert.Equal(WorkflowStatus.Cancelled,
+                (await firstRepository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+            Assert.Equal(1, probe.Recorded);
+        }
+        finally
+        {
+            await firstRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
+        }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task SqlScannerCompletesCancellationAfterRequestingHostStops()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var firstRepository = new SqlWorkflowStateRepository(connectionString);
+        var secondRepository = new SqlWorkflowStateRepository(connectionString);
+        var firstRegistry = new WorkflowVersionRegistry();
+        var secondRegistry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        var definition = Workflow.Create<LeaseData>("SqlCancelAfterHostStop")
+            .Step<RecordActivity>(_ => { })
+            .WaitFor<LeaseEvent>("approval")
+            .Build();
+        await secondRegistry.RegisterWorkflowAsync(definition);
+        WorkflowExecutionResult started;
+        using (var firstHost = CreateHost(firstRepository, firstRegistry, probe))
+        {
+            started = await firstHost.GetRequiredService<IWorkflowEngine>()
+                .ExecuteWorkflowAsync(definition, new LeaseData());
+        }
+        try
+        {
+            Assert.True(await firstRepository.RequestCancellationAsync(started.InstanceId,
+                new CancellationReason { ReasonCode = "withdrawn" }));
+            using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
+            using var scanner = new WorkflowRecoveryService(
+                secondHost.GetRequiredService<IServiceScopeFactory>(), secondRepository,
+                NullLogger<WorkflowRecoveryService>.Instance);
+
+            await scanner.RecoverOnceAsync(CancellationToken.None);
+
+            Assert.Equal(WorkflowStatus.Cancelled,
+                (await firstRepository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+        }
+        finally
+        {
+            await firstRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
+        }
     }
 
     [Fact]
@@ -407,6 +655,7 @@ public sealed class ExecutionLeaseContractTests
                 TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(50)));
         services.AddSingleton(probe);
         services.AddTransient<BlockingActivity>();
+        services.AddTransient<CancellableBlockingActivity>();
         services.AddTransient<RecordActivity>();
         return services.BuildServiceProvider();
     }
@@ -582,6 +831,33 @@ public sealed class ExecutionLeaseContractTests
         }
     }
 
+    private static async Task VerifyRecoveryQuery(IWorkflowStateRepository repository)
+    {
+        var instanceId = Guid.NewGuid().ToString("N");
+        try
+        {
+            await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
+            {
+                InstanceId = instanceId,
+                WorkflowName = "RecoveryQuery",
+                Status = WorkflowStatus.Running
+            });
+            Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+                instance => instance.InstanceId == instanceId);
+            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "worker",
+                TimeSpan.FromMilliseconds(150)));
+            Assert.DoesNotContain(await repository.GetWorkflowsRequiringRecoveryAsync(),
+                instance => instance.InstanceId == instanceId);
+            await Task.Delay(300);
+            Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+                instance => instance.InstanceId == instanceId);
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
     public sealed class LeaseData;
     public sealed class LeaseEvent;
 
@@ -614,8 +890,35 @@ public sealed class ExecutionLeaseContractTests
         }
     }
 
+    public sealed class CancellableBlockingActivity(ActivityProbe probe) : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default)
+        {
+            probe.Started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+    }
+
     private sealed class PausedReadRepository(InMemoryWorkflowStateRepository inner) : IWorkflowStateRepository
     {
+        public bool CompleteOnCancellationRequest { get; set; }
+        public bool PauseFirstRead { get; set; } = true;
+        public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
+        {
+            var accepted = await inner.RequestCancellationAsync(instanceId, reason);
+            if (accepted && CompleteOnCancellationRequest)
+            {
+                var instance = (await inner.GetWorkflowInstanceAsync(instanceId))!;
+                instance.Status = WorkflowStatus.Completed;
+                await inner.SaveWorkflowInstanceAsync(instance);
+            }
+            return accepted;
+        }
+        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
+            inner.GetCancellationRequestAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
+            inner.GetWorkflowsRequiringRecoveryAsync();
         private int _reads;
         public bool FailRelease { get; set; }
         public TaskCompletionSource ReadCompleted { get; } =
@@ -626,7 +929,7 @@ public sealed class ExecutionLeaseContractTests
         public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
         {
             var snapshot = await inner.GetWorkflowInstanceAsync(instanceId);
-            if (Interlocked.Increment(ref _reads) == 1)
+            if (PauseFirstRead && Interlocked.Increment(ref _reads) == 1)
             {
                 ReadCompleted.TrySetResult();
                 await Continue.Task;

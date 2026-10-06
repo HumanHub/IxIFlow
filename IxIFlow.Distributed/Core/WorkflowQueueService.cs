@@ -169,7 +169,7 @@ public class WorkflowQueueService : BackgroundService
         public Task AcknowledgeAsync() => Task.CompletedTask;
     }
 
-    private async Task ProcessExecuteCommandAsync(ExecuteWorkflowCommand command)
+    internal async Task ProcessExecuteCommandAsync(ExecuteWorkflowCommand command)
     {
         using var scope = _serviceProvider.CreateScope();
         var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
@@ -219,16 +219,8 @@ public class WorkflowQueueService : BackgroundService
                         $"Workflow instance '{command.InstanceId}' is executing; keep the command for redelivery");
             }
 
-            // Publish completion event
-            await _messageBus.PublishAsync(new WorkflowExecutionCompletedEvent
-            {
-                InstanceId = command.InstanceId,
-                HostId = _hostId,
-                Status = result.Status,
-                ErrorMessage = result.ErrorMessage,
-                CompletedAt = DateTime.UtcNow,
-                ExecutionTime = result.ExecutionTime
-            });
+            if (IsTerminal(result.Status))
+                await PublishCompletionAsync(command.InstanceId, result);
 
             _logger.LogInformation("Successfully executed workflow {InstanceId} with status {Status}", 
                 command.InstanceId, result.Status);
@@ -265,18 +257,8 @@ public class WorkflowQueueService : BackgroundService
                     $"Workflow instance '{command.InstanceId}' is executing; keep the resume command for redelivery");
 
             // Publish completion event if workflow finished
-            if (result.EventAccepted && result.Status != WorkflowExecutionStatus.Suspended)
-            {
-                await _messageBus.PublishAsync(new WorkflowExecutionCompletedEvent
-                {
-                    InstanceId = command.InstanceId,
-                    HostId = _hostId,
-                    Status = result.Status,
-                    ErrorMessage = result.ErrorMessage,
-                    CompletedAt = DateTime.UtcNow,
-                    ExecutionTime = result.ExecutionTime
-                });
-            }
+            if (result.EventAccepted && IsTerminal(result.Status))
+                await PublishCompletionAsync(command.InstanceId, result);
 
             _logger.LogInformation("Successfully resumed workflow {InstanceId} with status {Status}", 
                 command.InstanceId, result.Status);
@@ -288,33 +270,33 @@ public class WorkflowQueueService : BackgroundService
         }
     }
 
-    private async Task ProcessCancelCommandAsync(CancelWorkflowCommand command)
+    internal async Task ProcessCancelCommandAsync(CancelWorkflowCommand command)
     {
         using var scope = _serviceProvider.CreateScope();
-        
-        try
-        {
-            // For now, just log the cancellation request
-            // In a full implementation, this would interact with the workflow engine to cancel execution
-            _logger.LogInformation("Processing cancellation for workflow {InstanceId} with reason: {Reason}", 
-                command.InstanceId, command.Reason);
-
-            // Publish cancellation event
-            await _messageBus.PublishAsync(new WorkflowExecutionCompletedEvent
-            {
-                InstanceId = command.InstanceId,
-                HostId = _hostId,
-                Status = WorkflowExecutionStatus.Cancelled,
-                ErrorMessage = command.Reason?.ToString(),
-                CompletedAt = DateTime.UtcNow,
-                ExecutionTime = TimeSpan.Zero
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to cancel workflow {InstanceId}", command.InstanceId);
-        }
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var result = await engine.CancelWorkflowAsync(command.InstanceId, command.Reason);
+        if (!IsTerminal(result.Status))
+            return;
+        await PublishCompletionAsync(command.InstanceId, result);
     }
+
+    private async Task PublishCompletionAsync(string instanceId, WorkflowExecutionResult result)
+    {
+        await _messageBus.PublishAsync(new WorkflowExecutionCompletedEvent
+        {
+            InstanceId = instanceId,
+            HostId = _hostId,
+            Status = result.Status,
+            ErrorMessage = result.ErrorMessage,
+            CompletedAt = DateTime.UtcNow,
+            ExecutionTime = result.ExecutionTime
+        });
+    }
+
+    private static bool IsTerminal(WorkflowExecutionStatus status) => status is
+        WorkflowExecutionStatus.Success or WorkflowExecutionStatus.Faulted or
+        WorkflowExecutionStatus.Failed or WorkflowExecutionStatus.TimedOut or
+        WorkflowExecutionStatus.Cancelled;
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
