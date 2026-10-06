@@ -175,6 +175,42 @@ public class EngineContractRegressionTests
     }
 
     [Fact]
+    public void DefinitionFingerprintChangesWhenCapturedObjectStateChanges()
+    {
+        WorkflowDefinition Build(bool enabled)
+        {
+            var rule = new DecisionRule { Enabled = enabled };
+            return Workflow.Create<RegressionData>("CapturedObject")
+                .Step<MarkChildActivity>()
+                .If(ctx => rule.Enabled,
+                    then => then.Step<MarkChildActivity>(_ => { }))
+                .Build();
+        }
+
+        Assert.NotEqual(new WorkflowScopeCatalog(Build(true)).Fingerprint,
+            new WorkflowScopeCatalog(Build(false)).Fingerprint);
+    }
+
+    [Fact]
+    public void DurableConditionRejectsAnUnfingerprintableCapture()
+    {
+        using var source = new CancellationTokenSource();
+
+        var error = Assert.Throws<NotSupportedException>(() =>
+            Workflow.Create<RegressionData>("UnsafeCapture")
+                .Step<MarkChildActivity>()
+                .If(ctx => source.IsCancellationRequested,
+                    then => then.Step<MarkChildActivity>(_ => { })));
+
+        Assert.Contains("cannot be fingerprinted", error.Message);
+    }
+
+    private sealed class DecisionRule
+    {
+        public bool Enabled { get; set; }
+    }
+
+    [Fact]
     public async Task EquivalentRebuiltWorkflowCanRunTwiceInOneHost()
     {
         var services = new ServiceCollection();

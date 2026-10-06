@@ -223,20 +223,28 @@ public sealed class ExecutionLeaseContractTests
     public async Task CallerCancellationLeavesWorkflowRecoverable()
     {
         using var cancellation = new CancellationTokenSource();
+        CurrentCancellation.Value = cancellation;
         var repository = new InMemoryWorkflowStateRepository();
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
         var definition = Workflow.Create<LeaseData>("CancelDuringBranch")
             .Step<RecordActivity>(_ => { })
-            .If(_ => CancelAndTrue(cancellation),
+            .If(_ => CancelAndTrue(),
                 then => then.Step<RecordActivity>(_ => { }))
             .Build();
 
         var engine = host.GetRequiredService<IWorkflowEngine>();
         var instanceId = Guid.NewGuid().ToString("N");
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            engine.ExecuteWorkflowAsync(definition, new LeaseData(),
-                new WorkflowOptions { InstanceId = instanceId }, cancellation.Token));
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                engine.ExecuteWorkflowAsync(definition, new LeaseData(),
+                    new WorkflowOptions { InstanceId = instanceId }, cancellation.Token));
+        }
+        finally
+        {
+            CurrentCancellation.Value = null;
+        }
 
         Assert.Equal(WorkflowStatus.Running,
             (await repository.GetWorkflowInstanceAsync(instanceId))!.Status);
@@ -246,9 +254,11 @@ public sealed class ExecutionLeaseContractTests
         Assert.Equal(2, probe.Recorded);
     }
 
-    private static bool CancelAndTrue(CancellationTokenSource cancellation)
+    private static readonly AsyncLocal<CancellationTokenSource?> CurrentCancellation = new();
+
+    private static bool CancelAndTrue()
     {
-        cancellation.Cancel();
+        CurrentCancellation.Value?.Cancel();
         return true;
     }
 
