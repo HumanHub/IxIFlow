@@ -472,18 +472,19 @@ public class ExceptionHandlingTests
             .Step<StepExecutionAsyncActivity>(setup => setup
                 .Input(act => act.StepName).From(ctx => "InitialStep")
                 .Input(act => act.StepNumber).From(ctx => 0))
-            .Try(tryBuilder => tryBuilder
-                .Step<ValidateOrderWithExceptionActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)))
-            .Catch<BusinessValidationException, MessageFault>(catchBuilder => catchBuilder
-                // This will throw a PaymentProcessingException when Amount >= 150
-                .Step<ProcessPaymentWithExceptionActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => 200m) // Force exception
-                    .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
-                    .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed)))
+            .Try(outer => outer
+                .Try(tryBuilder => tryBuilder
+                    .Step<ValidateOrderWithExceptionActivity>(setup => setup
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
+                        .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)))
+                .Catch<BusinessValidationException, MessageFault>(catchBuilder => catchBuilder
+                    // This will throw a PaymentProcessingException when Amount >= 150
+                    .Step<ProcessPaymentWithExceptionActivity>(setup => setup
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.Amount).From(ctx => 200m) // Force exception
+                        .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
+                        .Output(act => act.PaymentProcessed).To(ctx => ctx.WorkflowData.PaymentProcessed))))
             .Catch<PaymentProcessingException, PaymentFault>(catchBuilder => catchBuilder
                 .Step<HandlePaymentErrorActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)

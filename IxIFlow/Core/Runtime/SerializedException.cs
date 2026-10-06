@@ -15,21 +15,27 @@ internal sealed class SerializedException
     public string? RestorationFailureReason { get; set; }
     public List<ExceptionArgument> Arguments { get; set; } = [];
     public SerializedValue? Fault { get; set; }
+    public string? FaultCatchType { get; set; }
+    public Dictionary<string, SavedExceptionProperty> Properties { get; set; } = [];
 
-    public static SerializedException FromForCatch(Exception error, Type catchType, Type faultType)
+    public static SerializedException FromForCatch(Exception error, Type catchType, Type faultType,
+        IReadOnlyCollection<PropertyInfo>? faultProperties = null)
     {
-        var fault = FaultProjection.For(catchType, faultType).Capture(error);
-        return new SerializedException
-        {
-            Type = error.GetType().AssemblyQualifiedName!,
-            Message = error.Message,
-            IsRestorable = false,
-            Fault = SerializedValue.From(fault)
-        };
+        var projection = FaultProjection.For(catchType, faultType);
+        if (error is DurableWorkflowException carried)
+            return carried.Saved.WithFault(projection.Capture(carried.Saved), catchType);
+        var fault = projection.Capture(error);
+        var saved = From(error, faultProperties);
+        saved.Fault = SerializedValue.From(fault);
+        saved.FaultCatchType = catchType.AssemblyQualifiedName;
+        return saved;
     }
 
-    public static SerializedException From(Exception error)
+    public static SerializedException From(Exception error,
+        IReadOnlyCollection<PropertyInfo>? faultProperties = null)
     {
+        if (error is DurableWorkflowException carried)
+            return carried.Saved;
         var constructors = error.GetType().GetConstructors()
             .OrderByDescending(constructor => constructor.GetParameters().Length);
         var failureReason = "no public constructor can rebuild the exception";
@@ -67,8 +73,60 @@ internal sealed class SerializedException
             Type = error.GetType().AssemblyQualifiedName!,
             Message = error.Message,
             IsRestorable = false,
-            RestorationFailureReason = roundTripFailureReason ?? failureReason
+            RestorationFailureReason = roundTripFailureReason ?? failureReason,
+            Properties = CaptureFaultProperties(error, faultProperties)
         };
+    }
+
+    public Exception ForPropagation() => IsRestorable
+        ? Restore()
+        : new DurableWorkflowException(this);
+
+    public static Type CatchType(Exception error) => error is DurableWorkflowException carried
+        ? WorkflowTypeIdentity.Resolve(carried.Saved.Type) ?? error.GetType()
+        : error.GetType();
+
+    private SerializedException WithFault(object fault, Type catchType) => new()
+    {
+        Type = Type,
+        Message = Message,
+        IsRestorable = IsRestorable,
+        RestorationFailureReason = RestorationFailureReason,
+        Arguments = Arguments,
+        Properties = Properties,
+        Fault = SerializedValue.From(fault),
+        FaultCatchType = catchType.AssemblyQualifiedName
+    };
+
+    private static Dictionary<string, SavedExceptionProperty> CaptureFaultProperties(
+        Exception error, IReadOnlyCollection<PropertyInfo>? properties)
+    {
+        var values = new Dictionary<string, SavedExceptionProperty>(StringComparer.Ordinal);
+        if (properties == null)
+            return values;
+        foreach (var property in properties)
+        {
+            var key = FaultProjection.PropertyKey(property);
+            if (values.ContainsKey(key))
+                continue;
+            try
+            {
+                if (property.GetMethod?.IsPublic != true || property.GetIndexParameters().Length != 0)
+                    throw new InvalidOperationException($"Exception property '{property.Name}' is unavailable");
+                values[key] = new SavedExceptionProperty
+                {
+                    Json = JsonSerializer.Serialize(property.GetValue(error), property.PropertyType)
+                };
+            }
+            catch (Exception captureError)
+            {
+                values[key] = new SavedExceptionProperty
+                {
+                    Error = captureError.GetBaseException().Message
+                };
+            }
+        }
+        return values;
     }
 
     public Exception Restore()
@@ -182,6 +240,17 @@ internal sealed class SerializedException
         }
         return true;
     }
+}
+
+internal sealed class SavedExceptionProperty
+{
+    public string? Json { get; set; }
+    public string? Error { get; set; }
+}
+
+internal sealed class DurableWorkflowException(SerializedException saved) : Exception(saved.Message)
+{
+    public SerializedException Saved { get; } = saved;
 }
 
 internal sealed class ExceptionArgument

@@ -63,7 +63,7 @@ internal sealed class StructuredWorkflowRunner(
         if (options.PersistState)
         {
             await registry.RegisterWorkflowAsync(definition);
-            await PersistAsync(instance, checkpoint, workflowData, scopes, true);
+            await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
         }
         return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
             options.PersistState, cancellationToken);
@@ -132,7 +132,7 @@ internal sealed class StructuredWorkflowRunner(
         continuation.Status = ContinuationStatus.Active;
 
         instance.Status = WorkflowStatus.Running;
-        await PersistAsync(instance, checkpoint, workflowData, scopes, true);
+        await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
 
         var resumed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
             true, cancellationToken);
@@ -310,7 +310,8 @@ internal sealed class StructuredWorkflowRunner(
                 }
                 catch (Exception error)
                 {
-                    if (!CaptureFailure(scopes, checkpoint, completedActivity.Continuation, error))
+                    if (!CaptureFailure(scopes, checkpoint, completedActivity.Continuation,
+                            error, !completedActivity.ActivityReturned))
                         throw;
                 }
                 await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
@@ -441,15 +442,15 @@ internal sealed class StructuredWorkflowRunner(
                 instance.ExecutionSnapshot.Frames.Clear();
             }
             if (persistState)
-                await PersistAsync(instance, checkpoint, workflowData,
-                    new WorkflowScopeCatalog(definition), true);
+                await PersistUnwrappedAsync(instance, checkpoint, workflowData,
+                    new WorkflowScopeCatalog(definition));
             return new WorkflowExecutionResult
             {
                 InstanceId = instance.InstanceId,
                 Status = cancelled ? WorkflowExecutionStatus.Cancelled : WorkflowExecutionStatus.Faulted,
                 WorkflowData = workflowData,
                 ErrorMessage = ex.Message,
-                ErrorType = ex.GetType().FullName,
+                ErrorType = SerializedException.CatchType(ex).FullName,
                 ErrorStackTrace = ex.StackTrace
             };
         }
@@ -884,6 +885,7 @@ internal sealed class StructuredWorkflowRunner(
                 throw outcome.Error ?? new InvalidOperationException("Activity failed without an exception");
             }
 
+            activity.ActivityReturned = true;
             var output = outcome.Output;
             try
             {
@@ -984,7 +986,10 @@ internal sealed class StructuredWorkflowRunner(
         Task<ActivityRunResult> Task,
         CancellationTokenSource Cancellation,
         PreparedActivity? Prepared,
-        int StepNumber);
+        int StepNumber)
+    {
+        public bool ActivityReturned { get; set; }
+    }
 
     private static void Fork(WorkflowScopeCatalog scopes, WorkflowStep step, ExecutionCheckpoint checkpoint,
         ContinuationState parent)
@@ -1109,9 +1114,9 @@ internal sealed class StructuredWorkflowRunner(
     }
 
     private static bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        ContinuationState continuation, Exception error)
+        ContinuationState continuation, Exception error, bool allowStepRetry = true)
     {
-        if (!continuation.CancellationUnwind &&
+        if (allowStepRetry && !continuation.CancellationUnwind &&
             SagaScopeTransitions.HandleStepFailure(scopes, continuation, error))
             return true;
         if (continuation.CancellationUnwind)
@@ -1191,7 +1196,6 @@ internal sealed class StructuredWorkflowRunner(
             if (join == null)
                 return;
             join.IsCompleting = true;
-            join.ResumeParentWithoutAdvance = true;
             foreach (var siblingId in join.ChildContinuationIds.Where(id => id != continuation.Id))
                 CancelTree(checkpoint,
                     checkpoint.Continuations.Single(item => item.Id == siblingId));
@@ -1205,6 +1209,20 @@ internal sealed class StructuredWorkflowRunner(
         Status = WorkflowExecutionStatus.Faulted,
         ErrorMessage = reason
     };
+
+    private async Task PersistUnwrappedAsync(WorkflowInstance instance,
+        ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes)
+    {
+        try
+        {
+            await PersistAsync(instance, checkpoint, workflowData, scopes, true);
+        }
+        catch (CheckpointPersistenceException error)
+        {
+            ExceptionDispatchInfo.Capture(error.InnerException!).Throw();
+            throw;
+        }
+    }
 
     private async Task PersistAsync(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
         object workflowData, WorkflowScopeCatalog scopes, bool persistState)

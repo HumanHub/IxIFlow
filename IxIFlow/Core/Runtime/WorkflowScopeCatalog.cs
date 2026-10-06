@@ -1,3 +1,4 @@
+using System.Reflection;
 using IxIFlow.Builders;
 
 namespace IxIFlow.Core.Runtime;
@@ -17,6 +18,13 @@ internal sealed class WorkflowScopeCatalog
 
     public string Fingerprint { get; }
     public bool ContainsWait => _steps.Values.Any(step => step.StepType == WorkflowStepType.SuspendResume);
+
+    public IReadOnlyCollection<PropertyInfo> FaultProperties(Type exceptionType) => _steps.Values
+        .Where(step => step.StepType == WorkflowStepType.CatchBlock &&
+            step.ExceptionType?.IsAssignableFrom(exceptionType) == true && step.FaultType != null)
+        .SelectMany(step => FaultProjection.For(step.ExceptionType!, step.FaultType!).SourceProperties)
+        .DistinctBy(FaultProjection.PropertyKey)
+        .ToArray();
 
     public IReadOnlyList<WorkflowStep> Steps(string scopeId) => _scopes.TryGetValue(scopeId, out var steps)
         ? steps

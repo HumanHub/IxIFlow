@@ -45,6 +45,23 @@ public sealed class ActivityRecoveryTests
     }
 
     [Fact]
+    public async Task FailureCheckpointFailureExposesTheRepositoryError()
+    {
+        var store = new FaultStore { FailFailureCommits = 3 };
+        using var services = CreateServices(store, new ChargeLedger(store));
+        var definition = Workflow.Create<ChargeData>("FailureCheckpointFailure")
+            .Step<NoopActivity>()
+            .Step<ThrowActivity>(_ => { })
+            .Build();
+
+        var error = await Assert.ThrowsAsync<IOException>(() =>
+            services.GetRequiredService<WorkflowEngine>()
+                .ExecuteWorkflowAsync(definition, new ChargeData()));
+
+        Assert.Equal("Checkpoint unavailable", error.Message);
+    }
+
+    [Fact]
     public async Task StartIsCommittedBeforeTheActivityCallsAnExternalSystem()
     {
         var store = new FaultStore();
@@ -413,6 +430,7 @@ public sealed class ActivityRecoveryTests
         public int FailStartAfterApply { get; set; }
         public int FailCompletionBeforeApply { get; set; }
         public int FailCompletionAfterApply { get; set; }
+        public int FailFailureCommits { get; set; }
 
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
             WorkflowInstance instance, long expectedRevision, string commitId)
@@ -421,6 +439,8 @@ public sealed class ActivityRecoveryTests
             {
                 throw new IOException("Checkpoint unavailable");
             }
+            if (instance.Status == WorkflowStatus.Failed && FailFailureCommits-- > 0)
+                throw new IOException("Checkpoint unavailable");
             var started = instance.ExecutionHistory.LastOrDefault()?.EntryType ==
                 TraceEntryType.ActivityStarted;
             var completed = instance.ExecutionHistory.LastOrDefault()?.EntryType ==
@@ -459,6 +479,12 @@ public sealed class ActivityRecoveryTests
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+    }
+
+    public sealed class ThrowActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("business failure");
     }
 
     public sealed class CancelledRecoveryProbe
