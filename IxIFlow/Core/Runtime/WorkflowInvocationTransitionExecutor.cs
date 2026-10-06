@@ -36,7 +36,8 @@ internal sealed class WorkflowInvocationTransitionExecutor(IWorkflowInvoker invo
             executionState, invocationId, cancellationToken);
         if (executionState.PendingException != null)
             throw executionState.PendingException;
-        if (result.WorkflowStatus == WorkflowExecutionStatus.Suspended)
+        if (result.WorkflowStatus is WorkflowExecutionStatus.Suspended or
+            WorkflowExecutionStatus.Running or WorkflowExecutionStatus.NeedsResolution)
             return new WorkflowInvocationTransitionResult(result.ChildInstanceId!, null, true);
         if (!result.IsSuccess)
             throw result.Exception ?? new InvalidOperationException(result.ErrorMessage ??

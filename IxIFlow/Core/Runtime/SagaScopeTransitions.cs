@@ -39,12 +39,13 @@ internal static class SagaScopeTransitions
                 return;
             }
 
-            var error = state.IsCancellationCleanup ||
-                (state.ErrorAction == SagaContinuationAction.Continue &&
-                 state.CompensationErrors.Count == 0) ? null : state.GetTerminalError();
+            var mayContinue = state.ErrorAction == SagaContinuationAction.Continue &&
+                (state.CompensationErrors.Count == 0 || state.IgnoreCompensationErrors);
+            var error = state.IsCancellationCleanup || mayContinue ? null : state.GetTerminalError();
             var compensationErrors = state.CompensationErrors;
             var isCancellationCleanup = state.IsCancellationCleanup;
-            if (compensationErrors.Count == 0 && !isCancellationCleanup && state.ErrorAction is { } action)
+            if ((compensationErrors.Count == 0 || mayContinue) &&
+                !isCancellationCleanup && state.ErrorAction is { } action)
             {
                 if (action == SagaContinuationAction.Continue)
                 {
@@ -335,6 +336,7 @@ internal static class SagaScopeTransitions
                 ? value as SagaErrorConfiguration
                 : null;
         state.ErrorAction = configuration?.ContinuationAction;
+        state.IgnoreCompensationErrors = configuration?.IgnoreCompensationErrors ?? false;
         state.MaximumRetries = configuration?.RetryPolicy?.MaximumAttempts ?? 0;
         state.CompensationFloor = 0;
         if (configuration?.CompensationStrategy == CompensationStrategy.None)

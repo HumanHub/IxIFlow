@@ -14,6 +14,44 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class EngineContractRegressionTests
 {
     [Fact]
+    public async Task UnnamedDefinitionsHaveDistinctStableRecoveryNames()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        WorkflowDefinition Immediate() => Workflow.Create<RegressionData>()
+            .Step<MarkChildActivity>(_ => { }).Build();
+        WorkflowDefinition Waiting() => Workflow.Create<RegressionData>()
+            .Step<MarkChildActivity>()
+            .WaitFor<RegressionApprovalEvent>("approval").Build();
+
+        string waitingId;
+        string waitingName;
+        using (var firstProvider = new ServiceCollection().AddLogging().AddIxIFlow()
+                   .AddSingleton<IWorkflowStateRepository>(repository).BuildServiceProvider())
+        {
+            var engine = firstProvider.GetRequiredService<IWorkflowEngine>();
+            var first = await engine.ExecuteWorkflowAsync(Immediate(), new RegressionData());
+            var waiting = await engine.ExecuteWorkflowAsync(Waiting(), new RegressionData());
+            Assert.Equal(WorkflowExecutionStatus.Success, first.Status);
+            Assert.Equal(WorkflowExecutionStatus.Suspended, waiting.Status);
+            var savedFirst = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
+            var savedWaiting = (await repository.GetWorkflowInstanceAsync(waiting.InstanceId))!;
+            Assert.False(string.IsNullOrWhiteSpace(savedFirst.WorkflowName));
+            Assert.NotEqual(savedFirst.WorkflowName, savedWaiting.WorkflowName);
+            waitingId = waiting.InstanceId;
+            waitingName = savedWaiting.WorkflowName;
+        }
+
+        using var secondProvider = new ServiceCollection().AddLogging().AddIxIFlow()
+            .AddSingleton<IWorkflowStateRepository>(repository).BuildServiceProvider();
+        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(Waiting());
+        var recovered = await secondProvider.GetRequiredService<IWorkflowEngine>()
+            .ResumeWorkflowAsync(waitingId, "approval", new RegressionApprovalEvent());
+        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+        Assert.Equal(waitingName, (await repository.GetWorkflowInstanceAsync(waitingId))!.WorkflowName);
+    }
+
+    [Fact]
     public void DefinitionFingerprintIncludesOutcomeLabelsAndErrorPolicies()
     {
         WorkflowDefinition Outcome(string label) => new()
@@ -339,6 +377,13 @@ public class EngineContractRegressionTests
         var registrations = services.Where(service => service.ServiceType == typeof(IWorkflowStateRepository)).ToList();
         Assert.Single(registrations);
         Assert.Equal(typeof(ConfiguredStateRepository), registrations[0].ImplementationType);
+        Assert.Equal(ServiceLifetime.Singleton, registrations[0].Lifetime);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateOnBuild = true,
+            ValidateScopes = true
+        });
+        Assert.NotNull(provider.GetRequiredService<IHostedService>());
     }
 
     [Fact]

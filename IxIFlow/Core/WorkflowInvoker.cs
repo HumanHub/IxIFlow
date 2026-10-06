@@ -90,7 +90,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                                     ?? throw new InvalidOperationException(
                                         $"Failed to create instance of {childWorkflowDataType}");
                 await ApplyInputMappingsAsync(childWorkflowData, step.InputMappings, context,
-                    context.PreviousStepData, cancellationToken);
+                    context.PreviousStepData, step.PreviousStepDataType, cancellationToken);
             }
             else
             {
@@ -179,11 +179,12 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
 
             var duration = DateTime.UtcNow - startTime;
 
-            if (childResult.Status == WorkflowExecutionStatus.Suspended)
+            if (childResult.Status is WorkflowExecutionStatus.Suspended or
+                WorkflowExecutionStatus.Running or WorkflowExecutionStatus.NeedsResolution)
                 return new StepExecutionResult
                 {
                     IsSuccess = true,
-                    WorkflowStatus = WorkflowExecutionStatus.Suspended,
+                    WorkflowStatus = childResult.Status,
                     ChildInstanceId = invocationId
                 };
 
@@ -216,7 +217,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
 
             // Apply output mappings to transfer results back to parent
             await ApplyOutputMappingsAsync(childResult.WorkflowData!, step.OutputMappings, context,
-                context.PreviousStepData, cancellationToken);
+                context.PreviousStepData, step.PreviousStepDataType, cancellationToken);
 
             // Add child workflow completed trace
             await TraceInvocationAsync(context.WorkflowInstance, new ExecutionTraceEntry
@@ -310,6 +311,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
         List<PropertyMapping> inputMappings,
         StepExecutionContext<TWorkflowData> context,
         object? previousStepData,
+        Type? previousStepType,
         CancellationToken cancellationToken)
     {
         _logger.LogDebug("Applying {Count} workflow input mappings", inputMappings.Count);
@@ -319,7 +321,8 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             try
             {
                 // Create evaluation context for parent workflow
-                var evaluationContext = CreateEvaluationContext(context, previousStepData);
+                var evaluationContext = CreateEvaluationContext(context, previousStepData,
+                    previousStepType);
 
                 // Execute the compiled source function
                 var sourceValue = mapping.SourceFunction(evaluationContext);
@@ -352,6 +355,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
         List<PropertyMapping> outputMappings,
         StepExecutionContext<TWorkflowData> context,
         object? previousStepData,
+        Type? previousStepType,
         CancellationToken cancellationToken)
     {
         _logger.LogDebug("Applying {Count} workflow output mappings", outputMappings.Count);
@@ -367,7 +371,8 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                     var sourceValue = sourceProperty.GetValue(childWorkflowData);
 
                     // Create evaluation context for parent workflow
-                    var evaluationContext = CreateEvaluationContext(context, previousStepData);
+                    var evaluationContext = CreateEvaluationContext(context, previousStepData,
+                        previousStepType);
 
                     // Use the compiled target assignment function
                     if (mapping.TargetAssignmentFunction != null)
@@ -393,12 +398,16 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
     /// </summary>
     private object CreateEvaluationContext<TWorkflowData>(
         StepExecutionContext<TWorkflowData> context,
-        object? previousStepData)
+        object? previousStepData,
+        Type? previousStepType)
     {
         if (previousStepData != null)
         {
             // Create WorkflowContext<TWorkflowData, TPreviousStepData>
-            var previousStepDataType = previousStepData.GetType();
+            var previousStepDataType = previousStepType ?? previousStepData.GetType();
+            if (!previousStepDataType.IsInstanceOfType(previousStepData))
+                throw new InvalidOperationException(
+                    $"Previous step value does not match the declared type '{previousStepDataType}'");
             var contextType = typeof(WorkflowContext<,>).MakeGenericType(typeof(TWorkflowData), previousStepDataType);
 
             var contextInstance = Activator.CreateInstance(contextType);

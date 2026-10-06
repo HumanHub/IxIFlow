@@ -84,6 +84,11 @@ internal sealed class StructuredWorkflowRunner(
         var step = scopes.Step(pending.StepId);
         if (step.StepType is not (WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation))
             throw new NotSupportedException("This step cannot be resolved by an operator");
+        var child = pending.ChildWorkflowId == null
+            ? null : await repository.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
+        if (ChildIsActive(child))
+            throw new InvalidOperationException(
+                $"Resolve child workflow '{pending.ChildWorkflowId}' before recovering its parent invocation");
         var childDataType = step.StepType == WorkflowStepType.WorkflowInvocation
             ? await ResolveChildDataTypeAsync(step)
             : null;
@@ -132,21 +137,30 @@ internal sealed class StructuredWorkflowRunner(
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             throw new InvalidOperationException("The registered workflow definition differs from the saved version");
-        return checkpoint.Continuations
-            .Where(item => item.Status == ContinuationStatus.WaitingResolution && item.PendingActivity != null)
-            .Select(item =>
-            {
-                var pending = item.PendingActivity!;
-                var step = scopes.Step(pending.StepId);
-                return new PendingActivityInfo(pending.Id, pending.StepId,
-                    step.ActivityType?.Name ?? step.Name, pending.ResolutionReason,
-                    pending.StartedAtUtc,
-                    step.OutputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Output)
-                        .Select(mapping => mapping.TargetProperty).Distinct().ToArray(),
-                    step.StepType is WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation);
-            })
-            .ToArray();
+        var pendingActivities = new List<PendingActivityInfo>();
+        foreach (var continuation in checkpoint.Continuations.Where(item =>
+                     item.Status == ContinuationStatus.WaitingResolution &&
+                     item.PendingActivity != null))
+        {
+            var pending = continuation.PendingActivity!;
+            var step = scopes.Step(pending.StepId);
+            var child = pending.ChildWorkflowId == null
+                ? null : await repository.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
+            pendingActivities.Add(new PendingActivityInfo(pending.Id, pending.StepId,
+                step.ActivityType?.Name ?? step.Name, pending.ResolutionReason,
+                pending.StartedAtUtc,
+                step.OutputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Output)
+                    .Select(mapping => mapping.TargetProperty).Distinct().ToArray(),
+                step.StepType == WorkflowStepType.Activity ||
+                step.StepType == WorkflowStepType.WorkflowInvocation && !ChildIsActive(child)));
+        }
+        return pendingActivities;
     }
+
+    private static bool ChildIsActive(WorkflowInstance? child) =>
+        child != null && child.Status is not (WorkflowStatus.Completed or
+            WorkflowStatus.Failed or WorkflowStatus.Cancelled or
+            WorkflowStatus.TimedOut or WorkflowStatus.Terminated);
 
     private async Task<Type> ResolveChildDataTypeAsync(WorkflowStep step)
     {
@@ -240,6 +254,7 @@ internal sealed class StructuredWorkflowRunner(
                 "Execution timeout must be positive");
         if (options.InstanceId != null && !options.PersistState)
             throw new InvalidOperationException("An explicit workflow instance ID requires state persistence");
+        WorkflowDefinitionIdentity.AssignImplicitName(definition);
         var instance = new WorkflowInstance
         {
             InstanceId = options.InstanceId ?? Guid.NewGuid().ToString("N"),
@@ -256,8 +271,8 @@ internal sealed class StructuredWorkflowRunner(
             Properties = new Dictionary<string, object>(options.Properties)
         };
         var scopes = new WorkflowScopeCatalog(definition);
-        if (!options.PersistState && scopes.ContainsWait)
-            throw new InvalidOperationException("A workflow with waits requires state persistence");
+        if (!options.PersistState && scopes.RequiresPersistence)
+            throw new InvalidOperationException("A workflow with waits or child workflows requires state persistence");
         var checkpoint = new ExecutionCheckpoint
         {
             DefinitionFingerprint = scopes.Fingerprint,
@@ -345,12 +360,6 @@ internal sealed class StructuredWorkflowRunner(
                 return Rejected(instanceId, "The workflow instance is not waiting");
 
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
-            var candidates = checkpoint.Waits.Where(wait =>
-                (key == null || wait.Key == key) &&
-                WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(@event.GetType()) == true).ToList();
-            if (candidates.Count == 0)
-                return Rejected(instanceId, "No active wait matches this event and key");
-
             var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
             if (definition == null)
                 return Rejected(instanceId, "The registered workflow definition is unavailable");
@@ -362,37 +371,6 @@ internal sealed class StructuredWorkflowRunner(
             var scopes = new WorkflowScopeCatalog(definition);
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
                 return Rejected(instanceId, "The registered workflow definition differs from the saved version");
-            if (HasDueDeadline(checkpoint))
-            {
-                await using var deadlineOwner = await WorkflowExecutionLease.TryAcquireAsync(
-                    repository, instance, _leaseSettings);
-                if (deadlineOwner == null)
-                    return Busy(instanceId);
-                var deadlineCurrent = await repository.GetWorkflowInstanceAsync(instanceId);
-                if (deadlineCurrent?.Revision != instance.Revision ||
-                    deadlineCurrent.Status != instance.Status)
-                    continue;
-                instance.Status = WorkflowStatus.Running;
-                await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
-                var afterDeadline = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-                    true, deadlineOwner, cancellationToken);
-                if (afterDeadline.Status == WorkflowExecutionStatus.Suspended)
-                    continue;
-                return afterDeadline;
-            }
-            var matching = StructuredWaitMatcher.FindMatches(checkpoint, scopes, workflowData,
-                @event, services, key);
-            if (matching.Count == 0)
-                return new WorkflowExecutionResult
-                {
-                    InstanceId = instanceId,
-                    Status = WorkflowExecutionStatus.Suspended,
-                    WorkflowData = workflowData,
-                    ErrorMessage = "The event did not satisfy any active wait"
-                };
-            if (matching.Count > 1)
-                return Rejected(instanceId, "The event satisfies more than one wait; provide a unique key");
-
             await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
                 repository, instance, _leaseSettings);
             if (owner == null)
@@ -406,6 +384,43 @@ internal sealed class StructuredWorkflowRunner(
                     ? Busy(instanceId)
                     : Rejected(instanceId, "The wait changed before this event could be accepted");
             }
+            if (await ReconcileChildWaitsAsync(checkpoint))
+            {
+                instance.Status = WorkflowStatus.Running;
+                await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+                var refreshed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
+                    true, owner, cancellationToken);
+                if (refreshed.Status == WorkflowExecutionStatus.Suspended)
+                    continue;
+                return refreshed;
+            }
+            if (HasDueDeadline(checkpoint))
+            {
+                instance.Status = WorkflowStatus.Running;
+                await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+                var afterDeadline = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
+                    true, owner, cancellationToken);
+                if (afterDeadline.Status == WorkflowExecutionStatus.Suspended)
+                    continue;
+                return afterDeadline;
+            }
+            var candidates = checkpoint.Waits.Where(wait =>
+                (key == null || wait.Key == key) &&
+                WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(@event.GetType()) == true).ToList();
+            if (candidates.Count == 0)
+                return Rejected(instanceId, "No active wait matches this event and key");
+            var matching = StructuredWaitMatcher.FindMatches(checkpoint, scopes, workflowData,
+                @event, services, key);
+            if (matching.Count == 0)
+                return new WorkflowExecutionResult
+                {
+                    InstanceId = instanceId,
+                    Status = WorkflowExecutionStatus.Suspended,
+                    WorkflowData = workflowData,
+                    ErrorMessage = "The event did not satisfy any active wait"
+                };
+            if (matching.Count > 1)
+                return Rejected(instanceId, "The event satisfies more than one wait; provide a unique key");
 
             var cancellationReason = await repository.GetCancellationRequestAsync(instanceId);
             if (cancellationReason != null && !checkpoint.CancellationRequested)
@@ -492,8 +507,9 @@ internal sealed class StructuredWorkflowRunner(
                 ? Busy(instanceId)
                 : Rejected(instanceId, "The workflow instance changed before recovery could start");
         foreach (var continuation in checkpoint.Continuations.Where(item =>
-                     item.PendingActivity != null && item.Status is
-                         ContinuationStatus.WaitingResolution or ContinuationStatus.Cancelling))
+                     item.PendingActivity is { ChildWorkflowId: null } &&
+                     item.Status is (ContinuationStatus.WaitingResolution or
+                         ContinuationStatus.Cancelling)))
             continuation.Status = ContinuationStatus.Active;
         instance.Status = WorkflowStatus.Running;
         if (cancellationReason != null && !checkpoint.CancellationRequested &&
@@ -542,7 +558,7 @@ internal sealed class StructuredWorkflowRunner(
                 if (deadlineAdvanced)
                     await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
                 await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
-                    scopes, persistState);
+                    scopes, persistState, ObservedCancellation(owner));
                 foreach (var activity in inFlight.Values.Where(item =>
                              item.Continuation.Status == ContinuationStatus.Cancelling))
                     activity.Cancellation.Cancel();
@@ -575,7 +591,7 @@ internal sealed class StructuredWorkflowRunner(
                     if (HasDueDeadline(checkpoint))
                         break;
                     await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
-                        scopes, persistState);
+                        scopes, persistState, ObservedCancellation(owner));
                     if (!checkpoint.CancellationRequested &&
                         owner?.Cancellation.IsCompleted == true &&
                         checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
@@ -659,7 +675,7 @@ internal sealed class StructuredWorkflowRunner(
                 if (inFlight.Count == 0 && nextRetry == null)
                 {
                     if (await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
-                            scopes, persistState))
+                            scopes, persistState, ObservedCancellation(owner)))
                         continue;
                     break;
                 }
@@ -673,7 +689,7 @@ internal sealed class StructuredWorkflowRunner(
                 Task? retryTimer = null;
                 var nextWake = new[] { nextRetry,
                         inFlight.Count > 0 ? nextWaitDeadline : null,
-                        checkpoint.TimedOut ? null : checkpoint.ExecutionDeadlineUtc }
+                        checkpoint.CancellationRequested ? null : checkpoint.ExecutionDeadlineUtc }
                     .Where(due => due != null).Min();
                 if (nextWake is { } retryAt)
                 {
@@ -933,22 +949,30 @@ internal sealed class StructuredWorkflowRunner(
         }
     }
 
+    private static CancellationReason? ObservedCancellation(WorkflowExecutionLease? owner) =>
+        owner?.Cancellation.IsCompletedSuccessfully == true
+            ? owner.Cancellation.Result
+            : null;
+
     private async Task<bool> ApplyCancellationRequestAsync(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes,
-        bool persistState)
+        bool persistState, CancellationReason? observedReason = null)
     {
         if (!persistState || checkpoint.CancellationRequested)
             return false;
-        CancellationReason? requested;
-        try
+        var requested = observedReason;
+        if (requested == null)
         {
-            requested = await repository.GetCancellationRequestAsync(instance.InstanceId);
-        }
-        catch (Exception)
-        {
-            // The lease watcher tolerates a short store outage and detects a
-            // persistent one. Keep committed activity attempts in this owner.
-            return false;
+            try
+            {
+                requested = await repository.GetCancellationRequestAsync(instance.InstanceId);
+            }
+            catch (Exception)
+            {
+                // The lease watcher detects a persistent store outage.
+                // Keep committed activity attempts in this owner.
+                return false;
+            }
         }
         if (requested == null)
             return false;
@@ -1090,13 +1114,37 @@ internal sealed class StructuredWorkflowRunner(
                 continuation.Status = ContinuationStatus.Active;
                 changed = true;
             }
-            else if (child.Status == WorkflowStatus.NeedsResolution &&
-                     continuation.Status != ContinuationStatus.WaitingResolution)
+            else if (child.Status == WorkflowStatus.Running &&
+                     (continuation.Status != ContinuationStatus.Waiting ||
+                      group.Any(wait => !string.IsNullOrEmpty(wait.EventType) ||
+                                        wait.ChildWaitId != null)))
             {
-                continuation.Status = ContinuationStatus.WaitingResolution;
-                continuation.PendingActivity!.ResolutionReason =
-                    $"Child workflow '{child.InstanceId}' needs activity resolution";
+                ProjectChildLifecycleWait(checkpoint, continuation, child.InstanceId,
+                    needsResolution: false);
                 changed = true;
+            }
+            else if (child.Status == WorkflowStatus.NeedsResolution &&
+                     (continuation.Status != ContinuationStatus.WaitingResolution ||
+                      group.Any(wait => !string.IsNullOrEmpty(wait.EventType) ||
+                                        wait.ChildWaitId != null)))
+            {
+                ProjectChildLifecycleWait(checkpoint, continuation, child.InstanceId,
+                    needsResolution: true);
+                changed = true;
+            }
+            else if (child.Status == WorkflowStatus.Suspended &&
+                     ShouldCancelInvokedChild(continuation))
+            {
+                // A cancelled parent polls the child's cancellation rather than
+                // exposing a child event wait that it no longer intends to accept.
+                if (continuation.Status != ContinuationStatus.Waiting ||
+                    group.Any(wait => !string.IsNullOrEmpty(wait.EventType) ||
+                                      wait.ChildWaitId != null))
+                {
+                    ProjectChildLifecycleWait(checkpoint, continuation, child.InstanceId,
+                        needsResolution: false);
+                    changed = true;
+                }
             }
             else if (child.Status == WorkflowStatus.Suspended)
             {
@@ -1573,9 +1621,7 @@ internal sealed class StructuredWorkflowRunner(
             instance.ExecutionHistory.Add(startTrace);
         await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
 
-        if (continuation.CancellationUnwind &&
-            !TryScopeTransitions.IsInsideFinally(continuation) &&
-            !SagaScopeTransitions.IsInsideCompensation(continuation) &&
+        if (ShouldCancelInvokedChild(continuation) &&
             pending.Resolution == null &&
             pending.ChildWorkflowId != null)
         {
@@ -1598,14 +1644,24 @@ internal sealed class StructuredWorkflowRunner(
                 if (childResult.Status == WorkflowExecutionStatus.Running)
                     childResult = await engine.RecoverWorkflowAsync(pending.ChildWorkflowId,
                         cancellation.Token);
-                var cancellationOutcome = childResult.Status == WorkflowExecutionStatus.Cancelled
-                    ? ActivityRunResult.Skipped()
-                    : ActivityRunResult.Unresolved(
-                        $"Child workflow '{pending.ChildWorkflowId}' has not completed cancellation");
-                return new RunningActivity(continuation, step,
-                    Task.FromResult(cancellationOutcome), cancellation, null,
-                    continuation.Stack[^1].NextStepIndex);
+                if (childResult.Status is WorkflowExecutionStatus.Cancelled or
+                    WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended or
+                    WorkflowExecutionStatus.NeedsResolution)
+                {
+                    var cancellationOutcome = childResult.Status == WorkflowExecutionStatus.Cancelled
+                        ? ActivityRunResult.Skipped()
+                        : ActivityRunResult.Suspended(pending.ChildWorkflowId);
+                    return new RunningActivity(continuation, step,
+                        Task.FromResult(cancellationOutcome), cancellation, null,
+                        continuation.Stack[^1].NextStepIndex);
+                }
+                // A terminal child failure or completion is observed through the
+                // ordinary invocation path below, including its saved output or error.
             }
+            if (child?.Status == WorkflowStatus.Cancelled)
+                return new RunningActivity(continuation, step,
+                    Task.FromResult(ActivityRunResult.Skipped()), cancellation, null,
+                    continuation.Stack[^1].NextStepIndex);
         }
 
         Task<ActivityRunResult> task;
@@ -1648,12 +1704,24 @@ internal sealed class StructuredWorkflowRunner(
         return await task;
     }
 
-    private async Task ProjectChildWaitsAsync(ExecutionCheckpoint checkpoint,
+    private async Task ProjectChildStateAsync(ExecutionCheckpoint checkpoint,
         ContinuationState continuation, string childInstanceId)
     {
         var child = await repository.GetWorkflowInstanceAsync(childInstanceId)
             ?? throw new InvalidOperationException($"Child workflow '{childInstanceId}' was not saved");
-        if (child.Status != WorkflowStatus.Suspended || !HasStructuredCheckpoint(child))
+        if (child.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
+            child.Status == WorkflowStatus.Suspended && ShouldCancelInvokedChild(continuation))
+        {
+            ProjectChildLifecycleWait(checkpoint, continuation, childInstanceId,
+                child.Status == WorkflowStatus.NeedsResolution);
+            return;
+        }
+        if (child.Status != WorkflowStatus.Suspended)
+        {
+            continuation.Status = ContinuationStatus.Active;
+            return;
+        }
+        if (!HasStructuredCheckpoint(child))
             throw new InvalidOperationException(
                 $"Child workflow '{childInstanceId}' has no saved waits to project");
         var childCheckpoint = ExecutionCheckpoint.Read(child.ExecutionStateJson);
@@ -1662,6 +1730,31 @@ internal sealed class StructuredWorkflowRunner(
                 $"Suspended child workflow '{childInstanceId}' has no active waits");
 
         ProjectChildWaits(checkpoint, continuation, childInstanceId, childCheckpoint);
+    }
+
+    private static bool ShouldCancelInvokedChild(ContinuationState continuation) =>
+        continuation.CancellationUnwind &&
+        !TryScopeTransitions.IsInsideFinally(continuation) &&
+        !SagaScopeTransitions.IsInsideCompensation(continuation);
+
+    private static void ProjectChildLifecycleWait(ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, string childInstanceId, bool needsResolution)
+    {
+        var pending = continuation.PendingActivity
+            ?? throw new InvalidOperationException("A child has no parent invocation");
+        checkpoint.Waits.RemoveAll(wait => wait.ChildWorkflowId == childInstanceId &&
+            wait.ContinuationId == continuation.Id);
+        checkpoint.Waits.Add(new WaitState
+        {
+            ContinuationId = continuation.Id,
+            StepId = pending.StepId,
+            Key = "child-workflow",
+            ChildWorkflowId = childInstanceId
+        });
+        continuation.Status = needsResolution
+            ? ContinuationStatus.WaitingResolution : ContinuationStatus.Waiting;
+        pending.ResolutionReason = needsResolution
+            ? $"Child workflow '{childInstanceId}' needs activity resolution" : null;
     }
 
     private static void ProjectChildWaits(ExecutionCheckpoint checkpoint,
@@ -1708,7 +1801,7 @@ internal sealed class StructuredWorkflowRunner(
 
             if (outcome.Kind == ActivityRunKind.Suspended)
             {
-                await ProjectChildWaitsAsync(checkpoint, activity.Continuation,
+                await ProjectChildStateAsync(checkpoint, activity.Continuation,
                     outcome.ChildWorkflowId!);
                 return;
             }
@@ -1724,9 +1817,7 @@ internal sealed class StructuredWorkflowRunner(
             {
                 if (outcome.Error is OperationCanceledException &&
                     activity.Step.StepType == WorkflowStepType.WorkflowInvocation &&
-                    activity.Continuation.CancellationUnwind &&
-                    !TryScopeTransitions.IsInsideFinally(activity.Continuation) &&
-                    !SagaScopeTransitions.IsInsideCompensation(activity.Continuation) &&
+                    ShouldCancelInvokedChild(activity.Continuation) &&
                     activity.Continuation.PendingActivity?.ChildWorkflowId is { } childId &&
                     (await repository.GetWorkflowInstanceAsync(childId))?.Status is
                         (WorkflowStatus.Running or WorkflowStatus.Suspended or
@@ -2159,7 +2250,7 @@ internal sealed class StructuredWorkflowRunner(
             instance.ExecutionSnapshot = snapshot;
             instance.NextDueAtUtc = instance.Status is WorkflowStatus.Running or
                     WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution
-                ? new[] { checkpoint.TimedOut ? null : checkpoint.ExecutionDeadlineUtc }
+                ? new[] { checkpoint.CancellationRequested ? null : checkpoint.ExecutionDeadlineUtc }
                     .Concat(checkpoint.Waits.Select(wait => wait.DeadlineUtc))
                     .Concat(checkpoint.Waits.Any(wait => wait.ChildWorkflowId != null)
                         ? [DateTime.UtcNow.AddSeconds(5)] : [])
