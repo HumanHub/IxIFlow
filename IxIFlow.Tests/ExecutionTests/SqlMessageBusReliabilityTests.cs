@@ -8,6 +8,84 @@ public class SqlMessageBusReliabilityTests
 {
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
+    public async Task GenericConsumerContinuesAfterLosingAcknowledgementClaim()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var token = Guid.NewGuid().ToString("N");
+        try
+        {
+            using var bus = new SqlMessageBus(connectionString);
+            await bus.PublishAsync(new GenericConsumerProbe { Token = token + "-first" });
+            await bus.PublishAsync(new GenericConsumerProbe { Token = token + "-second" });
+            await using var consumer = bus.ConsumeAsync<GenericConsumerProbe>().GetAsyncEnumerator();
+            Assert.True(await consumer.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            var first = consumer.Current.Token;
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            Assert.Equal(1, await connection.ExecuteAsync("""
+                UPDATE dbo.WorkflowMessages
+                SET ProcessedAt = SYSUTCDATETIME(), ClaimToken = NULL, ClaimedUntil = NULL
+                WHERE MessageType = @MessageType AND Payload LIKE @Payload
+                  AND ProcessedAt IS NULL
+                """, new { MessageType = typeof(GenericConsumerProbe).AssemblyQualifiedName,
+                    Payload = $"%{first}%" }));
+
+            Assert.True(await consumer.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.NotEqual(first, consumer.Current.Token);
+        }
+        finally
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            await connection.ExecuteAsync("""
+                DELETE FROM dbo.WorkflowMessages
+                WHERE MessageType = @MessageType AND Payload LIKE @Payload
+                """, new { MessageType = typeof(GenericConsumerProbe).AssemblyQualifiedName,
+                    Payload = $"%{token}%" });
+        }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task GenericConsumerAcknowledgesEachMessageAfterProcessing()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var token = Guid.NewGuid().ToString("N");
+        try
+        {
+            using var bus = new SqlMessageBus(connectionString);
+            await bus.PublishAsync(new GenericConsumerProbe { Token = token + "-first" });
+            await bus.PublishAsync(new GenericConsumerProbe { Token = token + "-second" });
+            await using var consumer = bus.ConsumeAsync<GenericConsumerProbe>().GetAsyncEnumerator();
+            Assert.True(await consumer.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            var first = consumer.Current.Token;
+            Assert.True(await consumer.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.NotEqual(first, consumer.Current.Token);
+
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            var acknowledged = await connection.ExecuteScalarAsync<int>("""
+                SELECT COUNT(*) FROM dbo.WorkflowMessages
+                WHERE MessageType = @MessageType AND Payload LIKE @Payload
+                  AND ProcessedAt IS NOT NULL
+                """, new { MessageType = typeof(GenericConsumerProbe).AssemblyQualifiedName,
+                    Payload = $"%{token}%" });
+            Assert.Equal(1, acknowledged);
+        }
+        finally
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            await connection.ExecuteAsync("""
+                DELETE FROM dbo.WorkflowMessages
+                WHERE MessageType = @MessageType AND Payload LIKE @Payload
+                """, new { MessageType = typeof(GenericConsumerProbe).AssemblyQualifiedName,
+                    Payload = $"%{token}%" });
+        }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
     public async Task RetriedCompletionPublishQueuesOneEventPerInstance()
     {
         var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
@@ -611,6 +689,11 @@ public sealed class MaintenanceProbe
 }
 
 public sealed class PoolProbe
+{
+    public string Token { get; set; } = string.Empty;
+}
+
+public sealed class GenericConsumerProbe
 {
     public string Token { get; set; } = string.Empty;
 }

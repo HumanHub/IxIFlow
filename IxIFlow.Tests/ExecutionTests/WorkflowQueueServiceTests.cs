@@ -485,6 +485,33 @@ public sealed class WorkflowQueueServiceTests
     }
 
     [Fact]
+    public async Task AcknowledgeStoreErrorLeavesCommandForRedeliveryAndKeepsConsumerRunning()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.AddTransient<NoopActivity>();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<QueueData>("AcknowledgeFailure")
+            .Step<NoopActivity>().Build();
+        await provider.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(definition);
+        var bus = new AcknowledgeFailureBus(definition);
+        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
+            new InMemoryHostRegistry());
+        using var service = new TestQueueService(provider, bus, coordinator);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var running = service.RunAsync(stop.Token);
+        await bus.SecondAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        stop.Cancel();
+        await running.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(0, bus.RejectedCount);
+        Assert.Equal(2, bus.AcknowledgeAttempts);
+    }
+
+    [Fact]
     public async Task BusyResumeCommandIsClassifiedForDeferral()
     {
         var services = new ServiceCollection();
@@ -623,6 +650,72 @@ public sealed class WorkflowQueueServiceTests
                     bus.SecondRejected.TrySetResult();
                 return Task.CompletedTask;
             }
+        }
+    }
+
+    private sealed class AcknowledgeFailureBus(WorkflowDefinition definition) : IAcknowledgingMessageBus
+    {
+        public TaskCompletionSource SecondAcknowledged { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int AcknowledgeAttempts;
+        public int RejectedCount;
+
+        public Task PublishAsync<T>(T message) where T : class => Task.CompletedTask;
+        public Task StopAsync() => Task.CompletedTask;
+        public async IAsyncEnumerable<T> ConsumeAsync<T>() where T : class
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public async IAsyncEnumerable<IMessageDelivery<T>> ConsumeDeliveriesAsync<T>(
+            string? targetHostId = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            where T : class
+        {
+            if (typeof(T) == typeof(ExecuteWorkflowCommand))
+            {
+                yield return (IMessageDelivery<T>)(object)new AcknowledgeFailureDelivery(this, definition);
+                yield return (IMessageDelivery<T>)(object)new AcknowledgeFailureDelivery(this, definition);
+            }
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+        }
+
+        private sealed class AcknowledgeFailureDelivery(
+            AcknowledgeFailureBus bus, WorkflowDefinition definition) :
+            IMessageDelivery<ExecuteWorkflowCommand>
+        {
+            public ExecuteWorkflowCommand Message { get; } = new()
+            {
+                InstanceId = Guid.NewGuid().ToString("N"),
+                TargetHostId = "test-host",
+                WorkflowName = definition.Name,
+                WorkflowVersion = definition.Version,
+                WorkflowDataType = typeof(QueueData).AssemblyQualifiedName!,
+                WorkflowDataJson = "{}"
+            };
+
+            public Task AcknowledgeAsync()
+            {
+                if (Interlocked.Increment(ref bus.AcknowledgeAttempts) == 1)
+                    throw new IOException("SQL acknowledgement unavailable");
+                bus.SecondAcknowledged.TrySetResult();
+                return Task.CompletedTask;
+            }
+
+            public Task RejectAsync(Exception error)
+            {
+                Interlocked.Increment(ref bus.RejectedCount);
+                throw new IOException("SQL rejection unavailable");
+            }
+
+            public Task DeferAsync(TimeSpan delay) => Task.CompletedTask;
         }
     }
 
