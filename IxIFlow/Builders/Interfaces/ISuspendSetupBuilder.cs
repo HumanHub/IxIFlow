@@ -25,6 +25,12 @@ public interface ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStep
     /// <param name="property">Expression identifying the property</param>
     ISuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData> Output<TProperty>(
         Expression<Func<TResumeEvent, TProperty>> property);
+
+    ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> TimeoutAfter(
+        TimeSpan duration);
+
+    ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> OnTimeout(
+        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure);
 }
 
 /// <summary>

@@ -60,6 +60,12 @@ internal static class SagaScopeTransitions
                         throw new InvalidOperationException("Saga retry exhausted", error);
                     }
                     state.RetryCount++;
+                    var retryConfiguration = step.CatchBlocks[state.ErrorHandlerIndex]
+                        .StepMetadata.TryGetValue("SagaErrorConfig", out var retryValue)
+                        ? retryValue as SagaErrorConfiguration
+                        : null;
+                    continuation.RetryAfterUtc = RetrySchedule.NextAttemptUtc(
+                        retryConfiguration?.RetryPolicy, state.RetryCount);
                     state.AcceptedWaitCursor = 0;
                     state.CompletedSteps.Clear();
                     state.CompensationErrors.Clear();
@@ -203,6 +209,8 @@ internal static class SagaScopeTransitions
         if (attempts >= (handler.RetryPolicy?.MaximumAttempts ?? 0))
             return false;
         position.StepRetryCounts[position.NextStepIndex] = attempts + 1;
+        continuation.RetryAfterUtc = RetrySchedule.NextAttemptUtc(
+            handler.RetryPolicy, attempts + 1);
         return true;
     }
 

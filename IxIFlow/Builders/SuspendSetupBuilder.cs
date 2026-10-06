@@ -10,6 +10,7 @@ namespace IxIFlow.Builders;
 /// </summary>
 public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> 
     : ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
+    where TWorkflowData : class
     where TResumeEvent : class
     where TPreviousStepData : class
 {
@@ -37,6 +38,26 @@ public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
     {
         return new SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData>(_step, property);
     }
+
+    public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> TimeoutAfter(
+        TimeSpan duration)
+    {
+        if (duration <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(duration), "Wait timeout must be positive");
+        _step.WaitTimeout = duration;
+        return this;
+    }
+
+    public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> OnTimeout(
+        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        if (_step.TimeoutSteps.Count != 0)
+            throw new InvalidOperationException("The wait already has a timeout branch");
+        configure(new WorkflowBuilder<TWorkflowData, TPreviousStepData>(
+            _step.TimeoutSteps, "WaitTimeout", 1));
+        return this;
+    }
 }
 
 /// <summary>
@@ -44,11 +65,22 @@ public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
 /// </summary>
 public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData> 
     : ISuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData>
+    where TWorkflowData : class
     where TResumeEvent : class
     where TPreviousStepData : class
 {
     private readonly Expression<Func<TResumeEvent, TProperty>> _propertyExpression;
     private readonly WorkflowStep _step;
+
+    public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> TimeoutAfter(
+        TimeSpan duration) =>
+        new SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>(_step)
+            .TimeoutAfter(duration);
+
+    public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> OnTimeout(
+        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure) =>
+        new SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>(_step)
+            .OnTimeout(configure);
 
     public SuspendInputBuilder(WorkflowStep step, Expression<Func<TResumeEvent, TProperty>> propertyExpression)
     {
@@ -123,11 +155,22 @@ public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevio
 /// </summary>
 public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData> 
     : ISuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData>
+    where TWorkflowData : class
     where TResumeEvent : class
     where TPreviousStepData : class
 {
     private readonly Expression<Func<TResumeEvent, TProperty>> _propertyExpression;
     private readonly WorkflowStep _step;
+
+    public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> TimeoutAfter(
+        TimeSpan duration) =>
+        new SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>(_step)
+            .TimeoutAfter(duration);
+
+    public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> OnTimeout(
+        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure) =>
+        new SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>(_step)
+            .OnTimeout(configure);
 
     public SuspendOutputBuilder(WorkflowStep step, Expression<Func<TResumeEvent, TProperty>> propertyExpression)
     {

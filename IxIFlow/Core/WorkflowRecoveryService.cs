@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
 
-/// <summary>Finds interrupted running instances for lease-aware recovery.</summary>
+/// <summary>Wakes due waits and deadlines, and recovers interrupted instances.</summary>
 public sealed class WorkflowRecoveryService(
     IServiceScopeFactory scopes,
     IWorkflowStateRepository repository,
@@ -38,7 +38,7 @@ public sealed class WorkflowRecoveryService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
         do
         {
             try

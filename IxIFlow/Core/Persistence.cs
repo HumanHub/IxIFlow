@@ -434,7 +434,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
 
     private static bool IsTerminal(WorkflowStatus status) => status is
         WorkflowStatus.Completed or WorkflowStatus.Failed or
-        WorkflowStatus.Cancelled or WorkflowStatus.Terminated;
+        WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut;
 
     public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
     {
@@ -478,7 +478,9 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                      (!_leases.TryGetValue(instance.InstanceId, out var lease) || lease.ExpiresAtUtc <= now)) ||
                     (instance.Status == WorkflowStatus.Suspended &&
                      _cancellations.ContainsKey(instance.InstanceId) &&
-                     !_acknowledgedCancellations.Contains(instance.InstanceId)))
+                     !_acknowledgedCancellations.Contains(instance.InstanceId)) ||
+                    (instance.Status == WorkflowStatus.Suspended &&
+                     instance.NextDueAtUtc <= now))
                 .Select(SnapshotStructured)
                 .ToArray();
             return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
@@ -559,7 +561,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 (hasLease && (lease.Token != instance.ExecutionLeaseToken ||
                               lease.ExpiresAtUtc <= DateTime.UtcNow)) ||
                 (!hasLease && instance.ExecutionLeaseToken != null) ||
-                ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated) &&
+                ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or
+                    WorkflowStatus.TimedOut) &&
                  _cancellations.ContainsKey(instance.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
