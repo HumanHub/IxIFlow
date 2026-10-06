@@ -732,6 +732,33 @@ public class StructuredTryWaitTests
     }
 
     [Fact]
+    public async Task FailureInParallelNestedInsideFinallyDoesNotRestartTheJoin()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<FinallyJoinProbe>();
+        services.AddTransient<CountFinallyWinnerActivity>();
+        services.AddIxIFlow();
+        services.AddSingleton<IWorkflowStateRepository>(new BoundedCheckpointStore());
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<TryData>("ParallelInsideFinallyFailure")
+            .Step<StartActivity>()
+            .Try(body => body.Step<StartActivity>(_ => { }))
+            .Finally(body => body.Parallel(parallel => parallel.WaitAny()
+                .Do(branch => branch.Step<CountFinallyWinnerActivity>(_ => { }))
+                .Do(branch => branch.Try(inner => inner.WaitFor<Approval>("approval"))
+                    .Finally(cleanup => cleanup.Step<ThrowActivity>(_ => { })))))
+            .Build();
+
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new TryData())
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Equal(1, provider.GetRequiredService<FinallyJoinProbe>().WinnerRuns);
+    }
+
+    [Fact]
     public async Task UncaughtParallelFailureCanWaitForSiblingCleanupBeforeFaulting()
     {
         using var services = CreateServices();
@@ -1104,6 +1131,28 @@ public class StructuredTryWaitTests
     }
 
     [Fact]
+    public async Task FailureInCatchDoesNotEnterAnotherCatchOnTheSameTry()
+    {
+        using var services = CreateServices();
+        var definition = Workflow.Create<TryData>("CatchFailureDoesNotMatchSibling")
+            .Step<StartActivity>()
+            .Try(body => body.Step<ThrowActivity>(_ => { }))
+            .Catch<InvalidOperationException, MessageFault>(body => body.Step<ThrowArgumentActivity>(_ => { }))
+            .Catch<ArgumentException, MessageFault>(body => body.Step<CountActivity>(setup => setup
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch)))
+            .Finally(body => body.Step<CountActivity>(setup => setup
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new TryData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Equal(0, Data(result).Catch);
+        Assert.Equal(1, Data(result).Finally);
+    }
+
+    [Fact]
     public async Task WaitInsideFinally_CompletesBeforeTheNextStep()
     {
         using var services = CreateServices();
@@ -1403,6 +1452,57 @@ public class StructuredTryWaitTests
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("boom");
+    }
+
+    public sealed class FinallyJoinProbe
+    {
+        public int WinnerRuns;
+    }
+
+    public sealed class BoundedCheckpointStore : IWorkflowStateRepository
+    {
+        private readonly InMemoryWorkflowStateRepository _inner = new();
+        private int _commits;
+
+        public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
+            WorkflowInstance instance, long expectedRevision, string commitId)
+        {
+            if (Interlocked.Increment(ref _commits) > 80)
+                throw new InvalidOperationException("Parallel cleanup exceeded the checkpoint budget");
+            return _inner.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
+        }
+
+        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
+            _inner.SaveWorkflowInstanceAsync(instance);
+        public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance) =>
+            _inner.TryClaimSuspendedWorkflowAsync(instance);
+        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
+            _inner.GetWorkflowInstanceAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
+            _inner.GetWorkflowInstancesByNameAsync(workflowName);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
+            _inner.GetWorkflowInstancesByStatusAsync(status);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
+            _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task DeleteWorkflowInstanceAsync(string instanceId) =>
+            _inner.DeleteWorkflowInstanceAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync() =>
+            _inner.GetSuspendedWorkflowsReadyForResumptionAsync();
+    }
+
+    public sealed class CountFinallyWinnerActivity(FinallyJoinProbe probe) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref probe.WinnerRuns);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class ThrowArgumentActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            throw new ArgumentException("catch failed");
     }
 
     public sealed class CountActivity : IAsyncActivity

@@ -111,10 +111,11 @@ consumed the event. A temporary checkpoint-store error leaves the last saved
 position available for recovery. The in-memory store snapshots structured
 instances at its save and read boundaries to preserve that behavior.
 
-Parallel activities start concurrently. Each branch receives a snapshot of
-workflow data; declared output mappings are applied to shared data by the
-single runner when an activity finishes. Direct mutations to the branch's
-workflow data snapshot are not merged. A losing WaitAny or conditional branch
+Parallel activities start concurrently and receive the same workflow data
+object. The runner applies declared output mappings when activities finish.
+Direct mutations by activities may overlap, so workflow authors must
+synchronize access to shared mutable state when their branches require it.
+A losing WaitAny or conditional branch
 receives cancellation, and the runner waits for its in-flight activity to
 settle before completing the instance. A cancelled branch runs its remaining
 Finally work before the parent proceeds; Finally may itself wait and may contain
