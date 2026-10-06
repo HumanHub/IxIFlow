@@ -119,9 +119,40 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IMessageMaintenance, IDis
     /// </summary>
     public async IAsyncEnumerable<T> ConsumeAsync<T>() where T : class
     {
+        var consecutiveAcknowledgementFailures = 0;
+        var messageType = typeof(T).AssemblyQualifiedName ?? typeof(T).Name;
         await foreach (var delivery in ConsumeDeliveriesAsync<T>())
         {
             yield return delivery.Message;
+            try
+            {
+                await delivery.AcknowledgeAsync();
+                consecutiveAcknowledgementFailures = 0;
+            }
+            catch (MessageClaimLostException error)
+            {
+                consecutiveAcknowledgementFailures = 0;
+                _logger?.LogWarning(error,
+                    "Message claim was lost before generic consumer acknowledgement for {MessageType}",
+                    messageType);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                consecutiveAcknowledgementFailures = Math.Min(
+                    consecutiveAcknowledgementFailures + 1, 6);
+                _logger?.LogWarning(error,
+                    "Could not acknowledge generic consumer message {MessageType}; retrying",
+                    messageType);
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1 <<
+                        (consecutiveAcknowledgementFailures - 1)), _cancellationTokenSource.Token);
+                }
+                catch (OperationCanceledException) when (_cancellationTokenSource.IsCancellationRequested)
+                {
+                    break;
+                }
+            }
         }
     }
 
