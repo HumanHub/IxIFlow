@@ -763,7 +763,21 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
 {
     private readonly ConcurrentDictionary<string, WorkflowDefinition> _workflows = new();
 
+    public WorkflowVersionRegistry() { }
+
+    public WorkflowVersionRegistry(IEnumerable<WorkflowDefinition> definitions)
+    {
+        foreach (var definition in definitions)
+            RegisterWorkflow(definition);
+    }
+
     public Task RegisterWorkflowAsync(WorkflowDefinition definition)
+    {
+        RegisterWorkflow(definition);
+        return Task.CompletedTask;
+    }
+
+    private void RegisterWorkflow(WorkflowDefinition definition)
     {
         var key = $"{definition.Name}:{definition.Version}";
         var published = _workflows.GetOrAdd(key, definition);
@@ -776,7 +790,6 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
         {
             throw new InvalidOperationException($"Workflow {definition.Name} v{definition.Version} is already registered");
         }
-        return Task.CompletedTask;
     }
 
     public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)
@@ -817,6 +830,7 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
             // Create a copy with IsActive = false
             var updatedDefinition = new WorkflowDefinition
             {
+                Id = definition.Id,
                 Name = definition.Name,
                 Version = definition.Version,
                 Description = definition.Description,
@@ -829,6 +843,7 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
                 UsesSagaPattern = definition.UsesSagaPattern,
                 SupportsParallelExecution = definition.SupportsParallelExecution,
                 WorkflowFactory = definition.WorkflowFactory,
+                Steps = definition.Steps,
                 Metadata = new Dictionary<string, object>(definition.Metadata)
                 {
                     ["IsActive"] = false

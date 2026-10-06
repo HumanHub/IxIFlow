@@ -223,8 +223,11 @@ public sealed class StructuredChildWaitTests
         Assert.True(duplicate.EventAccepted);
     }
 
-    [Fact]
-    public async Task RecoveryStartsChildWhenParentStartWasSavedBeforeChildWasCreated()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecoveryOfParentStartBeforeChildCreationHonorsCancellation(
+        bool cancelBeforeRecovery)
     {
         using var firstProvider = Services();
         var child = Workflow.Create<ChildData>("CrashWindowChild")
@@ -258,14 +261,25 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(parent);
+        if (cancelBeforeRecovery)
+            await recoveredStore.RequestCancellationAsync(started.InstanceId,
+                new CancellationReason { ReasonCode = "operator" });
 
         var recovered = await secondProvider.GetRequiredService<IWorkflowEngine>()
             .RecoverWorkflowAsync(started.InstanceId);
 
-        Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
-        var childId = await ChildIdAsync(secondProvider, started.InstanceId);
-        Assert.Equal(WorkflowStatus.Suspended,
-            (await recoveredStore.GetWorkflowInstanceAsync(childId))!.Status);
+        if (cancelBeforeRecovery)
+        {
+            Assert.Equal(WorkflowExecutionStatus.Cancelled, recovered.Status);
+            Assert.Empty(await recoveredStore.GetWorkflowInstancesByNameAsync("CrashWindowChild"));
+        }
+        else
+        {
+            Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
+            var childId = await ChildIdAsync(secondProvider, started.InstanceId);
+            Assert.Equal(WorkflowStatus.Suspended,
+                (await recoveredStore.GetWorkflowInstanceAsync(childId))!.Status);
+        }
     }
 
     [Fact]
@@ -336,6 +350,87 @@ public sealed class StructuredChildWaitTests
         Assert.Equal(WorkflowStatus.Cancelled,
             (await services.GetRequiredService<IWorkflowStateRepository>()
                 .GetWorkflowInstanceAsync(childId))!.Status);
+    }
+
+    [Fact]
+    public async Task CancellingParentWithActiveChildRequiresResolutionBeforeFinally()
+    {
+        var probe = new ActiveChildProbe();
+        var registrations = new ServiceCollection();
+        registrations.AddLogging();
+        registrations.AddSingleton(probe);
+        registrations.AddTransient<NoopActivity>();
+        registrations.AddTransient<ActiveChildActivity>();
+        registrations.AddTransient<MarkFinallyActivity>();
+        registrations.AddIxIFlow();
+        using var services = registrations.BuildServiceProvider();
+        var child = Workflow.Create<ChildData>("ActiveChild")
+            .Step<ActiveChildActivity>()
+            .Build();
+        await services.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(child);
+        var parent = Workflow.Create<ParentData>("ActiveChildParent")
+            .Step<NoopActivity>()
+            .Try(body => body.Invoke<ChildData>("ActiveChild", 1, _ => { }))
+            .Finally(body => body.Step<MarkFinallyActivity>(step => step
+                .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.FinallyRan)))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+
+        var execution = engine.ExecuteWorkflowAsync(parent, new ParentData());
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var instance = Assert.Single(await services.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstancesByNameAsync("ActiveChildParent"));
+        var childId = Assert.Single(await services.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstancesByNameAsync("ActiveChild")).InstanceId;
+        await engine.CancelWorkflowAsync(instance.InstanceId,
+            new CancellationReason { ReasonCode = "operator" });
+        var unresolved = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, unresolved.Status);
+        Assert.False(Assert.IsType<ParentData>(unresolved.WorkflowData).FinallyRan);
+        Assert.True(probe.CancellationSeen.Task.IsCompleted);
+        Assert.Equal(WorkflowStatus.NeedsResolution,
+            (await services.GetRequiredService<IWorkflowStateRepository>()
+                .GetWorkflowInstanceAsync(childId))?.Status);
+
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(childId));
+        var childResolution = await engine.ResolveActivityAsync(childId, pending.InvocationId,
+            ActivityResolution.Completed(new Dictionary<string, object?>()));
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, childResolution.Status);
+        var cancelled = await engine.RecoverWorkflowAsync(instance.InstanceId);
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
+        Assert.True(Assert.IsType<ParentData>(cancelled.WorkflowData).FinallyRan);
+    }
+
+    [Fact]
+    public async Task CancellationRunsChildWorkflowInsideFinally()
+    {
+        using var services = Services();
+        var cleanupChild = Workflow.Create<ChildData>("CancellationCleanupChild")
+            .Step<ApproveActivity>(step => step
+                .Output(activity => activity.Approved).To(ctx => ctx.WorkflowData.Approved))
+            .Build();
+        await services.GetRequiredService<IWorkflowVersionRegistry>()
+            .RegisterWorkflowAsync(cleanupChild);
+        var parent = Workflow.Create<ParentData>("CancellationCleanupParent")
+            .Step<NoopActivity>()
+            .Try(body => body.WaitFor<Approval>("approval"))
+            .Finally(body => body.Invoke<ChildData>("CancellationCleanupChild", 1, step => step
+                .Output(data => data.Approved).To(ctx => ctx.WorkflowData.ChildApproved)))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(parent, new ParentData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
+        var cancelled = await engine.CancelWorkflowAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "operator" });
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
+        Assert.True(Assert.IsType<ParentData>(cancelled.WorkflowData).ChildApproved);
+        var child = Assert.Single(await services.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstancesByNameAsync("CancellationCleanupChild"));
+        Assert.Equal(WorkflowStatus.Completed, child.Status);
     }
 
     [Fact]
@@ -510,5 +605,31 @@ public sealed class StructuredChildWaitTests
 
         public Task ExecuteAsync(IActivityContext context,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    public sealed class ActiveChildProbe
+    {
+        public TaskCompletionSource Started { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CancellationSeen { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public sealed class ActiveChildActivity(ActiveChildProbe probe) : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default)
+        {
+            probe.Started.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                probe.CancellationSeen.TrySetResult();
+                throw;
+            }
+        }
     }
 }
