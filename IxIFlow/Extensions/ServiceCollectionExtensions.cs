@@ -71,7 +71,7 @@ public static class ServiceCollectionExtensions
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
         {
-            services.Replace(ServiceDescriptor.Scoped(typeof(IWorkflowStateRepository), options.UseCustomStateRepository));
+            services.Replace(ServiceDescriptor.Singleton(typeof(IWorkflowStateRepository), options.UseCustomStateRepository));
         }
 
         if (options.UseCustomEventStore != null)
@@ -335,7 +335,8 @@ internal class WorkflowRegistrationBuilder : IWorkflowRegistrationBuilder
 public class IxIFlowOptions
 {
     /// <summary>
-    /// Custom workflow state repository implementation
+    /// Custom workflow state repository implementation. Registered as a singleton;
+    /// implementations must support concurrent workflow calls.
     /// </summary>
     public Type? UseCustomStateRepository { get; set; }
 

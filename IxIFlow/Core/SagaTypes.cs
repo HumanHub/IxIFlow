@@ -246,7 +246,7 @@ public class SagaErrorConfiguration
     //public int RetryCount { get; set; } = 0;
     public RetryPolicy? RetryPolicy { get; set; } = new();
     public Type? CompensationTargetType { get; set; }
-    //public bool IgnoreCompensationErrors { get; set; } = false;
+    public bool IgnoreCompensationErrors { get; set; }
     public Dictionary<string, object> Metadata { get; set; } = new();
 }
 

@@ -711,6 +711,40 @@ public sealed class ExecutionLeaseContractTests
     }
 
     [Fact]
+    public async Task ObservedCancellationSurvivesLaterCancellationStoreReadsFailing()
+    {
+        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository())
+        {
+            PauseFirstRead = false,
+            FailAfterObservedCancellation = true
+        };
+        var probe = new ActivityProbe();
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe,
+            shortLease: true);
+        var definition = Workflow.Create<LeaseData>("ObservedCancellationWithStoreOutage")
+            .Step<CancellableBlockingActivity>(_ => { }).Build();
+        var engine = host.GetRequiredService<IWorkflowEngine>();
+        var executing = engine.ExecuteWorkflowAsync(definition, new LeaseData());
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var instance = Assert.Single(await repository
+            .GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        await engine.CancelWorkflowAsync(instance.InstanceId,
+            new CancellationReason { ReasonCode = "operator" });
+        await repository.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            var result = await executing.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        }
+        finally
+        {
+            repository.FailAfterObservedCancellation = false;
+            await executing.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
     public async Task OneRenewalErrorDoesNotForfeitAnActiveLease()
     {
         var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository())
@@ -1313,6 +1347,10 @@ public sealed class ExecutionLeaseContractTests
         public int FailNextRenewals;
         public int LoseNextRenewal;
         public bool FailAllCancellationReads;
+        public bool FailAfterObservedCancellation;
+        private int _cancellationObserved;
+        public TaskCompletionSource CancellationObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int CancelBeforeTerminalCommit;
         public int CancelBeforeFailedCommit;
         public int CancelWhenRootCompletedOnRead;
@@ -1337,6 +1375,8 @@ public sealed class ExecutionLeaseContractTests
         }
         public async Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
         {
+            if (FailAfterObservedCancellation && Volatile.Read(ref _cancellationObserved) != 0)
+                throw new IOException("Cancellation store unavailable after observation");
             if (FailAllCancellationReads)
                 throw new IOException("Cancellation store unavailable");
             if (Interlocked.Exchange(ref FailNextCancellationReads, 0) > 0)
@@ -1355,7 +1395,13 @@ public sealed class ExecutionLeaseContractTests
                     await inner.RequestCancellationAsync(instanceId,
                         new CancellationReason { ReasonCode = "late" });
             }
-            return await inner.GetCancellationRequestAsync(instanceId);
+            var reason = await inner.GetCancellationRequestAsync(instanceId);
+            if (reason != null && FailAfterObservedCancellation)
+            {
+                Interlocked.Exchange(ref _cancellationObserved, 1);
+                CancellationObserved.TrySetResult();
+            }
+            return reason;
         }
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
             inner.GetWorkflowsRequiringRecoveryAsync();

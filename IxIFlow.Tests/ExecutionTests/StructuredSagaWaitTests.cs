@@ -379,6 +379,34 @@ public class StructuredSagaWaitTests
         Assert.Equal(1, Data(result).Compensated);
     }
 
+    [Theory]
+    [InlineData(false, WorkflowExecutionStatus.Faulted)]
+    [InlineData(true, WorkflowExecutionStatus.Success)]
+    public async Task SagaContinueCanIgnoreCompensationFailure(
+        bool ignoreCompensationErrors, WorkflowExecutionStatus expectedStatus)
+    {
+        using var services = CreateServices(new InMemoryWorkflowStateRepository());
+        var definition = Workflow.Create<SagaData>("IgnoreCompensationFailure")
+            .Step<BeginActivity>()
+            .Saga(saga => saga
+                .Step<ReserveActivity>(setup => setup
+                    .CompensateWith<FailCompensationActivity>())
+                .Step<FailActivity>(_ => { }))
+            .OnError<InvalidOperationException>(error => error.Compensate()
+                .ThenContinue(ignoreCompensationErrors))
+            .Step<HandlerMarkerActivity>(_ => { })
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(expectedStatus, result.Status);
+        if (ignoreCompensationErrors)
+            Assert.Equal("H", Data(result).Trace);
+        else
+            Assert.Contains("compensation failed", result.ErrorMessage);
+    }
+
     [Fact]
     public async Task CancelledSagaCompensatesAnInflightActivityThatSucceeded()
     {
