@@ -33,4 +33,4 @@ The SQL host overload registers a SQL workflow state repository, host registry, 
 
 ## What is being built next
 
-The current scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. The next work is automatic discovery of expired running instances, operator handling for uncertain external effects, and end-to-end host-loss tests. Track them in [status and roadmap](/docs/status-and-roadmap/).
+The current scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. The optional SQL host scans for interrupted running instances. The next work is operator handling for uncertain external effects and end-to-end host-loss tests. Track them in [status and roadmap](/docs/status-and-roadmap/).

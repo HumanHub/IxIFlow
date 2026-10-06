@@ -25,6 +25,7 @@ public static class SqlWorkflowHostExtensions
         services.AddSingleton<IMessageBus>(_ => new SqlMessageBus(connectionString));
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(
             _ => new SqlWorkflowStateRepository(connectionString)));
+        services.AddHostedService<WorkflowRecoveryService>();
         return services;
     }
 }

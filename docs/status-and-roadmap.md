@@ -13,7 +13,7 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 | Local activity execution | Implemented in the workflow host process. |
 | Conditions, parallel work, and exceptions | Implemented, including multiple simultaneous waits, `WaitAll`, `WaitAny`, conditional joins, and waits in `Catch` and `Finally`. Loop failure propagation and nested `PreviousStep` pass-through have regression tests. |
 | In-process saga compensation | Waits and error handlers resume with saved compensation results. Retry after a wait has success and exhaustion coverage. |
-| SQL host and state | Shared SQL Server instance state, revisioned checkpoints, renewable execution leases, host registry, and acknowledged message delivery with claim renewal are implemented. Cross-host resume, live-owner exclusion, and stable start IDs have integration tests. |
+| SQL host and state | Shared SQL Server instance state, revisioned checkpoints, renewable execution leases, recovery scanning, host registry, and acknowledged message delivery with claim renewal are implemented. Cross-host resume, live-owner exclusion, expired-worker takeover, and stable start IDs have integration tests. |
 | Workflow editor exercise | Structured, collapsible activity frames with inline fields, editable titles and annotations, manifest-driven icons, and draft YAML editing. It does not execute workflows. The earlier Vue Flow canvas remains a Flowchart reference. |
 | Custom activity prototype | A .NET package registry matches manifest activity keys to installed `IAsyncActivity` types. The YAML document compiler checks package and activity versions. Studio can load a local manifest into its toolbox. |
 
@@ -22,7 +22,7 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 - The default state repository and event store are singleton in-process memory. The optional SQL Server host registers shared workflow state, but its event store and definition registry remain in memory.
 - Local execution uses saved continuations and scope frames for initial execution, waits, and recovery. Crash recovery can leave a nonrecoverable activity at `NeedsResolution`; a recoverable activity supplies its own verification policy. More fault-injection coverage is needed for host termination during nested cancellation and external effects.
 - Parallel branches share mutable workflow data. Developers must synchronize conflicting updates; the engine does not merge branch-local copies.
-- Memory and SQL state repositories fence stale checkpoint writers with a revision and renewable execution lease. Recovery is currently requested through the engine API; there is no background scanner to discover and reclaim every expired running instance automatically.
+- Memory and SQL state repositories fence stale checkpoint writers with a revision and renewable execution lease. The optional SQL host scans running instances and requests recovery; an activity with an uncertain external outcome stops at `NeedsResolution` for operator action.
 - Saga error handlers can wait and resume. Cancellation behavior has targeted tests, but a complete matrix across nested loops, handlers, sagas, and parallel joins is still a release gate.
 - Typed resume events and correlation exist, but there is no published start-trigger registry for HTTP, schedules, or messages. General event matching still scans suspended instances. Targeted event-template updates now resume only their specified instance, and the default memory template store survives DI scopes.
 - SQL message claims renew during long handlers. Execute commands carry a stable instance ID, so redelivery reuses the saved instance. Completion events can still be delivered more than once; consumers need to deduplicate by instance ID.
@@ -72,7 +72,7 @@ Docker is available for repeatable integration runs. Use isolated PostgreSQL and
 ### Immediate engine gates
 
 1. Complete the cancellation and fault-injection matrix across nested scopes and external effects.
-2. Add an expired-instance recovery scanner and operator controls for `NeedsResolution`.
+2. Add operator controls for `NeedsResolution` and an indexed recovery query for large SQL installations.
 3. Connect distributed cancellation to engine state, then test delayed delivery and worker termination across hosts, including duplicate completion events and recovery of expired running instances.
 4. Make the YAML compiler and editor cover the same supported constructs as the fluent API, then add debugger and management APIs.
 
