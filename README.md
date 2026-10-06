@@ -1,18 +1,22 @@
 # IxIFlow Workflow Engine
 
-A simple, type-safe workflow engine for .NET that helps you build and orchestrate business processes. Build workflows using a fluent API that keeps your code clean and your logic clear.
+A type-safe, durable workflow engine for .NET. Define activities and control flow with a fluent C# API, then execute the definition through `IWorkflowEngine`. Workflows can suspend, survive restarts with persisted state, and resume where they stopped.
 
 ## Features
 
-- **Fluent API**: Build workflows with an intuitive, chainable interface
-- **Type Safety**: Compile-time checking for all workflow inputs and outputs
-- **Parallel Execution**: Run multiple tasks simultaneously
-- **Exception Handling**: Built-in try-catch support for robust error handling
-- **Saga Pattern**: In-process compensation for completed saga steps
-- **Suspend/Resume**: Pause workflows and continue when events occur
-- **Conditional Logic**: Dynamic branching based on your data
-- **Dependency Injection**: Works great with Microsoft DI container
-- **Optional Hosting**: Coordinator and host projects for multi-instance routing under development
+- **Fluent API**: Build workflows with a chainable, strongly typed builder
+- **Type Safety**: Activity inputs, outputs, and `PreviousStep` values are checked at compile time
+- **Control Flow**: Sequences, conditions, `WhileDo`/`DoWhile` loops, and child workflow invocation
+- **Parallel Execution**: Run branches together and join on all, any, or a condition
+- **Exception Handling**: `Try`/`Catch`/`Finally` with typed fault data saved for handlers
+- **Saga Pattern**: Compensation activities run in reverse order when later work fails
+- **Suspend/Resume**: Wait for correlated events or delays, then continue at the saved position
+- **Durable Execution**: Versioned checkpoints, recovery of interrupted instances, and explicit resolution of uncertain activity outcomes
+- **Cancellation**: Cancel a running or suspended workflow and unwind through compensation and `Finally`
+- **Dependency Injection**: Register engines, workflows, and activities with Microsoft DI
+- **SQL Server Hosting**: Optional shared instance state, execution leases, host registry, and acknowledged message bus
+
+See the [Roadmap](#roadmap) for work that is planned but not yet available.
 
 ## Installation
 
@@ -20,292 +24,274 @@ A simple, type-safe workflow engine for .NET that helps you build and orchestrat
 dotnet add package IxIFlow
 ```
 
-The solution also contains optional `IxIFlow.Authoring`, `IxIFlow.Distributed`, and `IxIFlow.Distributed.SqlServer` projects. The core project has no hosting or SQL Server dependency. Local execution only needs `IxIFlow`.
+Local execution uses the `IxIFlow` package. The solution also contains:
+
+| Package | Purpose |
+| --- | --- |
+| `IxIFlow.Distributed` | Host, coordinator, and queue service contracts |
+| `IxIFlow.Distributed.SqlServer` | SQL Server state repository, host registry, and message bus |
+| `IxIFlow.Authoring` | YAML workflow documents compiled to definitions (preview) |
+| `IxIFlow.ActivitySdk` | Contracts for packaged activities |
 
 ## Quick Start
 
-### Simple In-Process Execution
+### 1. Define data and activities
 
-For basic scenarios, you can create and execute workflows directly:
+An activity implements `IAsyncActivity`. Public properties receive mapped inputs and expose outputs.
+
+```csharp
+using IxIFlow.Core;
+
+public sealed class OrderData
+{
+    public string OrderId { get; set; } = "";
+    public decimal Amount { get; set; }
+    public bool IsValid { get; set; }
+    public string TransactionId { get; set; } = "";
+}
+
+public sealed class ValidateOrderActivity : IAsyncActivity
+{
+    public string OrderId { get; set; } = "";
+    public decimal Amount { get; set; }
+    public bool IsValid { get; private set; }
+
+    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+    {
+        IsValid = !string.IsNullOrWhiteSpace(OrderId) && Amount > 0;
+        return Task.CompletedTask;
+    }
+}
+
+public sealed class ProcessPaymentActivity : IAsyncActivity
+{
+    public decimal Amount { get; set; }
+    public string TransactionId { get; private set; } = "";
+
+    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+    {
+        TransactionId = $"TXN-{Guid.NewGuid():N}";
+        return Task.CompletedTask;
+    }
+}
+
+public sealed class RejectOrderActivity : IAsyncActivity
+{
+    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
+}
+```
+
+### 2. Build and execute
 
 ```csharp
 using IxIFlow.Builders;
 using IxIFlow.Core;
-
-// 1. Define your data
-public class OrderData
-{
-    public string OrderId { get; set; } = "";
-    public decimal Amount { get; set; }
-    public bool IsValid { get; set; }
-    public string TransactionId { get; set; } = "";
-}
-
-// 2. Create activities
-public class ValidateOrderActivity : IAsyncActivity
-{
-    public string OrderId { get; set; } = "";
-    public decimal Amount { get; set; }
-    public bool IsValid { get; set; }
-
-    public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-    {
-        IsValid = !string.IsNullOrEmpty(OrderId) && Amount > 0;
-        context.Logger.LogInformation($"Order {OrderId} validation: {IsValid}");
-    }
-}
-
-public class ProcessPaymentActivity : IAsyncActivity
-{
-    public decimal Amount { get; set; }
-    public string TransactionId { get; set; } = "";
-
-    public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-    {
-        // Simulate payment processing
-        TransactionId = $"TXN-{Guid.NewGuid()}";
-        context.Logger.LogInformation($"Payment processed: {TransactionId}");
-    }
-}
-
-// 3. Build and execute workflow
-var services = new ServiceCollection();
-services.AddLogging(builder => builder.AddConsole());
-services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
-services.AddSingleton<IActivityExecutor, ActivityExecutor>();
-services.AddSingleton<WorkflowEngine>();
-// ... add other required services
-
-var serviceProvider = services.BuildServiceProvider();
-var workflowEngine = serviceProvider.GetRequiredService<WorkflowEngine>();
-
-// Build the workflow
-var definition = Workflow.Create<OrderData>("OrderProcessing")
-    .Step<ValidateOrderActivity>(setup => setup
-        .Input(step => step.OrderId).From(data => data.WorkflowData.OrderId)
-        .Input(step => step.Amount).From(data => data.WorkflowData.Amount)
-        .Output(step => step.IsValid).To(data => data.WorkflowData.IsValid))
-    
-    .If(data => data.PreviousStep.IsValid,
-        then => then.Step<ProcessPaymentActivity>(setup => setup
-            .Input(step => step.Amount).From(data => data.WorkflowData.Amount)
-            .Output(step => step.TransactionId).To(data => data.WorkflowData.TransactionId)),
-        @else => @else.Step<LogErrorActivity>(setup => setup
-            .Input(step => step.Message).From(data => "Invalid order")))
-    .Build();
-
-// Execute the workflow
-var orderData = new OrderData { OrderId = "ORD-001", Amount = 100.50m };
-var result = await workflowEngine.ExecuteWorkflowAsync(definition, orderData);
-
-if (result.IsSuccess)
-{
-    var finalData = (OrderData)result.WorkflowData;
-    Console.WriteLine($"Order processed! Transaction: {finalData.TransactionId}");
-}
-```
-
-### Full DI Integration
-
-For larger applications, use the full dependency injection setup:
-
-```csharp
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 
-// 1. Define workflow as a class
-public class CustomerOrderWorkflow : IWorkflow<CustomerOrderData>
-{
-    public string Id => "CustomerOrderWorkflow";
-    public int Version => 1;
+var services = new ServiceCollection();
+services.AddLogging();
+services.AddIxIFlow();
+services.AddTransient<ValidateOrderActivity>();
+services.AddTransient<ProcessPaymentActivity>();
+services.AddTransient<RejectOrderActivity>();
 
-    public void Build(IWorkflowBuilder<CustomerOrderData> builder)
-    {
-        builder
-            .Step<ValidateCustomerActivity>(setup => setup
-                .Input(step => step.CustomerId).From(data => data.WorkflowData.CustomerId)
-                .Output(step => step.IsValid).To(data => data.WorkflowData.IsValidCustomer))
-            
-            .Step<ProcessOrderActivity>(setup => setup
-                .Input(step => step.OrderAmount).From(data => data.WorkflowData.OrderAmount)
-                .Input(step => step.IsValidCustomer).From(data => data.PreviousStep.IsValid)
-                .Output(step => step.OrderId).To(data => data.WorkflowData.ProcessedOrderId));
-    }
-}
+using var provider = services.BuildServiceProvider();
+using var scope = provider.CreateScope();
+var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
 
-// 2. Register services
-var host = Host.CreateDefaultBuilder(args)
-    .ConfigureServices((context, services) =>
-    {
-        // Register IxIFlow
-        services.AddIxIFlow();
-        
-        // Register your workflow
-        services.RegisterWorkflow<CustomerOrderWorkflow>();
-        
-        // Register activities
-        services.AddTransient<ValidateCustomerActivity>();
-        services.AddTransient<ProcessOrderActivity>();
-    })
+var definition = Workflow.Create<OrderData>("OrderProcessing", version: 1)
+    .Step<ValidateOrderActivity>(step => step
+        .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+        .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
+        .Output(activity => activity.IsValid).To(ctx => ctx.WorkflowData.IsValid))
+    .If(ctx => ctx.PreviousStep.IsValid,
+        then => then.Step<ProcessPaymentActivity>(step => step
+            .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
+            .Output(activity => activity.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)),
+        @else => @else.Step<RejectOrderActivity>())
     .Build();
 
-// 3. Execute
-var workflowEngine = host.Services.GetRequiredService<IWorkflowEngine>();
-var workflowDefinition = host.Services.GetWorkflowDefinition<CustomerOrderWorkflow>();
+var result = await engine.ExecuteWorkflowAsync(
+    definition, new OrderData { OrderId = "ORD-001", Amount = 100.50m });
 
-var workflowData = new CustomerOrderData
-{
-    CustomerId = "CUST-123",
-    OrderAmount = 249.99m
-};
-
-var result = await workflowEngine.ExecuteWorkflowAsync(workflowDefinition, workflowData);
+if (result.IsSuccess)
+    Console.WriteLine($"Transaction: {((OrderData)result.WorkflowData!).TransactionId}");
+else
+    Console.WriteLine($"{result.Status}: {result.ErrorMessage}");
 ```
+
+`WorkflowExecutionResult` includes `Status`, `InstanceId`, `WorkflowData`, `ErrorMessage`, and `TraceEntries`.
+
+### 3. Register a workflow class
+
+`IWorkflow<TData>` packages a named, versioned definition for dependency injection.
+
+```csharp
+using IxIFlow.Builders.Interfaces;
+
+public sealed class OrderWorkflow : IWorkflow<OrderData>
+{
+    public int Version => 1;
+
+    public void Build(IWorkflowBuilder<OrderData> builder)
+    {
+        builder.Step<ValidateOrderActivity>(step => step
+            .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+            .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
+            .Output(activity => activity.IsValid).To(ctx => ctx.WorkflowData.IsValid));
+    }
+}
+```
+
+```csharp
+services.RegisterWorkflow<OrderWorkflow>();
+
+// Or several at once
+services.RegisterWorkflows(registry => registry
+    .RegisterWorkflow<OrderWorkflow>()
+    .RegisterWorkflow<RefundWorkflow>());
+
+var registered = provider.GetWorkflowDefinition<OrderWorkflow>();
+```
+
+`RegisterWorkflow<TWorkflow>(name)` can supply a name; otherwise the class name is used.
 
 ## Advanced Features
 
 ### Parallel Execution
 
-Run multiple tasks at the same time:
+Branches share workflow data, so write to distinct properties.
 
 ```csharp
-.Parallel(parallel =>
-{
-    parallel
-        .Do(emailBranch =>
-        {
-            emailBranch.Step<SendEmailActivity>(setup => setup
-                .Input(step => step.EmailAddress).From(data => data.WorkflowData.CustomerEmail));
-        })
-        .Do(smsBranch =>
-        {
-            smsBranch.Step<SendSmsActivity>(setup => setup
-                .Input(step => step.PhoneNumber).From(data => data.WorkflowData.CustomerPhone));
-        });
-})
+.Parallel(parallel => parallel
+    .Do(email => email.Step<SendEmailActivity>(step => step
+        .Input(activity => activity.Address).From(ctx => ctx.WorkflowData.Email)
+        .Output(activity => activity.Sent).To(ctx => ctx.WorkflowData.EmailSent)))
+    .Do(sms => sms.Step<SendSmsActivity>(step => step
+        .Input(activity => activity.Number).From(ctx => ctx.WorkflowData.Phone)
+        .Output(activity => activity.Sent).To(ctx => ctx.WorkflowData.SmsSent))))
 ```
+
+By default the join waits for all branches. `WaitAny()` continues after the first branch and cancels the rest; `WaitConditionally(predicate)` continues when the predicate becomes true.
 
 ### Exception Handling
 
-Catch an exception and select the data the handler needs. The fault value must be a checkpointable DTO:
+`Catch<TException, TFault>` saves selected exception properties in a fault record that handlers read through `ctx.Fault`.
 
 ```csharp
-public sealed class PaymentFault
-{
-    public string Message { get; set; } = "";
-}
-
-public sealed class ErrorFault
-{
-    public string Message { get; set; } = "";
-}
-
-.Try(tryBlock =>
-{
-    tryBlock.Step<ChargeCardActivity>(setup => setup
-        .Input(step => step.Amount).From(data => data.WorkflowData.OrderTotal));
-})
-.Catch<PaymentDeclinedException, PaymentFault>(catchBlock =>
-{
-    catchBlock.Step<NotifyPaymentFailureActivity>(setup => setup
-        .Input(step => step.Reason).From(ctx => ctx.Fault.Message));
-})
-.Catch<Exception, ErrorFault>(catchBlock =>
-{
-    catchBlock.Step<LogUnknownErrorActivity>(setup => setup
-        .Input(step => step.Error).From(ctx => ctx.Fault.Message));
-})
+public sealed record PaymentFault(string Message);
 ```
 
-Each fault property must match a public property on the caught exception by name and type. The workflow builder rejects unsupported fault types before execution.
+```csharp
+.Try(tryBlock => tryBlock.Step<ChargeCardActivity>())
+.Catch<PaymentException, PaymentFault>(catchBlock => catchBlock
+    .Step<LogPaymentFailureActivity>(step => step
+        .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)))
+.Finally(finallyBlock => finallyBlock.Step<AuditOrderActivity>())
+```
 
 ### Saga Transactions
 
-Compensate completed saga steps when a later step fails:
+Each saga step can name a compensation activity. When a later step fails, completed steps are compensated in reverse order.
 
 ```csharp
-.Saga(saga =>
-{
-    saga.Step<ReserveProductActivity>(setup => setup
-            .Input(step => step.ProductId).From(data => data.WorkflowData.ProductId)
-            .Output(step => step.ReservationId).To(data => data.WorkflowData.ReservationId)
-            .CompensateWith<ReleaseProductActivity>())
-        
-        .Step<ChargeCustomerActivity>(setup => setup
-            .Input(step => step.Amount).From(data => data.WorkflowData.TotalAmount)
-            .Output(step => step.PaymentId).To(data => data.WorkflowData.PaymentId)
-            .CompensateWith<RefundCustomerActivity>());
-})
-.OnError<Exception>(error =>
-{
-    error.Compensate(); // Rolls back all successful steps
-})
+.Saga(saga => saga
+    .Step<ReserveProductActivity>(step => step
+        .Input(activity => activity.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+        .CompensateWith<ReleaseProductActivity>())
+    .Step<ChargeCustomerActivity>(step => step
+        .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.TotalAmount)
+        .CompensateWith<RefundCustomerActivity>()))
+.OnError<Exception>(error => error.Compensate().ThenTerminate())
 ```
+
+Compensation is an application action, not an automatic rollback of another system. See [sagas](docs/sagas.md).
 
 ### Suspend and Resume
 
-Pause workflows and continue when something happens:
+A wait is identified by a correlation key. On resume, the event becomes `PreviousStep`.
 
 ```csharp
-.Suspend<ManagerApprovalEvent>("Waiting for manager approval",
-    (approval, context) => approval.OrderId == context.WorkflowData.OrderId && approval.Approved)
+var definition = Workflow.Create<OrderData>("Approval")
+    .Step<PrepareOrderActivity>()
+    .WaitFor<ApprovalEvent>("manager-approval",
+        (approval, ctx) => approval.OrderId == ctx.WorkflowData.OrderId)
+    .Step<FinalizeOrderActivity>(step => step
+        .Input(activity => activity.Approved).From(ctx => ctx.PreviousStep.Approved))
+    .Build();
 
-.Step<FinalizeOrderActivity>(setup => setup
-    .Input(step => step.OrderId).From(data => data.WorkflowData.OrderId)
-    .Input(step => step.IsApproved).From(data => data.PreviousStep.Approved))
+var started = await engine.ExecuteWorkflowAsync(definition, orderData);
+// started.Status is Suspended
+var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "manager-approval", approvalEvent);
 ```
 
-## Configuration Options
+`Delay(TimeSpan)` suspends until a deadline, and `Invoke<TWorkflow, TChildData>` runs a child workflow with its own saved state.
 
-### Basic Setup
+## Configuration
+
+### In-process
+
+`AddIxIFlow()` registers in-memory state and event storage shared across scopes in one process. Custom implementations can replace them:
 
 ```csharp
 services.AddIxIFlow(options =>
 {
-    options.EnableDetailedLogging = true;
-    options.MaxConcurrentExecutions = 100;
+    options.UseCustomStateRepository = typeof(MyStateRepository);
+    options.UseCustomTracer = typeof(MyTracer);
 });
 ```
 
-### Optional Host Infrastructure
+### SQL Server hosting
 
-The SQL Server host integration is in `IxIFlow.Distributed.SqlServer`. It registers a SQL message bus and host registry. It does not provide durable workflow instance state or distributed saga recovery yet:
+`IxIFlow.Distributed.SqlServer` stores instance state in SQL Server with revisioned checkpoints and renewable execution leases, and adds a SQL host registry and message bus.
 
 ```csharp
+services.AddIxIFlow();
+services.AddHttpClient();
 services.AddIxIFlowHost(options =>
 {
-    options.HostName = "WorkflowNode-01";
-    options.EnableDistribution = true;
-}, connectionString: "Server=localhost;Database=WorkflowEngine;");
+    options.HostId = "workflow-node-01";
+    options.MaxConcurrentWorkflows = 50;
+    options.Tags = ["payments"];
+}, connectionString: "Server=localhost;Database=IxIFlow;Trusted_Connection=True;");
 ```
 
-### Multiple Workflows
+Every host that may execute or resume a workflow must register the same workflow definitions and activity code. See [coordinator and hosts](docs/coordinator-and-hosts.md).
 
-Register several workflows at once:
+## Roadmap
 
-```csharp
-services.RegisterWorkflows(builder =>
-{
-    builder
-        .RegisterWorkflow<OrderProcessingWorkflow>()
-        .RegisterWorkflow<CustomerOnboardingWorkflow>()
-        .RegisterWorkflow<InventoryManagementWorkflow>();
-});
-```
+These items are planned and not yet available:
+
+- **Debugging and observability**: step-level trace store, breakpoints and step-through, structured logging with instance correlation, and OpenTelemetry traces and metrics
+- **Coordinator dispatch**: routing queued execute, resume, and cancel commands to a selected host, an HTTP host endpoint, host affinity on resume, and live load accounting
+- **Management API**: instance inspection, dead-letter inspection and requeue, and start triggers
+- **Workflow documents**: JSON schema and full YAML parity with the fluent API (parallel, loops, `Try`, sagas, delays), reusable step templates, and publish and version flow
+- **Storage adapters**: PostgreSQL, SQLite, and message broker adapters; persisted definition and event registries
+- **Visual editor**: graph editor and debugger UI on top of the document model
 
 ## Tips
 
-- **Keep it simple**: Start with basic sequential steps, add complexity as needed
-- **One job per activity**: Each activity should do one thing well
-- **Test your activities**: Write unit tests for individual activities first
-- **Handle errors**: Always think about what could go wrong and plan for it
-- **Use meaningful names**: Future you will thank you for clear naming
+- **Start simple**: Begin with sequential steps and add control flow as needed
+- **One job per activity**: Keep each activity focused and unit-testable
+- **Make side effects idempotent**: Activities and compensations can be retried after recovery
+- **Name and version workflows**: Explicit names and versions keep saved instances resumable
+- **Register everywhere**: Any host that resumes a workflow needs its definition and activities
+
+## Documentation
+
+- [Getting started](docs/getting-started.md)
+- [Fluent API](docs/fluent-api.md)
+- [Execution model](docs/execution-model.md)
+- [Sagas and compensation](docs/sagas.md)
+- [Engine capabilities](docs/engine-capabilities.md)
+- [Coordinator and hosts](docs/coordinator-and-hosts.md)
 
 ## Contributing
 
-Want to help make IxIFlow better? Check out our [Contributing Guide](CONTRIBUTING.md) to get started.
+See the [Contributing Guide](CONTRIBUTING.md).
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).

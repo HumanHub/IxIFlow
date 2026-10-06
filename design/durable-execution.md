@@ -70,10 +70,10 @@ consumers should deduplicate by instance ID.
 
 ## Current limits
 
-- Invoked child workflows run in the parent call without their own persisted
-  checkpoint. A child definition containing a wait is rejected before its
-  activities run. Durable child waits need a stable child instance ID and a
-  saved parent-child completion link.
+- Invoked child workflows have their own persisted checkpoint and a stable
+  instance ID. The parent saves projected child waits and resumes when the
+  child completes. If cancellation interrupts a child activity before its
+  outcome is recorded, the child and parent wait for activity resolution.
 - The SQL host still uses in-memory definition registration and event storage.
   Every host must load the same code-defined workflow version and activities.
 - The structured runner writes traces into the instance checkpoint. The older
