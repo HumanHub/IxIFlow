@@ -1118,6 +1118,121 @@ public class ParallelApprovalContractTests
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
     }
 
+    [Fact]
+    public async Task NestedParallelWaitAllJoinsOnlyAfterEveryInnerAndOuterWait()
+    {
+        using var services = CreateServices();
+        var definition = Workflow.Create<ApprovalData>("NestedParallelWaitAll")
+            .Step<StartActivity>()
+            .Parallel(outer => outer
+                .Do(branch => branch
+                    .Parallel(inner => inner
+                        .Do(child => child.WaitFor<ApprovalReply>("finance", Matches("finance"))
+                            .Step<CountActivity>(step => step
+                                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.FinanceCompleted)
+                                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.FinanceCompleted)))
+                        .Do(child => child.WaitFor<ApprovalReply>("legal", Matches("legal"))
+                            .Step<CountActivity>(step => step
+                                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.LegalCompleted)
+                                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.LegalCompleted))))
+                    .Step<CountActivity>(step => step
+                        .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.RiskCompleted)
+                        .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.RiskCompleted)))
+                .Do(branch => branch.WaitFor<ApprovalReply>("risk", Matches("risk"))
+                    .Step<CountActivity>(step => step
+                        .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.RiskStarted)
+                        .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.RiskStarted))))
+            .Step<CountActivity>(step => step
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finished)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+
+        var started = await engine.ExecuteWorkflowAsync(definition,
+            new ApprovalData { RequestId = "request-1" });
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        var legal = await engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", true));
+        Assert.Equal(WorkflowExecutionStatus.Suspended, legal.Status);
+        Assert.Equal(0, GetData(legal).RiskCompleted);
+        var finance = await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true));
+        Assert.Equal(WorkflowExecutionStatus.Suspended, finance.Status);
+        Assert.Equal(1, GetData(finance).RiskCompleted);
+        Assert.Equal(0, GetData(finance).Finished);
+        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "risk", Reply("risk", true));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Equal(1, GetData(completed).FinanceCompleted);
+        Assert.Equal(1, GetData(completed).LegalCompleted);
+        Assert.Equal(1, GetData(completed).RiskStarted);
+        Assert.Equal(1, GetData(completed).Finished);
+    }
+
+    [Fact]
+    public async Task ParallelWaitsInsideLoopRestartOnTheNextIteration()
+    {
+        using var services = CreateServices();
+        var definition = Workflow.Create<ApprovalData>("LoopOfParallelApprovals")
+            .Step<StartActivity>()
+            .WhileDo(ctx => ctx.WorkflowData.Finished < 2,
+                body => body.Parallel(parallel => parallel
+                        .Do(branch => branch.WaitFor<ApprovalReply>("finance", Matches("finance"))
+                            .Step<CountActivity>(step => step
+                                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.FinanceCompleted)
+                                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.FinanceCompleted)))
+                        .Do(branch => branch.WaitFor<ApprovalReply>("legal", Matches("legal"))
+                            .Step<CountActivity>(step => step
+                                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.LegalCompleted)
+                                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.LegalCompleted))))
+                    .Step<CountActivity>(step => step
+                        .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finished)
+                        .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished)))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(definition,
+            new ApprovalData { RequestId = "request-1" });
+
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        Assert.Equal(WorkflowExecutionStatus.Suspended,
+            (await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true))).Status);
+        var nextIteration = await engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", true));
+        Assert.Equal(WorkflowExecutionStatus.Suspended, nextIteration.Status);
+        Assert.Equal(1, GetData(nextIteration).Finished);
+        Assert.Equal(WorkflowExecutionStatus.Suspended,
+            (await engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", true))).Status);
+        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Equal(2, GetData(completed).FinanceCompleted);
+        Assert.Equal(2, GetData(completed).LegalCompleted);
+        Assert.Equal(2, GetData(completed).Finished);
+    }
+
+    [Fact]
+    public async Task ConditionalJoinFailureClosesTheOtherWait()
+    {
+        using var services = CreateServices();
+        var definition = Workflow.Create<ApprovalData>("ConditionalJoinFailure")
+            .Step<StartActivity>()
+            .Parallel(parallel => parallel.WaitConditionally(data => data.ApprovedBy != null)
+                .Do(branch => branch.WaitFor<ApprovalReply>("finance", Matches("finance"))
+                    .Step<ThrowActivity>(_ => { }))
+                .Do(branch => branch.WaitFor<ApprovalReply>("legal", Matches("legal"))))
+            .Step<CountActivity>(step => step
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(definition,
+            new ApprovalData { RequestId = "request-1" });
+
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        var failed = await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true));
+        Assert.Equal(WorkflowExecutionStatus.Faulted, failed.Status);
+        Assert.Contains("Approval branch failed", failed.ErrorMessage);
+        Assert.Equal(0, GetData(failed).Finished);
+        var late = await engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", true));
+        Assert.False(late.EventAccepted);
+    }
+
     private static WorkflowDefinition CreateApprovalWorkflow(ParallelJoinMode joinMode, bool includeRisk)
     {
         return Workflow.Create<ApprovalData>("ParallelApprovals")
