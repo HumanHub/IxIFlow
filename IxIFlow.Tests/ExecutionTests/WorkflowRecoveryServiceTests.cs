@@ -39,6 +39,41 @@ public sealed class WorkflowRecoveryServiceTests
     }
 
     [Fact]
+    public async Task HostShutdownDuringRecoveryDoesNotCancelTheWorkflow()
+    {
+        var repository = new ActivityRecoveryTests.FaultStore
+        {
+            FailCompletionBeforeApply = 3
+        };
+        var probe = new RecoveryStopProbe();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
+        services.AddSingleton(probe);
+        services.AddTransient<RecoveryStopActivity>();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<RecoveryData>("HostStopDuringRecovery")
+            .Step<RecoveryStopActivity>()
+            .Build();
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new RecoveryData()));
+        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        using var scanner = new WorkflowRecoveryService(
+            provider.GetRequiredService<IServiceScopeFactory>(), repository,
+            NullLogger<WorkflowRecoveryService>.Instance);
+        using var stopping = new CancellationTokenSource();
+        var scan = scanner.RecoverOnceAsync(stopping.Token);
+        await probe.RecoveryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        stopping.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => scan);
+
+        Assert.Equal(WorkflowStatus.Running,
+            (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
+    }
+
+    [Fact]
     public async Task ScannerRecoversRunningInstancesOnly()
     {
         var repository = new InMemoryWorkflowStateRepository();
@@ -99,6 +134,39 @@ public sealed class WorkflowRecoveryServiceTests
     }
 
     [Fact]
+    public async Task ScannerDoesNotRepeatCancellationWhileFinallyWaits()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
+        services.AddTransient<ActivityRecoveryTests.NoopActivity>();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<RecoveryData>("CancelFinallyWait")
+            .Step<ActivityRecoveryTests.NoopActivity>()
+            .Try(body => body.WaitFor<RecoveryEvent>("approval"))
+            .Finally(body => body.WaitFor<RecoveryEvent>("cleanup"))
+            .Build();
+        var started = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new RecoveryData());
+        Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" }));
+        using var scanner = new WorkflowRecoveryService(
+            provider.GetRequiredService<IServiceScopeFactory>(), repository,
+            NullLogger<WorkflowRecoveryService>.Instance);
+        await scanner.RecoverOnceAsync(CancellationToken.None);
+        var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
+        Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
+        Assert.Empty(await repository.GetWorkflowsRequiringRecoveryAsync());
+
+        await scanner.RecoverOnceAsync(CancellationToken.None);
+
+        Assert.Equal(waiting.Revision,
+            (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Revision);
+    }
+
+    [Fact]
     public async Task UnresolvedActivityRetainsCancellationUntilOperatorDecision()
     {
         var repository = new ActivityRecoveryTests.FaultStore
@@ -141,6 +209,10 @@ public sealed class WorkflowRecoveryServiceTests
 
     private sealed class RecordingEngine : IWorkflowEngine
     {
+        public Task<WorkflowExecutionResult> ResumeWorkflowDeliveryAsync<TEventData>(
+            string instanceId, string? key, TEventData @event, string deliveryId,
+            CancellationToken cancellationToken = default) where TEventData : class =>
+            throw new NotSupportedException();
         public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
             throw new NotSupportedException();
         public Task<WorkflowExecutionResult> ResolveActivityAsync(string instanceId,
@@ -177,4 +249,26 @@ public sealed class WorkflowRecoveryServiceTests
 
     public sealed class RecoveryData;
     public sealed class RecoveryEvent;
+
+    public sealed class RecoveryStopProbe
+    {
+        public TaskCompletionSource RecoveryStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public sealed class RecoveryStopActivity(RecoveryStopProbe probe) : IRecoverableActivity<string>
+    {
+        public string CaptureRecoveryState(IActivityContext context) => "ready";
+
+        public async Task<ActivityRecoveryResult<string>> RecoverAsync(
+            string state, IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.RecoveryStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return new ActivityRecoveryResult<string>.Completed();
+        }
+
+        public Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
 }

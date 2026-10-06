@@ -26,6 +26,7 @@ public interface IMessageDelivery<out T> where T : class
 {
     T Message { get; }
     Task AcknowledgeAsync();
+    Task RejectAsync(Exception error) => Task.CompletedTask;
 }
 
 public interface IAcknowledgingMessageBus : IMessageBus
@@ -53,6 +54,7 @@ public class ExecuteWorkflowCommand
 
 public class ResumeWorkflowCommand
 {
+    public string CommandId { get; set; } = Guid.NewGuid().ToString("N");
     public string InstanceId { get; set; } = "";
     public string TargetHostId { get; set; } = "";
     public string? Key { get; set; }

@@ -130,6 +130,136 @@ public class SqlMessageBusReliabilityTests
                 new { MessageType = typeof(BusDeliveryProbe).AssemblyQualifiedName, Payload = $"%{token}%" });
         }
     }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task RejectedMessageIsDelayedAndRecordsTheFailure()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var token = Guid.NewGuid().ToString("N");
+        try
+        {
+            using var bus = new SqlMessageBus(connectionString, TimeSpan.FromMilliseconds(20));
+            await bus.PublishAsync(new FailureBusProbe { Token = token });
+            await using (var consumer = bus.ConsumeDeliveriesAsync<FailureBusProbe>().GetAsyncEnumerator())
+            {
+                Assert.True(await consumer.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+                await consumer.Current.RejectAsync(new IOException("missing workflow definition"));
+            }
+
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            var row = await connection.QuerySingleAsync<(int AttemptCount, DateTime NextVisibleAt,
+                string LastError)>("""
+                SELECT AttemptCount, NextVisibleAt, LastError
+                FROM dbo.WorkflowMessages
+                WHERE MessageType = @MessageType AND Payload LIKE @Payload
+                """, new { MessageType = typeof(FailureBusProbe).AssemblyQualifiedName,
+                    Payload = $"%{token}%" });
+            Assert.Equal(1, row.AttemptCount);
+            Assert.True(row.NextVisibleAt > DateTime.UtcNow);
+            Assert.Contains("missing workflow definition", row.LastError);
+        }
+        finally
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                "DELETE FROM dbo.WorkflowMessages WHERE MessageType = @MessageType AND Payload LIKE @Payload",
+                new { MessageType = typeof(FailureBusProbe).AssemblyQualifiedName,
+                    Payload = $"%{token}%" });
+        }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task RepeatedFailureDeadLettersTheMessage()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var token = Guid.NewGuid().ToString("N");
+        try
+        {
+            using var bus = new SqlMessageBus(connectionString, TimeSpan.FromMilliseconds(20),
+                failureBackoff: TimeSpan.FromMilliseconds(50), maxDeliveryAttempts: 2);
+            await bus.PublishAsync(new FailureBusProbe { Token = token });
+            await using var consumer = bus.ConsumeDeliveriesAsync<FailureBusProbe>().GetAsyncEnumerator();
+            Assert.True(await consumer.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            await consumer.Current.RejectAsync(new IOException("first failure"));
+            Assert.True(await consumer.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            await consumer.Current.RejectAsync(new IOException("second failure"));
+
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            var row = await connection.QuerySingleAsync<(int AttemptCount, DateTime? DeadLetteredAt)>("""
+                SELECT AttemptCount, DeadLetteredAt
+                FROM dbo.WorkflowMessages
+                WHERE MessageType = @MessageType AND Payload LIKE @Payload
+                """, new { MessageType = typeof(FailureBusProbe).AssemblyQualifiedName,
+                    Payload = $"%{token}%" });
+            Assert.Equal(2, row.AttemptCount);
+            Assert.NotNull(row.DeadLetteredAt);
+        }
+        finally
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                "DELETE FROM dbo.WorkflowMessages WHERE MessageType = @MessageType AND Payload LIKE @Payload",
+                new { MessageType = typeof(FailureBusProbe).AssemblyQualifiedName,
+                    Payload = $"%{token}%" });
+        }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task InvalidPayloadIsDeadLetteredWithoutStoppingTheConsumer()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var token = Guid.NewGuid().ToString("N");
+        string? messageId = null;
+        try
+        {
+            using var bus = new SqlMessageBus(connectionString, TimeSpan.FromMilliseconds(20),
+                failureBackoff: TimeSpan.FromMilliseconds(30), maxDeliveryAttempts: 2);
+            await bus.PublishAsync(new FailureBusProbe { Token = token });
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            messageId = await connection.QuerySingleAsync<string>("""
+                SELECT Id FROM dbo.WorkflowMessages
+                WHERE MessageType = @MessageType AND Payload LIKE @Payload
+                """, new { MessageType = typeof(FailureBusProbe).AssemblyQualifiedName,
+                    Payload = $"%{token}%" });
+            await connection.ExecuteAsync("""
+                UPDATE dbo.WorkflowMessages SET Payload = '{invalid' WHERE Id = @MessageId
+                """, new { MessageId = messageId });
+            await using var consumer = bus.ConsumeDeliveriesAsync<FailureBusProbe>().GetAsyncEnumerator();
+            var receiving = consumer.MoveNextAsync().AsTask();
+            await Task.Delay(300);
+            await bus.StopAsync();
+            Assert.False(await receiving);
+
+            var row = await connection.QuerySingleAsync<(int AttemptCount, DateTime? DeadLetteredAt)>("""
+                SELECT AttemptCount, DeadLetteredAt FROM dbo.WorkflowMessages WHERE Id = @MessageId
+                """, new { MessageId = messageId });
+            Assert.Equal(2, row.AttemptCount);
+            Assert.NotNull(row.DeadLetteredAt);
+        }
+        finally
+        {
+            if (messageId != null)
+            {
+                await using var connection = new SqlConnection(connectionString);
+                await connection.OpenAsync();
+                await connection.ExecuteAsync("DELETE FROM dbo.WorkflowMessages WHERE Id = @MessageId",
+                    new { MessageId = messageId });
+            }
+        }
+    }
+}
+
+public sealed class FailureBusProbe
+{
+    public string Token { get; set; } = string.Empty;
 }
 
 public sealed class BusDeliveryProbe

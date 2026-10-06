@@ -16,19 +16,26 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
     private readonly TimeSpan _pollInterval;
     private readonly TimeSpan _claimDuration;
     private readonly TimeSpan _renewalInterval;
+    private readonly TimeSpan _failureBackoff;
+    private readonly int _maxDeliveryAttempts;
     private readonly CancellationTokenSource _cancellationTokenSource;
     private readonly SemaphoreSlim _schemaLock = new(1, 1);
     private bool _schemaReady;
     
     public SqlMessageBus(string connectionString, TimeSpan? pollInterval = null,
-        TimeSpan? claimDuration = null, TimeSpan? renewalInterval = null)
+        TimeSpan? claimDuration = null, TimeSpan? renewalInterval = null,
+        TimeSpan? failureBackoff = null, int maxDeliveryAttempts = 8)
     {
         _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(1);
         _claimDuration = claimDuration ?? TimeSpan.FromMinutes(5);
         _renewalInterval = renewalInterval ?? TimeSpan.FromMinutes(1);
+        _failureBackoff = failureBackoff ?? TimeSpan.FromSeconds(1);
+        _maxDeliveryAttempts = maxDeliveryAttempts;
         if (_claimDuration <= TimeSpan.Zero || _renewalInterval <= TimeSpan.Zero ||
-            _renewalInterval >= _claimDuration || _claimDuration.TotalMilliseconds > int.MaxValue)
+            _renewalInterval >= _claimDuration || _claimDuration.TotalMilliseconds > int.MaxValue ||
+            _failureBackoff < TimeSpan.FromMilliseconds(1) ||
+            _failureBackoff > TimeSpan.FromMinutes(1) || _maxDeliveryAttempts < 1)
             throw new ArgumentOutOfRangeException(nameof(claimDuration));
         _cancellationTokenSource = new CancellationTokenSource();
     }
@@ -109,7 +116,7 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             finally
             {
                 await delivery.StopRenewalAsync();
-                if (!delivery.IsAcknowledged)
+                if (!delivery.IsAcknowledged && !delivery.IsRejected)
                 {
                     await ReleaseClaimAsync(delivery.MessageId, delivery.ClaimToken);
                 }
@@ -141,6 +148,8 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
                 SELECT TOP (1) Id
                 FROM dbo.WorkflowMessages WITH (UPDLOCK, READPAST, ROWLOCK)
                 WHERE MessageType = @MessageType AND ProcessedAt IS NULL
+                  AND DeadLetteredAt IS NULL
+                  AND (NextVisibleAt IS NULL OR NextVisibleAt <= SYSUTCDATETIME())
                   AND (ClaimedUntil IS NULL OR ClaimedUntil <= SYSUTCDATETIME())
                   AND (@TargetHostId IS NULL OR JSON_VALUE(Payload, '$.TargetHostId') = @TargetHostId)
                 ORDER BY Priority DESC, CreatedAt ASC
@@ -157,9 +166,17 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             return null;
         }
 
-        var message = JsonSerializer.Deserialize<T>(row.Payload)
-            ?? throw new InvalidOperationException($"Message {row.Id} could not be deserialized");
-        return new SqlMessageDelivery<T>(this, row.Id, claimToken, message);
+        try
+        {
+            var message = JsonSerializer.Deserialize<T>(row.Payload)
+                ?? throw new JsonException($"Message {row.Id} deserialized to null");
+            return new SqlMessageDelivery<T>(this, row.Id, claimToken, message);
+        }
+        catch (Exception error) when (error is JsonException or NotSupportedException)
+        {
+            await RejectClaimAsync(row.Id, claimToken, error);
+            return null;
+        }
     }
 
     private async Task AcknowledgeAsync(string messageId, string claimToken)
@@ -203,6 +220,35 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             """, new { MessageId = messageId, ClaimToken = claimToken });
     }
 
+    private async Task RejectClaimAsync(string messageId, string claimToken, Exception error)
+    {
+        var description = $"{error.GetType().Name}: {error.Message}";
+        if (description.Length > 2048)
+            description = description[..2048];
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+        var changed = await connection.ExecuteAsync("""
+            UPDATE dbo.WorkflowMessages
+            SET AttemptCount = AttemptCount + 1,
+                LastError = @Description,
+                NextVisibleAt = CASE WHEN AttemptCount + 1 >= @MaxDeliveryAttempts
+                    THEN NULL ELSE DATEADD(MILLISECOND,
+                        @BaseBackoffMilliseconds *
+                        CASE WHEN AttemptCount >= 5 THEN 32
+                             ELSE CONVERT(INT, POWER(CONVERT(FLOAT, 2), AttemptCount)) END,
+                        SYSUTCDATETIME()) END,
+                DeadLetteredAt = CASE WHEN AttemptCount + 1 >= @MaxDeliveryAttempts
+                    THEN SYSUTCDATETIME() ELSE NULL END,
+                ClaimToken = NULL, ClaimedUntil = NULL
+            WHERE Id = @MessageId AND ClaimToken = @ClaimToken AND ProcessedAt IS NULL
+                AND ClaimedUntil > SYSUTCDATETIME()
+            """, new { MessageId = messageId, ClaimToken = claimToken,
+                Description = description, MaxDeliveryAttempts = _maxDeliveryAttempts,
+                BaseBackoffMilliseconds = (int)Math.Ceiling(_failureBackoff.TotalMilliseconds) });
+        if (changed != 1)
+            throw new InvalidOperationException($"Message claim {messageId} is no longer owned by this consumer");
+    }
+
     private async Task EnsureSchemaAsync()
     {
         if (_schemaReady) return;
@@ -241,6 +287,14 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
                     ALTER TABLE dbo.WorkflowMessages ADD ClaimToken NVARCHAR(50) NULL;
                 IF COL_LENGTH(N'dbo.WorkflowMessages', N'ClaimedUntil') IS NULL
                     ALTER TABLE dbo.WorkflowMessages ADD ClaimedUntil DATETIME2 NULL;
+                IF COL_LENGTH(N'dbo.WorkflowMessages', N'AttemptCount') IS NULL
+                    ALTER TABLE dbo.WorkflowMessages ADD AttemptCount INT NOT NULL DEFAULT 0;
+                IF COL_LENGTH(N'dbo.WorkflowMessages', N'NextVisibleAt') IS NULL
+                    ALTER TABLE dbo.WorkflowMessages ADD NextVisibleAt DATETIME2 NULL;
+                IF COL_LENGTH(N'dbo.WorkflowMessages', N'DeadLetteredAt') IS NULL
+                    ALTER TABLE dbo.WorkflowMessages ADD DeadLetteredAt DATETIME2 NULL;
+                IF COL_LENGTH(N'dbo.WorkflowMessages', N'LastError') IS NULL
+                    ALTER TABLE dbo.WorkflowMessages ADD LastError NVARCHAR(2048) NULL;
                 """, transaction: transaction);
             await transaction.CommitAsync();
             _schemaReady = true;
@@ -295,6 +349,7 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
         public string MessageId => _messageId;
         public string ClaimToken => _claimToken;
         public bool IsAcknowledged { get; private set; }
+        public bool IsRejected { get; private set; }
 
         public SqlMessageDelivery(SqlMessageBus bus, string messageId, string claimToken, T message)
         {
@@ -310,6 +365,15 @@ public class SqlMessageBus : IAcknowledgingMessageBus, IDisposable
             if (IsAcknowledged) return;
             await _bus.AcknowledgeAsync(_messageId, _claimToken);
             IsAcknowledged = true;
+            await StopRenewalAsync();
+        }
+
+        public async Task RejectAsync(Exception error)
+        {
+            ArgumentNullException.ThrowIfNull(error);
+            if (IsRejected) return;
+            await _bus.RejectClaimAsync(_messageId, _claimToken, error);
+            IsRejected = true;
             await StopRenewalAsync();
         }
 
