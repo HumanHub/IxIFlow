@@ -6,6 +6,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
 using IxIFlow.Tests.Infrastructure;
+using Dapper;
+using Microsoft.Data.SqlClient;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -332,6 +334,63 @@ public sealed class ExecutionLeaseContractTests
         Assert.NotNull(completed);
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, probe.Recorded);
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task SqlRecoveryScannerReclaimsAnExpiredWorker()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var firstRepository = new SqlWorkflowStateRepository(connectionString);
+        var secondRepository = new SqlWorkflowStateRepository(connectionString);
+        var firstRegistry = new WorkflowVersionRegistry();
+        var secondRegistry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
+        using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
+        var definition = Workflow.Create<LeaseData>("ExpiredWorker")
+            .Step<BlockingActivity>(_ => { })
+            .Step<RecordActivity>(_ => { })
+            .Build();
+        await secondRegistry.RegisterWorkflowAsync(definition);
+        var correlationId = Guid.NewGuid().ToString("N");
+        var executing = firstHost.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData(),
+                new WorkflowOptions { CorrelationId = correlationId });
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
+        try
+        {
+            await using (var connection = new SqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await connection.ExecuteAsync("""
+                    UPDATE dbo.IxIFlowWorkflowLeases
+                    SET ExpiresAtUtc = DATEADD(SECOND, -1, SYSUTCDATETIME())
+                    WHERE InstanceId = @InstanceId
+                    """, new { saved.InstanceId });
+            }
+            using var scanner = new WorkflowRecoveryService(
+                secondHost.GetRequiredService<IServiceScopeFactory>(), secondRepository,
+                NullLogger<WorkflowRecoveryService>.Instance);
+            await scanner.RecoverOnceAsync(CancellationToken.None);
+
+            Assert.Equal(WorkflowStatus.NeedsResolution,
+                (await secondRepository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
+        }
+        finally
+        {
+            probe.Release.TrySetResult();
+            try
+            {
+                await executing.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (InvalidOperationException)
+            {
+                // The former owner is fenced after the scanner takes over.
+            }
+            await firstRepository.DeleteWorkflowInstanceAsync(saved.InstanceId);
+        }
     }
 
     private static ServiceProvider CreateHost(IWorkflowStateRepository repository,
