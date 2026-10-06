@@ -84,7 +84,7 @@ public class WorkflowQueueService : BackgroundService
                     command.InstanceId, _hostId);
 
                 await ProcessExecuteCommandAsync(command, cancellationToken);
-                await delivery.AcknowledgeAsync();
+                await AcknowledgeIfOwnedAsync(delivery);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -120,7 +120,7 @@ public class WorkflowQueueService : BackgroundService
                     command.InstanceId, _hostId);
 
                 await ProcessResumeCommandAsync(command, cancellationToken);
-                await delivery.AcknowledgeAsync();
+                await AcknowledgeIfOwnedAsync(delivery);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -156,7 +156,7 @@ public class WorkflowQueueService : BackgroundService
                     command.InstanceId, _hostId);
 
                 await ProcessCancelCommandAsync(command, cancellationToken);
-                await delivery.AcknowledgeAsync();
+                await AcknowledgeIfOwnedAsync(delivery);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -204,6 +204,25 @@ public class WorkflowQueueService : BackgroundService
         public Task DeferAsync(TimeSpan delay) => Task.CompletedTask;
     }
 
+    private async Task AcknowledgeIfOwnedAsync<T>(IMessageDelivery<T> delivery)
+        where T : class
+    {
+        try
+        {
+            await delivery.AcknowledgeAsync();
+        }
+        catch (MessageClaimLostException error)
+        {
+            _logger.LogWarning(error, "Message claim was lost before acknowledgement");
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // The command already ran. Leave the claim for redelivery rather than
+            // reject a successfully processed command because its acknowledgement failed.
+            _logger.LogWarning(error, "Could not acknowledge workflow message; it may be redelivered");
+        }
+    }
+
     private async Task DeferIfOwnedAsync<T>(IMessageDelivery<T> delivery,
         WorkflowInstanceBusyException error) where T : class
     {
@@ -214,6 +233,10 @@ public class WorkflowQueueService : BackgroundService
         catch (MessageClaimLostException claimError)
         {
             _logger.LogWarning(claimError, "Message claim was lost before deferral");
+        }
+        catch (Exception deferError) when (deferError is not OperationCanceledException)
+        {
+            _logger.LogWarning(deferError, "Could not defer workflow message; its claim will expire");
         }
     }
 
@@ -227,6 +250,10 @@ public class WorkflowQueueService : BackgroundService
         catch (MessageClaimLostException claimError)
         {
             _logger.LogWarning(claimError, "Message claim was lost before rejection");
+        }
+        catch (Exception rejectionError) when (rejectionError is not OperationCanceledException)
+        {
+            _logger.LogWarning(rejectionError, "Could not reject workflow message; its claim will expire");
         }
     }
 
