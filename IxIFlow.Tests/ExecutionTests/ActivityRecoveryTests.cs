@@ -12,6 +12,39 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class ActivityRecoveryTests
 {
     [Fact]
+    public async Task InitialCheckpointFailureExposesTheRepositoryError()
+    {
+        var store = new FaultStore { FailNextCommits = 3 };
+        using var services = CreateServices(store, new ChargeLedger(store));
+
+        var error = await Assert.ThrowsAsync<IOException>(() =>
+            services.GetRequiredService<WorkflowEngine>().ExecuteWorkflowAsync(
+                ChargeWorkflow(), new ChargeData { OrderId = "initial-checkpoint" }));
+
+        Assert.Equal("Checkpoint unavailable", error.Message);
+    }
+
+    [Fact]
+    public async Task ResumeCheckpointFailureExposesTheRepositoryError()
+    {
+        var store = new FaultStore();
+        using var services = CreateServices(store, new ChargeLedger(store));
+        var definition = Workflow.Create<ChargeData>("ResumeCheckpointFailure")
+            .Step<NoopActivity>()
+            .WaitFor<RecoveryReply>("reply")
+            .Build();
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(definition, new ChargeData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
+        store.FailNextCommits = 3;
+        var error = await Assert.ThrowsAsync<IOException>(() =>
+            engine.ResumeWorkflowAsync(started.InstanceId, "reply", new RecoveryReply()));
+
+        Assert.Equal("Checkpoint unavailable", error.Message);
+    }
+
+    [Fact]
     public async Task StartIsCommittedBeforeTheActivityCallsAnExternalSystem()
     {
         var store = new FaultStore();
@@ -376,6 +409,7 @@ public sealed class ActivityRecoveryTests
     public sealed class FaultStore : IWorkflowStateRepository
     {
         private readonly InMemoryWorkflowStateRepository _inner = new();
+        public int FailNextCommits { get; set; }
         public int FailStartAfterApply { get; set; }
         public int FailCompletionBeforeApply { get; set; }
         public int FailCompletionAfterApply { get; set; }
@@ -383,6 +417,10 @@ public sealed class ActivityRecoveryTests
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
             WorkflowInstance instance, long expectedRevision, string commitId)
         {
+            if (FailNextCommits-- > 0)
+            {
+                throw new IOException("Checkpoint unavailable");
+            }
             var started = instance.ExecutionHistory.LastOrDefault()?.EntryType ==
                 TraceEntryType.ActivityStarted;
             var completed = instance.ExecutionHistory.LastOrDefault()?.EntryType ==
@@ -416,6 +454,12 @@ public sealed class ActivityRecoveryTests
     }
 
     public sealed class RecoveryReply;
+
+    public sealed class NoopActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
 
     public sealed class CancelledRecoveryProbe
     {

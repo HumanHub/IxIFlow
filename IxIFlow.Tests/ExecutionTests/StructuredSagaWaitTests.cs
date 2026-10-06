@@ -369,6 +369,67 @@ public class StructuredSagaWaitTests
     }
 
     [Fact]
+    public async Task CancellationDuringSagaCompensationRemainsCancelled()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<PausedCompensationProbe>();
+        services.AddTransient<PausedReleaseActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<SagaData>("CancelDuringCompensation")
+            .Step<BeginActivity>()
+            .Saga(saga => saga
+                .Step<ReserveActivity>(setup => setup
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved)
+                    .CompensateWith<PausedReleaseActivity>(compensation => compensation
+                        .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
+                        .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
+                .Step<FailActivity>(_ => { }))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
+            .Build();
+
+        using var cancellation = new CancellationTokenSource();
+        var executing = provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData(), cancellationToken: cancellation.Token);
+        var probe = provider.GetRequiredService<PausedCompensationProbe>();
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        probe.Release.SetResult();
+
+        var result = await executing.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.Equal(1, Data(result).Compensated);
+    }
+
+    [Fact]
+    public async Task RecoveredSagaHandlerPreservesTheOriginalErrorForOuterCatch()
+    {
+        var repository = new HandlerStartCrashStore();
+        using var services = CreateServices(repository);
+        var definition = Workflow.Create<SagaData>("RecoveredSagaHandlerError")
+            .Step<BeginActivity>()
+            .Try(body => body
+                .Saga(saga => saga.Step<FailActivity>(_ => { }))
+                .OnError<InvalidOperationException, MessageFault>(error => error
+                    .Step<RecoverableHandlerActivity>()))
+            .Catch<InvalidOperationException, MessageFault>(handler => handler.Step<ReadErrorActivity>(setup => setup
+                .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
+                .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+        Assert.Equal("payment failed", Data(recovered).Error);
+    }
+
+    [Fact]
     public async Task SagaCompensationInsideCatchUsesItsCurrentStep()
     {
         using var services = CreateServices(new InMemoryWorkflowStateRepository());
@@ -565,6 +626,62 @@ public class StructuredSagaWaitTests
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("output mapping failed", result.ErrorMessage);
         Assert.Equal(1, Data(result).Compensated);
+    }
+
+    [Fact]
+    public async Task FaultProjectionFailureStillCompensatesAndReachesOuterCatch()
+    {
+        using var services = CreateServices(new InMemoryWorkflowStateRepository());
+        var definition = Workflow.Create<SagaData>("SagaFaultProjectionFailure")
+            .Step<BeginActivity>()
+            .Try(body => body
+                .Saga(saga => saga
+                    .Step<ReserveActivity>(setup => setup
+                        .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
+                        .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved)
+                        .CompensateWith<ReleaseActivity>(compensation => compensation
+                            .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
+                            .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
+                    .Step<ThrowFragileSagaActivity>(_ => { }))
+                .OnError<FragileSagaException, FragileSagaFault>(error => error.Compensate().ThenTerminate()))
+            .Catch<InvalidOperationException, MessageFault>(handler => handler.Step<ReadErrorActivity>(setup => setup
+                .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
+                .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(1, Data(result).Compensated);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Contains("Fault projection", Data(result).Error);
+    }
+
+    [Fact]
+    public async Task RetryingFailedOutputMappingDoesNotRepeatTheCompletedActivity()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<CompletedStepProbe>();
+        services.AddTransient<CountedReserveActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<SagaData>("SagaOutputRetry")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<CountedReserveActivity>(setup => setup
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.RejectedOutput)
+                .CompensateWith<ReleaseActivity>(compensation => compensation
+                    .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated))
+                .OnError<InvalidOperationException>(handler => handler.ThenRetry(1))))
+            .Build();
+
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(1, Data(result).Compensated);
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Equal(1, provider.GetRequiredService<CompletedStepProbe>().Executions);
     }
 
     [Fact]
@@ -980,6 +1097,104 @@ public class StructuredSagaWaitTests
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("payment failed");
+    }
+
+    public sealed class FragileSagaException : Exception
+    {
+        public int Code => throw new InvalidOperationException("property getter failed");
+    }
+
+    public sealed class FragileSagaFault
+    {
+        public int Code { get; set; }
+    }
+
+    public sealed class ThrowFragileSagaActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            throw new FragileSagaException();
+    }
+
+    public sealed class CompletedStepProbe
+    {
+        public int Executions;
+    }
+
+    public sealed class CountedReserveActivity(CompletedStepProbe probe) : IAsyncActivity
+    {
+        public int Result { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref probe.Executions);
+            Result = 1;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class PausedCompensationProbe
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public sealed class PausedReleaseActivity(PausedCompensationProbe probe) : IAsyncActivity
+    {
+        public int Count { get; set; }
+        public int Result { get; private set; }
+
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.Started.SetResult();
+            await probe.Release.Task;
+            Result = Count;
+        }
+    }
+
+    public sealed class RecoverableHandlerActivity : IRecoverableActivity<string>
+    {
+        public string CaptureRecoveryState(IActivityContext context) => "handler";
+
+        public Task<ActivityRecoveryResult<string>> RecoverAsync(
+            string state, IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.FromResult<ActivityRecoveryResult<string>>(new ActivityRecoveryResult<string>.Execute());
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    public sealed class HandlerStartCrashStore : IWorkflowStateRepository
+    {
+        private readonly InMemoryWorkflowStateRepository _inner = new();
+        private int _lostAcknowledgments = 3;
+
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
+            WorkflowInstance instance, long expectedRevision, string commitId)
+        {
+            var handlerStarted = instance.ExecutionHistory.LastOrDefault() is
+            { EntryType: TraceEntryType.ActivityStarted, ActivityName: nameof(RecoverableHandlerActivity) };
+            var result = await _inner.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
+            if (handlerStarted && _lostAcknowledgments-- > 0)
+                throw new IOException("Handler start acknowledgment lost");
+            return result;
+        }
+
+        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
+            _inner.SaveWorkflowInstanceAsync(instance);
+        public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance) =>
+            _inner.TryClaimSuspendedWorkflowAsync(instance);
+        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
+            _inner.GetWorkflowInstanceAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
+            _inner.GetWorkflowInstancesByNameAsync(workflowName);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
+            _inner.GetWorkflowInstancesByStatusAsync(status);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
+            _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task DeleteWorkflowInstanceAsync(string instanceId) =>
+            _inner.DeleteWorkflowInstanceAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync() =>
+            _inner.GetSuspendedWorkflowsReadyForResumptionAsync();
     }
 
     public sealed class SagaRetryProbe
