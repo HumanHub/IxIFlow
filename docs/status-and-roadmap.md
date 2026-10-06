@@ -13,7 +13,7 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 | Local activity execution | Implemented in the workflow host process. |
 | Conditions, parallel work, and exceptions | Implemented, including multiple simultaneous waits, `WaitAll`, `WaitAny`, conditional joins, and waits in `Catch` and `Finally`. Loop failure propagation and nested `PreviousStep` pass-through have regression tests. |
 | In-process saga compensation | Waits and error handlers resume with saved compensation results. Retry after a wait has success and exhaustion coverage. |
-| SQL host and state | Shared SQL Server instance state, revisioned checkpoints, renewable execution leases, recovery scanning, host registry, and acknowledged message delivery with claim renewal are implemented. Cross-host resume, live-owner exclusion, expired-worker takeover, and stable start IDs have integration tests. |
+| SQL host and state | Shared SQL Server instance state, revisioned checkpoints, renewable execution leases, indexed recovery scanning, host registry, and acknowledged message delivery with claim renewal are implemented. Cross-host resume and cancellation, live-owner exclusion, expired-worker takeover, and stable start IDs have integration tests. |
 | Workflow editor exercise | Structured, collapsible activity frames with inline fields, editable titles and annotations, manifest-driven icons, and draft YAML editing. It does not execute workflows. The earlier Vue Flow canvas remains a Flowchart reference. |
 | Custom activity prototype | A .NET package registry matches manifest activity keys to installed `IAsyncActivity` types. The YAML document compiler checks package and activity versions. Studio can load a local manifest into its toolbox. |
 
@@ -22,11 +22,11 @@ IxIFlow is under active development. The fluent C# API is the current way to def
 - The default state repository and event store are singleton in-process memory. The optional SQL Server host registers shared workflow state, but its event store and definition registry remain in memory.
 - Local execution uses saved continuations and scope frames for initial execution, waits, and recovery. Crash recovery can leave a nonrecoverable activity at `NeedsResolution`; a recoverable activity supplies its own verification policy. More fault-injection coverage is needed for host termination during nested cancellation and external effects.
 - Parallel branches share mutable workflow data. Developers must synchronize conflicting updates; the engine does not merge branch-local copies.
-- Memory and SQL state repositories fence stale checkpoint writers with a revision and renewable execution lease. The optional SQL host scans running instances and requests recovery; an activity with an uncertain external outcome stops at `NeedsResolution` for operator action.
+- Memory and SQL state repositories fence stale checkpoint writers with a revision and renewable execution lease. The optional SQL host scans running instances without a live owner and suspended instances with a pending cancellation request. A leaf activity or child-workflow invocation with an uncertain external outcome stops at `NeedsResolution`. The engine can list pending attempts and save an operator decision to mark the step completed with explicit outputs or failed with a typed exception. A management API for these controls is still missing.
 - Saga error handlers can wait and resume. Cancellation behavior has targeted tests, but a complete matrix across nested loops, handlers, sagas, and parallel joins is still a release gate.
 - Typed resume events and correlation exist, but there is no published start-trigger registry for HTTP, schedules, or messages. General event matching still scans suspended instances. Targeted event-template updates now resume only their specified instance, and the default memory template store survives DI scopes.
-- SQL message claims renew during long handlers. Execute commands carry a stable instance ID, so redelivery reuses the saved instance. Completion events can still be delivered more than once; consumers need to deduplicate by instance ID.
-- The distributed cancellation command currently publishes a cancellation event without changing engine state. It must be connected to a durable cancellation request before it can be offered as an operational control.
+- SQL message claims renew during long handlers. Execute commands carry a stable instance ID, so redelivery reuses the saved instance. Completion events are emitted only for terminal results; waits and unresolved activities remain open. Completion events can still be delivered more than once; consumers need to deduplicate by instance ID.
+- A distributed cancellation command now records a durable request. An active owner observes it, and an idle wait unwinds through saga compensation and `Finally`. A completion event is published only after a terminal result. The full host-loss and nested cancellation matrix remains a release gate.
 - Each host must register the same code-defined workflow version and activity code. The SQL host does not persist executable C# definitions or distribute activity packages.
 - Named child-workflow invocation resolves the registered definition and version. Queued commands carry a name and version, but the HTTP host client still sends unserializable workflow definitions.
 - The document compiler preserves conditionals, bindings, and a small Boolean expression set. A basic YAML workflow can compile and execute with a registered custom activity. The document model still lacks several fluent constructs, and Studio's draft YAML shape is not the engine's canonical document. A runtime-connected Studio is not built.
@@ -72,8 +72,8 @@ Docker is available for repeatable integration runs. Use isolated PostgreSQL and
 ### Immediate engine gates
 
 1. Complete the cancellation and fault-injection matrix across nested scopes and external effects.
-2. Add operator controls for `NeedsResolution` and an indexed recovery query for large SQL installations.
-3. Connect distributed cancellation to engine state, then test delayed delivery and worker termination across hosts, including duplicate completion events and recovery of expired running instances.
+2. Expose pending attempts and operator resolution through a management API, with authorization and an audit trail for the decision.
+3. Test delayed cancellation delivery and worker termination across hosts, including duplicate completion events and recovery of expired running instances.
 4. Make the YAML compiler and editor cover the same supported constructs as the fluent API, then add debugger and management APIs.
 
 This is a dependency order, not a release date. Check the repository's tests and changes before depending on a specific capability.

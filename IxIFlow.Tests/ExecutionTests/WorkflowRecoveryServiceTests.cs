@@ -69,8 +69,86 @@ public sealed class WorkflowRecoveryServiceTests
         Assert.Equal([runningId], engine.Recovered);
     }
 
+    [Fact]
+    public async Task ScannerFinishesCancellationRequestedBeforeSuspendedHostStopped()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
+        services.AddTransient<ActivityRecoveryTests.NoopActivity>();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<RecoveryData>("CancelAfterHostStopped")
+            .Step<ActivityRecoveryTests.NoopActivity>()
+            .WaitFor<RecoveryEvent>("approval")
+            .Build();
+        var started = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new RecoveryData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" }));
+        using var scanner = new WorkflowRecoveryService(
+            provider.GetRequiredService<IServiceScopeFactory>(), repository,
+            NullLogger<WorkflowRecoveryService>.Instance);
+
+        await scanner.RecoverOnceAsync(CancellationToken.None);
+
+        Assert.Equal(WorkflowStatus.Cancelled,
+            (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+    }
+
+    [Fact]
+    public async Task UnresolvedActivityRetainsCancellationUntilOperatorDecision()
+    {
+        var repository = new ActivityRecoveryTests.FaultStore
+        {
+            FailCompletionBeforeApply = 3
+        };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
+        services.AddTransient<ActivityRecoveryTests.NoopActivity>();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<RecoveryData>("CancelUnresolved")
+            .Step<ActivityRecoveryTests.NoopActivity>()
+            .Build();
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new RecoveryData()));
+        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        await engine.RecoverWorkflowAsync(saved.InstanceId);
+        Assert.Equal(WorkflowStatus.NeedsResolution,
+            (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
+        Assert.True(await repository.RequestCancellationAsync(saved.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" }));
+        using var scanner = new WorkflowRecoveryService(
+            provider.GetRequiredService<IServiceScopeFactory>(), repository,
+            NullLogger<WorkflowRecoveryService>.Instance);
+
+        await scanner.RecoverOnceAsync(CancellationToken.None);
+
+        Assert.Equal(WorkflowStatus.NeedsResolution,
+            (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(saved.InstanceId));
+        var result = await engine.ResolveActivityAsync(saved.InstanceId, pending.InvocationId,
+            ActivityResolution.Completed(new Dictionary<string, object?>()));
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.Equal(WorkflowStatus.Cancelled,
+            (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
+    }
+
     private sealed class RecordingEngine : IWorkflowEngine
     {
+        public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
+            throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ResolveActivityAsync(string instanceId,
+            string invocationId, ActivityResolution resolution,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> CancelWorkflowAsync(string instanceId,
+            CancellationReason reason, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
         public List<string> Recovered { get; } = [];
 
         public Task<WorkflowExecutionResult> RecoverWorkflowAsync(string instanceId,
@@ -98,4 +176,5 @@ public sealed class WorkflowRecoveryServiceTests
     }
 
     public sealed class RecoveryData;
+    public sealed class RecoveryEvent;
 }

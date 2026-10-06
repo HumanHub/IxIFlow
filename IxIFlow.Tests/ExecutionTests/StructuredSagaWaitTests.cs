@@ -1369,6 +1369,12 @@ public class StructuredSagaWaitTests
     public sealed class HandlerStartCrashStore : IWorkflowStateRepository
     {
         private readonly InMemoryWorkflowStateRepository _inner = new();
+        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
+            _inner.RequestCancellationAsync(instanceId, reason);
+        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
+            _inner.GetCancellationRequestAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
+            _inner.GetWorkflowsRequiringRecoveryAsync();
         public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>

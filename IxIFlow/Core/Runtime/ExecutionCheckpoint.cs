@@ -85,6 +85,17 @@ internal sealed class ActivityInvocationState
     public SerializedValue? RecoveryState { get; set; }
     public List<ActivityAttemptState> Attempts { get; set; } = [];
     public string? ResolutionReason { get; set; }
+    public ActivityResolutionState? Resolution { get; set; }
+}
+
+internal sealed class ActivityResolutionState
+{
+    public ActivityResolutionKind Kind { get; set; }
+    public string Note { get; set; } = "";
+    public string? DecidedBy { get; set; }
+    public Dictionary<string, SerializedValue?> OutputProperties { get; set; } = [];
+    public SerializedValue? InvocationResult { get; set; }
+    public SerializedException? Failure { get; set; }
 }
 
 internal sealed class ActivityAttemptState
