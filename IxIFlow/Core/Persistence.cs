@@ -779,6 +779,7 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
 
     private void RegisterWorkflow(WorkflowDefinition definition)
     {
+        Runtime.WorkflowDefinitionIdentity.AssignImplicitName(definition);
         var key = $"{definition.Name}:{definition.Version}";
         var published = _workflows.GetOrAdd(key, definition);
         if (!ReferenceEquals(published, definition) &&

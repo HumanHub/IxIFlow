@@ -229,6 +229,7 @@ internal sealed class SagaScopeState
     public int ErrorHandlerIndex { get; set; } = -1;
     public bool ErrorHandlerStarted { get; set; }
     public SagaContinuationAction? ErrorAction { get; set; }
+    public bool IgnoreCompensationErrors { get; set; }
     public int RetryCount { get; set; }
     public int MaximumRetries { get; set; }
     public List<SagaAcceptedWait> AcceptedWaits { get; set; } = [];

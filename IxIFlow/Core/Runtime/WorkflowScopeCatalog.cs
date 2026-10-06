@@ -17,8 +17,9 @@ internal sealed class WorkflowScopeCatalog
     }
 
     public string Fingerprint { get; }
-    public bool ContainsWait => _steps.Values.Any(step =>
-        step.StepType is WorkflowStepType.SuspendResume or WorkflowStepType.Delay);
+    public bool RequiresPersistence => _steps.Values.Any(step =>
+        step.StepType is WorkflowStepType.SuspendResume or WorkflowStepType.Delay or
+            WorkflowStepType.WorkflowInvocation);
 
     public IReadOnlyCollection<PropertyInfo> FaultProperties(Type exceptionType) => _steps.Values
         .Where(step => step.StepType == WorkflowStepType.CatchBlock &&
@@ -181,6 +182,7 @@ internal sealed class WorkflowScopeCatalog
         var saga = step.StepMetadata.TryGetValue("SagaErrorConfig", out value) &&
             value is SagaErrorConfiguration policy
                 ? string.Join(':', policy.CompensationStrategy, policy.ContinuationAction,
+                    policy.IgnoreCompensationErrors,
                     WorkflowTypeIdentity.StableName(policy.CompensationTargetType),
                     RetrySignature(policy.RetryPolicy))
                 : "";

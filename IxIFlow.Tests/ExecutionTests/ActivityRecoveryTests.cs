@@ -410,12 +410,16 @@ public sealed class ActivityRecoveryTests
         using var services = CreateServices(store, ledger);
         var engine = services.GetRequiredService<WorkflowEngine>();
         await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
-            OrdinaryChargeWorkflow(), new ChargeData { OrderId = "cancel-before-resolution" }));
+            OrdinaryChargeWorkflow(), new ChargeData { OrderId = "cancel-before-resolution" },
+            new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMinutes(1) }));
         var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         await engine.RecoverWorkflowAsync(running.InstanceId);
         var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
         Assert.True(await store.RequestCancellationAsync(running.InstanceId,
             new CancellationReason { ReasonCode = "withdrawn" }));
+        var awaitingResolution = await engine.RecoverWorkflowAsync(running.InstanceId);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, awaitingResolution.Status);
+        Assert.Null((await store.GetWorkflowInstanceAsync(running.InstanceId))!.NextDueAtUtc);
 
         var resolved = await engine.ResolveActivityAsync(running.InstanceId, pending.InvocationId,
             ActivityResolution.Completed(new Dictionary<string, object?>
