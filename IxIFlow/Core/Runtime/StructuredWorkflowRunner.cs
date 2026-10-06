@@ -293,6 +293,11 @@ internal sealed class StructuredWorkflowRunner(
                 return ExistingResult(existing);
             }
         }
+        var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
+        if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true &&
+            isActive is false)
+            throw new InvalidOperationException(
+                $"Workflow {definition.Name} v{definition.Version} is deactivated");
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes);
         if (options.PersistState)
@@ -1537,6 +1542,8 @@ internal sealed class StructuredWorkflowRunner(
         }
 
         pending ??= new ActivityInvocationState { StepId = scopes.Id(step) };
+        if (_childStartIsCheckpointed)
+            pending.ChildWorkflowId ??= pending.Id;
         var attempt = new ActivityAttemptState
         {
             Kind = pending.Resolution == null ? "InvokeWorkflow" :
@@ -1566,10 +1573,17 @@ internal sealed class StructuredWorkflowRunner(
             instance.ExecutionHistory.Add(startTrace);
         await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
 
-        if (continuation.CancellationUnwind && pending.Resolution == null &&
+        if (continuation.CancellationUnwind &&
+            !TryScopeTransitions.IsInsideFinally(continuation) &&
+            !SagaScopeTransitions.IsInsideCompensation(continuation) &&
+            pending.Resolution == null &&
             pending.ChildWorkflowId != null)
         {
             var child = await repository.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
+            if (child == null && _childStartIsCheckpointed)
+                return new RunningActivity(continuation, step,
+                    Task.FromResult(ActivityRunResult.Skipped()), cancellation, null,
+                    continuation.Stack[^1].NextStepIndex);
             if (child?.Status is WorkflowStatus.Suspended or WorkflowStatus.Running or
                 WorkflowStatus.NeedsResolution)
             {
@@ -1581,6 +1595,9 @@ internal sealed class StructuredWorkflowRunner(
                         ReasonCode = "parent_branch_cancelled",
                         Description = "The parent workflow branch was cancelled"
                     }, cancellation.Token);
+                if (childResult.Status == WorkflowExecutionStatus.Running)
+                    childResult = await engine.RecoverWorkflowAsync(pending.ChildWorkflowId,
+                        cancellation.Token);
                 var cancellationOutcome = childResult.Status == WorkflowExecutionStatus.Cancelled
                     ? ActivityRunResult.Skipped()
                     : ActivityRunResult.Unresolved(
@@ -1705,6 +1722,21 @@ internal sealed class StructuredWorkflowRunner(
 
             if (outcome.Kind == ActivityRunKind.Threw)
             {
+                if (outcome.Error is OperationCanceledException &&
+                    activity.Step.StepType == WorkflowStepType.WorkflowInvocation &&
+                    activity.Continuation.CancellationUnwind &&
+                    !TryScopeTransitions.IsInsideFinally(activity.Continuation) &&
+                    !SagaScopeTransitions.IsInsideCompensation(activity.Continuation) &&
+                    activity.Continuation.PendingActivity?.ChildWorkflowId is { } childId &&
+                    (await repository.GetWorkflowInstanceAsync(childId))?.Status is
+                        (WorkflowStatus.Running or WorkflowStatus.Suspended or
+                            WorkflowStatus.NeedsResolution))
+                {
+                    // The child stopped through the parent's cancellation token.
+                    // Its saved activity Start still needs reconciliation.
+                    activity.Continuation.Status = ContinuationStatus.Cancelling;
+                    return;
+                }
                 MarkActivityEnd(activity, instance, "Threw", outcome.Error);
                 throw outcome.Error ?? new InvalidOperationException("Activity failed without an exception");
             }

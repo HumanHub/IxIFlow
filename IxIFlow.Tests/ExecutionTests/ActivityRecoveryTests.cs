@@ -262,6 +262,90 @@ public sealed class ActivityRecoveryTests
     }
 
     [Fact]
+    public async Task InterruptedCatchActivityNeedsResolutionBeforeFinally()
+    {
+        var store = new FaultStore();
+        var ledger = new ChargeLedger(store) { FailCompletionAfterCharge = true };
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        var definition = Workflow.Create<ChargeData>("InterruptedCatch")
+            .Step<NoopActivity>()
+            .Try(body => body.Step<ThrowActivity>(_ => { }))
+            .Catch<InvalidOperationException, MessageFault>(body => body
+                .Step<OrdinaryChargeActivity>(step => step
+                    .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                    .Output(activity => activity.ChargeId).To(ctx => ctx.WorkflowData.ChargeId)))
+            .Finally(body => body.Step<MarkFinallyActivity>(step => step
+                .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.FinallyRan)))
+            .Build();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            definition, new ChargeData { OrderId = "catch-effect" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var unresolved = await engine.RecoverWorkflowAsync(running.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, unresolved.Status);
+        Assert.Equal(1, ledger.ChargeCount);
+        Assert.False(Assert.IsType<ChargeData>(unresolved.WorkflowData).FinallyRan);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
+        Assert.Equal(nameof(OrdinaryChargeActivity), pending.ActivityName);
+
+        var completed = await engine.ResolveActivityAsync(running.InstanceId,
+            pending.InvocationId, ActivityResolution.Completed(
+                new Dictionary<string, object?> { ["ChargeId"] = "observed-charge" }));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.True(Assert.IsType<ChargeData>(completed.WorkflowData).FinallyRan);
+        Assert.Equal("observed-charge", ((ChargeData)completed.WorkflowData!).ChargeId);
+        Assert.Equal(1, ledger.ChargeCount);
+    }
+
+    [Fact]
+    public async Task InterruptedCompensationNeedsResolutionBeforeCatchAndFinally()
+    {
+        var store = new FaultStore();
+        var ledger = new ChargeLedger(store) { FailCompletionAfterCharge = true };
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        var definition = Workflow.Create<ChargeData>("InterruptedCompensation")
+            .Step<NoopActivity>()
+            .Try(body => body.Saga(saga => saga
+                .Step<NoopActivity>(step => step
+                    .CompensateWith<OrdinaryChargeActivity>(comp => comp
+                        .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Output(activity => activity.ChargeId).To(ctx => ctx.WorkflowData.ChargeId)))
+                .Step<ThrowActivity>(_ => { })))
+            .Catch<InvalidOperationException, MessageFault>(body => body
+                .Step<MarkCaughtActivity>(step => step
+                    .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.Caught)))
+            .Finally(body => body.Step<MarkFinallyActivity>(step => step
+                .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.FinallyRan)))
+            .Build();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            definition, new ChargeData { OrderId = "compensation-effect" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var unresolved = await engine.RecoverWorkflowAsync(running.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, unresolved.Status);
+        Assert.Equal(1, ledger.ChargeCount);
+        Assert.False(Assert.IsType<ChargeData>(unresolved.WorkflowData).Caught);
+        Assert.False(((ChargeData)unresolved.WorkflowData!).FinallyRan);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
+        Assert.Equal(nameof(OrdinaryChargeActivity), pending.ActivityName);
+
+        var completed = await engine.ResolveActivityAsync(running.InstanceId,
+            pending.InvocationId, ActivityResolution.Completed(
+                new Dictionary<string, object?> { ["ChargeId"] = "observed-compensation" }));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.True(Assert.IsType<ChargeData>(completed.WorkflowData).Caught);
+        Assert.True(((ChargeData)completed.WorkflowData!).FinallyRan);
+        Assert.Equal("observed-compensation", ((ChargeData)completed.WorkflowData!).ChargeId);
+        Assert.Equal(1, ledger.ChargeCount);
+    }
+
+    [Fact]
     public async Task OperatorResolutionRequiresMappedOutputBeforeChangingCheckpoint()
     {
         var store = new FaultStore { FailCompletionBeforeApply = 3 };
@@ -626,6 +710,8 @@ public sealed class ActivityRecoveryTests
         public int SecondIndex { get; set; }
         public int FaultCode { get; set; }
         public string? ChildResult { get; set; }
+        public bool FinallyRan { get; set; }
+        public bool Caught { get; set; }
     }
 
     public sealed class OperatorFaultException(int code) : Exception($"operator fault {code}")
@@ -677,6 +763,30 @@ public sealed class ActivityRecoveryTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken)
         {
             Index = context.StepNumber;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class MarkFinallyActivity : IAsyncActivity
+    {
+        public bool Ran { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Ran = true;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class MarkCaughtActivity : IAsyncActivity
+    {
+        public bool Ran { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Ran = true;
             return Task.CompletedTask;
         }
     }

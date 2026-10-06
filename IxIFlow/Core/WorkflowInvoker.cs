@@ -3,6 +3,7 @@ using System.Text.Json;
 using IxIFlow.Builders;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core.Runtime;
+using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -65,6 +66,10 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                         $"Workflow type {step.WorkflowType} does not implement IWorkflow<>");
 
                 childWorkflowDataType = workflowInterface.GetGenericArguments()[0];
+                var registrationType = typeof(RegisteredWorkflowDefinition<>)
+                    .MakeGenericType(step.WorkflowType);
+                registeredDefinition = (_serviceProvider.GetService(registrationType)
+                    as IRegisteredWorkflowDefinition)?.Definition;
             }
             else
             {
@@ -97,18 +102,28 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             // Create child workflow definition
             WorkflowDefinition childWorkflowDefinition;
 
-            if (step.WorkflowType != null)
+            if (registeredDefinition != null)
+            {
+                childWorkflowDefinition = registeredDefinition;
+            }
+            else if (step.WorkflowType != null)
             {
                 // Create workflow instance and build definition
-                var childWorkflow = Activator.CreateInstance(step.WorkflowType);
+                var childWorkflow = ActivatorUtilities.GetServiceOrCreateInstance(
+                    _serviceProvider, step.WorkflowType);
                 if (childWorkflow == null)
                     throw new InvalidOperationException(
                         $"Failed to create workflow instance of type {step.WorkflowType}");
 
                 // Create builder and get definition
                 var builderType = typeof(WorkflowBuilder<>).MakeGenericType(childWorkflowDataType);
+                var workflowInterface = step.WorkflowType.GetInterfaces().First(i =>
+                    i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IWorkflow<>));
+                var workflowVersion = (int)(workflowInterface.GetProperty("Version")!
+                    .GetValue(childWorkflow) ?? throw new InvalidOperationException(
+                    $"Workflow {step.WorkflowType} has no version"));
                 var builder = Activator.CreateInstance(builderType, step.WorkflowName ?? step.WorkflowType.Name,
-                    step.WorkflowVersion ?? 1);
+                    step.WorkflowVersion ?? workflowVersion);
 
                 // Call Build method on the workflow
                 var buildMethod = step.WorkflowType.GetMethod("Build");

@@ -99,6 +99,7 @@ public static class ServiceCollectionExtensions
         string? name = null)
         where TWorkflow : class
     {
+        EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
         // Use reflection to find the IWorkflow<T> interface
         var workflowInterface = typeof(TWorkflow)
             .GetInterfaces()
@@ -117,12 +118,14 @@ public static class ServiceCollectionExtensions
             .GetMethod(nameof(BuildWorkflowDefinition), BindingFlags.Public | BindingFlags.Static)!
             .MakeGenericMethod(typeof(TWorkflow), workflowDataType);
         
-        // Register the workflow definition as a singleton
-        services.AddSingleton<WorkflowDefinition>(serviceProvider =>
+        services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-            return (WorkflowDefinition)buildMethod.Invoke(null, new object[] { workflow, name })!;
+            var definition = (WorkflowDefinition)buildMethod.Invoke(null, new object[] { workflow, name })!;
+            return new RegisteredWorkflowDefinition<TWorkflow>(definition);
         });
+        services.AddSingleton(serviceProvider =>
+            serviceProvider.GetRequiredService<RegisteredWorkflowDefinition<TWorkflow>>().Definition);
 
         return services;
     }
@@ -141,15 +144,18 @@ public static class ServiceCollectionExtensions
         where TWorkflow : class, IWorkflow<TWorkflowData>
         where TWorkflowData : class
     {
+        EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
         // Register the workflow class
         services.AddTransient<TWorkflow>();
         
-        // Register the workflow definition as a singleton
-        services.AddSingleton<WorkflowDefinition>(serviceProvider =>
+        services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-            return BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow, name);
+            return new RegisteredWorkflowDefinition<TWorkflow>(
+                BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow, name));
         });
+        services.AddSingleton(serviceProvider =>
+            serviceProvider.GetRequiredService<RegisteredWorkflowDefinition<TWorkflow>>().Definition);
 
         return services;
     }
@@ -199,6 +205,10 @@ public static class ServiceCollectionExtensions
         this IServiceProvider serviceProvider)
         where TWorkflow : class
     {
+        var registration = serviceProvider.GetService<RegisteredWorkflowDefinition<TWorkflow>>();
+        if (registration != null)
+            return registration.Definition;
+
         // Try to get a registered definition first
         var definitions = serviceProvider.GetServices<WorkflowDefinition>();
         var definition = definitions.FirstOrDefault(d => d.Name == typeof(TWorkflow).Name);
@@ -236,6 +246,10 @@ public static class ServiceCollectionExtensions
         where TWorkflow : class, IWorkflow<TWorkflowData>
         where TWorkflowData : class
     {
+        var registration = serviceProvider.GetService<RegisteredWorkflowDefinition<TWorkflow>>();
+        if (registration != null)
+            return registration.Definition;
+
         // Try to get a registered definition first
         var definitions = serviceProvider.GetServices<WorkflowDefinition>();
         var definition = definitions.FirstOrDefault(d => d.Name == typeof(TWorkflow).Name);
@@ -247,7 +261,24 @@ public static class ServiceCollectionExtensions
         var workflow = serviceProvider.GetRequiredService<TWorkflow>();
         return BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow);
     }
+
+    private static void EnsureWorkflowTypeIsNotRegistered<TWorkflow>(IServiceCollection services)
+        where TWorkflow : class
+    {
+        if (services.Any(descriptor =>
+                descriptor.ServiceType == typeof(RegisteredWorkflowDefinition<TWorkflow>)))
+            throw new InvalidOperationException(
+                $"Workflow '{typeof(TWorkflow).Name}' is already registered");
+    }
 }
+
+internal interface IRegisteredWorkflowDefinition
+{
+    WorkflowDefinition Definition { get; }
+}
+
+internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinition Definition)
+    : IRegisteredWorkflowDefinition where TWorkflow : class;
 
 /// <summary>
 /// Builder for registering multiple workflows
