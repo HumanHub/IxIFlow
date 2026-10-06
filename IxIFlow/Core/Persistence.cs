@@ -479,7 +479,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                     (instance.Status == WorkflowStatus.Suspended &&
                      _cancellations.ContainsKey(instance.InstanceId) &&
                      !_acknowledgedCancellations.Contains(instance.InstanceId)) ||
-                    (instance.Status == WorkflowStatus.Suspended &&
+                    (instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution &&
                      instance.NextDueAtUtc <= now))
                 .Select(SnapshotStructured)
                 .ToArray();
@@ -766,7 +766,13 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
     public Task RegisterWorkflowAsync(WorkflowDefinition definition)
     {
         var key = $"{definition.Name}:{definition.Version}";
-        if (!_workflows.TryAdd(key, definition) && !ReferenceEquals(_workflows[key], definition))
+        var published = _workflows.GetOrAdd(key, definition);
+        if (!ReferenceEquals(published, definition) &&
+            (published.Description != definition.Description ||
+             published.WorkflowDataType != definition.WorkflowDataType ||
+             !published.Tags.SequenceEqual(definition.Tags) ||
+             new WorkflowScopeCatalog(published).Fingerprint !=
+             new WorkflowScopeCatalog(definition).Fingerprint))
         {
             throw new InvalidOperationException($"Workflow {definition.Name} v{definition.Version} is already registered");
         }

@@ -137,8 +137,6 @@ public static class WorkflowBuilderExtensions
         services.AddSingleton<IActivityExecutor, ActivityExecutor>();
         services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
         services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
-        services.AddSingleton<ISuspendResumeExecutor, SuspendResumeExecutor>();
-        services.AddSingleton<ISagaExecutor, SagaExecutor>();
         services.AddSingleton<StructuredWorkflowRunner>();
         services.AddSingleton(InProcessInstanceGate.Shared);
 

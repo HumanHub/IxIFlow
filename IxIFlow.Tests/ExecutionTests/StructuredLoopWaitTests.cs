@@ -8,6 +8,33 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class StructuredLoopWaitTests
 {
     [Fact]
+    public void WhileDoExposesCorrectLoopKindToAuthoring()
+    {
+        var definition = WhileWorkflow();
+        Assert.Equal(LoopType.WhileDo, definition.Steps[1].StepMetadata["LoopType"]);
+    }
+
+    [Fact]
+    public async Task WhileDoCanCompleteMoreThanOneThousandIterations()
+    {
+        using var services = CreateServices();
+        var definition = Workflow.Create<LoopData>("LongFiniteLoop")
+            .Step<StartActivity>()
+            .WhileDo(ctx => ctx.WorkflowData.Count < 1001,
+                body => body.Step<IncrementActivity>(step => step
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Count)
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Count)))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LoopData(),
+                new WorkflowOptions { PersistState = false });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(1001, Data(result).Count);
+    }
+
+    [Fact]
     public async Task WhileDo_WaitsOnEachIterationAndDoesNotRepeatCompletedWork()
     {
         using var services = CreateServices();

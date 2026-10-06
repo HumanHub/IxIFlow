@@ -10,4 +10,6 @@ public class StepExecutionResult
     public string? ErrorMessage { get; set; }
     public string? ErrorStackTrace { get; set; }
     public Exception? Exception { get; set; }
+    public WorkflowExecutionStatus? WorkflowStatus { get; set; }
+    public string? ChildInstanceId { get; set; }
 }

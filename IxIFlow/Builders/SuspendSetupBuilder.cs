@@ -114,6 +114,7 @@ public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevio
         {
             TargetProperty = propertyName,
             SourceFunction = wrappedFunction,
+            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
             SourceType = typeof(WorkflowContext<TWorkflowData, TPreviousStepData>),
             TargetType = typeof(TResumeEvent),
             Direction = PropertyMappingDirection.Input
@@ -212,6 +213,7 @@ public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevi
             TargetProperty = propertyName,
             SourceFunction = dummySourceFunction, // Not used for outputs
             TargetAssignmentFunction = assignmentFunction,
+            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
             SourceType = typeof(TResumeEvent),
             TargetType = typeof(WorkflowContext<TWorkflowData>),
             Direction = PropertyMappingDirection.Output

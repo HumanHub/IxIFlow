@@ -146,7 +146,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                OR (instance.Status = 'Suspended' AND
                    instance.CancellationJson IS NOT NULL AND
                    instance.CancellationAcknowledged = 0)
-               OR (instance.Status = 'Suspended' AND
+               OR (instance.Status IN ('Suspended', 'NeedsResolution') AND
                    instance.NextDueAtUtc <= SYSUTCDATETIME())
             """);
         return rows.Select(Deserialize).ToArray();

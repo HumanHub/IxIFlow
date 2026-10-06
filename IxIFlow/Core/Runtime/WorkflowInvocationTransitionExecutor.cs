@@ -8,20 +8,21 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class WorkflowInvocationTransitionExecutor(IWorkflowInvoker invoker)
 {
-    public async Task<object?> ExecuteAsync(WorkflowStep step, WorkflowDefinition definition,
-        WorkflowInstance instance, object workflowData, object? previous,
+    public async Task<WorkflowInvocationTransitionResult> ExecuteAsync(
+        WorkflowStep step, WorkflowDefinition definition,
+        WorkflowInstance instance, object workflowData, object? previous, string invocationId,
         CancellationToken cancellationToken)
     {
         var method = GetType().GetMethod(nameof(ExecuteTypedAsync),
             BindingFlags.NonPublic | BindingFlags.Instance)!.MakeGenericMethod(workflowData.GetType());
-        var task = (Task<object?>)method.Invoke(this,
-            [step, definition, instance, workflowData, previous, cancellationToken])!;
+        var task = (Task<WorkflowInvocationTransitionResult>)method.Invoke(this,
+            [step, definition, instance, workflowData, previous, invocationId, cancellationToken])!;
         return await task;
     }
 
-    private async Task<object?> ExecuteTypedAsync<TData>(WorkflowStep step,
+    private async Task<WorkflowInvocationTransitionResult> ExecuteTypedAsync<TData>(WorkflowStep step,
         WorkflowDefinition definition, WorkflowInstance instance, object workflowData,
-        object? previous, CancellationToken cancellationToken) where TData : class
+        object? previous, string invocationId, CancellationToken cancellationToken) where TData : class
     {
         var executionState = new ExecutionState { LastStepResult = previous };
         var context = new StepExecutionContext<TData>
@@ -32,12 +33,17 @@ internal sealed class WorkflowInvocationTransitionExecutor(IWorkflowInvoker invo
             PreviousStepData = previous
         };
         var result = await invoker.ExecuteWorkflowInvocationAsync(step, context,
-            executionState, cancellationToken);
+            executionState, invocationId, cancellationToken);
         if (executionState.PendingException != null)
             throw executionState.PendingException;
+        if (result.WorkflowStatus == WorkflowExecutionStatus.Suspended)
+            return new WorkflowInvocationTransitionResult(result.ChildInstanceId!, null, true);
         if (!result.IsSuccess)
             throw result.Exception ?? new InvalidOperationException(result.ErrorMessage ??
                 "Child workflow invocation failed");
-        return result.OutputData;
+        return new WorkflowInvocationTransitionResult(result.ChildInstanceId, result.OutputData, false);
     }
 }
+
+internal sealed record WorkflowInvocationTransitionResult(
+    string? ChildInstanceId, object? Output, bool Suspended);

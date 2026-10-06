@@ -25,8 +25,6 @@ public class SagaExecutionTests
         // Register interfaces for WorkflowEngine dependencies
         services.AddSingleton<IActivityExecutor, ActivityExecutor>();
         services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
-        services.AddSingleton<ISuspendResumeExecutor, SuspendResumeExecutor>();
-        services.AddSingleton<ISagaExecutor, SagaExecutor>();
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
         services.AddSingleton<IEventCorrelator, EventCorrelator>();
         services.AddSingleton<IWorkflowTracer, WorkflowTracer>();

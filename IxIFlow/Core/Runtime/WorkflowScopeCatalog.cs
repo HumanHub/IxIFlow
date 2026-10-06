@@ -17,7 +17,8 @@ internal sealed class WorkflowScopeCatalog
     }
 
     public string Fingerprint { get; }
-    public bool ContainsWait => _steps.Values.Any(step => step.StepType == WorkflowStepType.SuspendResume);
+    public bool ContainsWait => _steps.Values.Any(step =>
+        step.StepType is WorkflowStepType.SuspendResume or WorkflowStepType.Delay);
 
     public IReadOnlyCollection<PropertyInfo> FaultProperties(Type exceptionType) => _steps.Values
         .Where(step => step.StepType == WorkflowStepType.CatchBlock &&
@@ -132,15 +133,65 @@ internal sealed class WorkflowScopeCatalog
                 var step = pair.Value;
                 var waitKey = step.StepMetadata.TryGetValue("WaitKey", out var key) ? key?.ToString() : "";
                 return string.Join('|', pair.Key, step.StepType,
+                    step.Name, WorkflowTypeIdentity.StableName(step.WorkflowDataType),
+                    WorkflowTypeIdentity.StableName(step.PreviousStepDataType),
                     WorkflowTypeIdentity.StableName(step.ActivityType),
+                    WorkflowTypeIdentity.StableName(step.WorkflowType),
+                    step.WorkflowName, step.WorkflowVersion,
                     WorkflowTypeIdentity.StableName(step.ResumeEventType), waitKey,
-                    step.WaitTimeout?.Ticks, step.ParallelJoinMode,
+                    step.WaitTimeout?.Ticks, step.DelayDuration?.Ticks, step.ParallelJoinMode,
                     step.LoopType, WorkflowTypeIdentity.StableName(step.ExceptionType),
-                    WorkflowTypeIdentity.StableName(step.FaultType));
+                    WorkflowTypeIdentity.StableName(step.FaultType),
+                    step.ConditionExpressionSignature,
+                    WorkflowCodeSignature.Of(step.CompiledCondition),
+                    WorkflowCodeSignature.Of(step.OutcomeSelector),
+                    WorkflowCodeSignature.Of(step.ParallelCompletionCondition),
+                    string.Join(';', step.OutcomeBranches.Select(OutcomeBranchSignature)),
+                    ErrorPolicySignature(step),
+                    string.Join(';', step.InputMappings.Select(MappingSignature)),
+                    string.Join(';', step.OutputMappings.Select(MappingSignature)));
             }));
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature));
         return Convert.ToHexString(bytes);
     }
+
+    private static string MappingSignature(PropertyMapping mapping) => string.Join(':',
+        mapping.Direction, mapping.TargetProperty,
+        WorkflowTypeIdentity.StableName(mapping.SourceType),
+        WorkflowTypeIdentity.StableName(mapping.TargetType),
+        mapping.CompensationSource,
+        mapping.ExpressionSignature,
+        WorkflowCodeSignature.Of(mapping.SourceFunction),
+        WorkflowCodeSignature.Of(mapping.TargetAssignmentFunction));
+
+    private static string OutcomeBranchSignature(WorkflowOutcomeBranch branch) => string.Join(':',
+        branch.IsDefault,
+        WorkflowTypeIdentity.StableName(branch.Value?.GetType()),
+        branch.Value == null ? "null" :
+            System.Text.Json.JsonSerializer.Serialize(branch.Value, branch.Value.GetType()));
+
+    private static string ErrorPolicySignature(WorkflowStep step)
+    {
+        var handlers = step.StepMetadata.TryGetValue("StepErrorHandlers", out var value) &&
+            value is List<StepErrorHandlerInfo> configured
+                ? string.Join(';', configured.Select(handler => string.Join(':',
+                    WorkflowTypeIdentity.StableName(handler.ExceptionType), handler.HandlerAction,
+                    RetrySignature(handler.RetryPolicy))))
+                : "";
+        var saga = step.StepMetadata.TryGetValue("SagaErrorConfig", out value) &&
+            value is SagaErrorConfiguration policy
+                ? string.Join(':', policy.CompensationStrategy, policy.ContinuationAction,
+                    WorkflowTypeIdentity.StableName(policy.CompensationTargetType),
+                    RetrySignature(policy.RetryPolicy))
+                : "";
+        return handlers + "|" + saga;
+    }
+
+    private static string RetrySignature(RetryPolicy? policy) => policy == null
+        ? ""
+        : string.Join(':', policy.MaximumAttempts, policy.InitialInterval.Ticks,
+            policy.MaximumInterval.Ticks,
+            policy.BackoffCoefficient.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
     private void ValidateSupportedSteps()
     {
@@ -152,6 +203,7 @@ internal sealed class WorkflowScopeCatalog
                     WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop or
                     WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga => true,
                 WorkflowStepType.SuspendResume => step.StepMetadata.ContainsKey("WaitKey"),
+                WorkflowStepType.Delay => step.DelayDuration > TimeSpan.Zero,
                 _ => false
             };
             if (!supported)
