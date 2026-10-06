@@ -1022,6 +1022,102 @@ public class ParallelApprovalContractTests
         Assert.Equal(1, GetData(completed).LegalCompleted);
     }
 
+    [Fact]
+    public async Task WaitAny_CancelledLoserDoesNotBlockAnIndependentIf()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<BlockedCancellationProbe>();
+        services.AddTransient<IgnoreCancellationActivity>();
+        services.AddTransient<GateWinnerActivity>();
+        services.AddTransient<GateTriggerActivity>();
+        services.AddTransient<GateOtherActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var probe = provider.GetRequiredService<BlockedCancellationProbe>();
+        var definition = Workflow.Create<ApprovalData>("IndependentIfAfterWaitAny")
+            .Step<StartActivity>()
+            .Parallel(outer => outer
+                .Do(branch => branch.Parallel(inner => inner.WaitAny()
+                    .Do(child => child.Step<IgnoreCancellationActivity>(_ => { }))
+                    .Do(child => child.Step<GateWinnerActivity>(_ => { }))))
+                .Do(branch => branch.Step<GateTriggerActivity>(_ => { })
+                    .If(_ => true, then => then.Step<GateOtherActivity>(_ => { }))))
+            .Build();
+
+        var execution = provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new ApprovalData());
+        var startedBeforeLoserEnded = false;
+        try
+        {
+            await Task.WhenAll(probe.LoserStarted.Task, probe.TriggerStarted.Task)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            probe.ReleaseWinner.SetResult();
+            await probe.LoserCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            probe.ReleaseTrigger.SetResult();
+            await probe.TriggerReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            startedBeforeLoserEnded = await Task.WhenAny(probe.OtherStarted.Task,
+                Task.Delay(TimeSpan.FromSeconds(5))) == probe.OtherStarted.Task;
+        }
+        finally
+        {
+            probe.ReleaseWinner.TrySetResult();
+            probe.ReleaseTrigger.TrySetResult();
+            probe.ReleaseLoser.TrySetResult();
+            probe.ReleaseOther.TrySetResult();
+        }
+
+        var completed = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(startedBeforeLoserEnded,
+            "An independent If must advance while a cancelled WaitAny loser is still running");
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+    }
+
+    [Fact]
+    public async Task WaitAny_CompletedJoinStartsNextStepBeforeUnrelatedActivityEnds()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<BlockedCancellationProbe>();
+        services.AddTransient<GateWinnerActivity>();
+        services.AddTransient<GateTriggerActivity>();
+        services.AddTransient<GateOtherActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var probe = provider.GetRequiredService<BlockedCancellationProbe>();
+        var definition = Workflow.Create<ApprovalData>("NestedJoinBeforeUnrelatedActivity")
+            .Step<StartActivity>()
+            .Parallel(outer => outer
+                .Do(branch => branch.Parallel(inner => inner.WaitAny()
+                        .Do(child => child.WaitFor<ApprovalReply>("reply"))
+                        .Do(child => child.Step<GateWinnerActivity>(_ => { })))
+                    .Step<GateTriggerActivity>(_ => { }))
+                .Do(branch => branch.Step<GateOtherActivity>(_ => { })))
+            .Build();
+
+        var execution = provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new ApprovalData());
+        var nextStepStartedBeforeOtherEnded = false;
+        try
+        {
+            await probe.OtherStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            probe.ReleaseWinner.SetResult();
+            nextStepStartedBeforeOtherEnded = await Task.WhenAny(probe.TriggerStarted.Task,
+                Task.Delay(TimeSpan.FromSeconds(5))) == probe.TriggerStarted.Task;
+        }
+        finally
+        {
+            probe.ReleaseWinner.TrySetResult();
+            probe.ReleaseTrigger.TrySetResult();
+            probe.ReleaseOther.TrySetResult();
+        }
+
+        var completed = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(nextStepStartedBeforeOtherEnded,
+            "A completed join must resume its parent while an unrelated activity is running");
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+    }
+
     private static WorkflowDefinition CreateApprovalWorkflow(ParallelJoinMode joinMode, bool includeRisk)
     {
         return Workflow.Create<ApprovalData>("ParallelApprovals")
