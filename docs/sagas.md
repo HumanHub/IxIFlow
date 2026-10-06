@@ -50,6 +50,6 @@ The default state repository is process memory. It can retain an instance across
 
 ## Distributed saga goal
 
-The engine saves versioned checkpoints, activity attempts, and compensation progress. Complete multi-host operation still needs automatic recovery discovery, durable definition registration, distributed cancellation, and host-loss tests. Activities that call external systems need idempotency or an explicit recovery policy.
+The engine saves versioned checkpoints, activity attempts, and compensation progress. The SQL host scans for interrupted running instances. Complete multi-host operation still needs durable definition registration, distributed cancellation, operator controls, and broader host-loss tests. Activities that call external systems need idempotency or an explicit recovery policy.
 
 Read [execution model](/docs/execution-model/) and [coordinator and hosts](/docs/coordinator-and-hosts/) for the wider runtime boundary.

@@ -17,7 +17,7 @@ IxIFlow includes infrastructure for selecting a host and routing a **whole workf
 
 ## What the SQL overload does not provide
 
-`AddIxIFlowHost(connectionString)` replaces the memory workflow state repository with `SqlWorkflowStateRepository`. The `IEventStore` and `IWorkflowVersionRegistry` still use memory. A saved instance needs its exact definition and activity code registered on the resuming host. The SQL repository uses revisioned checkpoints and renewable execution leases. A stopped worker's lease expires so another host can request recovery.
+`AddIxIFlowHost(connectionString)` replaces the memory workflow state repository with `SqlWorkflowStateRepository`. The `IEventStore` and `IWorkflowVersionRegistry` still use memory. A saved instance needs its exact definition and activity code registered on the resuming host. The SQL repository uses revisioned checkpoints and renewable execution leases. The SQL host scans running instances and requests recovery after an owner's lease expires.
 
 The SQL bus claims a message, renews the claim while the handler runs, and marks it processed only after acknowledgement. An unacknowledged delivery is released when its consumer stops; an abandoned claim expires after five minutes by default. Queued execute commands use a stable instance ID and a workflow name and version resolved on the receiving host. Queued resume commands can include a wait key. The HTTP host client's immediate and queue request bodies still contain a `WorkflowDefinition` and need reference-based transport.
 
@@ -25,4 +25,4 @@ The SQL bus claims a message, renews the claim while the handler runs, and marks
 
 The host selection, registry, and queue code are useful infrastructure, but the end-to-end distributed path is experimental. Treat it as a development surface, not a production reliability guarantee. The coordinator does not turn an in-process saga into a distributed saga.
 
-The next steps are host-loss integration tests, discovery of expired running instances, distributed cancellation, HTTP transport cleanup, and durable definition registration. SQL state persistence and message redelivery have been tested against a disposable SQL Server container. See [status and roadmap](/docs/status-and-roadmap/).
+The next steps are full host-loss integration tests, distributed cancellation, HTTP transport cleanup, durable definition registration, and operator controls for uncertain activity outcomes. SQL state persistence, expired-worker takeover, and message redelivery have been tested against a disposable SQL Server container. See [status and roadmap](/docs/status-and-roadmap/).
