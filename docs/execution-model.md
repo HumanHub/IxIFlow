@@ -1,6 +1,6 @@
 ---
 title: Execution model
-description: How IxIFlow definitions, instances, steps, and hosts work today.
+description: How IxIFlow definitions, instances, steps, and hosts work.
 ---
 
 IxIFlow has a definition, an execution engine, and an instance record. A definition contains ordered steps and the workflow data type. `IWorkflowEngine.ExecuteWorkflowAsync` runs that definition with a data object and returns a `WorkflowExecutionResult`.
@@ -31,6 +31,6 @@ Parallel branches have separate saved continuations and waits. They share mutabl
 
 The SQL host overload registers a SQL workflow state repository, host registry, and message bus. Queued commands use name and version references, and SQL deliveries require acknowledgement. The definition registry is still local memory; each host must register the same definition and activity code. SQL state uses revisioned checkpoints and renewable execution leases. See [coordinator and hosts](/docs/coordinator-and-hosts/).
 
-## What is being built next
+## Checkpoints
 
-The current scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. The optional SQL host scans for interrupted running instances. The next work is operator handling for uncertain external effects and end-to-end host-loss tests. Track them in [status and roadmap](/docs/status-and-roadmap/).
+The scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. The SQL host scans for interrupted running instances. An uncertain external activity outcome stops for an explicit resolution decision; inspect pending attempts and resolve them through `IWorkflowEngine` before continuing.

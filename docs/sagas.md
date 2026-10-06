@@ -5,7 +5,7 @@ description: Compensation, error handlers, and saved saga progress.
 
 A saga groups steps that need compensating actions when later work fails. The checkpointed runner records completed steps and runs their compensations in reverse order. The error handler is a saved sequence: its activities and waits resume at the saved position.
 
-An activity may call a remote service, but IxIFlow does not dispatch each saga step to a durable remote worker. The current saga is an in-process orchestration pattern.
+An activity may call a remote service. Saga activities execute in the workflow host process; the coordinator routes whole workflow executions to hosts.
 
 ## Define compensation
 
@@ -42,14 +42,14 @@ public sealed record PaymentFault(string Message);
 
 The handler can also read `ctx.WorkflowData` and `ctx.PreviousStep`. It does not receive the live exception object. `WaitFor` saves the fault and the handler position, so a new provider can resume the same handler when the state repository survives a restart.
 
-## Current resume limits
+## Resume and persistence
 
-Direct waits inside a saga resume the remaining saga activities. Completed activity results are saved at suspension and restored for compensation if later work fails. The default memory state repository loses those checkpoints when the process exits.
+Direct waits inside a saga resume the remaining saga activities. Completed activity results are saved at suspension and restored for compensation if later work fails.
 
 The default state repository is process memory. It can retain an instance across request scopes in the same process, but not across a restart or another host. The optional SQL Server host stores instance state in SQL and uses renewable execution leases for cross-host resume and recovery. Definitions and activity code must still be registered on the resuming host.
 
-## Distributed saga goal
+## External effects
 
-The engine saves versioned checkpoints, activity attempts, and compensation progress. The SQL host scans for interrupted running instances. Complete multi-host operation still needs durable definition registration, distributed cancellation, operator controls, and broader host-loss tests. Activities that call external systems need idempotency or an explicit recovery policy.
+The engine saves versioned checkpoints, activity attempts, and compensation progress. The SQL host scans for interrupted running instances. Activities that call external systems need idempotency or an explicit recovery policy. An uncertain external outcome is held for an explicit resolution decision before execution continues.
 
 Read [execution model](/docs/execution-model/) and [coordinator and hosts](/docs/coordinator-and-hosts/) for the wider runtime boundary.
