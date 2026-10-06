@@ -946,6 +946,82 @@ public class ParallelApprovalContractTests
         Assert.True(provider.GetRequiredService<CancellationProbe>().Cancelled.Task.IsCompleted);
     }
 
+    [Fact]
+    public async Task WaitAny_CancelledLoserDoesNotBlockAnIndependentBranch()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<BlockedCancellationProbe>();
+        services.AddTransient<IgnoreCancellationActivity>();
+        services.AddTransient<GateWinnerActivity>();
+        services.AddTransient<GateTriggerActivity>();
+        services.AddTransient<GateOtherActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var probe = provider.GetRequiredService<BlockedCancellationProbe>();
+        var repository = provider.GetRequiredService<IWorkflowStateRepository>();
+        var definition = Workflow.Create<ApprovalData>("IndependentBranchAfterWaitAny")
+            .Step<StartActivity>()
+            .Parallel(outer => outer
+                .Do(branch => branch.Parallel(inner => inner.WaitAny()
+                    .Do(child => child.Step<IgnoreCancellationActivity>(_ => { }))
+                    .Do(child => child.Step<GateWinnerActivity>(_ => { }))))
+                .Do(branch => branch.Step<GateTriggerActivity>(setup => setup
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.FinanceCompleted)))
+                .Do(branch => branch.Step<GateOtherActivity>(setup => setup
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.LegalCompleted))))
+            .Build();
+
+        var execution = provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new ApprovalData());
+        var otherCommittedBeforeLoserEnded = false;
+        try
+        {
+            await Task.WhenAll(probe.LoserStarted.Task, probe.TriggerStarted.Task,
+                    probe.OtherStarted.Task)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            probe.ReleaseWinner.SetResult();
+            await probe.LoserCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            probe.ReleaseTrigger.SetResult();
+            await probe.TriggerReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var triggerDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+            while (DateTime.UtcNow < triggerDeadline)
+            {
+                var saved = (await repository.GetWorkflowInstancesByNameAsync(definition.Name)).Single();
+                if (System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!
+                    .FinanceCompleted == 1)
+                    break;
+                await Task.Delay(25);
+            }
+            await Task.Delay(100);
+            probe.ReleaseOther.SetResult();
+            await probe.OtherReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+            while (DateTime.UtcNow < deadline)
+            {
+                var saved = (await repository.GetWorkflowInstancesByNameAsync(definition.Name)).Single();
+                if (System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!
+                    .LegalCompleted == 1)
+                {
+                    otherCommittedBeforeLoserEnded = true;
+                    break;
+                }
+                await Task.Delay(25);
+            }
+        }
+        finally
+        {
+            probe.ReleaseLoser.TrySetResult();
+        }
+
+        var completed = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(otherCommittedBeforeLoserEnded,
+            "The independent branch must commit while the cancelled WaitAny loser is still running");
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Equal(1, GetData(completed).LegalCompleted);
+    }
+
     private static WorkflowDefinition CreateApprovalWorkflow(ParallelJoinMode joinMode, bool includeRisk)
     {
         return Workflow.Create<ApprovalData>("ParallelApprovals")
@@ -1229,6 +1305,63 @@ public class ParallelApprovalContractTests
     public sealed class CancellationProbe
     {
         public TaskCompletionSource<bool> Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public sealed class BlockedCancellationProbe
+    {
+        public TaskCompletionSource LoserStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource OtherStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource TriggerStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource LoserCancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource OtherReturned { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource TriggerReturned { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseWinner { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseTrigger { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseOther { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseLoser { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public sealed class IgnoreCancellationActivity(BlockedCancellationProbe probe) : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            using var registration = cancellationToken.Register(() =>
+                probe.LoserCancelled.TrySetResult());
+            probe.LoserStarted.TrySetResult();
+            await probe.ReleaseLoser.Task;
+        }
+    }
+
+    public sealed class GateWinnerActivity(BlockedCancellationProbe probe) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            probe.ReleaseWinner.Task;
+    }
+
+    public sealed class GateOtherActivity(BlockedCancellationProbe probe) : IAsyncActivity
+    {
+        public int Result { get; private set; }
+
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.OtherStarted.TrySetResult();
+            await probe.ReleaseOther.Task;
+            Result = 1;
+            probe.OtherReturned.TrySetResult();
+        }
+    }
+
+    public sealed class GateTriggerActivity(BlockedCancellationProbe probe) : IAsyncActivity
+    {
+        public int Result { get; private set; }
+
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.TriggerStarted.TrySetResult();
+            await probe.ReleaseTrigger.Task;
+            Result = 1;
+            probe.TriggerReturned.TrySetResult();
+        }
     }
 
     public sealed class SlowCancellableActivity(CancellationProbe probe) : IAsyncActivity

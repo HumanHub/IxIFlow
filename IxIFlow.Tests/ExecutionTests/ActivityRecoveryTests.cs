@@ -62,6 +62,47 @@ public sealed class ActivityRecoveryTests
     }
 
     [Fact]
+    public async Task InvalidActivityStateFaultsInsteadOfLeavingARunningInstance()
+    {
+        var store = new FaultStore();
+        using var services = CreateServices(store, new ChargeLedger(store));
+        var definition = Workflow.Create<CheckpointData>("InvalidActivityState")
+            .Step<NoopActivity>()
+            .Step<InvalidActivityStateActivity>(_ => { })
+            .WaitFor<RecoveryReply>("reply")
+            .Build();
+
+        var result = await services.GetRequiredService<WorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new CheckpointData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("checkpoint", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        var saved = await store.GetWorkflowInstanceAsync(result.InstanceId);
+        Assert.Equal(WorkflowStatus.Failed, saved?.Status);
+    }
+
+    [Fact]
+    public async Task InvalidWorkflowDataFaultsAndKeepsTheLastSavedData()
+    {
+        var store = new FaultStore();
+        using var services = CreateServices(store, new ChargeLedger(store));
+        var definition = Workflow.Create<CheckpointData>("InvalidWorkflowData")
+            .Step<NoopActivity>()
+            .Step<InvalidWorkflowDataActivity>(_ => { })
+            .WaitFor<RecoveryReply>("reply")
+            .Build();
+
+        var result = await services.GetRequiredService<WorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new CheckpointData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("checkpoint", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        var saved = await store.GetWorkflowInstanceAsync(result.InstanceId);
+        Assert.Equal(WorkflowStatus.Failed, saved?.Status);
+        Assert.Null(JsonSerializer.Deserialize<CheckpointData>(saved!.WorkflowDataJson)?.Payload);
+    }
+
+    [Fact]
     public async Task StartIsCommittedBeforeTheActivityCallsAnExternalSystem()
     {
         var store = new FaultStore();
@@ -337,6 +378,31 @@ public sealed class ActivityRecoveryTests
         public string? ChargeId { get; set; }
         public int FirstIndex { get; set; }
         public int SecondIndex { get; set; }
+    }
+
+    public sealed class CheckpointData
+    {
+        public object? Payload { get; set; }
+    }
+
+    public sealed class InvalidActivityStateActivity : IAsyncActivity
+    {
+        public object? State { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            State = (Action)(() => { });
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class InvalidWorkflowDataActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            ((CheckpointData)context.WorkflowData).Payload = (Action)(() => { });
+            return Task.CompletedTask;
+        }
     }
 
     public sealed class StepIndexActivity : IAsyncActivity
