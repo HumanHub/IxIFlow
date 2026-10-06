@@ -26,6 +26,8 @@ The fluent API lets a saga step name a compensation activity:
 
 Compensation is an application action, not an automatic rollback of another service or database. Design it to be safe when retried, and test its behavior when a later activity fails.
 
+`ThenContinue()` runs the remaining workflow after successful compensation. A compensation failure normally faults the workflow after the other compensations have been attempted. Use `ThenContinue(ignoreCompensationErrors: true)` when the workflow should continue despite those failures.
+
 ## Read a saved fault in an error handler
 
 Declare a fault type with the exception properties the handler needs. Public property names and types must match the caught exception. IxIFlow checks the fault shape when building the workflow and captures its values when the exception occurs.
