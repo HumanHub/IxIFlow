@@ -235,17 +235,25 @@ internal sealed class StructuredWorkflowRunner(
                         var sourceData = workflowData;
                         var activityCancellation = new CancellationTokenSource();
                         RunningActivity? running;
-                        if (next.StepType == WorkflowStepType.Activity)
+                        try
                         {
-                            running = await StartActivityAsync(scopes, checkpoint, runnable, next,
-                                definition, instance, sourceData, workflowData, persistState,
-                                activityCancellation);
+                            if (next.StepType == WorkflowStepType.Activity)
+                            {
+                                running = await StartActivityAsync(scopes, checkpoint, runnable, next,
+                                    definition, instance, sourceData, workflowData, persistState,
+                                    activityCancellation);
+                            }
+                            else
+                            {
+                                running = await StartInvocationAsync(scopes, checkpoint, runnable, next,
+                                    definition, instance, sourceData, workflowData, persistState,
+                                    activityCancellation);
+                            }
                         }
-                        else
+                        catch
                         {
-                            running = await StartInvocationAsync(scopes, checkpoint, runnable, next,
-                                definition, instance, sourceData, workflowData, persistState,
-                                activityCancellation);
+                            activityCancellation.Dispose();
+                            throw;
                         }
                         if (running != null)
                             inFlight.Add(runnable.Id, running);
@@ -264,20 +272,20 @@ internal sealed class StructuredWorkflowRunner(
                                 throw;
                         }
                         await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
-                        if (inFlight.Values.Any(item => item.Continuation.Status == ContinuationStatus.Cancelling))
-                            break;
+                        foreach (var activity in inFlight.Values.Where(item =>
+                                     item.Continuation.Status == ContinuationStatus.Cancelling))
+                            activity.Cancellation.Cancel();
                     }
                 }
 
+                if (checkpoint.Continuations.Any(item =>
+                        item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id)) ||
+                    checkpoint.Joins.Any(item => item.IsCompleting &&
+                        checkpoint.Continuations.Where(child => item.ChildContinuationIds.Contains(child.Id))
+                            .All(child => child.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)))
+                    continue;
                 if (inFlight.Count == 0)
-                {
-                    if (checkpoint.Continuations.Any(item => item.Status == ContinuationStatus.Cancelling) ||
-                        checkpoint.Joins.Any(item => item.IsCompleting &&
-                            checkpoint.Continuations.Where(child => item.ChildContinuationIds.Contains(child.Id))
-                                .All(child => child.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)))
-                        continue;
                     break;
-                }
 
                 foreach (var activity in inFlight.Values.Where(item =>
                              item.Continuation.Status == ContinuationStatus.Cancelling))
