@@ -200,16 +200,6 @@ internal sealed class StructuredWorkflowRunner(
                              item.Continuation.Status == ContinuationStatus.Cancelling))
                     activity.Cancellation.Cancel();
 
-                // Let cancelled activities settle before running their Finally blocks.
-                var cancelled = inFlight.Values.FirstOrDefault(item =>
-                    item.Continuation.Status == ContinuationStatus.Cancelling);
-                if (cancelled != null)
-                {
-                    await SettleAsync(scopes, cancelled, inFlight, workflowData, instance);
-                    await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
-                    continue;
-                }
-
                 var unwinding = checkpoint.Continuations.FirstOrDefault(item =>
                     item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id));
                 if (unwinding != null)
@@ -433,8 +423,6 @@ internal sealed class StructuredWorkflowRunner(
             instance.LastError = ex.Message;
             instance.LastErrorStackTrace = ex.StackTrace;
             instance.CompletedAt = DateTime.UtcNow;
-            instance.WorkflowDataJson = JsonSerializer.Serialize(workflowData, workflowData.GetType());
-            instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
             if (instance.ExecutionSnapshot != null)
             {
                 instance.ExecutionSnapshot.Status = instance.Status;
@@ -442,8 +430,22 @@ internal sealed class StructuredWorkflowRunner(
                 instance.ExecutionSnapshot.Frames.Clear();
             }
             if (persistState)
-                await PersistUnwrappedAsync(instance, checkpoint, workflowData,
-                    new WorkflowScopeCatalog(definition));
+            {
+                var scopes = new WorkflowScopeCatalog(definition);
+                try
+                {
+                    await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+                }
+                catch (CheckpointDataException)
+                {
+                    // A terminal failure cannot resume. Retain the last committed data
+                    // and the execution history even if live state cannot be serialized.
+                    checkpoint.Continuations.Clear();
+                    checkpoint.UnhandledError = null;
+                    await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes,
+                        preserveSavedWorkflowData: true);
+                }
+            }
             return new WorkflowExecutionResult
             {
                 InstanceId = instance.InstanceId,
@@ -1211,11 +1213,13 @@ internal sealed class StructuredWorkflowRunner(
     };
 
     private async Task PersistUnwrappedAsync(WorkflowInstance instance,
-        ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes)
+        ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes,
+        bool preserveSavedWorkflowData = false)
     {
         try
         {
-            await PersistAsync(instance, checkpoint, workflowData, scopes, true);
+            await PersistAsync(instance, checkpoint, workflowData, scopes, true,
+                preserveSavedWorkflowData);
         }
         catch (CheckpointPersistenceException error)
         {
@@ -1225,16 +1229,30 @@ internal sealed class StructuredWorkflowRunner(
     }
 
     private async Task PersistAsync(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
-        object workflowData, WorkflowScopeCatalog scopes, bool persistState)
+        object workflowData, WorkflowScopeCatalog scopes, bool persistState,
+        bool preserveSavedWorkflowData = false)
     {
         if (!persistState)
             return;
         try
         {
             PrepareCheckpoint(checkpoint, scopes);
-            instance.WorkflowDataJson = JsonSerializer.Serialize(workflowData, workflowData.GetType());
-            instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-            instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes);
+            var dataJson = preserveSavedWorkflowData
+                ? instance.WorkflowDataJson
+                : JsonSerializer.Serialize(workflowData, workflowData.GetType());
+            var stateJson = JsonSerializer.Serialize(checkpoint);
+            var snapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes);
+            instance.WorkflowDataJson = dataJson;
+            instance.ExecutionStateJson = stateJson;
+            instance.ExecutionSnapshot = snapshot;
+        }
+        catch (Exception ex)
+        {
+            throw new CheckpointDataException(ex);
+        }
+
+        try
+        {
             var expectedRevision = instance.Revision;
             var commitId = Guid.NewGuid().ToString("N");
             for (var attempt = 0; attempt < 3; attempt++)
@@ -1262,6 +1280,9 @@ internal sealed class StructuredWorkflowRunner(
             throw new CheckpointPersistenceException(ex);
         }
     }
+
+    private sealed class CheckpointDataException(Exception inner) : Exception(
+        $"The workflow state could not be checkpointed: {inner.Message}", inner);
 
     private sealed class CheckpointPersistenceException(Exception inner) : Exception(
         "The workflow checkpoint could not be saved", inner);
