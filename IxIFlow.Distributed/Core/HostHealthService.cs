@@ -174,7 +174,6 @@ public class HostHealthService : BackgroundService
             };
 
             await _hostRegistry.UpdateHostStatusAsync(_hostId, status);
-            await _hostRegistry.UpdateHeartbeatAsync(_hostId);
         }
         catch (Exception ex)
         {

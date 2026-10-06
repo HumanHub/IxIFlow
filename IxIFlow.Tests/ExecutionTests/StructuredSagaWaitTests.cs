@@ -390,17 +390,76 @@ public class StructuredSagaWaitTests
             .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
             .Build();
 
-        using var cancellation = new CancellationTokenSource();
-        var executing = provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData(), cancellationToken: cancellation.Token);
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var executing = engine.ExecuteWorkflowAsync(definition, new SagaData(),
+            new WorkflowOptions { InstanceId = instanceId });
         var probe = provider.GetRequiredService<PausedCompensationProbe>();
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        cancellation.Cancel();
+        await engine.CancelWorkflowAsync(instanceId,
+            new CancellationReason { ReasonCode = "operator" });
         probe.Release.SetResult();
 
         var result = await executing.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.True(result.Status == WorkflowExecutionStatus.Cancelled,
+            $"Expected cancellation, got {result.Status}: {result.ErrorMessage}");
         Assert.Equal(1, Data(result).Compensated);
+    }
+
+    [Fact]
+    public async Task UnserializableSagaOutputStopsForResolutionBeforeCompensation()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<UnsafeOutputProbe>();
+        services.AddTransient<UnsafeOutputActivity>();
+        services.AddTransient<UnsafeOutputCompensation>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<SagaData>("UnsafeSagaOutput")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<UnsafeOutputActivity>(step => step
+                .CompensateWith<UnsafeOutputCompensation>()))
+            .Build();
+
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var result = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
+        Assert.Contains("saga output could not be saved",
+            Assert.Single(await engine.GetPendingActivitiesAsync(result.InstanceId))
+                .Reason ?? string.Empty);
+        Assert.Equal(1, provider.GetRequiredService<UnsafeOutputProbe>().Effects);
+        Assert.Equal(0, provider.GetRequiredService<UnsafeOutputProbe>().Compensations);
+    }
+
+    public sealed class UnsafeOutputProbe
+    {
+        public int Effects;
+        public int Compensations;
+    }
+
+    public sealed class UnsafeOutputActivity(UnsafeOutputProbe probe) : IAsyncActivity
+    {
+        public object? Result { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref probe.Effects);
+            Result = (Action)(() => { });
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class UnsafeOutputCompensation(UnsafeOutputProbe probe) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref probe.Compensations);
+            return Task.CompletedTask;
+        }
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using IxIFlow.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Extensions;
 
@@ -22,10 +23,10 @@ public static class SqlWorkflowHostExtensions
         });
 
         services.AddSingleton<IHostRegistry>(_ => new SqlHostRegistry(connectionString));
-        services.AddSingleton<IMessageBus>(_ => new SqlMessageBus(connectionString));
+        services.AddSingleton<IMessageBus>(provider => new SqlMessageBus(connectionString,
+            logger: provider.GetService<ILogger<SqlMessageBus>>()));
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(
             _ => new SqlWorkflowStateRepository(connectionString)));
-        services.AddHostedService<WorkflowRecoveryService>();
         return services;
     }
 }

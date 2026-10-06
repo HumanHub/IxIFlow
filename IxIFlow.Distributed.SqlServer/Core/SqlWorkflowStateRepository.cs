@@ -9,11 +9,94 @@ namespace IxIFlow.Core;
 /// <summary>
 /// Stores workflow instances in SQL Server so host processes share the same state.
 /// </summary>
-public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
+public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox
 {
     private readonly string _connectionString;
     private readonly SemaphoreSlim _schemaLock = new(1, 1);
     private bool _schemaReady;
+
+    public async Task<WorkflowInstance?> GetUnpublishedCompletionAsync(string instanceId)
+    {
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var json = await connection.QuerySingleOrDefaultAsync<string>("""
+            SELECT StateJson FROM dbo.IxIFlowWorkflowInstances
+            WHERE InstanceId = @InstanceId
+              AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated')
+              AND CompletionPublished = 0
+            """, new { InstanceId = instanceId });
+        return json == null ? null : Deserialize(json);
+    }
+
+    public async Task<IEnumerable<WorkflowInstance>> GetUnpublishedCompletionsAsync()
+    {
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var rows = await connection.QueryAsync<string>("""
+            SELECT TOP (100) StateJson FROM dbo.IxIFlowWorkflowInstances
+            WHERE Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated')
+              AND CompletionPublished = 0
+            ORDER BY InstanceId
+            """);
+        return rows.Select(Deserialize).ToArray();
+    }
+
+    public async Task<IEnumerable<WorkflowInstance>> ClaimUnpublishedCompletionsAsync(
+        string? instanceId, string token, TimeSpan duration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(token);
+        if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(duration));
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var rows = await connection.QueryAsync<string>("""
+            ;WITH pending AS (
+                SELECT TOP (100) InstanceId
+                FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, READPAST, ROWLOCK)
+                WHERE (@InstanceId IS NULL OR InstanceId = @InstanceId)
+                  AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated')
+                  AND CompletionPublished = 0
+                  AND (CompletionClaimUntil IS NULL OR CompletionClaimUntil <= SYSUTCDATETIME())
+                ORDER BY InstanceId
+            )
+            UPDATE instance
+            SET CompletionClaimToken = @Token,
+                CompletionClaimUntil = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME())
+            OUTPUT inserted.StateJson
+            FROM dbo.IxIFlowWorkflowInstances AS instance
+            INNER JOIN pending ON pending.InstanceId = instance.InstanceId;
+            """, new { InstanceId = instanceId, Token = token,
+                Milliseconds = (int)Math.Ceiling(duration.TotalMilliseconds) });
+        return rows.Select(Deserialize).ToArray();
+    }
+
+    public async Task<bool> MarkCompletionPublishedAsync(string instanceId, long revision, string token)
+    {
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var changed = await connection.ExecuteAsync("""
+            UPDATE dbo.IxIFlowWorkflowInstances
+            SET CompletionPublished = 1,
+                CompletionClaimToken = NULL, CompletionClaimUntil = NULL
+            WHERE InstanceId = @InstanceId AND Revision = @Revision
+              AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated')
+              AND CompletionPublished = 0
+              AND CompletionClaimToken = @Token
+              AND CompletionClaimUntil > SYSUTCDATETIME()
+            """, new { InstanceId = instanceId, Revision = revision, Token = token });
+        return changed == 1;
+    }
+
+    public async Task ReleaseCompletionClaimAsync(string instanceId, string token)
+    {
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        await connection.ExecuteAsync("""
+            UPDATE dbo.IxIFlowWorkflowInstances
+            SET CompletionClaimToken = NULL, CompletionClaimUntil = NULL
+            WHERE InstanceId = @InstanceId AND CompletionClaimToken = @Token
+            """, new { InstanceId = instanceId, Token = token });
+    }
 
     public SqlWorkflowStateRepository(string connectionString)
     {
@@ -74,7 +157,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var changed = await connection.ExecuteAsync("""
-            MERGE dbo.IxIFlowWorkflowLeases WITH (HOLDLOCK) AS target
+            MERGE dbo.IxIFlowWorkflowLeases WITH (UPDLOCK, HOLDLOCK) AS target
             USING (SELECT @InstanceId AS InstanceId) AS source
             ON target.InstanceId = source.InstanceId
             WHEN MATCHED AND target.ExpiresAtUtc <= SYSUTCDATETIME() THEN
@@ -165,10 +248,11 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
-        var currentRevision = await connection.QuerySingleOrDefaultAsync<long?>("""
-            SELECT Revision FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+        var current = await connection.QuerySingleOrDefaultAsync<CommitState>("""
+            SELECT Revision, CancellationJson FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
             WHERE InstanceId = @InstanceId
-            """, new { instance.InstanceId }, transaction) ?? 0;
+            """, new { instance.InstanceId }, transaction);
+        var currentRevision = current?.Revision ?? 0;
         var receipt = await connection.QuerySingleOrDefaultAsync<CommitReceipt>("""
             SELECT ExpectedRevision, Revision, PayloadHash FROM dbo.IxIFlowWorkflowCommits
             WHERE InstanceId = @InstanceId AND CommitId = @CommitId
@@ -192,7 +276,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
             await transaction.CommitAsync();
             return new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision);
         }
-        if (currentRevision != expectedRevision)
+        if (currentRevision != expectedRevision ||
+            (current?.CancellationJson != null && snapshot.CancellationReason == null &&
+             snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated))
         {
             await transaction.CommitAsync();
             return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
@@ -243,6 +329,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
         public long ExpectedRevision { get; set; }
         public long Revision { get; set; }
         public byte[] PayloadHash { get; set; } = [];
+    }
+
+    private sealed class CommitState
+    {
+        public long Revision { get; set; }
+        public string? CancellationJson { get; set; }
     }
 
     private sealed class LeaseRecord
@@ -380,6 +472,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                         StateJson NVARCHAR(MAX) NOT NULL,
                         CancellationJson NVARCHAR(MAX) NULL,
                         CancellationAcknowledged BIT NOT NULL DEFAULT 0,
+                        CompletionPublished BIT NOT NULL DEFAULT 0,
+                        CompletionClaimToken NVARCHAR(100) NULL,
+                        CompletionClaimUntil DATETIME2 NULL,
                         Revision BIGINT NOT NULL DEFAULT 0
                     );
                     CREATE INDEX IX_IxIFlowWorkflowInstances_Status
@@ -398,6 +493,26 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CancellationAcknowledged') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances
                         ADD CancellationAcknowledged BIT NOT NULL DEFAULT 0;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CompletionPublished') IS NULL
+                BEGIN
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances
+                        ADD CompletionPublished BIT NOT NULL DEFAULT 0;
+                    EXEC(N'UPDATE dbo.IxIFlowWorkflowInstances SET CompletionPublished = 1
+                        WHERE Status IN (''Completed'', ''Failed'', ''Cancelled'', ''Terminated'')');
+                END
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CompletionClaimToken') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances
+                        ADD CompletionClaimToken NVARCHAR(100) NULL;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CompletionClaimUntil') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances
+                        ADD CompletionClaimUntil DATETIME2 NULL;
+                IF NOT EXISTS (SELECT 1 FROM sys.indexes
+                    WHERE object_id = OBJECT_ID(N'dbo.IxIFlowWorkflowInstances')
+                      AND name = N'IX_IxIFlowWorkflowInstances_PendingCompletion')
+                    EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_PendingCompletion
+                        ON dbo.IxIFlowWorkflowInstances (InstanceId)
+                        INCLUDE (CompletionClaimUntil)
+                        WHERE CompletionPublished = 0');
                 IF OBJECT_ID(N'dbo.IxIFlowWorkflowCommits', N'U') IS NULL
                     CREATE TABLE dbo.IxIFlowWorkflowCommits (
                         InstanceId NVARCHAR(100) NOT NULL,

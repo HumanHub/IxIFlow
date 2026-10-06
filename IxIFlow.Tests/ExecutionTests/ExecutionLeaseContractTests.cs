@@ -50,6 +50,31 @@ public sealed class ExecutionLeaseContractTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
+    public async Task SqlConcurrentFirstLeaseHasOneOwner()
+    {
+        var instanceId = Guid.NewGuid().ToString("N");
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var repositories = Enumerable.Range(0, 8).Select(_ => SqlRepository()).ToArray();
+        try
+        {
+            var attempts = repositories.Select(async (repository, index) =>
+            {
+                await start.Task;
+                return await repository.TryAcquireExecutionLeaseAsync(instanceId,
+                    $"host-{index}", TimeSpan.FromSeconds(10));
+            }).ToArray();
+            start.SetResult();
+
+            Assert.Single((await Task.WhenAll(attempts)).Where(acquired => acquired));
+        }
+        finally
+        {
+            await repositories[0].DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
     public Task SqlExpiredLeaseCanBeReclaimed() => VerifyExpiredLease(SqlRepository());
 
     [SqlServerFact]
@@ -195,7 +220,7 @@ public sealed class ExecutionLeaseContractTests
     }
 
     [Fact]
-    public async Task CancellationDuringSynchronousBranchStopsBeforeItsNextActivity()
+    public async Task CallerCancellationLeavesWorkflowRecoverable()
     {
         using var cancellation = new CancellationTokenSource();
         var repository = new InMemoryWorkflowStateRepository();
@@ -207,18 +232,226 @@ public sealed class ExecutionLeaseContractTests
                 then => then.Step<RecordActivity>(_ => { }))
             .Build();
 
-        var result = await host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData(),
-                cancellationToken: cancellation.Token);
+        var engine = host.GetRequiredService<IWorkflowEngine>();
+        var instanceId = Guid.NewGuid().ToString("N");
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            engine.ExecuteWorkflowAsync(definition, new LeaseData(),
+                new WorkflowOptions { InstanceId = instanceId }, cancellation.Token));
 
-        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.Equal(WorkflowStatus.Running,
+            (await repository.GetWorkflowInstanceAsync(instanceId))!.Status);
         Assert.Equal(1, probe.Recorded);
+        Assert.Equal(WorkflowExecutionStatus.Success,
+            (await engine.RecoverWorkflowAsync(instanceId)).Status);
+        Assert.Equal(2, probe.Recorded);
     }
 
     private static bool CancelAndTrue(CancellationTokenSource cancellation)
     {
         cancellation.Cancel();
         return true;
+    }
+
+    [Fact]
+    public async Task CancellationRequestWinsOverAnEventArrivingAtAnIdleWait()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var probe = new ActivityProbe();
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
+        var definition = Workflow.Create<LeaseData>("CancelBeforeResume")
+            .Step<NoopActivity>(_ => { })
+            .WaitFor<LeaseEvent>("approval")
+            .Step<RecordActivity>(_ => { })
+            .Build();
+        var engine = host.GetRequiredService<IWorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(definition, new LeaseData());
+        Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "operator" }));
+
+        var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new LeaseEvent());
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, resumed.Status);
+        Assert.Equal(0, probe.Recorded);
+        Assert.Equal(WorkflowStatus.Cancelled,
+            (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+    }
+
+    [Fact]
+    public async Task MemoryCompletionWinsCancellationArrivingAfterWorkFinished()
+    {
+        await VerifyTerminalCommitWinsLateCancellation(
+            new InMemoryWorkflowStateRepository(), WorkflowStatus.Completed);
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task SqlCompletionWinsCancellationArrivingAfterWorkFinished()
+    {
+        await VerifyTerminalCommitWinsLateCancellation(SqlRepository(), WorkflowStatus.Completed);
+    }
+
+    [Fact]
+    public async Task MemoryFailureWinsCancellationArrivingAfterWorkFinished() =>
+        await VerifyTerminalCommitWinsLateCancellation(
+            new InMemoryWorkflowStateRepository(), WorkflowStatus.Failed);
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task SqlFailureWinsCancellationArrivingAfterWorkFinished() =>
+        await VerifyTerminalCommitWinsLateCancellation(SqlRepository(), WorkflowStatus.Failed);
+
+    private static async Task VerifyTerminalCommitWinsLateCancellation(
+        IWorkflowStateRepository repository, WorkflowStatus terminalStatus)
+    {
+        var instanceId = Guid.NewGuid().ToString("N");
+        var owner = Guid.NewGuid().ToString("N");
+        try
+        {
+            await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
+            {
+                InstanceId = instanceId,
+                WorkflowName = "CancellationCommitFence",
+                Status = WorkflowStatus.Running
+            });
+            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, owner,
+                TimeSpan.FromSeconds(10)));
+            var active = (await repository.GetWorkflowInstanceAsync(instanceId))!;
+            active.ExecutionLeaseToken = owner;
+            Assert.Equal(WorkflowCommitStatus.Applied,
+                (await repository.CommitWorkflowInstanceAsync(active, 0, Guid.NewGuid().ToString("N"))).Status);
+            Assert.True(await repository.RequestCancellationAsync(instanceId,
+                new CancellationReason { ReasonCode = "operator" }));
+            var terminal = (await repository.GetWorkflowInstanceAsync(instanceId))!;
+            terminal.ExecutionLeaseToken = owner;
+            terminal.Status = terminalStatus;
+
+            var result = await repository.CommitWorkflowInstanceAsync(terminal, terminal.Revision,
+                Guid.NewGuid().ToString("N"));
+
+            Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
+            Assert.Equal(terminalStatus,
+                (await repository.GetWorkflowInstanceAsync(instanceId))!.Status);
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+    [Fact]
+    public async Task CancellationArrivingAtTerminalCommitDoesNotRelabelCompletedWork()
+    {
+        var inner = new InMemoryWorkflowStateRepository();
+        var repository = new PausedReadRepository(inner)
+        {
+            PauseFirstRead = false,
+            CancelBeforeTerminalCommit = 1
+        };
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
+        var definition = Workflow.Create<LeaseData>("CancelAtTerminalCommit")
+            .Step<NoopActivity>(_ => { })
+            .Build();
+        var engine = host.GetRequiredService<IWorkflowEngine>();
+        var instanceId = Guid.NewGuid().ToString("N");
+
+        var completed = await engine.ExecuteWorkflowAsync(definition, new LeaseData(),
+            new WorkflowOptions { InstanceId = instanceId });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Equal(WorkflowStatus.Completed,
+            (await inner.GetWorkflowInstanceAsync(instanceId))!.Status);
+    }
+
+    [Fact]
+    public async Task CancellationAtFailureCommitDoesNotStrandLocalInstance()
+    {
+        var inner = new InMemoryWorkflowStateRepository();
+        var repository = new PausedReadRepository(inner)
+        {
+            PauseFirstRead = false,
+            CancelBeforeFailedCommit = 1
+        };
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
+        var definition = Workflow.Create<LeaseData>("CancelAtFailureCommit")
+            .Step<FailingActivity>(_ => { })
+            .Build();
+
+        var result = await host.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Equal(WorkflowStatus.Failed,
+            (await inner.GetWorkflowInstanceAsync(result.InstanceId))!.Status);
+    }
+
+    [Fact]
+    public async Task CancellationSignalAfterRootCompletionDoesNotSpinTheRunner()
+    {
+        var inner = new InMemoryWorkflowStateRepository();
+        var repository = new PausedReadRepository(inner)
+        {
+            PauseFirstRead = false,
+            CancelWhenRootCompletedOnRead = 1
+        };
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
+        var definition = Workflow.Create<LeaseData>("CancelAfterRootFinished")
+            .Step<NoopActivity>(_ => { })
+            .Build();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var result = await host.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData(), cancellationToken: timeout.Token);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+    }
+
+    [Fact]
+    public async Task CancellationStoreReadFailureDoesNotInterruptLocalExecution()
+    {
+        var inner = new InMemoryWorkflowStateRepository();
+        var repository = new PausedReadRepository(inner)
+        {
+            PauseFirstRead = false,
+            FailAllCancellationReads = true
+        };
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
+        var definition = Workflow.Create<LeaseData>("CancellationReadFailure")
+            .Step<NoopActivity>(_ => { })
+            .Build();
+        var engine = host.GetRequiredService<IWorkflowEngine>();
+        var instanceId = Guid.NewGuid().ToString("N");
+
+        var completed = await engine.ExecuteWorkflowAsync(definition, new LeaseData(),
+            new WorkflowOptions { InstanceId = instanceId });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Equal(WorkflowStatus.Completed,
+            (await inner.GetWorkflowInstanceAsync(instanceId))!.Status);
+    }
+
+    [Fact]
+    public async Task OneCancellationReadFailureDuringActivityDoesNotDiscardItsResult()
+    {
+        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository())
+        {
+            PauseFirstRead = false
+        };
+        var probe = new ActivityProbe();
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
+        var definition = Workflow.Create<LeaseData>("CancellationReadDuringActivity")
+            .Step<BlockingActivity>(_ => { })
+            .Step<RecordActivity>(_ => { })
+            .Build();
+        var executing = host.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new LeaseData());
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        repository.FailAllCancellationReads = true;
+        probe.Release.TrySetResult();
+
+        var result = await executing.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(1, probe.Recorded);
     }
 
     [SqlServerFact]
@@ -460,7 +693,7 @@ public sealed class ExecutionLeaseContractTests
             .ExecuteWorkflowAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.FailNextCancellationReads = 1;
-        await Task.Delay(150);
+        await repository.CancellationReadFailed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         probe.Release.TrySetResult();
 
         Assert.Equal(WorkflowExecutionStatus.Success,
@@ -483,7 +716,7 @@ public sealed class ExecutionLeaseContractTests
             .ExecuteWorkflowAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.FailNextRenewals = 1;
-        await Task.Delay(150);
+        await repository.RenewalFailed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         probe.Release.TrySetResult();
 
         Assert.Equal(WorkflowExecutionStatus.Success,
@@ -601,11 +834,19 @@ public sealed class ExecutionLeaseContractTests
             EventDataType = typeof(LeaseEvent).AssemblyQualifiedName!,
             EventDataJson = "{}"
         };
-        await service.ProcessResumeCommandAsync(command);
+        await Assert.ThrowsAsync<WorkflowInstanceBusyException>(() =>
+            service.ProcessResumeCommandAsync(command));
 
         Assert.Equal(WorkflowStatus.Suspended,
             (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
         Assert.Equal(1, probe.Recorded);
+
+        command.CommandId = Guid.NewGuid().ToString("N");
+        command.Key = "approval";
+        await service.ProcessResumeCommandAsync(command);
+        Assert.Equal(WorkflowStatus.Completed,
+            (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+        Assert.Equal(2, probe.Recorded);
     }
 
     [SqlServerFact]
@@ -768,6 +1009,7 @@ public sealed class ExecutionLeaseContractTests
         services.AddTransient<BlockingActivity>();
         services.AddTransient<CancellableBlockingActivity>();
         services.AddTransient<RecordActivity>();
+        services.AddTransient<NoopActivity>();
         return services.BuildServiceProvider();
     }
 
@@ -972,6 +1214,19 @@ public sealed class ExecutionLeaseContractTests
     public sealed class LeaseData;
     public sealed class LeaseEvent;
 
+    public sealed class NoopActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    public sealed class FailingActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Simulated activity failure");
+    }
+
     public sealed class ActivityProbe
     {
         public TaskCompletionSource Started { get; } =
@@ -1015,6 +1270,14 @@ public sealed class ExecutionLeaseContractTests
     {
         public int FailNextCancellationReads;
         public int FailNextRenewals;
+        public bool FailAllCancellationReads;
+        public int CancelBeforeTerminalCommit;
+        public int CancelBeforeFailedCommit;
+        public int CancelWhenRootCompletedOnRead;
+        public TaskCompletionSource CancellationReadFailed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource RenewalFailed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool CompleteOnCancellationRequest { get; set; }
         public bool PauseFirstRead { get; set; } = true;
         public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
@@ -1028,11 +1291,27 @@ public sealed class ExecutionLeaseContractTests
             }
             return accepted;
         }
-        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
+        public async Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
         {
+            if (FailAllCancellationReads)
+                throw new IOException("Cancellation store unavailable");
             if (Interlocked.Exchange(ref FailNextCancellationReads, 0) > 0)
+            {
+                CancellationReadFailed.TrySetResult();
                 throw new IOException("Cancellation read unavailable");
-            return inner.GetCancellationRequestAsync(instanceId);
+            }
+            if (Volatile.Read(ref CancelWhenRootCompletedOnRead) > 0)
+            {
+                var saved = await inner.GetWorkflowInstanceAsync(instanceId);
+                if (saved?.Status == WorkflowStatus.Running &&
+                    ExecutionCheckpoint.IsStructured(saved.ExecutionStateJson) &&
+                    ExecutionCheckpoint.Read(saved.ExecutionStateJson).Continuations[0].Status ==
+                        ContinuationStatus.Completed &&
+                    Interlocked.Exchange(ref CancelWhenRootCompletedOnRead, 0) > 0)
+                    await inner.RequestCancellationAsync(instanceId,
+                        new CancellationReason { ReasonCode = "late" });
+            }
+            return await inner.GetCancellationRequestAsync(instanceId);
         }
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
             inner.GetWorkflowsRequiringRecoveryAsync();
@@ -1059,15 +1338,28 @@ public sealed class ExecutionLeaseContractTests
         public Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
         {
             if (Interlocked.Exchange(ref FailNextRenewals, 0) > 0)
+            {
+                RenewalFailed.TrySetResult();
                 throw new IOException("Lease renewal unavailable");
+            }
             return inner.RenewExecutionLeaseAsync(id, token, duration);
         }
         public Task<bool> ReleaseExecutionLeaseAsync(string id, string token) =>
             FailRelease ? throw new IOException("Release acknowledgment unavailable") :
                 inner.ReleaseExecutionLeaseAsync(id, token);
-        public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
-            WorkflowInstance instance, long revision, string commitId) =>
-            inner.CommitWorkflowInstanceAsync(instance, revision, commitId);
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
+            WorkflowInstance instance, long revision, string commitId)
+        {
+            if (instance.Status == WorkflowStatus.Completed &&
+                Interlocked.Exchange(ref CancelBeforeTerminalCommit, 0) > 0)
+                await inner.RequestCancellationAsync(instance.InstanceId,
+                    new CancellationReason { ReasonCode = "operator" });
+            if (instance.Status == WorkflowStatus.Failed &&
+                Interlocked.Exchange(ref CancelBeforeFailedCommit, 0) > 0)
+                await inner.RequestCancellationAsync(instance.InstanceId,
+                    new CancellationReason { ReasonCode = "operator" });
+            return await inner.CommitWorkflowInstanceAsync(instance, revision, commitId);
+        }
         public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
             inner.SaveWorkflowInstanceAsync(instance);
         public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance) =>

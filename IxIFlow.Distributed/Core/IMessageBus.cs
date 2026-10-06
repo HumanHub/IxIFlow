@@ -26,14 +26,24 @@ public interface IMessageDelivery<out T> where T : class
 {
     T Message { get; }
     Task AcknowledgeAsync();
-    Task RejectAsync(Exception error) => Task.CompletedTask;
+    Task RejectAsync(Exception error);
+    Task DeferAsync(TimeSpan delay);
 }
+
+public sealed class MessageClaimLostException(string message) : InvalidOperationException(message);
 
 public interface IAcknowledgingMessageBus : IMessageBus
 {
     IAsyncEnumerable<IMessageDelivery<T>> ConsumeDeliveriesAsync<T>(
         string? targetHostId = null, CancellationToken cancellationToken = default)
         where T : class;
+}
+
+/// <summary>Optional maintenance for a durable message transport.</summary>
+public interface IMessageMaintenance
+{
+    Task<int> PruneExpiredAsync(TimeSpan retention, int batchSize,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
