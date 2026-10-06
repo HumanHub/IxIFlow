@@ -1462,6 +1462,12 @@ public class StructuredTryWaitTests
     public sealed class BoundedCheckpointStore : IWorkflowStateRepository
     {
         private readonly InMemoryWorkflowStateRepository _inner = new();
+        public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
+        public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+            _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
+        public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+            _inner.ReleaseExecutionLeaseAsync(instanceId, token);
         private int _commits;
 
         public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(

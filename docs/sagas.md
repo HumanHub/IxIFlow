@@ -46,10 +46,10 @@ The handler can also read `ctx.WorkflowData` and `ctx.PreviousStep`. It does not
 
 Direct waits inside a saga resume the remaining saga activities. Completed activity results are saved at suspension and restored for compensation if later work fails. The default memory state repository loses those checkpoints when the process exits.
 
-The default state repository is process memory. It can retain an instance across request scopes in the same process, but not across a restart or another host. The optional SQL Server host stores instance state in SQL and atomically claims one matching suspended instance for resume. Definitions must still be registered on the resuming host, and a claim has no worker lease for crash recovery.
+The default state repository is process memory. It can retain an instance across request scopes in the same process, but not across a restart or another host. The optional SQL Server host stores instance state in SQL and uses renewable execution leases for cross-host resume and recovery. Definitions and activity code must still be registered on the resuming host.
 
 ## Distributed saga goal
 
-Reliable distributed saga recovery still needs versioned checkpoints across transitions, recoverable worker leases, durable published definitions, persisted step attempts, and durable compensation progress. SQL state and acknowledged message delivery alone do not provide those guarantees.
+The engine saves versioned checkpoints, activity attempts, and compensation progress. Complete multi-host operation still needs automatic recovery discovery, durable definition registration, distributed cancellation, and host-loss tests. Activities that call external systems need idempotency or an explicit recovery policy.
 
 Read [execution model](/docs/execution-model/) and [coordinator and hosts](/docs/coordinator-and-hosts/) for the wider runtime boundary.
