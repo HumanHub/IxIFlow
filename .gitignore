@@ -453,3 +453,6 @@ jspm_packages/
 
 # Local agent instructions
 AGENTS.md
+
+# Local design notes
+design/
