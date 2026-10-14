@@ -44,7 +44,7 @@ public class StructuredSagaWaitTests
         using var services = CreateServices(new InMemoryWorkflowStateRepository());
         var definition = Workflow.Create<SagaData>("ImplicitSagaRethrow")
             .Step<BeginActivity>()
-            .Saga(saga => saga.Step<FailActivity>(_ => { }))
+            .Saga(saga => saga.Step<FailActivity>())
             .OnError<InvalidOperationException>(handler => handler.Step<HandlerMarkerActivity>())
             .Build();
 
@@ -156,7 +156,7 @@ public class StructuredSagaWaitTests
                         .Input(activity => activity.Trace).From(ctx => ctx.WorkflowData.Trace)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Trace)))
                 .WaitFor<Approval>("approval")
-                .Step<FailActivity>(_ => { })))
+                .Step<FailActivity>()))
             .Catch<InvalidOperationException, MessageFault>(body => body.Step<ReadErrorActivity>(setup => setup
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
@@ -250,7 +250,7 @@ public class StructuredSagaWaitTests
                         .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed)))
                 .WaitFor<Approval>("approval")
-                .Step<FailActivity>(_ => { }))
+                .Step<FailActivity>())
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
@@ -281,7 +281,7 @@ public class StructuredSagaWaitTests
                         .Input(activity => activity.PreviousCompensation).From((CompleteActivity previous) => previous.Result)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
                 .WaitFor<Approval>("approval")
-                .Step<FailActivity>(_ => { }))
+                .Step<FailActivity>())
             .Build();
 
         string instanceId;
@@ -322,7 +322,7 @@ public class StructuredSagaWaitTests
                         .Input(activity => activity.PreviousCompensation).From((BaseValueActivity previous) => previous.Result)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
                 .WaitFor<Approval>("approval")
-                .Step<FailActivity>(_ => { }))
+                .Step<FailActivity>())
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
@@ -367,7 +367,7 @@ public class StructuredSagaWaitTests
                         .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
                 .WaitFor<Approval>("approval")
-                .Step<FailActivity>(_ => { }))
+                .Step<FailActivity>())
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
@@ -391,10 +391,10 @@ public class StructuredSagaWaitTests
             .Saga(saga => saga
                 .Step<ReserveActivity>(setup => setup
                     .CompensateWith<FailCompensationActivity>())
-                .Step<FailActivity>(_ => { }))
+                .Step<FailActivity>())
             .OnError<InvalidOperationException>(error => error.Compensate()
                 .ThenContinue(ignoreCompensationErrors))
-            .Step<HandlerMarkerActivity>(_ => { })
+            .Step<HandlerMarkerActivity>()
             .Build();
 
         var result = await services.GetRequiredService<IWorkflowEngine>()
@@ -428,7 +428,7 @@ public class StructuredSagaWaitTests
                             .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated))));
                 })
-                .Do(branch => branch.Step<BeginActivity>(_ => { })))
+                .Do(branch => branch.Step<BeginActivity>()))
             .Build();
         var executing = services.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new SagaData());
@@ -462,7 +462,7 @@ public class StructuredSagaWaitTests
                     .CompensateWith<PausedReleaseActivity>(compensation => compensation
                         .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
-                .Step<FailActivity>(_ => { }))
+                .Step<FailActivity>())
             .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
             .Build();
 
@@ -546,7 +546,7 @@ public class StructuredSagaWaitTests
         var definition = Workflow.Create<SagaData>("RecoveredSagaHandlerError")
             .Step<BeginActivity>()
             .Try(body => body
-                .Saga(saga => saga.Step<FailActivity>(_ => { }))
+                .Saga(saga => saga.Step<FailActivity>())
                 .OnError<InvalidOperationException, MessageFault>(error => error
                     .Step<RecoverableHandlerActivity>()))
             .Catch<InvalidOperationException, MessageFault>(handler => handler.Step<ReadErrorActivity>(setup => setup
@@ -572,7 +572,7 @@ public class StructuredSagaWaitTests
         var definition = Workflow.Create<SagaData>("RecoveredNonRestorableSagaError")
             .Step<BeginActivity>()
             .Try(body => body
-                .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>(_ => { }))
+                .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>())
                 .OnError<NonRestorableSagaException, MessageFault>(error => error
                     .Step<RecoverableHandlerActivity>()))
             .Catch<NonRestorableSagaException, MessageFault>(handler => handler.Step<ReadErrorActivity>(setup => setup
@@ -598,7 +598,7 @@ public class StructuredSagaWaitTests
         var definition = Workflow.Create<SagaData>("RecoveredSagaWithDifferentOuterFault")
             .Step<BeginActivity>()
             .Try(body => body
-                .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>(_ => { }))
+                .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>())
                 .OnError<NonRestorableSagaException, MessageFault>(error => error
                     .Step<RecoverableHandlerActivity>()))
             .Catch<NonRestorableSagaException, MessageCodeFault>(handler => handler
@@ -628,11 +628,11 @@ public class StructuredSagaWaitTests
         var definition = Workflow.Create<SagaData>("UnusedOuterFaultProjection")
             .Step<BeginActivity>()
             .Try(body => body
-                .Saga(saga => saga.Step<ThrowFragileSagaActivity>(_ => { }))
+                .Saga(saga => saga.Step<ThrowFragileSagaActivity>())
                 .OnError<FragileSagaException, MessageFault>(error => error
                     .CompensateNone().ThenContinue()))
             .Catch<FragileSagaException, FragileSagaFault>(handler => handler
-                .Step<HandlerMarkerActivity>(_ => { }))
+                .Step<HandlerMarkerActivity>())
             .Build();
 
         var result = await services.GetRequiredService<IWorkflowEngine>()
@@ -649,7 +649,7 @@ public class StructuredSagaWaitTests
         using var services = CreateServices(repository);
         var definition = Workflow.Create<SagaData>("RecoveredUnhandledSagaError")
             .Step<BeginActivity>()
-            .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>(_ => { }))
+            .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>())
             .OnError<NonRestorableSagaException, MessageFault>(handler => handler
                 .Step<RecoverableHandlerActivity>())
             .Build();
@@ -672,7 +672,7 @@ public class StructuredSagaWaitTests
         var definition = Workflow.Create<SagaData>("RecoveredHiddenFaultProperty")
             .Step<BeginActivity>()
             .Try(body => body
-                .Saga(saga => saga.Step<ThrowHiddenPropertySagaActivity>(_ => { }))
+                .Saga(saga => saga.Step<ThrowHiddenPropertySagaActivity>())
                 .OnError<HiddenPropertySagaException, MessageCodeFault>(handler => handler
                     .Step<RecoverableHandlerActivity>()))
             .Catch<BaseCodeSagaException, MessageCodeFault>(handler => handler
@@ -700,7 +700,7 @@ public class StructuredSagaWaitTests
             .Step<BeginActivity>()
             .Try(outer => outer
                 .Try(inner => inner
-                    .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>(_ => { }))
+                    .Saga(saga => saga.Step<ThrowNonRestorableSagaActivity>())
                     .OnError<NonRestorableSagaException, MessageFault>(handler => handler
                         .CompensateNone().ThenTerminate()))
                 .Finally(cleanup => cleanup.WaitFor<Approval>("cleanup")))
@@ -739,7 +739,7 @@ public class StructuredSagaWaitTests
         using var services = CreateServices(new InMemoryWorkflowStateRepository());
         var definition = Workflow.Create<SagaData>("SagaInsideCatch")
             .Step<BeginActivity>()
-            .Try(body => body.WaitFor<Approval>("start").Step<FailActivity>(_ => { }))
+            .Try(body => body.WaitFor<Approval>("start").Step<FailActivity>())
             .Catch<InvalidOperationException, MessageFault>(body => body.Saga(saga => saga
                 .Step<ReserveActivity>(setup => setup
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
@@ -748,7 +748,7 @@ public class StructuredSagaWaitTests
                         .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
                 .WaitFor<Approval>("review")
-                .Step<FailActivity>(_ => { })))
+                .Step<FailActivity>()))
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
@@ -814,7 +814,7 @@ public class StructuredSagaWaitTests
             .Saga(saga => saga
                 .Step<ReserveActivity>(setup => setup
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved))
-                .Step<FailActivity>(_ => { }))
+                .Step<FailActivity>())
             .OnError<InvalidOperationException>(error => error.Compensate().ThenContinue())
             .Step<CompleteActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.PreviousStep.Result)
@@ -843,7 +843,7 @@ public class StructuredSagaWaitTests
                 .Step<ReserveActivity>(setup => setup
                     .Input(activity => activity.Count).From(ctx => ctx.PreviousStep.Result)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved))
-                .Step<FailOnceSagaActivity>(_ => { }))
+                .Step<FailOnceSagaActivity>())
             .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
             .Step<CompleteActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.PreviousStep.Result)
@@ -899,7 +899,7 @@ public class StructuredSagaWaitTests
                         .CompensateWith<ReleaseActivity>(compensation => compensation
                             .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))))
-                .Step<FailActivity>(_ => { }))
+                .Step<FailActivity>())
             .Build();
 
         var result = await services.GetRequiredService<IWorkflowEngine>()
@@ -946,7 +946,7 @@ public class StructuredSagaWaitTests
                         .CompensateWith<ReleaseActivity>(compensation => compensation
                             .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
-                    .Step<ThrowFragileSagaActivity>(_ => { }))
+                    .Step<ThrowFragileSagaActivity>())
                 .OnError<FragileSagaException, FragileSagaFault>(error => error.Compensate().ThenTerminate()))
             .Catch<InvalidOperationException, MessageFault>(handler => handler.Step<ReadErrorActivity>(setup => setup
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
@@ -995,9 +995,9 @@ public class StructuredSagaWaitTests
         var definition = Workflow.Create<SagaData>("ParallelSagaRetry")
             .Step<BeginActivity>()
             .Try(body => body.Parallel(parallel => parallel
-                .Do(branch => branch.Saga(saga => saga.Step<FailActivity>(_ => { }))
+                .Do(branch => branch.Saga(saga => saga.Step<FailActivity>())
                     .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1)))
-                .Do(branch => branch.Step<BeginActivity>(_ => { }))))
+                .Do(branch => branch.Step<BeginActivity>())))
             .Catch<InvalidOperationException, MessageFault>(handler => handler.Step<ReadErrorActivity>(setup => setup
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
@@ -1072,7 +1072,7 @@ public class StructuredSagaWaitTests
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<SagaData>("DelayedSagaRetry")
             .Step<BeginActivity>()
-            .Saga(saga => saga.Step<FailOnceSagaActivity>(_ => { }))
+            .Saga(saga => saga.Step<FailOnceSagaActivity>())
             .OnError<InvalidOperationException>(handler => handler.CompensateNone().ThenRetry(
                 new RetryPolicy(TimeSpan.FromMilliseconds(180),
                     TimeSpan.FromMilliseconds(180), 1, 1)))
@@ -1190,8 +1190,8 @@ public class StructuredSagaWaitTests
         var definition = Workflow.Create<SagaData>("NewSagaRetryId")
             .Step<BeginActivity>()
             .Saga(saga => saga
-                .Step<SagaAttemptIdActivity>(_ => { })
-                .Step<FailOnceSagaActivity>(_ => { }))
+                .Step<SagaAttemptIdActivity>()
+                .Step<FailOnceSagaActivity>())
             .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
             .Build();
 
@@ -1226,7 +1226,7 @@ public class StructuredSagaWaitTests
                     .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
             .WaitFor<Approval>("approval")
-            .Step<FailActivity>(_ => { }))
+            .Step<FailActivity>())
         .Build();
 
     private static WorkflowDefinition PredicateWorkflow() => Workflow.Create<SagaData>("SagaPredicateWait")
@@ -1257,7 +1257,7 @@ public class StructuredSagaWaitTests
                         .Input(activity => activity.Key).From(_ => "B")
                         .Input(activity => activity.Trace).From(ctx => ctx.WorkflowData.Trace)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Trace)))
-                .Step<FailActivity>(_ => { }))
+                .Step<FailActivity>())
             .OnError<InvalidOperationException, MessageFault>(error => error
                 .Step<HandlerMarkerActivity>()
                 .Step<ReadErrorActivity>(setup => setup
@@ -1310,7 +1310,7 @@ public class StructuredSagaWaitTests
         using var services = CreateServices(new InMemoryWorkflowStateRepository());
         var definition = Workflow.Create<SagaData>("SagaHandlerFailure")
             .Step<BeginActivity>()
-            .Saga(saga => saga.Step<FailActivity>(_ => { }))
+            .Saga(saga => saga.Step<FailActivity>())
             .OnError<InvalidOperationException>(error => error
                 .Step<FailHandlerActivity>()
                 .CompensateNone().ThenContinue())
@@ -1328,7 +1328,7 @@ public class StructuredSagaWaitTests
     {
         Assert.Throws<NotSupportedException>(() => Workflow.Create<SagaData>("InvalidSagaFault")
             .Step<BeginActivity>()
-            .Saga(saga => saga.Step<FailActivity>(_ => { }))
+            .Saga(saga => saga.Step<FailActivity>())
             .OnError<InvalidOperationException, InvalidFault>(error => error
                 .CompensateNone().ThenContinue())
             .Build());
@@ -1339,7 +1339,7 @@ public class StructuredSagaWaitTests
     {
         Assert.Throws<InvalidOperationException>(() => Workflow.Create<SagaData>("MissingSagaOutcome")
             .Step<BeginActivity>()
-            .Saga(saga => saga.Step<FailActivity>(_ => { }))
+            .Saga(saga => saga.Step<FailActivity>())
             .OnError<InvalidOperationException, MessageFault>(error => error
                 .WaitFor<Approval>("review"))
             .Build());
@@ -1395,7 +1395,7 @@ public class StructuredSagaWaitTests
 
     private static WorkflowDefinition SagaRetryAfterWaitWorkflow() => Workflow.Create<SagaData>("SagaRetryAfterWait")
         .Step<BeginActivity>()
-        .Saga(saga => saga.Step<FailOnceInDataActivity>(_ => { }))
+        .Saga(saga => saga.Step<FailOnceInDataActivity>())
         .OnError<InvalidOperationException, MessageFault>(error => error
             .WaitFor<Approval>("retry")
             .CompensateNone().ThenRetry(1))
@@ -1403,7 +1403,7 @@ public class StructuredSagaWaitTests
 
     private static WorkflowDefinition SagaTerminateAfterWaitWorkflow() => Workflow.Create<SagaData>("SagaTerminateAfterWait")
         .Step<BeginActivity>()
-        .Saga(saga => saga.Step<FailActivity>(_ => { }))
+        .Saga(saga => saga.Step<FailActivity>())
         .OnError<InvalidOperationException, MessageFault>(error => error
             .WaitFor<Approval>("terminate")
             .CompensateNone().ThenTerminate())
@@ -1411,7 +1411,7 @@ public class StructuredSagaWaitTests
 
     private static WorkflowDefinition SagaErrorWaitWorkflow() => Workflow.Create<SagaData>("SagaErrorWait")
         .Step<BeginActivity>()
-        .Saga(saga => saga.Step<FailActivity>(_ => { }))
+        .Saga(saga => saga.Step<FailActivity>())
         .OnError<InvalidOperationException, MessageFault>(error => error
             .Step<ReadErrorActivity>(setup => setup
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)

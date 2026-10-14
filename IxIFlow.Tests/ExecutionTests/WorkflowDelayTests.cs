@@ -18,8 +18,8 @@ public sealed class WorkflowDelayTests
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
                 .Do(branch => branch.Delay(TimeSpan.FromMilliseconds(300)))
-                .Do(branch => branch.Step<NoopActivity>(_ => { })))
-            .Step<MarkActivity>(_ => { })
+                .Do(branch => branch.Step<NoopActivity>()))
+            .Step<MarkActivity>()
             .Build();
 
         var started = await services.GetRequiredService<IWorkflowEngine>()
@@ -48,7 +48,7 @@ public sealed class WorkflowDelayTests
         var definition = Workflow.Create<DelayData>("SqlDurableDelay")
             .Step<NoopActivity>()
             .Delay(TimeSpan.FromSeconds(1))
-            .Step<MarkActivity>(_ => { })
+            .Step<MarkActivity>()
             .Build();
         string? instanceId = null;
         try
@@ -90,7 +90,7 @@ public sealed class WorkflowDelayTests
         var definition = Workflow.Create<DelayData>("DurableDelay")
             .Step<NoopActivity>()
             .Delay(TimeSpan.FromMilliseconds(500))
-            .Step<MarkActivity>(_ => { })
+            .Step<MarkActivity>()
             .Build();
         string instanceId;
         using (var firstProvider = Services(repository))
@@ -128,7 +128,7 @@ public sealed class WorkflowDelayTests
         var definition = Workflow.Create<DelayData>("TimedDelay")
             .Step<NoopActivity>()
             .Delay(TimeSpan.FromSeconds(1))
-            .Step<MarkActivity>(_ => { })
+            .Step<MarkActivity>()
             .Build();
         var started = await services.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new DelayData(),

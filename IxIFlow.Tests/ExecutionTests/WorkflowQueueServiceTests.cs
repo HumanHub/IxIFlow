@@ -23,7 +23,7 @@ public sealed class WorkflowQueueServiceTests
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<QueueData>("GracefulStop")
             .Step<ExecutionLeaseContractTests.BlockingActivity>(_ => { })
-            .Step<NoopActivity>(_ => { })
+            .Step<NoopActivity>()
             .Build();
         await provider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(definition);

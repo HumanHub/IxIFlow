@@ -51,7 +51,7 @@ public sealed class ActivityRecoveryTests
         using var services = CreateServices(store, new ChargeLedger(store));
         var definition = Workflow.Create<ChargeData>("FailureCheckpointFailure")
             .Step<NoopActivity>()
-            .Step<ThrowActivity>(_ => { })
+            .Step<ThrowActivity>()
             .Build();
 
         var error = await Assert.ThrowsAsync<IOException>(() =>
@@ -68,7 +68,7 @@ public sealed class ActivityRecoveryTests
         using var services = CreateServices(store, new ChargeLedger(store));
         var definition = Workflow.Create<CheckpointData>("InvalidActivityState")
             .Step<NoopActivity>()
-            .Step<InvalidActivityStateActivity>(_ => { })
+            .Step<InvalidActivityStateActivity>()
             .WaitFor<RecoveryReply>("reply")
             .Build();
 
@@ -88,7 +88,7 @@ public sealed class ActivityRecoveryTests
         using var services = CreateServices(store, new ChargeLedger(store));
         var definition = Workflow.Create<CheckpointData>("InvalidWorkflowData")
             .Step<NoopActivity>()
-            .Step<InvalidWorkflowDataActivity>(_ => { })
+            .Step<InvalidWorkflowDataActivity>()
             .WaitFor<RecoveryReply>("reply")
             .Build();
 
@@ -270,7 +270,7 @@ public sealed class ActivityRecoveryTests
         var engine = services.GetRequiredService<WorkflowEngine>();
         var definition = Workflow.Create<ChargeData>("InterruptedCatch")
             .Step<NoopActivity>()
-            .Try(body => body.Step<ThrowActivity>(_ => { }))
+            .Try(body => body.Step<ThrowActivity>())
             .Catch<InvalidOperationException, MessageFault>(body => body
                 .Step<OrdinaryChargeActivity>(step => step
                     .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
@@ -314,7 +314,7 @@ public sealed class ActivityRecoveryTests
                     .CompensateWith<OrdinaryChargeActivity>(comp => comp
                         .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                         .Output(activity => activity.ChargeId).To(ctx => ctx.WorkflowData.ChargeId)))
-                .Step<ThrowActivity>(_ => { })))
+                .Step<ThrowActivity>()))
             .Catch<InvalidOperationException, MessageFault>(body => body
                 .Step<MarkCaughtActivity>(step => step
                     .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.Caught)))
@@ -600,10 +600,10 @@ public sealed class ActivityRecoveryTests
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<ChargeData>("CancelledRecovery")
-            .Step<StepIndexActivity>(_ => { })
+            .Step<StepIndexActivity>()
             .Parallel(join => join.WaitAny()
                 .Do(branch => branch.WaitFor<RecoveryReply>("a")
-                    .Step<CancelledRecoveryActivity>(_ => { }))
+                    .Step<CancelledRecoveryActivity>())
                 .Do(branch => branch.WaitFor<RecoveryReply>("b")))
             .Build();
         var started = await engine.ExecuteWorkflowAsync(definition, new ChargeData());

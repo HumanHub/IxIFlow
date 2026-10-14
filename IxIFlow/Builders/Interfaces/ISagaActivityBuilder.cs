@@ -15,7 +15,7 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData> //: ISag
     /// <typeparam name="TActivity">The activity type for this step</typeparam>
     /// <param name="configure">Configuration for the saga activity</param>
     ISagaActivityBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>> configure)
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>

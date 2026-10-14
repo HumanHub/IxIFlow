@@ -85,7 +85,7 @@ public class StructuredTryWaitTests
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<TryData>("FailureAfterWait")
             .Step<StartActivity>()
-            .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>(_ => { }))
+            .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>())
             .Catch<InvalidOperationException, MessageFault>(body => body.Step<ReadErrorActivity>(setup => setup
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
@@ -157,7 +157,7 @@ public class StructuredTryWaitTests
         var definition = Workflow.Create<TryData>("ParallelFailureInTry")
             .Step<StartActivity>()
             .Try(body => body.Parallel(parallel => parallel
-                .Do(branch => branch.Step<ThrowActivity>(_ => { }))
+                .Do(branch => branch.Step<ThrowActivity>())
                 .Do(branch => branch.WaitFor<Approval>("approval"))))
             .Catch<InvalidOperationException, MessageFault>(body => body.Step<ReadErrorActivity>(setup => setup
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
@@ -279,7 +279,7 @@ public class StructuredTryWaitTests
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
                 .Do(branch => branch
-                    .Try(body => body.Step<StartActivity>(_ => { }))
+                    .Try(body => body.Step<StartActivity>())
                     .Finally(body => body.WaitFor<Approval>("audit")
                         .Step<CountActivity>(setup => setup
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
@@ -359,7 +359,7 @@ public class StructuredTryWaitTests
                         .Step<CountActivity>(setup => setup
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally))))
-                .Do(branch => branch.Step<StartActivity>(_ => { })))
+                .Do(branch => branch.Step<StartActivity>()))
             .Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
@@ -382,8 +382,8 @@ public class StructuredTryWaitTests
             .Parallel(parallel => parallel.WaitAny()
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("loser"))
-                    .Finally(body => body.Step<ThrowOnceCleanupActivity>(_ => { })))
-                .Do(branch => branch.Step<StartActivity>(_ => { })))
+                    .Finally(body => body.Step<ThrowOnceCleanupActivity>()))
+                .Do(branch => branch.Step<StartActivity>()))
             .Build();
 
         var result = await services.GetRequiredService<IWorkflowEngine>()
@@ -404,7 +404,7 @@ public class StructuredTryWaitTests
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<TryData>("OpaqueCatch")
             .Step<StartActivity>()
-            .Try(body => body.WaitFor<Approval>("approval").Step<ThrowOpaqueActivity>(_ => { }))
+            .Try(body => body.WaitFor<Approval>("approval").Step<ThrowOpaqueActivity>())
             .Catch<OpaqueApprovalException, MessageFault>(body => body.Step<ReadErrorActivity>(setup => setup
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
@@ -428,7 +428,7 @@ public class StructuredTryWaitTests
         var repository = new InMemoryWorkflowStateRepository();
         var definition = Workflow.Create<TryData>("OpaqueFinallyWait")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowOpaqueActivity>(_ => { }))
+            .Try(body => body.Step<ThrowOpaqueActivity>())
             .Finally(body => body.WaitFor<Approval>("cleanup")
                 .Step<CountActivity>(setup => setup
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
@@ -461,9 +461,9 @@ public class StructuredTryWaitTests
         using var services = CreateServices();
         var definition = Workflow.Create<TryData>("OpaqueCatchWait")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowOpaqueActivity>(_ => { }))
+            .Try(body => body.Step<ThrowOpaqueActivity>())
             .Catch<OpaqueApprovalException, MessageFault>(body => body
-                .Step<StartActivity>(_ => { }).WaitFor<Approval>("review"))
+                .Step<StartActivity>().WaitFor<Approval>("review"))
             .Finally(body => body.Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
@@ -485,9 +485,9 @@ public class StructuredTryWaitTests
         using var services = CreateServices();
         var definition = Workflow.Create<TryData>("OpaqueInnerCatchWait")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowOuterOpaqueActivity>(_ => { }))
+            .Try(body => body.Step<ThrowOuterOpaqueActivity>())
             .Catch<InvalidOperationException, MessageFault>(body => body
-                .Step<StartActivity>(_ => { }).WaitFor<Approval>("review"))
+                .Step<StartActivity>().WaitFor<Approval>("review"))
             .Finally(body => body.Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
@@ -510,7 +510,7 @@ public class StructuredTryWaitTests
         var definition = Workflow.Create<TryData>("OpaqueParallelFailure")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
-                .Do(branch => branch.Step<ThrowOpaqueActivity>(_ => { }))
+                .Do(branch => branch.Step<ThrowOpaqueActivity>())
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("approval"))
                     .Finally(body => body.Step<CountActivity>(setup => setup
@@ -538,7 +538,7 @@ public class StructuredTryWaitTests
         var definition = Workflow.Create<TryData>("CallerCancellationCleanup")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("begin")
-                .Step<WaitForCancellationActivity>(_ => { }))
+                .Step<WaitForCancellationActivity>())
             .Finally(body => body.Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
@@ -619,7 +619,7 @@ public class StructuredTryWaitTests
         var definition = Workflow.Create<TryData>("CallerCancellationWaitCleanup")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("begin")
-                .Step<WaitForCancellationActivity>(_ => { }))
+                .Step<WaitForCancellationActivity>())
             .Finally(body => body.WaitFor<Approval>("cleanup")
                 .Step<CountActivity>(setup => setup
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
@@ -675,7 +675,7 @@ public class StructuredTryWaitTests
         var definition = Workflow.Create<TryData>("UncaughtParallelFailure")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
-                .Do(branch => branch.Step<ThrowActivity>(_ => { }))
+                .Do(branch => branch.Step<ThrowActivity>())
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("approval"))
                     .Finally(body => body.Step<CountActivity>(setup => setup
@@ -704,12 +704,12 @@ public class StructuredTryWaitTests
         var definition = Workflow.Create<TryData>("NestedFinallyJoin")
             .Step<StartActivity>()
             .Parallel(outer => outer
-                .Do(branch => branch.Step<ThrowAfterCleanupStartsActivity>(_ => { }))
-                .Do(branch => branch.Try(body => body.Step<StartActivity>(_ => { }))
+                .Do(branch => branch.Step<ThrowAfterCleanupStartsActivity>())
+                .Do(branch => branch.Try(body => body.Step<StartActivity>())
                     .Finally(cleanup => cleanup
                         .Parallel(inner => inner
-                            .Do(child => child.Step<WaitForCleanupReleaseActivity>(_ => { }))
-                            .Do(child => child.Step<StartActivity>(_ => { })))
+                            .Do(child => child.Step<WaitForCleanupReleaseActivity>())
+                            .Do(child => child.Step<StartActivity>()))
                         .Step<CountActivity>(setup => setup
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
@@ -739,10 +739,10 @@ public class StructuredTryWaitTests
             .Step<StartActivity>()
             .Parallel(outer => outer
                 .Do(branch => branch.Parallel(inner => inner.WaitAny()
-                    .Do(child => child.Try(body => body.Step<WaitForNestedCancellationActivity>(_ => { }))
-                        .Finally(cleanup => cleanup.Step<ThrowLosingCleanupActivity>(_ => { })))
-                    .Do(child => child.Step<CompleteNestedWinnerActivity>(_ => { }))))
-                .Do(branch => branch.Step<WaitForOuterCancellationActivity>(_ => { })))
+                    .Do(child => child.Try(body => body.Step<WaitForNestedCancellationActivity>())
+                        .Finally(cleanup => cleanup.Step<ThrowLosingCleanupActivity>()))
+                    .Do(child => child.Step<CompleteNestedWinnerActivity>())))
+                .Do(branch => branch.Step<WaitForOuterCancellationActivity>()))
             .Build();
 
         var result = await provider.GetRequiredService<IWorkflowEngine>()
@@ -763,14 +763,14 @@ public class StructuredTryWaitTests
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("approval"))
                     .Finally(body => body
-                        .Try(inner => inner.Step<ThrowActivity>(_ => { }))
+                        .Try(inner => inner.Step<ThrowActivity>())
                         .Catch<InvalidOperationException, MessageFault>(inner => inner.Step<CountActivity>(setup => setup
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Catch)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch)))
                         .Finally(inner => inner.Step<CountActivity>(setup => setup
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
-                .Do(branch => branch.Step<StartActivity>(_ => { })))
+                .Do(branch => branch.Step<StartActivity>()))
             .Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.After)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
@@ -795,9 +795,9 @@ public class StructuredTryWaitTests
                 .Do(branch => branch
                     .Try(inner => inner.WaitFor<Approval>("approval"))
                     .Finally(inner => inner.Parallel(cleanup => cleanup
-                        .Do(path => path.Step<ThrowActivity>(_ => { }))
-                        .Do(path => path.Step<StartActivity>(_ => { })))))
-                .Do(branch => branch.Step<StartActivity>(_ => { }))))
+                        .Do(path => path.Step<ThrowActivity>())
+                        .Do(path => path.Step<StartActivity>()))))
+                .Do(branch => branch.Step<StartActivity>())))
             .Catch<InvalidOperationException, MessageFault>(body => body.Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Catch)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch)))
@@ -826,11 +826,11 @@ public class StructuredTryWaitTests
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<TryData>("ParallelInsideFinallyFailure")
             .Step<StartActivity>()
-            .Try(body => body.Step<StartActivity>(_ => { }))
+            .Try(body => body.Step<StartActivity>())
             .Finally(body => body.Parallel(parallel => parallel.WaitAny()
-                .Do(branch => branch.Step<CountFinallyWinnerActivity>(_ => { }))
+                .Do(branch => branch.Step<CountFinallyWinnerActivity>())
                 .Do(branch => branch.Try(inner => inner.WaitFor<Approval>("approval"))
-                    .Finally(cleanup => cleanup.Step<ThrowActivity>(_ => { })))))
+                    .Finally(cleanup => cleanup.Step<ThrowActivity>()))))
             .Build();
 
         var result = await provider.GetRequiredService<IWorkflowEngine>()
@@ -849,7 +849,7 @@ public class StructuredTryWaitTests
         var definition = Workflow.Create<TryData>("UncaughtParallelCleanupWait")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
-                .Do(branch => branch.Step<ThrowActivity>(_ => { }))
+                .Do(branch => branch.Step<ThrowActivity>())
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("approval"))
                     .Finally(body => body.WaitFor<Approval>("cleanup")
@@ -874,9 +874,9 @@ public class StructuredTryWaitTests
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<TryData>("ParallelInsideCatch")
             .Step<StartActivity>()
-            .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>(_ => { }))
+            .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>())
             .Catch<InvalidOperationException, MessageFault>(body => body
-                .Step<StartActivity>(_ => { })
+                .Step<StartActivity>()
                 .Parallel(parallel => parallel.Do(branch => branch.Step<ReadErrorActivity>(setup => setup
                     .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))))
             .Build();
@@ -935,22 +935,22 @@ public class StructuredTryWaitTests
     {
         var missing = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("MissingFaultField")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowCustomActivity>(_ => { }))
-            .Catch<ApprovalException, MissingPropertyFault>(body => body.Step<StartActivity>(_ => { }))
+            .Try(body => body.Step<ThrowCustomActivity>())
+            .Catch<ApprovalException, MissingPropertyFault>(body => body.Step<StartActivity>())
             .Build());
         Assert.Contains("no matching public property", missing.Message);
 
         var mismatched = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("WrongFaultFieldType")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowCustomActivity>(_ => { }))
-            .Catch<ApprovalException, WrongCodeFault>(body => body.Step<StartActivity>(_ => { }))
+            .Try(body => body.Step<ThrowCustomActivity>())
+            .Catch<ApprovalException, WrongCodeFault>(body => body.Step<StartActivity>())
             .Build());
         Assert.Contains("has type", mismatched.Message);
 
         var callback = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("DelegateFault")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowCallbackActivity>(_ => { }))
-            .Catch<CallbackException, DelegateFault>(body => body.Step<StartActivity>(_ => { }))
+            .Try(body => body.Step<ThrowCallbackActivity>())
+            .Catch<CallbackException, DelegateFault>(body => body.Step<StartActivity>())
             .Build());
         Assert.Contains("cannot be checkpointed", callback.Message);
     }
@@ -961,7 +961,7 @@ public class StructuredTryWaitTests
         var repository = new InMemoryWorkflowStateRepository();
         var definition = Workflow.Create<TryData>("CallbackExceptionCatch")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowCallbackActivity>(_ => { }))
+            .Try(body => body.Step<ThrowCallbackActivity>())
             .Catch<CallbackException, MessageFault>(body => body
                 .Step<ReadErrorActivity>(setup => setup
                     .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
@@ -993,7 +993,7 @@ public class StructuredTryWaitTests
     {
         var failure = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("UnmarkedFaultObject")
             .Step<StartActivity>()
-            .Try(body => body.Step<StartActivity>(_ => { }))
+            .Try(body => body.Step<StartActivity>())
             .Catch<UnmarkedDetailsException, ObjectDetailsFault>(body => body.Step<NoopObjectActivity>(setup => setup
                 .Input(activity => activity.Details).From(context => context.Fault.Details)))
             .Build());
@@ -1006,7 +1006,7 @@ public class StructuredTryWaitTests
     {
         var failure = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("InvalidFaultAllowlist")
             .Step<StartActivity>()
-            .Try(body => body.Step<StartActivity>(_ => { }))
+            .Try(body => body.Step<StartActivity>())
             .Catch<InvalidAllowlistException, ObjectDetailsFault>(body => body.Step<NoopObjectActivity>(setup => setup
                 .Input(activity => activity.Details).From(context => context.Fault.Details)))
             .Build());
@@ -1019,9 +1019,9 @@ public class StructuredTryWaitTests
     {
         var failure = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("WholeFault")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowCustomActivity>(_ => { }))
+            .Try(body => body.Step<ThrowCustomActivity>())
             .Catch<ApprovalException, Exception>(body => body
-                .Step<ReadWholeExceptionActivity>(_ => { }))
+                .Step<ReadWholeExceptionActivity>())
             .Build());
 
         Assert.Contains("cannot be checkpointed", failure.Message);
@@ -1056,7 +1056,7 @@ public class StructuredTryWaitTests
     {
         var failure = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("ObjectFaultWait")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowUnlistedDetailsActivity>(_ => { }))
+            .Try(body => body.Step<ThrowUnlistedDetailsActivity>())
             .Catch<UnmarkedDetailsException, ObjectDetailsFault>(body => body
                 .Step<NoopObjectActivity>(setup => setup
                     .Input(activity => activity.Details).From(context => context.Fault.Details))
@@ -1072,7 +1072,7 @@ public class StructuredTryWaitTests
         var repository = new InMemoryWorkflowStateRepository();
         var definition = Workflow.Create<TryData>("NullableFaultDetail")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowNullableDetailsActivity>(_ => { }))
+            .Try(body => body.Step<ThrowNullableDetailsActivity>())
             .Catch<NullableDetailsException, NullableDetailsFault>(body => body
                 .Step<ReadErrorActivity>(setup => setup
                     .Input(activity => activity.Message).From(ctx =>
@@ -1150,7 +1150,7 @@ public class StructuredTryWaitTests
         using var services = CreateServices();
         var definition = Workflow.Create<TryData>("MutableCatchNoWait")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowMutableApprovalActivity>(_ => { }))
+            .Try(body => body.Step<ThrowMutableApprovalActivity>())
             .Catch<MutableApprovalException, ApprovalFault>(body => body.Step<CaptureCodeActivity>(setup => setup
                 .Input(activity => activity.Code).From(ctx => ctx.Fault.Code)
                 .Output(activity => activity.Code).To(ctx => ctx.WorkflowData.After)))
@@ -1169,9 +1169,9 @@ public class StructuredTryWaitTests
         using var services = CreateServices();
         var definition = Workflow.Create<TryData>("MutableCatchWait")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowMutableApprovalActivity>(_ => { }))
+            .Try(body => body.Step<ThrowMutableApprovalActivity>())
             .Catch<MutableApprovalException, ApprovalFault>(body => body
-                .Step<StartActivity>(_ => { }).WaitFor<Approval>("review"))
+                .Step<StartActivity>().WaitFor<Approval>("review"))
             .Finally(body => body.Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
@@ -1193,12 +1193,12 @@ public class StructuredTryWaitTests
         using var services = CreateServices();
         var definition = Workflow.Create<TryData>("FailureInCatch")
             .Step<StartActivity>()
-            .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>(_ => { }))
+            .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>())
             .Catch<InvalidOperationException, MessageFault>(body => body
                 .Step<ReadErrorActivity>(setup => setup
                     .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                     .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error))
-                .Step<ThrowActivity>(_ => { }))
+                .Step<ThrowActivity>())
             .Finally(body => body.Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
@@ -1219,8 +1219,8 @@ public class StructuredTryWaitTests
         using var services = CreateServices();
         var definition = Workflow.Create<TryData>("CatchFailureDoesNotMatchSibling")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowActivity>(_ => { }))
-            .Catch<InvalidOperationException, MessageFault>(body => body.Step<ThrowArgumentActivity>(_ => { }))
+            .Try(body => body.Step<ThrowActivity>())
+            .Catch<InvalidOperationException, MessageFault>(body => body.Step<ThrowArgumentActivity>())
             .Catch<ArgumentException, MessageFault>(body => body.Step<CountActivity>(setup => setup
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch)))
             .Finally(body => body.Step<CountActivity>(setup => setup
@@ -1271,7 +1271,7 @@ public class StructuredTryWaitTests
         using var services = CreateServices();
         var definition = Workflow.Create<TryData>("UnhandledFailure")
             .Step<StartActivity>()
-            .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>(_ => { }))
+            .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>())
             .Finally(body => body.Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
@@ -1289,7 +1289,7 @@ public class StructuredTryWaitTests
 
     private static WorkflowDefinition CatchWaitWorkflow() => Workflow.Create<TryData>("WaitInCatch")
         .Step<StartActivity>()
-        .Try(body => body.Step<ThrowActivity>(_ => { }))
+        .Try(body => body.Step<ThrowActivity>())
         .Catch<InvalidOperationException, MessageFault>(body => body
             .Step<ReadErrorActivity>(setup => setup
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
@@ -1307,7 +1307,7 @@ public class StructuredTryWaitTests
     {
         return Workflow.Create<TryData>("CustomCatchRecovery")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowCustomActivity>(_ => { }))
+            .Try(body => body.Step<ThrowCustomActivity>())
             .Catch<ApprovalException, ApprovalFault>(body => body
                 .Step<ReadErrorActivity>(setup => setup
                     .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
@@ -1326,7 +1326,7 @@ public class StructuredTryWaitTests
     {
         return Workflow.Create<TryData>("MarkedFaultObjectRecovery")
             .Step<StartActivity>()
-            .Try(body => body.Step<ThrowMarkedDetailsActivity>(_ => { }))
+            .Try(body => body.Step<ThrowMarkedDetailsActivity>())
             .Catch<MarkedDetailsException, MarkedDetailsFault>(body => body
                 .Step<NoopObjectActivity>(setup => setup
                     .Input(activity => activity.Details).From(context => context.Fault.Details))
@@ -1390,7 +1390,7 @@ public class StructuredTryWaitTests
         var definition = Workflow.Create<TryData>("FaultProjectionFailure")
             .Step<StartActivity>()
             .Try(outer => outer
-                .Try(inner => inner.Step<ThrowFragileActivity>(_ => { }))
+                .Try(inner => inner.Step<ThrowFragileActivity>())
                 .Catch<FragileException, FragileFault>(handler => handler.Step<CountActivity>(setup => setup
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch)))
                 .Finally(body => body.Step<CountActivity>(setup => setup

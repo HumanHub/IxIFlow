@@ -203,7 +203,7 @@ public sealed class WorkflowDeadlineTests
         var blocking = services.GetRequiredService<BlockingProbe>();
         var definition = Workflow.Create<ApprovalData>("TimeoutFinally")
             .Step<SeedActivity>()
-            .Try(body => body.Step<BlockingActivity>(_ => { }))
+            .Try(body => body.Step<BlockingActivity>())
             .Finally(body => body.Step<AfterActivity>(step => step
                 .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After)))
             .Build();

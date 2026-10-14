@@ -102,7 +102,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Adds an activity step to the workflow
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>> configure)
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity
     {
         var step = new WorkflowStep
@@ -118,7 +118,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         // Create setup builder and configure it
         var setupBuilder = new ActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>(step);
-        configure(setupBuilder);
+        configure?.Invoke(setupBuilder);
 
         _steps.Add(step);
 

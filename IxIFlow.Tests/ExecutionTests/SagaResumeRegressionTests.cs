@@ -13,7 +13,7 @@ public class SagaResumeRegressionTests
     public async Task ResumeInsideSaga_RunsRemainingSagaActivityBeforeFollowingWorkflowStep()
     {
         var definition = Workflow.Create<SagaRegressionData>("SagaResumeOrder")
-            .Step<SagaSetupActivity>(_ => { })
+            .Step<SagaSetupActivity>()
             .Saga(saga => saga
                 .Step<SagaBeforeActivity>(setup => setup
                     .Output(a => a.Completed).To(ctx => ctx.WorkflowData.BeforeCompleted)
@@ -53,7 +53,7 @@ public class SagaResumeRegressionTests
     public async Task FailureAfterSagaResume_CompensatesWorkCompletedBeforeSuspension()
     {
         var definition = Workflow.Create<SagaRegressionData>("SagaResumeCompensation")
-            .Step<SagaSetupActivity>(_ => { })
+            .Step<SagaSetupActivity>()
             .Saga(saga => saga
                 .Step<SagaBeforeActivity>(setup => setup
                     .Output(a => a.Completed).To(ctx => ctx.WorkflowData.BeforeCompleted)
@@ -82,7 +82,7 @@ public class SagaResumeRegressionTests
     public async Task MultipleSagaSuspensions_KeepEarlierCompensationCheckpoint()
     {
         var definition = Workflow.Create<SagaRegressionData>("SagaMultipleSuspensions")
-            .Step<SagaSetupActivity>(_ => { })
+            .Step<SagaSetupActivity>()
             .Saga(saga => saga
                 .Step<SagaBeforeActivity>(setup => setup
                     .Output(a => a.Completed).To(ctx => ctx.WorkflowData.BeforeCompleted)
@@ -119,7 +119,7 @@ public class SagaResumeRegressionTests
     public async Task PermanentSagaFailure_ExhaustsRetriesAfterResume()
     {
         var definition = Workflow.Create<SagaRegressionData>("SagaPermanentFailure")
-            .Step<SagaSetupActivity>(_ => { })
+            .Step<SagaSetupActivity>()
             .Saga(saga => saga
                 .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
                 .Step<SagaSystemDependentAsyncActivity>(setup => setup
