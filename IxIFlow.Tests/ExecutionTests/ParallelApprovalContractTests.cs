@@ -264,7 +264,7 @@ public class ParallelApprovalContractTests
             .Step<StartActivity>()
             .Parallel(parallel => parallel
                 .Do(branch => branch.WaitFor<ApprovalReply>("finance")
-                    .Step<BlockApprovalActivity>(_ => { }))
+                    .Step<BlockApprovalActivity>())
                 .Do(branch => branch.WaitFor<ApprovalReply>("legal")
                     .Step<CountActivity>(setup => setup
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.LegalCompleted)
@@ -360,7 +360,7 @@ public class ParallelApprovalContractTests
             .Step<StartActivity>()
             .Parallel(parallel => parallel
                 .Do(branch => branch.WaitFor<ApprovalReply>("finance", Matches("finance")))
-                .Do(branch => branch.Step<ThrowActivity>(_ => { })))
+                .Do(branch => branch.Step<ThrowActivity>()))
             .Build();
 
         var result = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
@@ -897,8 +897,8 @@ public class ParallelApprovalContractTests
         var definition = Workflow.Create<ApprovalData>("ConcurrentBranches")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
-                .Do(branch => branch.Step<AwaitSiblingActivity>(_ => { }))
-                .Do(branch => branch.Step<SignalSiblingActivity>(_ => { })))
+                .Do(branch => branch.Step<AwaitSiblingActivity>())
+                .Do(branch => branch.Step<SignalSiblingActivity>()))
             .Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finished)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
@@ -932,11 +932,11 @@ public class ParallelApprovalContractTests
                 else
                     parallel.WaitConditionally(data => data.ApprovedBy == "finance");
 
-                parallel.Do(branch => branch.Step<SlowCancellableActivity>(_ => { }));
+                parallel.Do(branch => branch.Step<SlowCancellableActivity>());
                 parallel.Do(branch => branch.Step<FastApprovalActivity>(setup => setup
                     .Output(activity => activity.Winner).To(ctx => ctx.WorkflowData.ApprovedBy)));
             })
-            .Step<CheckCleanupActivity>(_ => { })
+            .Step<CheckCleanupActivity>()
             .Build();
 
         var result = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
@@ -964,8 +964,8 @@ public class ParallelApprovalContractTests
             .Step<StartActivity>()
             .Parallel(outer => outer
                 .Do(branch => branch.Parallel(inner => inner.WaitAny()
-                    .Do(child => child.Step<IgnoreCancellationActivity>(_ => { }))
-                    .Do(child => child.Step<GateWinnerActivity>(_ => { }))))
+                    .Do(child => child.Step<IgnoreCancellationActivity>())
+                    .Do(child => child.Step<GateWinnerActivity>())))
                 .Do(branch => branch.Step<GateTriggerActivity>(setup => setup
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.FinanceCompleted)))
                 .Do(branch => branch.Step<GateOtherActivity>(setup => setup
@@ -1039,10 +1039,10 @@ public class ParallelApprovalContractTests
             .Step<StartActivity>()
             .Parallel(outer => outer
                 .Do(branch => branch.Parallel(inner => inner.WaitAny()
-                    .Do(child => child.Step<IgnoreCancellationActivity>(_ => { }))
-                    .Do(child => child.Step<GateWinnerActivity>(_ => { }))))
-                .Do(branch => branch.Step<GateTriggerActivity>(_ => { })
-                    .If(_ => true, then => then.Step<GateOtherActivity>(_ => { }))))
+                    .Do(child => child.Step<IgnoreCancellationActivity>())
+                    .Do(child => child.Step<GateWinnerActivity>())))
+                .Do(branch => branch.Step<GateTriggerActivity>()
+                    .If(_ => true, then => then.Step<GateOtherActivity>())))
             .Build();
 
         var execution = provider.GetRequiredService<IWorkflowEngine>()
@@ -1090,9 +1090,9 @@ public class ParallelApprovalContractTests
             .Parallel(outer => outer
                 .Do(branch => branch.Parallel(inner => inner.WaitAny()
                         .Do(child => child.WaitFor<ApprovalReply>("reply"))
-                        .Do(child => child.Step<GateWinnerActivity>(_ => { })))
-                    .Step<GateTriggerActivity>(_ => { }))
-                .Do(branch => branch.Step<GateOtherActivity>(_ => { })))
+                        .Do(child => child.Step<GateWinnerActivity>()))
+                    .Step<GateTriggerActivity>())
+                .Do(branch => branch.Step<GateOtherActivity>()))
             .Build();
 
         var execution = provider.GetRequiredService<IWorkflowEngine>()
@@ -1215,7 +1215,7 @@ public class ParallelApprovalContractTests
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitConditionally(data => data.ApprovedBy != null)
                 .Do(branch => branch.WaitFor<ApprovalReply>("finance", Matches("finance"))
-                    .Step<ThrowActivity>(_ => { }))
+                    .Step<ThrowActivity>())
                 .Do(branch => branch.WaitFor<ApprovalReply>("legal", Matches("legal"))))
             .Step<CountActivity>(step => step
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))

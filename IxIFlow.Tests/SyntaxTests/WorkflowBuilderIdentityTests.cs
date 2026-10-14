@@ -10,8 +10,8 @@ public class WorkflowBuilderIdentityTests
     {
         var definition = Workflow.Create<WorkflowData>("OrderApproval", 2)
             .Step<StartActivity>()
-            .Try(body => body.Step<StartActivity>(_ => { }))
-            .Catch<InvalidOperationException>(body => body.Step<StartActivity>(_ => { }))
+            .Try(body => body.Step<StartActivity>())
+            .Catch<InvalidOperationException>(body => body.Step<StartActivity>())
             .Build();
 
         Assert.Equal("OrderApproval", definition.Name);
@@ -23,9 +23,9 @@ public class WorkflowBuilderIdentityTests
     {
         var definition = Workflow.Create<WorkflowData>("OrderApprovalFinally", 3)
             .Step<StartActivity>()
-            .Try(body => body.Step<StartActivity>(_ => { }))
-            .Catch<InvalidOperationException>(body => body.Step<StartActivity>(_ => { }))
-            .Finally(body => body.Step<StartActivity>(_ => { }))
+            .Try(body => body.Step<StartActivity>())
+            .Catch<InvalidOperationException>(body => body.Step<StartActivity>())
+            .Finally(body => body.Step<StartActivity>())
             .Build();
 
         Assert.Equal("OrderApprovalFinally", definition.Name);

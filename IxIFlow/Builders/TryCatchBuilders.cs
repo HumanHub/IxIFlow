@@ -108,7 +108,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).Saga(configure);
 
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TActivity> Step<TActivity>(
-        Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>> configure)
+        Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity
     {
         var step = new WorkflowStep
@@ -122,7 +122,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
             FaultType = typeof(TFault),
             Order = steps.Count
         };
-        configure(new CatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>(step));
+        configure?.Invoke(new CatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>(step));
         steps.Add(step);
         return new CatchWorkflowBuilder<TWorkflowData, TFault, TActivity>(steps, exceptionType);
     }

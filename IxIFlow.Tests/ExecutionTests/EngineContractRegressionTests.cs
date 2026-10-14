@@ -18,7 +18,7 @@ public class EngineContractRegressionTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         WorkflowDefinition Immediate() => Workflow.Create<RegressionData>()
-            .Step<MarkChildActivity>(_ => { }).Build();
+            .Step<MarkChildActivity>().Build();
         WorkflowDefinition Waiting() => Workflow.Create<RegressionData>()
             .Step<MarkChildActivity>()
             .WaitFor<RegressionApprovalEvent>("approval").Build();
@@ -144,7 +144,7 @@ public class EngineContractRegressionTests
             .BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<RegressionData>("OptionsMustBeHonest")
-            .Step<MarkChildActivity>(_ => { }).Build();
+            .Step<MarkChildActivity>().Build();
 
         await Assert.ThrowsAsync<NotSupportedException>(() =>
             engine.ExecuteWorkflowAsync(definition, new RegressionData(),
@@ -161,11 +161,11 @@ public class EngineContractRegressionTests
     {
         var always = Workflow.Create<RegressionData>("ChangedCondition")
             .Step<MarkChildActivity>()
-            .If(ctx => true, then => then.Step<MarkChildActivity>(_ => { }))
+            .If(ctx => true, then => then.Step<MarkChildActivity>())
             .Build();
         var never = Workflow.Create<RegressionData>("ChangedCondition")
             .Step<MarkChildActivity>()
-            .If(ctx => false, then => then.Step<MarkChildActivity>(_ => { }))
+            .If(ctx => false, then => then.Step<MarkChildActivity>())
             .Build();
 
         Assert.NotEqual(new WorkflowScopeCatalog(always).Fingerprint,
@@ -193,7 +193,7 @@ public class EngineContractRegressionTests
     {
         WorkflowDefinition Build(bool allow) => Workflow.Create<RegressionData>("CapturedCondition")
             .Step<MarkChildActivity>()
-            .If(ctx => allow, then => then.Step<MarkChildActivity>(_ => { }))
+            .If(ctx => allow, then => then.Step<MarkChildActivity>())
             .Build();
 
         Assert.NotEqual(new WorkflowScopeCatalog(Build(true)).Fingerprint,
@@ -221,7 +221,7 @@ public class EngineContractRegressionTests
             return Workflow.Create<RegressionData>("CapturedObject")
                 .Step<MarkChildActivity>()
                 .If(ctx => rule.Enabled,
-                    then => then.Step<MarkChildActivity>(_ => { }))
+                    then => then.Step<MarkChildActivity>())
                 .Build();
         }
 
@@ -238,7 +238,7 @@ public class EngineContractRegressionTests
             Workflow.Create<RegressionData>("UnsafeCapture")
                 .Step<MarkChildActivity>()
                 .If(ctx => source.IsCancellationRequested,
-                    then => then.Step<MarkChildActivity>(_ => { })));
+                    then => then.Step<MarkChildActivity>()));
 
         Assert.Contains("cannot be fingerprinted", error.Message);
     }
@@ -279,7 +279,7 @@ public class EngineContractRegressionTests
         using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(Workflow.Create<RegressionData>("TraceResult")
-                .Step<MarkChildActivity>(_ => { }).Build(), new RegressionData());
+                .Step<MarkChildActivity>().Build(), new RegressionData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Contains(result.TraceEntries, entry => entry.EntryType == TraceEntryType.ActivityStarted);
@@ -297,9 +297,9 @@ public class EngineContractRegressionTests
         var engine = provider.GetRequiredService<IWorkflowEngine>();
         var repository = provider.GetRequiredService<IWorkflowStateRepository>();
         var definition = Workflow.Create<RegressionData>("TraceOption")
-            .Step<MarkChildActivity>(_ => { })
+            .Step<MarkChildActivity>()
             .WaitFor<RegressionApprovalEvent>("approval")
-            .Step<MarkChildActivity>(_ => { })
+            .Step<MarkChildActivity>()
             .Build();
 
         var started = await engine.ExecuteWorkflowAsync(definition, new RegressionData(),
@@ -339,7 +339,7 @@ public class EngineContractRegressionTests
     public async Task FluentBuilder_ExecutesInProcessWithoutHostRegistration()
     {
         var builder = Workflow.Create<RegressionData>("Local");
-        builder.Step<MarkChildActivity>(_ => { });
+        builder.Step<MarkChildActivity>();
 
         var result = await builder.ExecuteAsync(new RegressionData());
 
@@ -415,7 +415,7 @@ public class EngineContractRegressionTests
         using var provider = services.BuildServiceProvider();
 
         var definition = Workflow.Create<RegressionData>("LocalResume")
-            .Step<MarkChildActivity>(_ => { })
+            .Step<MarkChildActivity>()
             .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
             .Step<MarkChildActivity>(setup => setup
                 .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.ChildExecuted))
@@ -451,9 +451,9 @@ public class EngineContractRegressionTests
         using var secondScope = provider.CreateScope();
 
         var definition = Workflow.Create<RegressionData>("ConcurrentResume")
-            .Step<MarkChildActivity>(_ => { })
+            .Step<MarkChildActivity>()
             .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
-            .Step<BlockingResumeActivity>(_ => { })
+            .Step<BlockingResumeActivity>()
             .Build();
         var firstEngine = firstScope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
         var suspended = await firstEngine.ExecuteWorkflowAsync(definition, new RegressionData());
@@ -527,8 +527,8 @@ public class EngineContractRegressionTests
         using var scope = provider.CreateScope();
 
         var definition = Workflow.Create<RegressionData>("ExceptionScope")
-            .Step<ThrowRegressionActivity>(_ => { })
-            .Try(tryBlock => tryBlock.Step<MarkChildActivity>(_ => { }))
+            .Step<ThrowRegressionActivity>()
+            .Try(tryBlock => tryBlock.Step<MarkChildActivity>())
             .Catch<Exception>(catchBlock => catchBlock.Step<MarkChildActivity>(setup => setup
                 .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.ChildExecuted)))
             .Build();
@@ -550,9 +550,9 @@ public class EngineContractRegressionTests
         using var scope = provider.CreateScope();
 
         var definition = Workflow.Create<RegressionData>("LoopBodyFailure")
-            .Step<MarkChildActivity>(_ => { })
+            .Step<MarkChildActivity>()
             .Try(tryBlock => tryBlock.WhileDo(_ => true,
-                body => body.Step<ThrowRegressionActivity>(_ => { })))
+                body => body.Step<ThrowRegressionActivity>()))
             .Catch<ApplicationException>(catchBlock => catchBlock
                 .Step<MarkChildActivity>(setup => setup
                     .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.CatchExecuted)))
@@ -630,7 +630,7 @@ public class EngineContractRegressionTests
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
 
         var definition = Workflow.Create<LoopResumeRegressionData>("LoopResume")
-            .Step<MarkChildActivity>(_ => { })
+            .Step<MarkChildActivity>()
             .WhileDo(ctx => ctx.WorkflowData.Count < 2, body => body
                 .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
                 .Step<IncrementRegressionActivity>(setup => setup
@@ -664,10 +664,10 @@ public class EngineContractRegressionTests
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
 
         var definition = Workflow.Create<RegressionData>("TryResumeFailure")
-            .Step<MarkChildActivity>(_ => { })
+            .Step<MarkChildActivity>()
             .Try(tryBlock => tryBlock
                 .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
-                .Step<ThrowRegressionActivity>(_ => { }))
+                .Step<ThrowRegressionActivity>())
             .Catch<ApplicationException>(catchBlock => catchBlock
                 .Step<MarkChildActivity>(setup => setup
                     .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.CatchExecuted)))
@@ -728,8 +728,8 @@ public class EngineContractRegressionTests
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
 
         var definition = Workflow.Create<RegressionData>("CatchWait")
-            .Step<MarkChildActivity>(_ => { })
-            .Try(tryBlock => tryBlock.Step<ThrowRegressionActivity>(_ => { }))
+            .Step<MarkChildActivity>()
+            .Try(tryBlock => tryBlock.Step<ThrowRegressionActivity>())
             .Catch<ApplicationException>(catchBlock => catchBlock
                 .Step<IncrementRegressionActivity>(setup => setup
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.CatchBeforeWaitCount)
@@ -768,8 +768,8 @@ public class EngineContractRegressionTests
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
 
         var definition = Workflow.Create<RegressionData>("FinallyWait")
-            .Step<MarkChildActivity>(_ => { })
-            .Try(tryBlock => tryBlock.Step<MarkChildActivity>(_ => { }))
+            .Step<MarkChildActivity>()
+            .Try(tryBlock => tryBlock.Step<MarkChildActivity>())
             .Finally(finallyBlock => finallyBlock
                 .Step<IncrementRegressionActivity>(setup => setup
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.FinallyBeforeWaitCount)
@@ -808,7 +808,7 @@ public class EngineContractRegressionTests
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
 
         var definition = Workflow.Create<RegressionData>("ParallelWait")
-            .Step<MarkChildActivity>(_ => { })
+            .Step<MarkChildActivity>()
             .Parallel(parallel =>
             {
                 parallel.Do(branch => branch.Step<IncrementRegressionActivity>(setup => setup
@@ -858,7 +858,7 @@ public class EngineContractRegressionTests
         using var scope = provider.CreateScope();
 
         var definition = Workflow.Create<RegressionData>("ParallelTwoWaits")
-            .Step<MarkChildActivity>(_ => { })
+            .Step<MarkChildActivity>()
             .Parallel(parallel =>
             {
                 parallel.Do(branch => branch.Suspend<RegressionApprovalEvent>("first", (evt, _) => evt.Approved));
@@ -1123,7 +1123,7 @@ public class EngineContractRegressionTests
         using var scope = provider.CreateScope();
 
         var parent = Workflow.Create<RegressionData>("MissingChildParent")
-            .Step<MarkChildActivity>(_ => { })
+            .Step<MarkChildActivity>()
             .Invoke<ChildData>("MissingChild", 1, _ => { })
             .Build();
         var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()

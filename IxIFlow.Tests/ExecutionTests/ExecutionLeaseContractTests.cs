@@ -112,9 +112,9 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(repository, registry, probe);
         var definition = Workflow.Create<LeaseData>("CrossHostWait")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("reply")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Build();
 
         var started = await firstHost.GetRequiredService<IWorkflowEngine>()
@@ -137,9 +137,9 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(repository, registry, probe);
         var definition = Workflow.Create<LeaseData>("CancelWait")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("approval")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Build();
         var started = await firstHost.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new LeaseData());
@@ -170,8 +170,8 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(repository, registry, probe, shortLease: true);
         using var secondHost = CreateHost(repository, registry, probe, shortLease: true);
         var definition = Workflow.Create<LeaseData>("CancelRunning")
-            .Step<CancellableBlockingActivity>(_ => { })
-            .Step<RecordActivity>(_ => { })
+            .Step<CancellableBlockingActivity>()
+            .Step<RecordActivity>()
             .Build();
         var executing = firstHost.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new LeaseData());
@@ -228,9 +228,9 @@ public sealed class ExecutionLeaseContractTests
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
         var definition = Workflow.Create<LeaseData>("CancelDuringBranch")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .If(_ => CancelAndTrue(),
-                then => then.Step<RecordActivity>(_ => { }))
+                then => then.Step<RecordActivity>())
             .Build();
 
         var engine = host.GetRequiredService<IWorkflowEngine>();
@@ -269,9 +269,9 @@ public sealed class ExecutionLeaseContractTests
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
         var definition = Workflow.Create<LeaseData>("CancelBeforeResume")
-            .Step<NoopActivity>(_ => { })
+            .Step<NoopActivity>()
             .WaitFor<LeaseEvent>("approval")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Build();
         var engine = host.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(definition, new LeaseData());
@@ -359,7 +359,7 @@ public sealed class ExecutionLeaseContractTests
         };
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
         var definition = Workflow.Create<LeaseData>("CancelAtTerminalCommit")
-            .Step<NoopActivity>(_ => { })
+            .Step<NoopActivity>()
             .Build();
         var engine = host.GetRequiredService<IWorkflowEngine>();
         var instanceId = Guid.NewGuid().ToString("N");
@@ -383,7 +383,7 @@ public sealed class ExecutionLeaseContractTests
         };
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
         var definition = Workflow.Create<LeaseData>("CancelAtFailureCommit")
-            .Step<FailingActivity>(_ => { })
+            .Step<FailingActivity>()
             .Build();
 
         var result = await host.GetRequiredService<IWorkflowEngine>()
@@ -405,7 +405,7 @@ public sealed class ExecutionLeaseContractTests
         };
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
         var definition = Workflow.Create<LeaseData>("CancelAfterRootFinished")
-            .Step<NoopActivity>(_ => { })
+            .Step<NoopActivity>()
             .Build();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
@@ -426,7 +426,7 @@ public sealed class ExecutionLeaseContractTests
         };
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
         var definition = Workflow.Create<LeaseData>("CancellationReadFailure")
-            .Step<NoopActivity>(_ => { })
+            .Step<NoopActivity>()
             .Build();
         var engine = host.GetRequiredService<IWorkflowEngine>();
         var instanceId = Guid.NewGuid().ToString("N");
@@ -449,8 +449,8 @@ public sealed class ExecutionLeaseContractTests
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
         var definition = Workflow.Create<LeaseData>("CancellationReadDuringActivity")
-            .Step<BlockingActivity>(_ => { })
-            .Step<RecordActivity>(_ => { })
+            .Step<BlockingActivity>()
+            .Step<RecordActivity>()
             .Build();
         var executing = host.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new LeaseData());
@@ -476,8 +476,8 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(firstRepository, registry, probe);
         using var secondHost = CreateHost(secondRepository, registry, probe);
         var definition = Workflow.Create<LeaseData>("SqlCancelRunning")
-            .Step<CancellableBlockingActivity>(_ => { })
-            .Step<RecordActivity>(_ => { })
+            .Step<CancellableBlockingActivity>()
+            .Step<RecordActivity>()
             .Build();
         var instanceId = Guid.NewGuid().ToString("N");
         var executing = firstHost.GetRequiredService<IWorkflowEngine>()
@@ -519,9 +519,9 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(firstRepository, registry, probe);
         using var secondHost = CreateHost(secondRepository, registry, probe);
         var definition = Workflow.Create<LeaseData>("SqlCancelWait")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("approval")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Build();
         var started = await firstHost.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new LeaseData());
@@ -555,7 +555,7 @@ public sealed class ExecutionLeaseContractTests
         var secondRegistry = new WorkflowVersionRegistry();
         var probe = new ActivityProbe();
         var definition = Workflow.Create<LeaseData>("SqlCancelAfterHostStop")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("approval")
             .Build();
         await secondRegistry.RegisterWorkflowAsync(definition);
@@ -593,7 +593,7 @@ public sealed class ExecutionLeaseContractTests
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
         var definition = Workflow.Create<LeaseData>("SqlCancelFinallyWait")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Try(body => body.WaitFor<LeaseEvent>("approval"))
             .Finally(body => body.WaitFor<LeaseEvent>("cleanup"))
             .Build();
@@ -627,8 +627,8 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(repository, registry, probe);
         var definition = Workflow.Create<LeaseData>("LiveOwner")
-            .Step<BlockingActivity>(_ => { })
-            .Step<RecordActivity>(_ => { })
+            .Step<BlockingActivity>()
+            .Step<RecordActivity>()
             .Build();
 
         var executing = firstHost.GetRequiredService<IWorkflowEngine>()
@@ -663,8 +663,8 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(repository, registry, probe, shortLease: true);
         using var secondHost = CreateHost(repository, registry, probe, shortLease: true);
         var definition = Workflow.Create<LeaseData>("LongOwner")
-            .Step<BlockingActivity>(_ => { })
-            .Step<RecordActivity>(_ => { })
+            .Step<BlockingActivity>()
+            .Step<RecordActivity>()
             .Build();
 
         var executing = firstHost.GetRequiredService<IWorkflowEngine>()
@@ -697,7 +697,7 @@ public sealed class ExecutionLeaseContractTests
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true);
         var definition = Workflow.Create<LeaseData>("TransientCancellationRead")
-            .Step<BlockingActivity>(_ => { })
+            .Step<BlockingActivity>()
             .Build();
         var executing = host.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new LeaseData());
@@ -722,7 +722,7 @@ public sealed class ExecutionLeaseContractTests
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe,
             shortLease: true);
         var definition = Workflow.Create<LeaseData>("ObservedCancellationWithStoreOutage")
-            .Step<CancellableBlockingActivity>(_ => { }).Build();
+            .Step<CancellableBlockingActivity>().Build();
         var engine = host.GetRequiredService<IWorkflowEngine>();
         var executing = engine.ExecuteWorkflowAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -754,7 +754,7 @@ public sealed class ExecutionLeaseContractTests
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true);
         var definition = Workflow.Create<LeaseData>("TransientRenewal")
-            .Step<BlockingActivity>(_ => { })
+            .Step<BlockingActivity>()
             .Build();
         var executing = host.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new LeaseData());
@@ -777,7 +777,7 @@ public sealed class ExecutionLeaseContractTests
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true);
         var definition = Workflow.Create<LeaseData>("LostLeaseActivity")
-            .Step<BlockingActivity>(_ => { })
+            .Step<BlockingActivity>()
             .Build();
         var executing = host.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new LeaseData());
@@ -808,9 +808,9 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(staleReader, registry, probe);
         var definition = Workflow.Create<LeaseData>("StaleResume")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("reply")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Build();
         var started = await firstHost.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new LeaseData());
@@ -841,7 +841,7 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(staleReader, registry, probe);
         var definition = Workflow.Create<LeaseData>("ConcurrentWaits")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Parallel(parallel => parallel
                 .Do(branch => branch.WaitFor<LeaseEvent>("first"))
                 .Do(branch => branch.WaitFor<LeaseEvent>("second")))
@@ -871,7 +871,7 @@ public sealed class ExecutionLeaseContractTests
         var probe = new ActivityProbe();
         using var host = CreateHost(releaseFault, new WorkflowVersionRegistry(), probe);
         var definition = Workflow.Create<LeaseData>("ReleaseFault")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Build();
 
         var completed = await host.GetRequiredService<IWorkflowEngine>()
@@ -889,9 +889,9 @@ public sealed class ExecutionLeaseContractTests
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
         var definition = Workflow.Create<LeaseData>("QueuedWaitKey")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("approval")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Build();
         var started = await host.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new LeaseData());
@@ -937,9 +937,9 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
         using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
         var definition = Workflow.Create<LeaseData>("SqlCrossHostWait")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("reply")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Build();
         await secondRegistry.RegisterWorkflowAsync(definition);
         var started = await firstHost.GetRequiredService<IWorkflowEngine>()
@@ -971,8 +971,8 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
         using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
         var definition = Workflow.Create<LeaseData>("SqlLiveOwner")
-            .Step<BlockingActivity>(_ => { })
-            .Step<RecordActivity>(_ => { })
+            .Step<BlockingActivity>()
+            .Step<RecordActivity>()
             .Build();
         await secondRegistry.RegisterWorkflowAsync(definition);
         var correlationId = Guid.NewGuid().ToString("N");
@@ -1024,8 +1024,8 @@ public sealed class ExecutionLeaseContractTests
         using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
         using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
         var definition = Workflow.Create<LeaseData>("ExpiredWorker")
-            .Step<BlockingActivity>(_ => { })
-            .Step<RecordActivity>(_ => { })
+            .Step<BlockingActivity>()
+            .Step<RecordActivity>()
             .Build();
         await secondRegistry.RegisterWorkflowAsync(definition);
         var correlationId = Guid.NewGuid().ToString("N");
@@ -1239,7 +1239,7 @@ public sealed class ExecutionLeaseContractTests
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
         var definition = Workflow.Create<LeaseData>("IdempotentStart")
-            .Step<RecordActivity>(_ => { })
+            .Step<RecordActivity>()
             .Build();
         try
         {

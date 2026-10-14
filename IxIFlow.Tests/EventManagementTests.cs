@@ -91,7 +91,7 @@ public class EventManagementTests
         var events = scope.ServiceProvider.GetRequiredService<IEventRepository>();
         var manager = scope.ServiceProvider.GetRequiredService<IWorkflowEventManager>();
         var definition = Workflow.Create<EventScopeData>("TargetedApproval")
-            .Step<EventScopeNoOpActivity>(_ => { })
+            .Step<EventScopeNoOpActivity>()
             .Suspend<EventScopeApproval>("approval", (approval, _) => approval.Approved)
             .Build();
 

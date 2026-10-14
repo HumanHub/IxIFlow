@@ -47,7 +47,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the activity</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>> configure)
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>

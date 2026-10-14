@@ -15,7 +15,7 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
     /// <typeparam name="TActivity">The activity type to execute for exception handling</typeparam>
     /// <param name="configure">Configuration for the exception handling activity</param>
     ICatchWorkflowBuilder<TWorkflowData, TFault, TActivity> Step<TActivity>(
-        Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>> configure)
+        Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity;
 
     ICatchWorkflowBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(

@@ -44,7 +44,7 @@ public class ActionFuncSerializationTests
                 .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                 .Output(step => step.WorkflowId).To(data => data.WorkflowData.Id))
             .Try(tb => tb
-                .Step<TestThrowSecurityExceptionActivity>(_ => { })
+                .Step<TestThrowSecurityExceptionActivity>()
             )
             .Catch<TestSecurityException, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup
@@ -78,7 +78,7 @@ public class ActionFuncSerializationTests
                 .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                 .Output(step => step.WorkflowId).To(data => data.WorkflowData.Id))
             .Try(tb => tb
-                .Step<TestThrowSecurityExceptionActivity>(_ => { })
+                .Step<TestThrowSecurityExceptionActivity>()
             )
             .Catch<Exception, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup
@@ -109,7 +109,7 @@ public class ActionFuncSerializationTests
         // Arrange
         var definition = Workflow
             .Create<AsyncActionTestWorkflowData>("AsyncActionTest")
-            .Step<TestAsyncLogActivity>(_ => { })
+            .Step<TestAsyncLogActivity>()
             .Build();
 
         var data = new AsyncActionTestWorkflowData();
@@ -137,7 +137,7 @@ public class ActionFuncSerializationTests
                     .Input(step => step.Username).From(data => data.WorkflowData.Username)
                     .Input(step => step.Password).From(data => data.WorkflowData.Password)
                     .Input(step => step.WorkflowName).From(data => data.WorkflowData.ProcessName))
-                .Step<TestThrowSecurityExceptionActivity>(_ => { })
+                .Step<TestThrowSecurityExceptionActivity>()
             )
             .Catch<TestSecurityException, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup
@@ -181,7 +181,7 @@ public class ActionFuncSerializationTests
                 .Input(step => step.OnLog).From(data => data.WorkflowData.OnLogInit)
                 .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id))
             .Try(tb => tb
-                .Step<TestThrowSecurityExceptionActivity>(_ => { })
+                .Step<TestThrowSecurityExceptionActivity>()
             )
             .Catch<TestSecurityException, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup

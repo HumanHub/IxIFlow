@@ -83,7 +83,7 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     private readonly List<WorkflowStep> _steps = steps ?? throw new ArgumentNullException(nameof(steps));
 
     public ISagaActivityBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>> configure)
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity
     {
         var stepId = Guid.NewGuid().ToString();
@@ -118,7 +118,7 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
             workflowStep, sagaStepInfo);
 
         // Configure the step
-        configure(setupBuilder);
+        configure?.Invoke(setupBuilder);
 
         // Add to collections
         _steps.Add(workflowStep);

@@ -266,7 +266,7 @@ public sealed class StructuredChildWaitTests
         var child = Workflow.Create<ChildData>("RunningAfterApproval")
             .Step<NoopActivity>()
             .WaitFor<Approval>("approval")
-            .Step<ActiveChildActivity>(_ => { })
+            .Step<ActiveChildActivity>()
             .Build();
         await services.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(child);
@@ -312,7 +312,7 @@ public sealed class StructuredChildWaitTests
             .Step<NoopActivity>()
             .WaitFor<Approval>("approval", configure: wait => wait
                 .TimeoutAfter(TimeSpan.FromMilliseconds(80))
-                .OnTimeout(path => path.Step<MarkChildTimeoutActivity>(_ => { })))
+                .OnTimeout(path => path.Step<MarkChildTimeoutActivity>()))
             .Build();
         await services.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(child);
@@ -606,7 +606,7 @@ public sealed class StructuredChildWaitTests
         var child = Workflow.Create<ChildData>("FailingCancellationChild")
             .Step<NoopActivity>()
             .Try(body => body.WaitFor<Approval>("approval"))
-            .Finally(body => body.Step<ThrowChildActivity>(_ => { }))
+            .Finally(body => body.Step<ThrowChildActivity>())
             .Build();
         await services.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(child);
