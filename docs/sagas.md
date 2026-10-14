@@ -5,7 +5,7 @@ description: Compensation, error handlers, and saved saga progress.
 
 A saga groups steps that need compensating actions when later work fails. The checkpointed runner records completed steps and runs their compensations in reverse order. The error handler is a saved sequence: its activities and waits resume at the saved position.
 
-An activity may call a remote service. Saga activities execute in the workflow host process; the coordinator routes whole workflow executions to hosts.
+An activity may call a remote service. Saga activities execute in the host process that runs the whole workflow.
 
 ## Define compensation
 
