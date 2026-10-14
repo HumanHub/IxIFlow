@@ -35,6 +35,8 @@ See [execution model](/docs/execution-model/), [sagas](/docs/sagas/), and [coord
 
 ## Current limits
 
+The [roadmap](/docs/roadmap/) lists the planned work for each limit.
+
 - Definitions, the version registry, and the event store are held in memory on each host, including SQL hosts. Every host must load the same code-defined workflow versions and activities.
 - Trace entries are stored in the instance checkpoint. History is not capped, so long-running instances write larger checkpoints. There is no separate trace store, step-through debugger, or OpenTelemetry instrumentation.
 - `IWorkflowTracer` is registered but not called by the runner.

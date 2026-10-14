@@ -49,6 +49,10 @@ A terminal result is written to a completion outbox in the same checkpoint commi
 
 An adapter without durable deduplication can still deliver a completion twice if publication succeeds and the host stops before recording its receipt. Consumers should deduplicate by instance ID. IxIFlow does not include a completion consumer; subscribe to the bus in your application.
 
+## Target design
+
+The coordinator is meant to route a whole workflow execution to a host chosen by health, capacity, current load, tags, and host preferences, over HTTP for immediate execution or through the message bus for queued execution. A resumed instance would prefer the host that ran it, and completion events would reach the caller. See the [roadmap](/docs/roadmap/#coordinator-and-hosts) for the remaining work.
+
 ## Current limits
 
 - The coordinator selects a host but does not dispatch work. Publish `ExecuteWorkflowCommand`, `ResumeWorkflowCommand`, or `CancelWorkflowCommand` to the bus with the selected host as the target.

@@ -16,6 +16,7 @@ The engine supports activities, typed data mapping, conditions, loops, parallel 
 - [Custom activity SDK](/docs/activity-sdk/) covers activity metadata and assembly registration.
 - [Sagas](/docs/sagas/) explains compensation and saved saga progress.
 - [Coordinator and hosts](/docs/coordinator-and-hosts/) describes SQL state, queued commands, completion events, and host selection.
+- [Roadmap](/docs/roadmap/) records the target design and the remaining work.
 
 ## Execution boundary
 
