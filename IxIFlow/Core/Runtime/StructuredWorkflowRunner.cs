@@ -997,10 +997,14 @@ internal sealed class StructuredWorkflowRunner(
         ExecutionCheckpoint.Read(instance.ExecutionStateJson).Waits.Any(wait =>
             wait.ChildWorkflowId != null);
 
+    // A deadline that passes after the root finishes has nothing left to interrupt.
     private static bool HasDueDeadline(ExecutionCheckpoint checkpoint) =>
-        (!checkpoint.CancellationRequested &&
+        (!checkpoint.CancellationRequested && !RootFinished(checkpoint) &&
          checkpoint.ExecutionDeadlineUtc <= DateTime.UtcNow) ||
         checkpoint.Waits.Any(wait => wait.DeadlineUtc <= DateTime.UtcNow);
+
+    private static bool RootFinished(ExecutionCheckpoint checkpoint) =>
+        checkpoint.Continuations[0].Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled;
 
     private static bool ProcessExecutionDeadline(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint)
@@ -1008,7 +1012,7 @@ internal sealed class StructuredWorkflowRunner(
         if (checkpoint.CancellationRequested || checkpoint.TimedOut ||
             checkpoint.ExecutionDeadlineUtc > DateTime.UtcNow ||
             checkpoint.ExecutionDeadlineUtc == null ||
-            checkpoint.Continuations[0].Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
+            RootFinished(checkpoint))
             return false;
         checkpoint.TimedOut = true;
         checkpoint.CancellationRequested = true;

@@ -15,8 +15,9 @@ The engine supports activities, typed data mapping, conditions, loops, parallel 
 - [Fluent API](/docs/fluent-api/) covers workflow authoring in C#.
 - [Custom activity SDK](/docs/activity-sdk/) covers activity metadata and assembly registration.
 - [Sagas](/docs/sagas/) explains compensation and saved saga progress.
-- [Coordinator and hosts](/docs/coordinator-and-hosts/) describes host selection, SQL state, and command routing.
+- [Coordinator and hosts](/docs/coordinator-and-hosts/) describes SQL state, queued commands, completion events, and host selection.
+- [Roadmap](/docs/roadmap/) records the target design and the remaining work.
 
 ## Execution boundary
 
-Saga activities execute in the selected host process. The coordinator selects a host for a whole workflow. The default workflow state repository lives in process memory across dependency injection scopes; the SQL Server host registers shared workflow instance state. Each host registers definitions and activity code used by its instances.
+Saga activities execute in the host process that runs the workflow. The default workflow state repository lives in process memory across dependency injection scopes; the SQL Server host registers shared workflow instance state. Each host registers definitions and activity code used by its instances.

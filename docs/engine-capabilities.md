@@ -27,8 +27,20 @@ A caller's `CancellationToken` stops the current engine call and leaves a saved 
 
 ## Coordinator and SQL hosts
 
-The coordinator selects a host for a whole workflow using health, capacity, load, tags, and host preferences. Activities and saga compensations run in the selected host process. The SQL host provides a workflow state repository, host registry, and acknowledged message bus.
+A host consumes queued execute, resume, and cancel commands addressed to it and runs the whole workflow in its process, including saga compensations. The coordinator selects a host using health, capacity, tags, and host preferences; it does not dispatch commands itself. The SQL host provides a workflow state repository, host registry, and acknowledged message bus.
 
 SQL message claims renew while handlers run. Queued execute commands carry a stable instance ID and workflow name and version; resume commands carry a delivery ID saved with the checkpoint. Redelivery does not satisfy a later wait with the same key. Failed deliveries retry and can enter dead letter state after the configured attempt limit. Completion events are emitted for terminal results through a checkpointed outbox, and consumers identify duplicates by instance ID.
 
 See [execution model](/docs/execution-model/), [sagas](/docs/sagas/), and [coordinator and hosts](/docs/coordinator-and-hosts/) for API and persistence details.
+
+## Current limits
+
+The [roadmap](/docs/roadmap/) lists the planned work for each limit.
+
+- Definitions, the version registry, and the event store are held in memory on each host, including SQL hosts. Every host must load the same code-defined workflow versions and activities.
+- Trace entries are stored in the instance checkpoint. History is not capped, so long-running instances write larger checkpoints. There is no separate trace store, step-through debugger, or OpenTelemetry instrumentation.
+- `IWorkflowTracer` is registered but not called by the runner.
+- The coordinator selects hosts but does not dispatch commands, and no HTTP host endpoint is included. See [coordinator and hosts](/docs/coordinator-and-hosts/).
+- Dead letters are retained without an inspection or requeue API.
+- Start triggers, a management API, and JSON and YAML authoring with parity to the fluent API are planned. YAML documents currently support activities, sequences, conditions, suspension, and child workflow invocation.
+- SQL Server is the only durable store. SQLite, PostgreSQL, and message broker adapters are not implemented.
