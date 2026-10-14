@@ -18,6 +18,21 @@ public interface IActivityContext
     string WorkflowInstanceId { get; }
 
     /// <summary>
+    /// Stable identity of this logical activity invocation, including its loop or branch occurrence.
+    /// </summary>
+    string InvocationId { get; }
+
+    /// <summary>
+    /// Identity of this physical attempt to execute or recover the invocation.
+    /// </summary>
+    string AttemptId { get; }
+
+    /// <summary>
+    /// State supplied to ExecuteAsync by the activity's recovery contract, when present.
+    /// </summary>
+    object? RecoveryState { get; }
+
+    /// <summary>
     ///     Correlation identifier for tracking
     /// </summary>
     string CorrelationId { get; }

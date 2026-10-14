@@ -83,7 +83,7 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     private readonly List<WorkflowStep> _steps = steps ?? throw new ArgumentNullException(nameof(steps));
 
     public ISagaActivityBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>> configure)
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity
     {
         var stepId = Guid.NewGuid().ToString();
@@ -118,7 +118,7 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
             workflowStep, sagaStepInfo);
 
         // Configure the step
-        configure(setupBuilder);
+        configure?.Invoke(setupBuilder);
 
         // Add to collections
         _steps.Add(workflowStep);
@@ -148,7 +148,8 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
                 ["IsSagaStep"] = true,
                 ["SagaStepOrder"] = _sagaSteps.Count,
                 // Store suspend reason in metadata
-                ["SuspendReason"] = suspendReason
+                ["SuspendReason"] = suspendReason,
+                ["WaitKey"] = suspendReason
             }
         };
 
@@ -158,11 +159,18 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
             // Create wrapper function that takes object and returns bool
             Func<object, bool> conditionWrapper = context =>
             {
-                // The context should be a ResumeEventContext<TWorkflowData, TResumeEvent>
+                if (context is ResumeEventContext<TWorkflowData, TResumeEvent, TPreviousStepData> typed)
+                {
+                    var workflowContext = new WorkflowContext<TWorkflowData, TPreviousStepData>
+                    {
+                        WorkflowData = typed.WorkflowData,
+                        PreviousStep = typed.PreviousStep
+                    };
+                    return resumeCondition(typed.ResumeEvent, workflowContext);
+                }
                 if (context is ResumeEventContext<TWorkflowData, TResumeEvent> resumeContext)
                 {
-                    // Create WorkflowContext<TWorkflowData> for the resume condition
-                    var workflowContext = new WorkflowContext<TWorkflowData,TPreviousStepData>
+                    var workflowContext = new WorkflowContext<TWorkflowData, TPreviousStepData>
                     {
                         WorkflowData = resumeContext.WorkflowData
                     };
@@ -193,6 +201,20 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
 
         // Return a workflow builder with TResumeEvent as the previous step type
         return new SagaActivityBuilder<TWorkflowData, TResumeEvent>(_steps,sagaSteps);
+    }
+
+    public ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
+        string key,
+        Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? matches = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        var next = Suspend(key, matches, configure);
+        var waitStep = _steps[^1];
+        waitStep.Name = "WaitFor";
+        waitStep.StepMetadata["WaitKey"] = key;
+        return next;
     }
 
     public ISagaActivityBuilder<TWorkflowData, TPreviousStepData> OutcomeOn<TProperty>(
@@ -451,6 +473,7 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
         {
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
+            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
             SourceType = typeof(WorkflowContext<TWorkflowData, TPreviousStepData>),
             TargetType = propertyType,
             Direction = PropertyMappingDirection.Input
@@ -559,6 +582,7 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
         {
             TargetProperty = propertyName,
             TargetAssignmentFunction = targetAssignmentFunction,
+            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
             SourceType = propertyType,
             TargetType = typeof(WorkflowContext<TWorkflowData>),
             Direction = PropertyMappingDirection.Output
@@ -698,8 +722,8 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
     private readonly Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TProperty>> _propertySelector;
     private readonly List<WorkflowStep> _steps;
     private readonly List<SagaStepInfo> _sagaSteps;
-    private readonly List<OutcomeBranch> _outcomeBranches = new();
-    private OutcomeBranch? _defaultBranch;
+    private readonly List<WorkflowOutcomeBranch> _outcomeBranches = new();
+    private WorkflowOutcomeBranch? _defaultBranch;
 
     public SagaOutcomeBuilder(
         WorkflowStep outcomeStep,
@@ -726,7 +750,7 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
         configure(branchBuilder);
 
         // Create outcome branch
-        var outcomeBranch = new OutcomeBranch
+        var outcomeBranch = new WorkflowOutcomeBranch
         {
             Value = value,
             Steps = branchSteps,
@@ -734,6 +758,7 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
         };
 
         _outcomeBranches.Add(outcomeBranch);
+        StoreOutcomeConfiguration();
 
         return this;
     }
@@ -750,7 +775,7 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
         configure(branchBuilder);
 
         // Create default branch
-        _defaultBranch = new OutcomeBranch
+        _defaultBranch = new WorkflowOutcomeBranch
         {
             Value = default(TProperty),
             IsDefault = true,
@@ -781,13 +806,8 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
         _outcomeStep.StepMetadata["OutcomeBranches"] = _outcomeBranches;
         _outcomeStep.StepMetadata["DefaultBranch"] = _defaultBranch;
         _outcomeStep.StepMetadata["PropertyType"] = typeof(TProperty);
-    }
-
-    private class OutcomeBranch
-    {
-        public object? Value { get; set; }
-        public bool IsDefault { get; set; }
-        public List<WorkflowStep> Steps { get; set; } = new();
-        public List<SagaStepInfo> SagaSteps { get; set; } = new();
+        _outcomeStep.OutcomeSelector = selectorWrapper;
+        _outcomeStep.OutcomeBranches =
+            _defaultBranch == null ? [.. _outcomeBranches] : [.. _outcomeBranches, _defaultBranch];
     }
 }

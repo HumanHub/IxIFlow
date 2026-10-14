@@ -25,8 +25,6 @@ public class SagaExecutionTests
         // Register interfaces for WorkflowEngine dependencies
         services.AddSingleton<IActivityExecutor, ActivityExecutor>();
         services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
-        services.AddSingleton<ISuspendResumeExecutor, SuspendResumeExecutor>();
-        services.AddSingleton<ISagaExecutor, SagaExecutor>();
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
         services.AddSingleton<IEventCorrelator, EventCorrelator>();
         services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
@@ -187,10 +185,10 @@ public class SagaExecutionTests
                     .OnError<PaymentProcessingException>(error =>
                         error.Compensate().ThenTerminate()); // NEW API: Compensate all and terminate
             })
-            .Catch<SagaTerminatedException>(catchBlock =>
+            .Catch<SagaTerminatedException, MessageFault>(catchBlock =>
             {
                 catchBlock.Step<HandleSagaFailureAsyncActivity>(setup => setup
-                    .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                     .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandlerExecuted));
             })
             .Step<UpdateAnalyticsAsyncActivity>(setup => setup
@@ -417,10 +415,10 @@ public class SagaExecutionTests
                 });
                 // NO explicit error handler - should use default behavior (Compensate + Terminate)
             })
-            .Catch<SagaTerminatedException>(catchBlock =>
+            .Catch<InvalidOperationException, MessageFault>(catchBlock =>
             {
                 catchBlock.Step<HandleSagaFailureAsyncActivity>(setup => setup
-                    .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                     .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandlerExecuted));
             })
             .Step<UpdateAnalyticsAsyncActivity>(setup => setup
@@ -514,10 +512,10 @@ public class SagaExecutionTests
                         error.CompensateUpTo<SagaReserveInventoryAsyncActivity>()
                             .ThenTerminate()); // CompensateUpTo Step1 (INCLUSIVE) - should compensate Step2,Step1 only
             })
-            .Catch<SagaTerminatedException>(catchBlock =>
+            .Catch<SagaTerminatedException, MessageFault>(catchBlock =>
             {
                 catchBlock.Step<HandleSagaFailureAsyncActivity>(setup => setup
-                    .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                     .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandlerExecuted));
             })
             .Step<UpdateAnalyticsAsyncActivity>(setup => setup
@@ -658,7 +656,7 @@ public class SagaExecutionTests
                             comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
                             comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
                         }))
-                    .Step<SagaSystemDependentAsyncActivity>(setup => setup // Will fail due to system unavailable
+                    .Step<SagaTransientSystemAsyncActivity>(setup => setup // Fails once, then succeeds on retry
                         .Input(act => act.SystemName).From(ctx => "PaymentProcessor")
                         .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                         .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed)
@@ -703,10 +701,11 @@ public class SagaExecutionTests
             Notes = "Order confirmed for testing"
         };
         var resumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, confirmationEvent);
-        Assert.True(resumeResult.IsSuccess); // Should succeed after resume
+        Assert.True(resumeResult.IsSuccess, $"Resume returned {resumeResult.Status}: {resumeResult.ErrorMessage}"); // Should succeed after resume
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SagaTestData)resumeResult.WorkflowData!;
         Assert.Equal(workflowData.ProductId, finalWorkflowData.SuspensionMessage); // Should contain the confirmed product ID
+        Assert.True(finalWorkflowData.Step2Completed);
         Assert.True(finalWorkflowData.AnalyticsUpdated);
     }
 
@@ -1115,62 +1114,14 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
     /// <summary>
     ///     Mock implementation of IWorkflowStateRepository for testing
     /// </summary>
-    public class MockWorkflowStateRepository : IWorkflowStateRepository
+    public class MockWorkflowStateRepository : InMemoryWorkflowStateRepository
     {
-        private readonly Dictionary<string, WorkflowInstance> _instances = new();
-
-        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
+        public async Task<List<WorkflowInstance>> GetWorkflowInstancesAsync(string workflowName, int? version = null)
         {
-            _instances.TryGetValue(instanceId, out var instance);
-            return Task.FromResult(instance);
+            var instances = await GetWorkflowInstancesByNameAsync(workflowName);
+            return instances.Where(instance => !version.HasValue || instance.WorkflowVersion == version.Value).ToList();
         }
-
-        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
-        {
-            _instances[instance.InstanceId] = instance;
-            return Task.CompletedTask;
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName)
-        {
-            var instances = _instances.Values.Where(i => i.WorkflowName == workflowName);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status)
-        {
-            var instances = _instances.Values.Where(i => i.Status == status);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId)
-        {
-            var instances = _instances.Values.Where(i => i.CorrelationId == correlationId);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync()
-        {
-            var instances = _instances.Values.Where(i => i.Status == WorkflowStatus.Suspended);
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-
-        public Task DeleteWorkflowInstanceAsync(string instanceId)
-        {
-            _instances.Remove(instanceId);
-            return Task.CompletedTask;
-        }
-
-        public Task<List<WorkflowInstance>> GetWorkflowInstancesAsync(string workflowName, int? version = null)
-        {
-            var instances = _instances.Values.Where(i => i.WorkflowName == workflowName);
-            if (version.HasValue)
-            {
-                instances = instances.Where(i => i.WorkflowVersion == version.Value);
-            }
-            return Task.FromResult(instances.ToList());
     }
-}
 
     /// <summary>
     ///     Mock implementation of IEventStore for testing

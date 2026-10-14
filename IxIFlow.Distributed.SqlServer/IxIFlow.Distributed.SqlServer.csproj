@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>1.0.0</Version>
+    <Description>SQL Server message bus and host registry for IxIFlow distributed hosting.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\IxIFlow.Distributed\IxIFlow.Distributed.csproj" />
+    <PackageReference Include="Dapper" Version="2.1.66" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.2" />
+  </ItemGroup>
+</Project>

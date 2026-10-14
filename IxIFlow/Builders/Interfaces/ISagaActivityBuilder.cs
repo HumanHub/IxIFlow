@@ -15,7 +15,7 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData> //: ISag
     /// <typeparam name="TActivity">The activity type for this step</typeparam>
     /// <param name="configure">Configuration for the saga activity</param>
     ISagaActivityBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>> configure)
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
@@ -29,6 +29,12 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData> //: ISag
     ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? resumeCondition = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class;
+
+    ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
+        string key,
+        Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? matches = null,
         Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
         where TResumeEvent : class;
 

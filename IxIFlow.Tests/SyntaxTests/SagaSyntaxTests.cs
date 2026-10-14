@@ -125,10 +125,10 @@ public class SagaSyntaxTests
                         .CompensateWith<RefundPaymentAsyncActivity>());
                 });
             })
-            .Catch<SagaTerminatedException>(catchBlock =>
+            .Catch<SagaTerminatedException, MessageFault>(catchBlock =>
             {
                 catchBlock.Step<HandleSagaFailureAsyncActivity>(setup => setup
-                    .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                     .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandled));
             })
                 .Catch(x => { }),

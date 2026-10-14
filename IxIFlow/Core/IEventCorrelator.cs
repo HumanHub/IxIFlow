@@ -14,7 +14,8 @@ public interface IEventCorrelator
     /// <returns>List of matching workflow instances</returns>
     Task<IEnumerable<WorkflowInstance>> FindMatchingWorkflowsAsync<TEvent>(
         TEvent @event,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default)
+        where TEvent : class;
 
     /// <summary>
     ///     Evaluates if an event matches the resume conditions for a suspended workflow
@@ -27,7 +28,8 @@ public interface IEventCorrelator
     Task<bool> EvaluateResumeConditionAsync<TEvent>(
         TEvent @event,
         WorkflowInstance workflowInstance,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default)
+        where TEvent : class;
 
     /// <summary>
     ///     Checks if an event matches the resume condition for a specific workflow
@@ -40,5 +42,6 @@ public interface IEventCorrelator
     Task<bool> CheckResumeConditionAsync<TEvent>(
         string workflowInstanceId,
         TEvent @event,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default)
+        where TEvent : class;
 }

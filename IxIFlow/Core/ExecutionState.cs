@@ -34,4 +34,14 @@ public class ExecutionState
     /// Step-level metadata for execution context (e.g., retry attempts)
     /// </summary>
     public Dictionary<string, object> StepMetadata { get; set; } = new();
+
+    /// <summary>
+    /// Structured execution pointers for debugger-friendly resume state.
+    /// </summary>
+    public List<ExecutionPointer> Pointers { get; set; } = new();
+
+    /// <summary>
+    /// Structured execution frames for nested control-flow state.
+    /// </summary>
+    public List<ExecutionFrame> Frames { get; set; } = new();
 }

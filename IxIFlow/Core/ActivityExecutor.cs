@@ -14,6 +14,9 @@ public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : I
 {
     public IServiceProvider Services { get; }
     public string WorkflowInstanceId { get; }
+    public string InvocationId { get; }
+    public string AttemptId { get; }
+    public object? RecoveryState { get; internal set; }
     public string CorrelationId { get; }
     public string ActivityName { get; }
     public int StepNumber { get; }
@@ -43,10 +46,16 @@ public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : I
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
         IDictionary<string, object>? metadata = null,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        string invocationId = "",
+        string attemptId = "",
+        object? recoveryState = null)
     {
         Services = services ?? throw new ArgumentNullException(nameof(services));
         WorkflowInstanceId = workflowInstanceId ?? throw new ArgumentNullException(nameof(workflowInstanceId));
+        InvocationId = invocationId;
+        AttemptId = attemptId;
+        RecoveryState = recoveryState;
         CorrelationId = correlationId ?? throw new ArgumentNullException(nameof(correlationId));
         ActivityName = activityName ?? throw new ArgumentNullException(nameof(activityName));
         StepNumber = stepNumber;
@@ -66,6 +75,7 @@ public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : I
 /// </summary>
 public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
 {
+    public int StepNumber { get; set; }
     public Type ActivityType { get; set; } = null!;
     public TWorkflowData WorkflowData { get; set; } = default!;
     public TPreviousStepData? PreviousStepData { get; set; }
@@ -74,8 +84,10 @@ public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
     public WorkflowStep Step { get; set; } = null!;
     public StepExecutionContext<TWorkflowData> ExecutionContext { get; set; } = null!;
     public CancellationToken CancellationToken { get; set; } = default;
-    public Exception? CatchException { get; set; } = null; // For catch block execution
+    public object? CatchFault { get; set; }
     public bool IsCompensationActivity { get; set; } = false; // For compensation activity detection
+    public object? CompensationPreviousStepData { get; set; }
+    public object? CompensationPreviousChainData { get; set; }
     public IDictionary<string, object>? StepMetadata { get; set; } = null; // Step-level metadata from ExecutionState
 }
 
@@ -92,6 +104,30 @@ public class TypedActivityExecutionResult<TOutput>
     public TimeSpan ExecutionTime { get; set; }
     public List<PropertyMappingTrace> InputTraces { get; set; } = new();
     public List<PropertyMappingTrace> OutputTraces { get; set; } = new();
+}
+
+/// <summary>
+/// An activity whose inputs and execution context have been prepared before invocation.
+/// </summary>
+public sealed class PreparedActivity
+{
+    private readonly Func<Task> _applyOutputs;
+    private readonly Action<object?> _setRecoveryState;
+
+    internal PreparedActivity(IAsyncActivity activity, IActivityContext context,
+        Func<Task> applyOutputs, Action<object?> setRecoveryState)
+    {
+        Activity = activity;
+        Context = context;
+        _applyOutputs = applyOutputs;
+        _setRecoveryState = setRecoveryState;
+    }
+
+    public IAsyncActivity Activity { get; }
+    public IActivityContext Context { get; }
+
+    internal Task ApplyOutputsAsync() => _applyOutputs();
+    internal void SetRecoveryState(object? state) => _setRecoveryState(state);
 }
 
 /// <summary>
@@ -113,6 +149,17 @@ public class PropertyMappingTrace
 /// </summary>
 public interface IActivityExecutor
 {
+    /// <summary>
+    /// Creates an activity and applies its inputs without invoking user code.
+    /// Frozen inputs are restored by the runner when applyInputMappings is false.
+    /// </summary>
+    Task<PreparedActivity> PrepareTypedActivityAsync<TWorkflowData, TPreviousStepData>(
+        TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData> request,
+        bool applyInputMappings,
+        string invocationId,
+        string attemptId,
+        IReadOnlyCollection<string>? codeInputs = null);
+
     /// <summary>
     /// Executes an activity with typed workflow and previous step data
     /// </summary>
@@ -142,7 +189,7 @@ public interface IActivityExecutor
     object CreateCatchEvaluationContext<TWorkflowData, TPreviousStepData>(
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
-        Exception exception);
+        object fault);
 }
 
 /// <summary>
@@ -162,6 +209,48 @@ public class ActivityExecutor : IActivityExecutor
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _tracer = tracer ?? throw new ArgumentNullException(nameof(tracer));
+    }
+
+    public async Task<PreparedActivity> PrepareTypedActivityAsync<TWorkflowData, TPreviousStepData>(
+        TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData> request,
+        bool applyInputMappings,
+        string invocationId,
+        string attemptId,
+        IReadOnlyCollection<string>? codeInputs = null)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var activity = CreateActivityInstance(request.ActivityType);
+        var context = new TypedActivityExecutionContext<TWorkflowData, TPreviousStepData>(
+            _serviceProvider,
+            request.ExecutionContext.WorkflowInstance.InstanceId,
+            request.ExecutionContext.WorkflowInstance.CorrelationId,
+            request.ActivityType.Name,
+            request.StepNumber,
+            request.ExecutionContext.WorkflowDefinition.Name,
+            request.ExecutionContext.WorkflowDefinition.Version,
+            DateTime.UtcNow,
+            request.WorkflowData,
+            request.PreviousStepData,
+            request.StepMetadata,
+            _logger,
+            invocationId,
+            attemptId);
+
+        var mappingResult = new TypedActivityExecutionResult<object>();
+        if (applyInputMappings || codeInputs is { Count: > 0 })
+            await ApplyTypedInputMappingsAsync(activity,
+                applyInputMappings ? request.InputMappings : request.InputMappings
+                    .Where(mapping => codeInputs!.Contains(mapping.TargetProperty)).ToList(),
+                request.WorkflowData,
+                request.PreviousStepData, request.CatchFault, mappingResult,
+                request.IsCompensationActivity, request.CompensationPreviousStepData,
+                request.CompensationPreviousChainData);
+
+        return new PreparedActivity(activity, context,
+            () => ApplyTypedOutputMappingsAsync(activity, request.OutputMappings,
+                request.WorkflowData, request.PreviousStepData, request.CatchFault,
+                new TypedActivityExecutionResult<object>()),
+            state => context.RecoveryState = state);
     }
 
     public async Task<TypedActivityExecutionResult<object>> ExecuteTypedActivityAsync<TWorkflowData, TPreviousStepData>(
@@ -194,9 +283,11 @@ public class ActivityExecutor : IActivityExecutor
                 request.InputMappings,
                 request.WorkflowData,
                 request.PreviousStepData,
-                request.CatchException,
+                request.CatchFault,
                 result,
-                request.IsCompensationActivity);
+                request.IsCompensationActivity,
+                request.CompensationPreviousStepData,
+                request.CompensationPreviousChainData);
 
             // Add activity started trace
             await _tracer.TraceAsync(request.ExecutionContext.WorkflowInstance.InstanceId, new ExecutionTraceEntry
@@ -216,7 +307,7 @@ public class ActivityExecutor : IActivityExecutor
                 request.OutputMappings,
                 request.WorkflowData,
                 request.PreviousStepData,
-                request.CatchException,
+                request.CatchFault,
                 result);
 
             // Add activity completed trace
@@ -372,33 +463,31 @@ public class ActivityExecutor : IActivityExecutor
     public object CreateCatchEvaluationContext<TWorkflowData, TPreviousStepData>(
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
-        Exception exception)
+        object fault)
     {
         // Use compile-time generic type parameters for consistent context creation
         var workflowDataType = typeof(TWorkflowData);
-        var exceptionType = exception.GetType();
+        var faultType = fault.GetType();
         var expectedPreviousStepDataType = typeof(TPreviousStepData);
 
         if (expectedPreviousStepDataType != typeof(object))
         {
-            // Create CatchContext<TWorkflowData, TException, TPreviousStepData> using EXPECTED types
-            var contextType = typeof(CatchContext<,,>).MakeGenericType(workflowDataType, exceptionType, expectedPreviousStepDataType);
+            var contextType = typeof(FaultContext<,,>).MakeGenericType(workflowDataType, faultType, expectedPreviousStepDataType);
             var context = Activator.CreateInstance(contextType);
 
             contextType.GetProperty("WorkflowData")?.SetValue(context, workflowData);
-            contextType.GetProperty("Exception")?.SetValue(context, exception);
+            contextType.GetProperty("Fault")?.SetValue(context, fault);
             contextType.GetProperty("PreviousStep")?.SetValue(context, previousStepData);
 
             return context!;
         }
         else
         {
-            // Create CatchContext<TWorkflowData, TException> for first step or when no previous step expected
-            var contextType = typeof(CatchContext<,>).MakeGenericType(workflowDataType, exceptionType);
+            var contextType = typeof(FaultContext<,,>).MakeGenericType(workflowDataType, faultType, typeof(object));
             var context = Activator.CreateInstance(contextType);
 
             contextType.GetProperty("WorkflowData")?.SetValue(context, workflowData);
-            contextType.GetProperty("Exception")?.SetValue(context, exception);
+            contextType.GetProperty("Fault")?.SetValue(context, fault);
 
             return context!;
         }
@@ -436,12 +525,14 @@ public class ActivityExecutor : IActivityExecutor
         List<PropertyMapping> inputMappings,
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
-        Exception? catchException,
+        object? catchFault,
         TypedActivityExecutionResult<object> result,
-        bool isCompensationActivity = false)
+        bool isCompensationActivity = false,
+        object? compensationPreviousStep = null,
+        object? compensationPreviousChain = null)
     {
-        _logger.LogTrace("Applying typed input mappings - Activity: {ActivityType}, Mappings: {Count}, TWorkflowData: {WorkflowDataType}, TPreviousStepData: {PreviousStepDataType}, CatchException: {CatchException}",
-            activity.GetType().Name, inputMappings.Count, typeof(TWorkflowData).Name, typeof(TPreviousStepData).Name, catchException?.GetType().Name ?? "null");
+        _logger.LogTrace("Applying typed input mappings - Activity: {ActivityType}, Mappings: {Count}, TWorkflowData: {WorkflowDataType}, TPreviousStepData: {PreviousStepDataType}, CatchFault: {CatchFault}",
+            activity.GetType().Name, inputMappings.Count, typeof(TWorkflowData).Name, typeof(TPreviousStepData).Name, catchFault?.GetType().Name ?? "null");
         
         _logger.LogDebug("Applying {Count} typed input mappings to activity {ActivityType}",
             inputMappings.Count, activity.GetType().Name);
@@ -457,13 +548,9 @@ public class ActivityExecutor : IActivityExecutor
             {
                 object evaluationContext;
                 
-                if (catchException != null)
+                if (catchFault != null)
                 {
-                    _logger.LogTrace("Catch exception detected: {ExceptionType}, creating CatchContext", catchException.GetType().Name);
-                    // Use the dedicated method for creating catch contexts
-                    evaluationContext = CreateCatchEvaluationContext(workflowData, previousStepData, catchException);
-                    _logger.LogTrace("Created CatchContext for exception type {ExceptionType}: {ContextType}", 
-                        catchException.GetType().Name, evaluationContext.GetType().FullName);
+                    evaluationContext = CreateCatchEvaluationContext(workflowData, previousStepData, catchFault);
                 }
                 else
                 {
@@ -481,6 +568,20 @@ public class ActivityExecutor : IActivityExecutor
                             var genericMethod = method.MakeGenericMethod(typeof(TWorkflowData), typeof(TPreviousStepData));
                             evaluationContext = (object)genericMethod.Invoke(this, new object[] { workflowData, previousStepData })!;
                             _logger.LogTrace("Created CompensationContext: {ContextType}", evaluationContext.GetType().FullName);
+                            if (mapping.CompensationSource == CompensationInputSource.PreviousStep)
+                                evaluationContext = compensationPreviousStep
+                                    ?? throw new InvalidOperationException(
+                                        $"Compensation input '{mapping.TargetProperty}' has no saved previous step");
+                            else if (mapping.CompensationSource == CompensationInputSource.PreviousCompensation)
+                                evaluationContext = compensationPreviousChain
+                                    ?? throw new InvalidOperationException(
+                                        $"Compensation input '{mapping.TargetProperty}' has no previous compensation result");
+                            if (!mapping.SourceType.IsInstanceOfType(evaluationContext))
+                            {
+                                throw new InvalidOperationException(
+                                    $"Compensation input '{mapping.TargetProperty}' requires " +
+                                    $"{mapping.SourceType.Name}, but saved value is {evaluationContext.GetType().Name}");
+                            }
                         }
                         else
                         {
@@ -541,7 +642,7 @@ public class ActivityExecutor : IActivityExecutor
         List<PropertyMapping> outputMappings,
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
-        Exception? catchException,
+        object? catchFault,
         TypedActivityExecutionResult<object> result)
     {
         _logger.LogDebug("Applying {Count} typed output mappings from activity {ActivityType}",
@@ -566,10 +667,9 @@ public class ActivityExecutor : IActivityExecutor
                     // Create appropriate evaluation context for target assignment
                     object evaluationContext;
                     
-                    if (catchException != null)
+                    if (catchFault != null)
                     {
-                        // Use the dedicated method for creating catch contexts
-                        evaluationContext = CreateCatchEvaluationContext(workflowData, previousStepData, catchException);
+                        evaluationContext = CreateCatchEvaluationContext(workflowData, previousStepData, catchFault);
                     }
                     else
                     {

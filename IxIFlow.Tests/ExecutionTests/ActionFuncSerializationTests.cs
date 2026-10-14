@@ -22,8 +22,6 @@ public class ActionFuncSerializationTests
         services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
         services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
         services.AddSingleton<IActivityExecutor, ActivityExecutor>();
-        services.AddSingleton<ISuspendResumeExecutor, SuspendResumeExecutor>();
-        services.AddSingleton<ISagaExecutor, SagaExecutor>();
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
         services.AddSingleton<IEventCorrelator, EventCorrelator>();
         services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
@@ -46,13 +44,13 @@ public class ActionFuncSerializationTests
                 .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                 .Output(step => step.WorkflowId).To(data => data.WorkflowData.Id))
             .Try(tb => tb
-                .Step<TestThrowSecurityExceptionActivity>(_ => { })
+                .Step<TestThrowSecurityExceptionActivity>()
             )
-            .Catch<TestSecurityException>(c => c
+            .Catch<TestSecurityException, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup
                     .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                     .Input(step => step.ProcessName).From(data => data.WorkflowData.ProcessName)
-                    .Input(step => step.Exception).From(data => data.Exception)
+                    .Input(step => step.ExceptionMessage).From(data => data.Fault.Message)
                     .Input(step => step.OnException).From(data => CreateSecurityErrorResponse)
                     .Output(step => step.ResponseHeader).To(data => data.WorkflowData.ErrorResponse)
                 )
@@ -80,13 +78,13 @@ public class ActionFuncSerializationTests
                 .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                 .Output(step => step.WorkflowId).To(data => data.WorkflowData.Id))
             .Try(tb => tb
-                .Step<TestThrowSecurityExceptionActivity>(_ => { })
+                .Step<TestThrowSecurityExceptionActivity>()
             )
-            .Catch<Exception>(c => c
+            .Catch<Exception, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup
                     .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                     .Input(step => step.ProcessName).From(data => data.WorkflowData.ProcessName)
-                    .Input(step => step.Exception).From(data => data.Exception)
+                    .Input(step => step.ExceptionMessage).From(data => data.Fault.Message)
                     .Input(step => step.OnException).From(data => CreateGenericErrorResponse)
                     .Output(step => step.ResponseHeader).To(data => data.WorkflowData.ErrorResponse)
                 )
@@ -111,7 +109,7 @@ public class ActionFuncSerializationTests
         // Arrange
         var definition = Workflow
             .Create<AsyncActionTestWorkflowData>("AsyncActionTest")
-            .Step<TestAsyncLogActivity>(_ => { })
+            .Step<TestAsyncLogActivity>()
             .Build();
 
         var data = new AsyncActionTestWorkflowData();
@@ -139,22 +137,22 @@ public class ActionFuncSerializationTests
                     .Input(step => step.Username).From(data => data.WorkflowData.Username)
                     .Input(step => step.Password).From(data => data.WorkflowData.Password)
                     .Input(step => step.WorkflowName).From(data => data.WorkflowData.ProcessName))
-                .Step<TestThrowSecurityExceptionActivity>(_ => { })
+                .Step<TestThrowSecurityExceptionActivity>()
             )
-            .Catch<TestSecurityException>(c => c
+            .Catch<TestSecurityException, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup
                 .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                     .Input(step => step.ProcessName).From(data => data.WorkflowData.ProcessName)
-                    .Input(step => step.Exception).From(data => data.Exception)
+                    .Input(step => step.ExceptionMessage).From(data => data.Fault.Message)
                 .Input(step => step.OnException).From(data => CreateSecurityErrorResponse)
                     .Output(step => step.ResponseHeader).To(data => data.WorkflowData.ErrorResponse)
                 )
             )
-            .Catch<Exception>(c => c
+            .Catch<Exception, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup
                 .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                     .Input(step => step.ProcessName).From(data => data.WorkflowData.ProcessName)
-                    .Input(step => step.Exception).From(data => data.Exception)
+                    .Input(step => step.ExceptionMessage).From(data => data.Fault.Message)
                 .Input(step => step.OnException).From(data => CreateGenericErrorResponse)
                     .Output(step => step.ResponseHeader).To(data => data.WorkflowData.ErrorResponse)
                 )
@@ -183,13 +181,13 @@ public class ActionFuncSerializationTests
                 .Input(step => step.OnLog).From(data => data.WorkflowData.OnLogInit)
                 .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id))
             .Try(tb => tb
-                .Step<TestThrowSecurityExceptionActivity>(_ => { })
+                .Step<TestThrowSecurityExceptionActivity>()
             )
-            .Catch<TestSecurityException>(c => c
+            .Catch<TestSecurityException, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup
                     .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                     .Input(step => step.ProcessName).From(data => data.WorkflowData.ProcessName)
-                    .Input(step => step.Exception).From(data => data.Exception)
+                    .Input(step => step.ExceptionMessage).From(data => data.Fault.Message)
                 .Input(step => step.OnException).From(data => data.WorkflowData.CreateSecurityError)
                     .Output(step => step.ResponseHeader).To(data => data.WorkflowData.ErrorResponse)
                 )
@@ -221,7 +219,7 @@ public class ActionFuncSerializationTests
             {
                 StatusCode = "-3",
                 Severity = "Error",
-                StatusDesc = $"Security Error: {context.Exception.Message}"
+                StatusDesc = $"Security Error: {context.ExceptionMessage}"
             }
         };
     }
@@ -237,7 +235,7 @@ public class ActionFuncSerializationTests
             {
                 StatusCode = "-3",
                 Severity = "Error",
-                StatusDesc = $"Bur. Error: {context.Exception.Message}"
+                StatusDesc = $"Bur. Error: {context.ExceptionMessage}"
             }
         };
     }
@@ -253,7 +251,7 @@ public class ActionFuncSerializationTests
             {
                 StatusCode = "-2",
                 Severity = "Error",
-                StatusDesc = $"Validation Error: {context.Exception.Message}"
+                StatusDesc = $"Validation Error: {context.ExceptionMessage}"
             }
         };
     }
@@ -269,7 +267,7 @@ public class ActionFuncSerializationTests
             {
                 StatusCode = "-5",
                 Severity = "Error",
-                StatusDesc = $"Timeout Error: {context.Exception.Message}"
+                StatusDesc = $"Timeout Error: {context.ExceptionMessage}"
             }
         };
     }
@@ -348,7 +346,7 @@ public class ActionFuncSerializationTests
                 {
                     StatusCode = "-3",
                     Severity = "Error",
-                    StatusDesc = $"Security Error for {ProcessName}: {context.Exception.Message}"
+                    StatusDesc = $"Security Error for {ProcessName}: {context.ExceptionMessage}"
                 }
             };
         }
@@ -431,7 +429,7 @@ public class ActionFuncSerializationTests
     {
         public string WorkflowId { get; set; } = "";
         public string ProcessName { get; set; } = "";
-        public Exception Exception { get; set; }
+        public string ExceptionMessage { get; set; } = "";
         public Func<TestExceptionContext, T> OnException { get; set; }
         public T ResponseHeader { get; set; }
 
@@ -443,7 +441,7 @@ public class ActionFuncSerializationTests
             {
                 var exceptionContext = new TestExceptionContext
                 {
-                    Exception = Exception,
+                    ExceptionMessage = ExceptionMessage,
                     WorkflowId = WorkflowId,
                     ProcessName = ProcessName
                 };
@@ -484,7 +482,7 @@ public class ActionFuncSerializationTests
 
     public class TestExceptionContext
     {
-        public Exception Exception { get; set; }
+        public string ExceptionMessage { get; set; } = "";
         public string WorkflowId { get; set; } = "";
         public string ProcessName { get; set; } = "";
     }

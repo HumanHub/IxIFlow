@@ -45,7 +45,13 @@ public enum WorkflowStatus
     /// <summary>
     ///     Workflow is terminated
     /// </summary>
-    Terminated
+    Terminated,
+    /// <summary>
+    /// At least one activity has a committed Start without a committed End and needs resolution.
+    /// </summary>
+    NeedsResolution,
+    /// <summary>The whole-instance execution deadline expired.</summary>
+    TimedOut
 }
 
 /// <summary>
@@ -130,6 +136,9 @@ public class WorkflowVersionInfo
 /// </summary>
 public class WorkflowOptions
 {
+    /// <summary>Stable instance ID for an idempotent start command.</summary>
+    public string? InstanceId { get; set; }
+
     /// <summary>
     ///     Maximum execution time for the workflow
     /// </summary>
@@ -215,6 +224,15 @@ public class WorkflowOptions
 /// </summary>
 public class WorkflowInstance
 {
+    /// <summary>The revision assigned by an atomic repository commit.</summary>
+    public long Revision { get; set; }
+
+    /// <summary>Runtime-only token used to fence checkpoint writes by a former owner.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? ExecutionLeaseToken { get; set; }
+
+    internal WorkflowInstance CopyForResume() => (WorkflowInstance)MemberwiseClone();
+
     /// <summary>
     ///     Unique identifier for this workflow instance
     /// </summary>
@@ -254,6 +272,9 @@ public class WorkflowInstance
     ///     When the workflow completed (successfully or with error)
     /// </summary>
     public DateTime? CompletedAt { get; set; }
+
+    /// <summary>Earliest persisted deadline that can wake an idle instance.</summary>
+    public DateTime? NextDueAtUtc { get; set; }
 
     /// <summary>
     ///     Current step number being executed
@@ -305,6 +326,9 @@ public class WorkflowInstance
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
 
+    /// <summary>Whether optional execution history entries are recorded.</summary>
+    public bool TracingEnabled { get; set; } = true;
+
     /// <summary>
     ///     Execution history entries
     /// </summary>
@@ -314,6 +338,130 @@ public class WorkflowInstance
     ///     Current suspension information (if suspended)
     /// </summary>
     public SuspensionInfo? SuspensionInfo { get; set; }
+
+    /// <summary>
+    ///     Structured execution snapshot for resume, replay, and debugging
+    /// </summary>
+    public WorkflowExecutionSnapshot? ExecutionSnapshot { get; set; }
+}
+
+/// <summary>
+///     Structured execution snapshot for durable resume and future debugger support
+/// </summary>
+public class WorkflowExecutionSnapshot
+{
+    /// <summary>
+    ///     Workflow instance identifier that owns this snapshot
+    /// </summary>
+    public string InstanceId { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Workflow definition name
+    /// </summary>
+    public string WorkflowName { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Workflow definition version
+    /// </summary>
+    public int WorkflowVersion { get; set; }
+
+    /// <summary>
+    ///     Workflow status at snapshot time
+    /// </summary>
+    public WorkflowStatus Status { get; set; }
+
+    /// <summary>
+    ///     The current active execution pointers
+    /// </summary>
+    public List<ExecutionPointer> Pointers { get; set; } = new();
+
+    /// <summary>
+    ///     Execution frames that describe nested control flow state
+    /// </summary>
+    public List<ExecutionFrame> Frames { get; set; } = new();
+
+    /// <summary>
+    ///     Serialized values used by the runtime during resume
+    /// </summary>
+    public Dictionary<string, string> Values { get; set; } = new();
+
+    /// <summary>
+    ///     When the snapshot was captured
+    /// </summary>
+    public DateTime CapturedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>
+///     Execution pointer describing the next step location for a branch of execution
+/// </summary>
+public class ExecutionPointer
+{
+    /// <summary>
+    ///     Pointer identity
+    /// </summary>
+    public string PointerId { get; set; } = Guid.NewGuid().ToString();
+
+    /// <summary>
+    ///     The step this pointer currently targets
+    /// </summary>
+    public string StepId { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Zero-based step index at the current scope
+    /// </summary>
+    public int StepIndex { get; set; }
+
+    /// <summary>
+    ///     Pointer status, such as Active, Waiting, or Completed
+    /// </summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Optional parent pointer for nested execution
+    /// </summary>
+    public string? ParentPointerId { get; set; }
+
+    /// <summary>
+    ///     Associated frame when the pointer belongs to a nested control-flow scope
+    /// </summary>
+    public string? FrameId { get; set; }
+}
+
+/// <summary>
+///     Execution frame representing nested control-flow context
+/// </summary>
+public class ExecutionFrame
+{
+    /// <summary>
+    ///     Frame identity
+    /// </summary>
+    public string FrameId { get; set; } = Guid.NewGuid().ToString();
+
+    /// <summary>
+    ///     Frame kind such as Try, Catch, Loop, Sequence, or Conditional
+    /// </summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Owning step identifier
+    /// </summary>
+    public string StepId { get; set; } = string.Empty;
+
+    /// <summary>
+    ///     Parent frame for nested flow scopes
+    /// </summary>
+    public string? ParentFrameId { get; set; }
+
+    /// <summary>
+    ///     Structured frame state captured as strings for persistence safety
+    /// </summary>
+    public Dictionary<string, string> State { get; set; } = new();
+
+    /// <summary>
+    /// Values needed only while a scope is active. They are encoded into State at suspension.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Dictionary<string, object?> RuntimeValues { get; set; } = new();
 }
 
 /// <summary>
@@ -321,6 +469,11 @@ public class WorkflowInstance
 /// </summary>
 public class SuspensionInfo
 {
+    /// <summary>
+    ///     Identifies this particular wait, including repeated waits at the same step.
+    /// </summary>
+    public string SuspensionId { get; set; } = Guid.NewGuid().ToString("N");
+
     /// <summary>
     ///     When the workflow was suspended
     /// </summary>
@@ -644,6 +797,14 @@ public class WorkflowStep
     /// </summary>
     public Func<object, bool>? CompiledCondition { get; set; }
 
+    /// <summary>Stable source shape for expression-based conditions.</summary>
+    public string? ConditionExpressionSignature { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, object?>? OutcomeSelector { get; set; }
+
+    public List<WorkflowOutcomeBranch> OutcomeBranches { get; set; } = new();
+
     /// <summary>
     ///     Steps to execute if condition is true
     /// </summary>
@@ -665,6 +826,17 @@ public class WorkflowStep
     public List<List<WorkflowStep>> ParallelBranches { get; set; } = new();
 
     /// <summary>
+    /// Determines when parallel branches join. The default waits for every branch.
+    /// </summary>
+    public ParallelJoinMode ParallelJoinMode { get; set; } = ParallelJoinMode.WaitAll;
+
+    /// <summary>
+    /// Evaluated after each branch completes when the join is conditional.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, bool>? ParallelCompletionCondition { get; set; }
+
+    /// <summary>
     ///     Catch blocks for try/catch error handling
     /// </summary>
     public List<WorkflowStep> CatchBlocks { get; set; } = new();
@@ -673,6 +845,15 @@ public class WorkflowStep
     ///     Finally steps for try/catch error handling
     /// </summary>
     public List<WorkflowStep> FinallySteps { get; set; } = new();
+
+    /// <summary>Maximum time to wait for the matching event.</summary>
+    public TimeSpan? WaitTimeout { get; set; }
+
+    /// <summary>Duration of a timer step that advances without an event.</summary>
+    public TimeSpan? DelayDuration { get; set; }
+
+    /// <summary>Alternative steps run when a wait deadline expires.</summary>
+    public List<WorkflowStep> TimeoutSteps { get; set; } = new();
 
     /// <summary>
     ///     Steps within a loop body (for loop steps)
@@ -698,6 +879,9 @@ public class WorkflowStep
     ///     Exception type (for catch blocks)
     /// </summary>
     public Type? ExceptionType { get; set; }
+
+    /// <summary>The durable data type exposed to catch activities.</summary>
+    public Type? FaultType { get; set; }
 
     /// <summary>
     ///     Resume event type (for resume operations)
@@ -731,22 +915,45 @@ public class WorkflowStep
             InputMappings = InputMappings.Select(m => m.Clone()).ToList(),
             OutputMappings = OutputMappings.Select(m => m.Clone()).ToList(),
             CompiledCondition = CompiledCondition,
+            ConditionExpressionSignature = ConditionExpressionSignature,
+            OutcomeSelector = OutcomeSelector,
+            OutcomeBranches = OutcomeBranches.Select(branch => new WorkflowOutcomeBranch
+            {
+                Value = branch.Value,
+                IsDefault = branch.IsDefault,
+                Steps = branch.Steps.Select(step => step.Clone()).ToList(),
+                SagaSteps = new List<IxIFlow.Builders.SagaStepInfo>(branch.SagaSteps)
+            }).ToList(),
             ThenSteps = ThenSteps.Select(s => s.Clone()).ToList(),
             ElseSteps = ElseSteps.Select(s => s.Clone()).ToList(),
             SequenceSteps = SequenceSteps.Select(s => s.Clone()).ToList(),
             ParallelBranches = ParallelBranches.Select(branch => branch.Select(s => s.Clone()).ToList()).ToList(),
+            ParallelJoinMode = ParallelJoinMode,
+            ParallelCompletionCondition = ParallelCompletionCondition,
             CatchBlocks = CatchBlocks.Select(s => s.Clone()).ToList(),
             FinallySteps = FinallySteps.Select(s => s.Clone()).ToList(),
+            WaitTimeout = WaitTimeout,
+            DelayDuration = DelayDuration,
+            TimeoutSteps = TimeoutSteps.Select(s => s.Clone()).ToList(),
             LoopBodySteps = LoopBodySteps.Select(s => s.Clone()).ToList(),
             LoopType = LoopType,
             WorkflowDataType = WorkflowDataType,
             PreviousStepDataType = PreviousStepDataType,
             ExceptionType = ExceptionType,
+            FaultType = FaultType,
             ResumeEventType = ResumeEventType,
             Order = Order,
             StepMetadata = new Dictionary<string, object>(StepMetadata)
         };
     }
+}
+
+public class WorkflowOutcomeBranch
+{
+    public object? Value { get; set; }
+    public bool IsDefault { get; set; }
+    public List<WorkflowStep> Steps { get; set; } = new();
+    public List<IxIFlow.Builders.SagaStepInfo> SagaSteps { get; set; } = new();
 }
 
 /// <summary>
@@ -802,7 +1009,10 @@ public enum WorkflowStepType
     /// <summary>
     ///     Loop constructs (while/do-while)
     /// </summary>
-    Loop
+    Loop,
+
+    /// <summary>Park until a durable timer becomes due.</summary>
+    Delay
 }
 
 /// <summary>
@@ -836,6 +1046,9 @@ public class PropertyMapping
     /// </summary>
     public string TargetProperty { get; set; } = string.Empty;
 
+    /// <summary>Stable source or destination expression used to bind this property.</summary>
+    public string? ExpressionSignature { get; set; }
+
     /// <summary>
     ///     Compiled source function from context (fast execution)
     /// </summary>
@@ -850,6 +1063,8 @@ public class PropertyMapping
     ///     Source type from expression
     /// </summary>
     public Type SourceType { get; set; } = typeof(object);
+
+    public CompensationInputSource CompensationSource { get; set; }
 
     /// <summary>
     ///     Target property type on activity
@@ -870,13 +1085,22 @@ public class PropertyMapping
         {
             Id = Id,
             TargetProperty = TargetProperty,
+            ExpressionSignature = ExpressionSignature,
             SourceFunction = SourceFunction,
             TargetAssignmentFunction = TargetAssignmentFunction,
             SourceType = SourceType,
+            CompensationSource = CompensationSource,
             TargetType = TargetType,
             Direction = Direction
         };
     }
+}
+
+public enum CompensationInputSource
+{
+    CurrentStepContext,
+    PreviousStep,
+    PreviousCompensation
 }
 
 /// <summary>
