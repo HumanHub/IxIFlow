@@ -19,7 +19,7 @@ The default `IWorkflowStateRepository` and `IEventStore` implementations are sin
 
 ## Optional host path
 
-`AddIxIFlowHost(options, connectionString)` adds a coordinator, host, registry, SQL message bus, and background services. The coordinator selects a host for a **whole workflow**. That host calls its local engine; saga steps still run in process there.
+`AddIxIFlowHost(options, connectionString)` adds SQL instance state, a host registry, a SQL message bus, and queue and health background services. A host consumes commands addressed to it and runs the **whole workflow** through its local engine; saga steps run in process there. The coordinator can select a host, but your application publishes the command to it.
 
 <div class="arch-diagram" role="img" aria-label="Coordinator selects a workflow host using the SQL host registry. A SQL message bus supports commands. The SQL host registers shared workflow instance state, while the selected host runs activities in process.">
   <div class="arch-node"><strong>Coordinator</strong><small>Selects a healthy host</small></div>

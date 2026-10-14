@@ -262,7 +262,7 @@ Every host that may execute or resume a workflow must register the same workflow
 
 ## Roadmap
 
-These items are planned and not yet available:
+These items are planned and not yet available. The [roadmap](docs/roadmap.md) describes the target design and remaining work for each area.
 
 - **Debugging and observability**: step-level trace store, breakpoints and step-through, structured logging with instance correlation, and OpenTelemetry traces and metrics
 - **Coordinator dispatch**: routing queued execute, resume, and cancel commands to a selected host, an HTTP host endpoint, host affinity on resume, and live load accounting
@@ -287,6 +287,7 @@ These items are planned and not yet available:
 - [Sagas and compensation](docs/sagas.md)
 - [Engine capabilities](docs/engine-capabilities.md)
 - [Coordinator and hosts](docs/coordinator-and-hosts.md)
+- [Roadmap](docs/roadmap.md)
 
 ## Contributing
 
