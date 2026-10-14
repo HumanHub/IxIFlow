@@ -29,10 +29,62 @@ Parallel branches have separate saved continuations and waits. They share mutabl
 
 ## Host boundary
 
-`WorkflowHost` manages whole workflow executions on one host. `WorkflowCoordinator` selects a host using health, tags, capacity, and load. Once selected, the host's local engine runs the workflow's activities. The coordinator does not distribute individual saga steps across workers.
+A host runs a whole workflow execution through its local engine when it receives a queued command addressed to it. `WorkflowCoordinator` selects a host using health, tags, and capacity; your application publishes the command. Individual saga steps are not distributed across workers.
 
 The SQL host overload registers a SQL workflow state repository, host registry, and message bus. Queued commands use name and version references, and SQL deliveries require acknowledgement. The definition registry is still local memory; each host must register the same definition and activity code. SQL state uses revisioned checkpoints and renewable execution leases. See [coordinator and hosts](/docs/coordinator-and-hosts/).
 
 ## Checkpoints
 
 The scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. The SQL host scans for interrupted running instances. An uncertain external activity outcome stops for an explicit resolution decision; inspect pending attempts and resolve them through `IWorkflowEngine` before continuing.
+
+## Interrupted activities
+
+The runner saves an attempt before it invokes an activity and saves the observed result afterward. A process can stop after an external effect but before the result is saved. On recovery, the engine must decide whether to run that activity again.
+
+An activity that implements `IRecoverableActivity<TState>` makes that decision itself. `CaptureRecoveryState` runs before the first invocation and must not perform an external effect; its value is saved with the attempt. After an interruption, `RecoverAsync` receives the saved value and returns one of these results:
+
+| Result | Effect |
+| --- | --- |
+| `Completed` | The effect happened. Restore the activity's output properties before returning. |
+| `Execute` | The effect did not happen. The engine runs the activity again. |
+| `Unresolved(reason)` | The outcome cannot be established. The instance stops at `NeedsResolution`. |
+| `Faulted(error)` | The effect failed. The error follows the normal `Catch` and saga rules. |
+
+```csharp
+public sealed class ChargeCardActivity(IPaymentLedger ledger) : IRecoverableActivity<string>
+{
+    public string OrderId { get; set; } = "";
+    public string? ChargeId { get; private set; }
+
+    public string CaptureRecoveryState(IActivityContext context) => context.InvocationId;
+
+    public async Task<ActivityRecoveryResult<string>> RecoverAsync(
+        string invocationId, IActivityContext context, CancellationToken cancellationToken = default)
+    {
+        ChargeId = await ledger.FindChargeAsync(invocationId, cancellationToken);
+        return ChargeId != null
+            ? new ActivityRecoveryResult<string>.Completed()
+            : new ActivityRecoveryResult<string>.Execute();
+    }
+
+    public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+        ChargeId = await ledger.ChargeAsync(OrderId, context.GetRecoveryState<string>(), cancellationToken);
+}
+```
+
+`IPaymentLedger` is an application service. Passing the saved invocation ID as an idempotency key lets the external system recognize a repeated request.
+
+An activity without this contract, or one that returns `Unresolved`, stops at `NeedsResolution`. An operator lists the pending attempts and records a decision. A completed decision supplies the activity's output properties; a failed decision supplies an error. The decision is saved before execution continues.
+
+```csharp
+var pending = await engine.GetPendingActivitiesAsync(instanceId);
+var attempt = pending.Single();
+
+await engine.ResolveActivityAsync(instanceId, attempt.InvocationId,
+    ActivityResolution.Completed(
+        new Dictionary<string, object?> { ["ChargeId"] = "ch_123" },
+        note: "Confirmed in the payment dashboard",
+        decidedBy: "ops@example.com"));
+```
+
+Saga compensation uses the same rule. A forward step whose outcome is unknown stops for resolution, and earlier steps are not compensated until it is resolved. The engine does not promise exactly-once effects in an external system.
