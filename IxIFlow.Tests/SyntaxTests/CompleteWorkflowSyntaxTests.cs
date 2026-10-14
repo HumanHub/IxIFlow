@@ -29,18 +29,18 @@ public class CompleteWorkflowSyntaxTests
                         .Input(act => act.InStock).From(ctx => ctx.PreviousStep.InStock)
                         .Output(act => act.FinalPrice).To(ctx => ctx.WorkflowData.FinalPrice));
                 })
-                .Catch<PricingException>(catchBlock =>
+                .Catch<PricingException, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<UseDefaultPricingAsyncActivity>(setup => setup
                         .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                        .Input(act => act.SomeMessage).From(ctx => ctx.Exception.Message)
+                        .Input(act => act.SomeMessage).From(ctx => ctx.Fault.Message)
                         .Output(act => act.DefaultPrice).To(ctx => ctx.WorkflowData.FinalPrice));
                 })
-                .Catch<Exception>(catchBlock =>
+                .Catch<Exception, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<UseDefaultPricingAsyncActivity>(setup => setup
                         .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                        .Input(act => act.SomeMessage).From(ctx => ctx.Exception.Message)
+                        .Input(act => act.SomeMessage).From(ctx => ctx.Fault.Message)
                         .Output(act => act.DefaultPrice).To(ctx => ctx.WorkflowData.FinalPrice));
                 })
 
@@ -94,19 +94,17 @@ public class CompleteWorkflowSyntaxTests
                                 .OnError(handler => handler.ThenIgnore()) // Non-critical
                                 .CompensateWith<CancelShipmentAsyncActivity>());
                     })
-                    .OnError<PaymentException>(error =>
+                    .OnError<PaymentException, MessageFault>(error =>
                     {
                         error
                             .Step<LogPaymentException>(setup => setup
-                                .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                                .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                                 .Input(act => act.ErrorMessage).From(ctx => ctx.PreviousStep.ProductId)
-                                .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
-                                .OnError(handler => handler.ThenRetry(1)))
+                                .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled))
                             .Step<LogPaymentException>(setup => setup
-                                .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                                .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                                 .Input(act => act.ErrorMessage).From(ctx => ctx.PreviousStep.ErrorMessage)
-                                .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled)
-                                .OnError(handler => handler.ThenRetry(1)))
+                                .Output(act => act.Logged).To(ctx => ctx.WorkflowData.ErrorHandled))
                             .CompensateUpTo<ChargePaymentAsyncActivity>() // Compensate up to specific step
                             .ThenTerminate(); // Throws SagaTerminatedException
                     })
@@ -116,11 +114,11 @@ public class CompleteWorkflowSyntaxTests
                             .Compensate(); // Compensate successful steps
                     });
                 })
-                 .Catch<SagaTerminatedException>(catchBlock =>
+                 .Catch<SagaTerminatedException, MessageFault>(catchBlock =>
                  {
                      catchBlock
                          .Step<HandleSagaFailureAsyncActivity>(setup => setup
-                             .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                             .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                              .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandled))
                          .Parallel(parallel =>
                          {
@@ -141,11 +139,11 @@ public class CompleteWorkflowSyntaxTests
                                  });
                          });
                  })
-                .Catch<Exception>(catchBlock =>
+                .Catch<Exception, MessageFault>(catchBlock =>
                 {
                     catchBlock
                         .Step<HandleSagaFailureAsyncActivity>(setup => setup
-                            .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                            .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                             .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandled))
                      .Parallel(parallel =>
                      {
@@ -245,11 +243,11 @@ public class CompleteWorkflowSyntaxTests
                         .From(ctx => ctx.PreviousStep.IsValid) // ValidateOrderAsyncActivity.IsValid
                         .Output(act => act.FinalPrice).To(ctx => ctx.WorkflowData.FinalPrice));
                 })
-                .Catch<PricingException>(catchBlock =>
+                .Catch<PricingException, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<UseDefaultPricingAsyncActivity>(setup => setup
                         .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                        .Input(act => act.SomeMessage).From(ctx => ctx.Exception.Message) // Exception message access
+                        .Input(act => act.SomeMessage).From(ctx => ctx.Fault.Message) // Exception message access
                         .Output(act => act.DefaultPrice).To(ctx => ctx.WorkflowData.FinalPrice));
                 })
                 .If(ctx => ctx.WorkflowData.FinalPrice > 1000,
@@ -323,10 +321,10 @@ public class CompleteWorkflowSyntaxTests
                     tryBlock.Step<ProcessOrderAsyncActivity>(setup => setup
                         .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId));
                 })
-                .Catch<Exception>(catchBlock =>
+                .Catch<Exception, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message));
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message));
                 })
 
              .Parallel(parallel =>
@@ -362,15 +360,15 @@ public class CompleteWorkflowSyntaxTests
                     tryBlock.Step<RiskyAsyncActivity>(setup => setup
                         .Input(act => act.Data).From(ctx => ctx.WorkflowData.OrderId));
                 })
-                .Catch<PricingException>(catchBlock =>
+                .Catch<PricingException, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<BusinessErrorHandlerAsyncActivity>(setup => setup
                         .Input(act => act.BusinessErrors).From(ctx => ctx.WorkflowData.ValidationErrors));
                 })
-                .Catch<Exception>(catchBlock =>
+                .Catch<Exception, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                         .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId));
                 }),
             "ChainedExceptionHandlingTest");

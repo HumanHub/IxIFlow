@@ -1,5 +1,6 @@
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -108,24 +109,14 @@ public static class WorkflowBuilderExtensions
 
         var activityExecutor = serviceProvider.GetRequiredService<IActivityExecutor>();
         var stateRepository = serviceProvider.GetRequiredService<IWorkflowStateRepository>();
-        var eventStore = serviceProvider.GetRequiredService<IEventStore>();
-        var logger = serviceProvider.GetRequiredService<ILogger<WorkflowEngine>>();
-        var tracer = serviceProvider.GetRequiredService<IWorkflowTracer>();
         var workflowInvoker = serviceProvider.GetRequiredService<IWorkflowInvoker>();
-        var suspendResumeExecutor = serviceProvider.GetRequiredService<ISuspendResumeExecutor>();
-        var sagaExecutor = serviceProvider.GetRequiredService<ISagaExecutor>();
         var versionRegistry = serviceProvider.GetRequiredService<IWorkflowVersionRegistry>();
 
         var engine = new WorkflowEngine(
             serviceProvider,
             activityExecutor,
             workflowInvoker,
-            suspendResumeExecutor,
-            sagaExecutor,
             stateRepository,
-            eventStore,
-            logger,
-            tracer,
             versionRegistry);
 
         return await engine.ExecuteWorkflowAsync(definition, workflowData, cancellationToken: cancellationToken);
@@ -146,7 +137,8 @@ public static class WorkflowBuilderExtensions
         services.AddSingleton<IActivityExecutor, ActivityExecutor>();
         services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
         services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
-        services.AddSingleton<ISuspendResumeExecutor, SuspendResumeExecutor>();
+        services.AddSingleton<StructuredWorkflowRunner>();
+        services.AddSingleton(InProcessInstanceGate.Shared);
 
         // Add event management services
         services.AddSingleton<IEventCorrelator, EventCorrelator>();

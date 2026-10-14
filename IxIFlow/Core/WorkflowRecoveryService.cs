@@ -1,0 +1,61 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+namespace IxIFlow.Core;
+
+/// <summary>Wakes due waits and deadlines, and recovers interrupted instances.</summary>
+public sealed class WorkflowRecoveryService(
+    IServiceScopeFactory scopes,
+    IWorkflowStateRepository repository,
+    ILogger<WorkflowRecoveryService> logger) : BackgroundService
+{
+    internal async Task RecoverOnceAsync(CancellationToken cancellationToken)
+    {
+        var instances = await repository.GetWorkflowsRequiringRecoveryAsync();
+        await Parallel.ForEachAsync(instances, new ParallelOptions
+        {
+            MaxDegreeOfParallelism = 8,
+            CancellationToken = cancellationToken
+        }, async (instance, token) =>
+        {
+            try
+            {
+                using var scope = scopes.CreateScope();
+                var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
+                    .RecoverWorkflowAsync(instance.InstanceId, token);
+                if (result.Status == WorkflowExecutionStatus.Faulted)
+                    logger.LogWarning("Recovery of workflow {InstanceId} was rejected: {Reason}",
+                        instance.InstanceId, result.ErrorMessage);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception error)
+            {
+                logger.LogError(error, "Could not recover workflow {InstanceId}", instance.InstanceId);
+            }
+        });
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        do
+        {
+            try
+            {
+                await RecoverOnceAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception error)
+            {
+                logger.LogError(error, "Could not scan running workflows for recovery");
+            }
+        } while (await timer.WaitForNextTickAsync(stoppingToken));
+    }
+}

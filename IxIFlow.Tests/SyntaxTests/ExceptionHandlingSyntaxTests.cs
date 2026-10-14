@@ -23,10 +23,10 @@ public class ExceptionHandlingSyntaxTests
                         .Input(act => act.Data).From(ctx => ctx.PreviousStep.IsValid)
                         .Output(act => act.Result).To(ctx => ctx.WorkflowData.ProcessedOrder));
                 })
-                .Catch<PaymentException>(catchBlock =>
+                .Catch<PaymentException, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                         .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId)
                         .Output(act => act.LoggedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp));
                 }),
@@ -54,17 +54,17 @@ public class ExceptionHandlingSyntaxTests
                         .Input(act => act.Data).From(ctx => ctx.PreviousStep.IsValid)
                         .Output(act => act.Result).To(ctx => ctx.WorkflowData.ProcessedOrder));
                 })
-                .Catch<PaymentException>(catchBlock =>
+                .Catch<PaymentException, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                         .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId)
                         .Output(act => act.LoggedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp));
                 })
-                .Catch<BusinessException>(catchBlock =>
+                .Catch<BusinessException, BusinessFault>(catchBlock =>
                 {
                     catchBlock.Step<BusinessErrorHandlerAsyncActivity>(setup => setup
-                        .Input(act => act.BusinessErrors).From(ctx => ctx.Exception.BusinessErrors)
+                        .Input(act => act.BusinessErrors).From(ctx => ctx.Fault.BusinessErrors)
                         .Output(act => act.HandledErrors).To(ctx => ctx.WorkflowData.ProcessedOrder));
                 }),
             "TryCatchMultipleTest");
@@ -90,10 +90,10 @@ public class ExceptionHandlingSyntaxTests
                         .Input(act => act.Data).From(ctx => ctx.PreviousStep.IsValid)
                         .Output(act => act.Result).To(ctx => ctx.WorkflowData.ProcessedOrder));
                 })
-                .Catch<PaymentException>(catchBlock =>
+                .Catch<PaymentException, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                         .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId));
                 })
                 .Finally(finallyBlock =>
@@ -124,10 +124,10 @@ public class ExceptionHandlingSyntaxTests
                     tryBlock.Step<RiskyAsyncActivity>(setup => setup
                         .Input(act => act.Data).From(ctx => ctx.PreviousStep.IsValid));
                 })
-                .Catch<PaymentException>(catchBlock =>
+                .Catch<PaymentException, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message));
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message));
                 }),
             "TryCatchStructureTest");
 
@@ -157,10 +157,10 @@ public class ExceptionHandlingSyntaxTests
                     tryBlock.Step<RiskyAsyncActivity>(setup => setup
                         .Input(act => act.Data).From(ctx => ctx.PreviousStep.IsValid));
                 })
-                .Catch<PaymentException>(catchBlock =>
+                .Catch<PaymentException, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message)
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                         .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId));
                 }),
             "ExceptionContextAccessTest");
@@ -183,10 +183,10 @@ public class ExceptionHandlingSyntaxTests
                     tryBlock.Step<RiskyAsyncActivity>(setup => setup
                         .Input(act => act.Data).From(ctx => ctx.PreviousStep.IsValid));
                 })
-                .Catch<BusinessException>(catchBlock =>
+                .Catch<BusinessException, BusinessFault>(catchBlock =>
                 {
                     catchBlock.Step<BusinessErrorHandlerAsyncActivity>(setup => setup
-                        .Input(act => act.BusinessErrors).From(ctx => ctx.Exception.BusinessErrors));
+                        .Input(act => act.BusinessErrors).From(ctx => ctx.Fault.BusinessErrors));
                 }),
             "BusinessExceptionTest");
 
@@ -211,10 +211,10 @@ public class ExceptionHandlingSyntaxTests
                         .Input(act => act.Data).From(ctx => ctx.PreviousStep.IsValid)
                         .Output(act => act.Result).To(ctx => ctx.WorkflowData.ProcessedOrder));
                 })
-                .Catch<PaymentException>(catchBlock =>
+                .Catch<PaymentException, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message));
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message));
                 })
                 .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
@@ -244,10 +244,10 @@ public class ExceptionHandlingSyntaxTests
                             .Input(act => act.Data).From(ctx => ctx.PreviousStep.IsValid)
                             .Output(act => act.Result).To(ctx => ctx.WorkflowData.ProcessedOrder));
                 })
-                .Catch<PaymentException>(catchBlock =>
+                .Catch<PaymentException, MessageFault>(catchBlock =>
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Exception.Message));
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message));
                 }),
             "NestedTryBlockTest");
 

@@ -9,6 +9,9 @@ namespace IxIFlow.Builders.Interfaces;
 /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
 public interface IWorkflowBuilder<TWorkflowData>
 {
+    /// <summary>Wait for a duration without requiring a resume event.</summary>
+    IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration);
+
     /// <summary>
     /// Adds a step to the workflow that executes the specified activity
     /// </summary>
@@ -34,6 +37,9 @@ public interface IWorkflowBuilder<TWorkflowData>
 public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData> 
     where TPreviousStepData : class
 {
+    /// <summary>Wait for a duration and retain the previous step value.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration);
+
     /// <summary>
     /// Adds a step to the workflow with access to previous step data
     /// </summary>
@@ -41,7 +47,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the activity</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>> configure)
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
@@ -145,6 +151,15 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
         Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>? resumeCondition = null,
         Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
         where TResumeEvent : class;
+
+    /// <summary>
+    /// Registers a wait for a correlated event and continues with that event as the previous step.
+    /// </summary>
+    IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(
+        string key,
+        Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class;
 
     /// <summary>
     /// Builds the workflow definition

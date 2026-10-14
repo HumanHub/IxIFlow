@@ -1,0 +1,998 @@
+using IxIFlow.Builders;
+using IxIFlow.Builders.Interfaces;
+using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
+using IxIFlow.Extensions;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using System.Text.Json;
+
+namespace IxIFlow.Tests.ExecutionTests;
+
+public sealed class ActivityRecoveryTests
+{
+    [Fact]
+    public async Task InitialCheckpointFailureExposesTheRepositoryError()
+    {
+        var store = new FaultStore { FailNextCommits = 3 };
+        using var services = CreateServices(store, new ChargeLedger(store));
+
+        var error = await Assert.ThrowsAsync<IOException>(() =>
+            services.GetRequiredService<WorkflowEngine>().ExecuteWorkflowAsync(
+                ChargeWorkflow(), new ChargeData { OrderId = "initial-checkpoint" }));
+
+        Assert.Equal("Checkpoint unavailable", error.Message);
+    }
+
+    [Fact]
+    public async Task ResumeCheckpointFailureExposesTheRepositoryError()
+    {
+        var store = new FaultStore();
+        using var services = CreateServices(store, new ChargeLedger(store));
+        var definition = Workflow.Create<ChargeData>("ResumeCheckpointFailure")
+            .Step<NoopActivity>()
+            .WaitFor<RecoveryReply>("reply")
+            .Build();
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        var started = await engine.ExecuteWorkflowAsync(definition, new ChargeData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
+        store.FailNextCommits = 3;
+        var error = await Assert.ThrowsAsync<IOException>(() =>
+            engine.ResumeWorkflowAsync(started.InstanceId, "reply", new RecoveryReply()));
+
+        Assert.Equal("Checkpoint unavailable", error.Message);
+    }
+
+    [Fact]
+    public async Task FailureCheckpointFailureExposesTheRepositoryError()
+    {
+        var store = new FaultStore { FailFailureCommits = 3 };
+        using var services = CreateServices(store, new ChargeLedger(store));
+        var definition = Workflow.Create<ChargeData>("FailureCheckpointFailure")
+            .Step<NoopActivity>()
+            .Step<ThrowActivity>()
+            .Build();
+
+        var error = await Assert.ThrowsAsync<IOException>(() =>
+            services.GetRequiredService<WorkflowEngine>()
+                .ExecuteWorkflowAsync(definition, new ChargeData()));
+
+        Assert.Equal("Checkpoint unavailable", error.Message);
+    }
+
+    [Fact]
+    public async Task InvalidActivityStateFaultsInsteadOfLeavingARunningInstance()
+    {
+        var store = new FaultStore();
+        using var services = CreateServices(store, new ChargeLedger(store));
+        var definition = Workflow.Create<CheckpointData>("InvalidActivityState")
+            .Step<NoopActivity>()
+            .Step<InvalidActivityStateActivity>()
+            .WaitFor<RecoveryReply>("reply")
+            .Build();
+
+        var result = await services.GetRequiredService<WorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new CheckpointData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("checkpoint", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        var saved = await store.GetWorkflowInstanceAsync(result.InstanceId);
+        Assert.Equal(WorkflowStatus.Failed, saved?.Status);
+    }
+
+    [Fact]
+    public async Task InvalidWorkflowDataFaultsAndKeepsTheLastSavedData()
+    {
+        var store = new FaultStore();
+        using var services = CreateServices(store, new ChargeLedger(store));
+        var definition = Workflow.Create<CheckpointData>("InvalidWorkflowData")
+            .Step<NoopActivity>()
+            .Step<InvalidWorkflowDataActivity>()
+            .WaitFor<RecoveryReply>("reply")
+            .Build();
+
+        var result = await services.GetRequiredService<WorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new CheckpointData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("checkpoint", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        var saved = await store.GetWorkflowInstanceAsync(result.InstanceId);
+        Assert.Equal(WorkflowStatus.Failed, saved?.Status);
+        Assert.Null(JsonSerializer.Deserialize<CheckpointData>(saved!.WorkflowDataJson)?.Payload);
+    }
+
+    [Fact]
+    public async Task StartIsCommittedBeforeTheActivityCallsAnExternalSystem()
+    {
+        var store = new FaultStore();
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger);
+        var data = new ChargeData { OrderId = "order-1" };
+
+        var result = await services.GetRequiredService<WorkflowEngine>()
+            .ExecuteWorkflowAsync(ChargeWorkflow(), data);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.True(ledger.SawCommittedStart);
+        Assert.Equal(1, ledger.ChargeCount);
+        Assert.NotNull(data.ChargeId);
+    }
+
+    [Fact]
+    public async Task CrashAfterEffectBeforeEndUsesRecoveryWithoutAnotherCharge()
+    {
+        var store = new FaultStore { FailCompletionBeforeApply = 3 };
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            ChargeWorkflow(), new ChargeData { OrderId = "order-2" }));
+
+        var saved = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        Assert.Equal(1, ledger.ChargeCount);
+        Assert.Equal(1, saved.ExecutionHistory.Count(entry =>
+            entry.EntryType == TraceEntryType.ActivityStarted));
+        Assert.DoesNotContain(saved.ExecutionHistory, entry =>
+            entry.EntryType == TraceEntryType.ActivityCompleted);
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.True(recovered.Status == WorkflowExecutionStatus.Success, recovered.ErrorMessage);
+        Assert.Equal(1, ledger.ChargeCount);
+        Assert.Equal(1, ledger.RecoveryCount);
+        Assert.NotNull(((ChargeData)recovered.WorkflowData!).ChargeId);
+    }
+
+    [Fact]
+    public async Task StartWithoutEndOfOrdinaryActivityNeedsResolution()
+    {
+        var store = new FaultStore { FailCompletionBeforeApply = 3 };
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            OrdinaryChargeWorkflow(), new ChargeData { OrderId = "order-3" }));
+        var saved = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, recovered.Status);
+        Assert.Equal(1, ledger.ChargeCount);
+        Assert.Equal(WorkflowStatus.NeedsResolution,
+            (await store.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(saved.InstanceId));
+        Assert.Equal(nameof(OrdinaryChargeActivity), pending.ActivityName);
+        Assert.Contains("ChargeId", pending.RequiredOutputProperties);
+        Assert.False(string.IsNullOrWhiteSpace(pending.InvocationId));
+    }
+
+    [Fact]
+    public async Task OperatorCanCompleteUnknownActivityWithObservedOutput()
+    {
+        var store = new FaultStore { FailCompletionBeforeApply = 3 };
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            OrdinaryChargeWorkflow(), new ChargeData { OrderId = "operator-complete" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var unresolved = await engine.RecoverWorkflowAsync(running.InstanceId);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, unresolved.Status);
+        var pending = (await store.GetWorkflowInstanceAsync(running.InstanceId))!;
+        var invocationId = pending.ExecutionHistory.Last(entry =>
+            entry.EntryType == TraceEntryType.ActivityStarted).Metadata["InvocationId"].ToString()!;
+
+        var resolved = await engine.ResolveActivityAsync(running.InstanceId, invocationId,
+            ActivityResolution.Completed(new Dictionary<string, object?>
+            {
+                ["ChargeId"] = "observed-charge"
+            }, "Checked the provider receipt", "operator-1"));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, resolved.Status);
+        Assert.Equal("observed-charge", ((ChargeData)resolved.WorkflowData!).ChargeId);
+        Assert.Equal(1, ledger.ChargeCount);
+        var history = (await store.GetWorkflowInstanceAsync(running.InstanceId))!.ExecutionHistory;
+        var decision = history.Last(entry => entry.EntryType == TraceEntryType.ActivityStarted);
+        Assert.Equal("OperatorCompleted", decision.Metadata["Kind"].ToString());
+        Assert.Equal("operator-1", decision.Metadata["DecidedBy"].ToString());
+        Assert.Equal("Checked the provider receipt", decision.Metadata["DecisionNote"].ToString());
+    }
+
+    [Fact]
+    public async Task OperatorCanFailUnknownActivityWithoutRepeatingExternalEffect()
+    {
+        var store = new FaultStore { FailCompletionBeforeApply = 3 };
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            OrdinaryChargeWorkflow(), new ChargeData { OrderId = "operator-fail" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
+            (await engine.RecoverWorkflowAsync(running.InstanceId)).Status);
+        var pending = (await store.GetWorkflowInstanceAsync(running.InstanceId))!;
+        var invocationId = pending.ExecutionHistory.Last(entry =>
+            entry.EntryType == TraceEntryType.ActivityStarted).Metadata["InvocationId"].ToString()!;
+
+        var resolved = await engine.ResolveActivityAsync(running.InstanceId, invocationId,
+            ActivityResolution.Failed("Operator confirmed the operation failed"));
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, resolved.Status);
+        Assert.Equal(WorkflowStatus.Failed,
+            (await store.GetWorkflowInstanceAsync(running.InstanceId))!.Status);
+        Assert.Equal(1, ledger.ChargeCount);
+    }
+
+    [Fact]
+    public async Task OperatorTypedFailureEntersMatchingCatchWithFaultProperties()
+    {
+        var store = new FaultStore();
+        var ledger = new ChargeLedger(store) { FailCompletionAfterCharge = true };
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        var definition = Workflow.Create<ChargeData>("OperatorTypedFailure")
+            .Step<NoopActivity>()
+            .Try(body => body.Step<OrdinaryChargeActivity>(step => step
+                .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(activity => activity.ChargeId).To(ctx => ctx.WorkflowData.ChargeId)))
+            .Catch<OperatorFaultException, OperatorFaultData>(handler => handler
+                .Step<HandleOperatorFaultActivity>(step => step
+                    .Input(activity => activity.Code).From(ctx => ctx.Fault.Code)
+                    .Output(activity => activity.Code).To(ctx => ctx.WorkflowData.FaultCode)))
+            .Build();
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            definition, new ChargeData { OrderId = "typed-failure" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        await engine.RecoverWorkflowAsync(running.InstanceId);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
+        var savedCheckpoint = ExecutionCheckpoint.Read(
+            (await store.GetWorkflowInstanceAsync(running.InstanceId))!.ExecutionStateJson);
+        Assert.Contains(savedCheckpoint.Continuations.SelectMany(item => item.Stack),
+            frame => frame.TryState != null);
+
+        var resolved = await engine.ResolveActivityAsync(running.InstanceId, pending.InvocationId,
+            ActivityResolution.Failed(new OperatorFaultException(41)));
+
+        Assert.True(resolved.Status == WorkflowExecutionStatus.Success, resolved.ErrorMessage);
+        Assert.Equal(41, ((ChargeData)resolved.WorkflowData!).FaultCode);
+        Assert.Equal(1, ledger.ChargeCount);
+    }
+
+    [Fact]
+    public async Task InterruptedCatchActivityNeedsResolutionBeforeFinally()
+    {
+        var store = new FaultStore();
+        var ledger = new ChargeLedger(store) { FailCompletionAfterCharge = true };
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        var definition = Workflow.Create<ChargeData>("InterruptedCatch")
+            .Step<NoopActivity>()
+            .Try(body => body.Step<ThrowActivity>())
+            .Catch<InvalidOperationException, MessageFault>(body => body
+                .Step<OrdinaryChargeActivity>(step => step
+                    .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                    .Output(activity => activity.ChargeId).To(ctx => ctx.WorkflowData.ChargeId)))
+            .Finally(body => body.Step<MarkFinallyActivity>(step => step
+                .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.FinallyRan)))
+            .Build();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            definition, new ChargeData { OrderId = "catch-effect" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var unresolved = await engine.RecoverWorkflowAsync(running.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, unresolved.Status);
+        Assert.Equal(1, ledger.ChargeCount);
+        Assert.False(Assert.IsType<ChargeData>(unresolved.WorkflowData).FinallyRan);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
+        Assert.Equal(nameof(OrdinaryChargeActivity), pending.ActivityName);
+
+        var completed = await engine.ResolveActivityAsync(running.InstanceId,
+            pending.InvocationId, ActivityResolution.Completed(
+                new Dictionary<string, object?> { ["ChargeId"] = "observed-charge" }));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.True(Assert.IsType<ChargeData>(completed.WorkflowData).FinallyRan);
+        Assert.Equal("observed-charge", ((ChargeData)completed.WorkflowData!).ChargeId);
+        Assert.Equal(1, ledger.ChargeCount);
+    }
+
+    [Fact]
+    public async Task InterruptedCompensationNeedsResolutionBeforeCatchAndFinally()
+    {
+        var store = new FaultStore();
+        var ledger = new ChargeLedger(store) { FailCompletionAfterCharge = true };
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        var definition = Workflow.Create<ChargeData>("InterruptedCompensation")
+            .Step<NoopActivity>()
+            .Try(body => body.Saga(saga => saga
+                .Step<NoopActivity>(step => step
+                    .CompensateWith<OrdinaryChargeActivity>(comp => comp
+                        .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Output(activity => activity.ChargeId).To(ctx => ctx.WorkflowData.ChargeId)))
+                .Step<ThrowActivity>()))
+            .Catch<InvalidOperationException, MessageFault>(body => body
+                .Step<MarkCaughtActivity>(step => step
+                    .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.Caught)))
+            .Finally(body => body.Step<MarkFinallyActivity>(step => step
+                .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.FinallyRan)))
+            .Build();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            definition, new ChargeData { OrderId = "compensation-effect" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var unresolved = await engine.RecoverWorkflowAsync(running.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, unresolved.Status);
+        Assert.Equal(1, ledger.ChargeCount);
+        Assert.False(Assert.IsType<ChargeData>(unresolved.WorkflowData).Caught);
+        Assert.False(((ChargeData)unresolved.WorkflowData!).FinallyRan);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
+        Assert.Equal(nameof(OrdinaryChargeActivity), pending.ActivityName);
+
+        var completed = await engine.ResolveActivityAsync(running.InstanceId,
+            pending.InvocationId, ActivityResolution.Completed(
+                new Dictionary<string, object?> { ["ChargeId"] = "observed-compensation" }));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.True(Assert.IsType<ChargeData>(completed.WorkflowData).Caught);
+        Assert.True(((ChargeData)completed.WorkflowData!).FinallyRan);
+        Assert.Equal("observed-compensation", ((ChargeData)completed.WorkflowData!).ChargeId);
+        Assert.Equal(1, ledger.ChargeCount);
+    }
+
+    [Fact]
+    public async Task OperatorResolutionRequiresMappedOutputBeforeChangingCheckpoint()
+    {
+        var store = new FaultStore { FailCompletionBeforeApply = 3 };
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            OrdinaryChargeWorkflow(), new ChargeData { OrderId = "missing-output" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        await engine.RecoverWorkflowAsync(running.InstanceId);
+        var pending = (await store.GetWorkflowInstanceAsync(running.InstanceId))!;
+        var invocationId = pending.ExecutionHistory.Last(entry =>
+            entry.EntryType == TraceEntryType.ActivityStarted).Metadata["InvocationId"].ToString()!;
+
+        await Assert.ThrowsAsync<ArgumentException>(() => engine.ResolveActivityAsync(
+            running.InstanceId, invocationId,
+            ActivityResolution.Completed(new Dictionary<string, object?>())));
+
+        Assert.Equal(WorkflowStatus.NeedsResolution,
+            (await store.GetWorkflowInstanceAsync(running.InstanceId))!.Status);
+        Assert.Equal(1, ledger.ChargeCount);
+    }
+
+    [Fact]
+    public async Task SavedOperatorDecisionSurvivesCompletionCheckpointFailure()
+    {
+        var store = new FaultStore { FailCompletionBeforeApply = 3 };
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            OrdinaryChargeWorkflow(), new ChargeData { OrderId = "resolution-crash" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        await engine.RecoverWorkflowAsync(running.InstanceId);
+        var pending = (await store.GetWorkflowInstanceAsync(running.InstanceId))!;
+        var invocationId = pending.ExecutionHistory.Last(entry =>
+            entry.EntryType == TraceEntryType.ActivityStarted).Metadata["InvocationId"].ToString()!;
+        store.FailCompletionBeforeApply = 3;
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ResolveActivityAsync(
+            running.InstanceId, invocationId,
+            ActivityResolution.Completed(new Dictionary<string, object?>
+            {
+                ["ChargeId"] = "observed-after-crash"
+            })));
+        var afterCrash = (await store.GetWorkflowInstanceAsync(running.InstanceId))!;
+        Assert.Equal(WorkflowStatus.Running, afterCrash.Status);
+        Assert.Equal(1, ledger.ChargeCount);
+
+        var recovered = await engine.RecoverWorkflowAsync(running.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+        Assert.Equal("observed-after-crash", ((ChargeData)recovered.WorkflowData!).ChargeId);
+        Assert.Equal(1, ledger.ChargeCount);
+    }
+
+    [Fact]
+    public async Task OperatorResolutionHonorsCancellationRequestedBeforeHostStopped()
+    {
+        var store = new FaultStore { FailCompletionBeforeApply = 3 };
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            OrdinaryChargeWorkflow(), new ChargeData { OrderId = "cancel-before-resolution" },
+            new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMinutes(1) }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        await engine.RecoverWorkflowAsync(running.InstanceId);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
+        Assert.True(await store.RequestCancellationAsync(running.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" }));
+        var awaitingResolution = await engine.RecoverWorkflowAsync(running.InstanceId);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, awaitingResolution.Status);
+        Assert.Null((await store.GetWorkflowInstanceAsync(running.InstanceId))!.NextDueAtUtc);
+
+        var resolved = await engine.ResolveActivityAsync(running.InstanceId, pending.InvocationId,
+            ActivityResolution.Completed(new Dictionary<string, object?>
+            {
+                ["ChargeId"] = "observed-charge"
+            }));
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, resolved.Status);
+        Assert.Equal(WorkflowStatus.Cancelled,
+            (await store.GetWorkflowInstanceAsync(running.InstanceId))!.Status);
+        Assert.Equal(1, ledger.ChargeCount);
+    }
+
+    [Fact]
+    public async Task CommittedStartWithoutDispatchCanExecuteAfterRecovery()
+    {
+        var store = new FaultStore { FailStartAfterApply = 3 };
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+            ChargeWorkflow(), new ChargeData { OrderId = "order-4" }));
+        Assert.Equal(0, ledger.ChargeCount);
+        var saved = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.True(recovered.Status == WorkflowExecutionStatus.Success, recovered.ErrorMessage);
+        Assert.Equal(1, ledger.ChargeCount);
+        Assert.Equal(1, ledger.RecoveryCount);
+    }
+
+    [Fact]
+    public async Task LostCompletionAcknowledgmentDoesNotRepeatTheActivity()
+    {
+        var store = new FaultStore { FailCompletionAfterApply = 1 };
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger);
+
+        var result = await services.GetRequiredService<WorkflowEngine>()
+            .ExecuteWorkflowAsync(ChargeWorkflow(), new ChargeData { OrderId = "order-5" });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(1, ledger.ChargeCount);
+        Assert.Equal(0, ledger.RecoveryCount);
+    }
+
+    [Fact]
+    public async Task InterruptedChildWorkflowInvocationIsNotRepeated()
+    {
+        var store = new FaultStore();
+        var ledger = new ChargeLedger(store);
+        using var services = CreateServices(store, ledger, new InvocationProbe(store));
+        var engine = services.GetRequiredService<WorkflowEngine>();
+
+        var definition = Workflow.Create<ChargeData>("InterruptedChildInvocation")
+            .Step<WorkflowInvocationTests.PrepareDataActivity>(_ => { })
+            .Invoke<WorkflowInvocationTests.ChildWorkflow, WorkflowInvocationTests.ChildWorkflowData>(step => step
+                .Input(child => child.InputData).From(ctx => ctx.WorkflowData.OrderId))
+            .Build();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition,
+            new ChargeData { OrderId = "order-6" }));
+        var saved = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, recovered.Status);
+        Assert.Equal(1, services.GetRequiredService<InvocationProbe>().Calls);
+    }
+
+    [Fact]
+    public async Task OperatorCanCompleteUnknownChildInvocationWithoutRepeatingIt()
+    {
+        var store = new FaultStore();
+        var probe = new InvocationProbe(store);
+        using var services = CreateServices(store, new ChargeLedger(store), probe);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        var definition = Workflow.Create<ChargeData>("ResolveChildInvocation")
+            .Step<WorkflowInvocationTests.PrepareDataActivity>(_ => { })
+            .Invoke<WorkflowInvocationTests.ChildWorkflow, WorkflowInvocationTests.ChildWorkflowData>(step => step
+                .Input(child => child.InputData).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(child => child.ProcessedResult).To(ctx => ctx.WorkflowData.ChildResult))
+            .Build();
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition,
+            new ChargeData { OrderId = "child-1" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
+            (await engine.RecoverWorkflowAsync(running.InstanceId)).Status);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
+        Assert.Contains("ProcessedResult", pending.RequiredOutputProperties);
+
+        var resolved = await engine.ResolveActivityAsync(running.InstanceId, pending.InvocationId,
+            ActivityResolution.CompletedInvocation(new WorkflowInvocationTests.ChildWorkflowData
+            {
+                ProcessedResult = "observed-child-result"
+            }));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, resolved.Status);
+        Assert.Equal("observed-child-result", ((ChargeData)resolved.WorkflowData!).ChildResult);
+        Assert.Equal(1, probe.Calls);
+    }
+
+    [Fact]
+    public async Task OperatorCanFailUnknownChildInvocationIntoCatch()
+    {
+        var store = new FaultStore();
+        var probe = new InvocationProbe(store);
+        using var services = CreateServices(store, new ChargeLedger(store), probe);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        var definition = Workflow.Create<ChargeData>("FailChildInvocation")
+            .Step<NoopActivity>()
+            .Try(body => body
+                .Invoke<WorkflowInvocationTests.ChildWorkflow,
+                    WorkflowInvocationTests.ChildWorkflowData>(_ => { }))
+            .Catch<OperatorFaultException, OperatorFaultData>(handler => handler
+                .Step<HandleOperatorFaultActivity>(step => step
+                    .Input(activity => activity.Code).From(ctx => ctx.Fault.Code)
+                    .Output(activity => activity.Code).To(ctx => ctx.WorkflowData.FaultCode)))
+            .Build();
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition,
+            new ChargeData { OrderId = "child-failed" }));
+        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        await engine.RecoverWorkflowAsync(running.InstanceId);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
+
+        var resolved = await engine.ResolveActivityAsync(running.InstanceId, pending.InvocationId,
+            ActivityResolution.Failed(new OperatorFaultException(42)));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, resolved.Status);
+        Assert.Equal(42, ((ChargeData)resolved.WorkflowData!).FaultCode);
+        Assert.Equal(1, probe.Calls);
+    }
+
+    [Fact]
+    public async Task WaitAnyCannotDiscardAnUnresolvedLosingBranch()
+    {
+        var store = new FaultStore();
+        var ledger = new ChargeLedger(store) { FailCompletionAfterCharge = true };
+        using var services = CreateServices(store, ledger);
+        var engine = services.GetRequiredService<WorkflowEngine>();
+        var definition = Workflow.Create<ChargeData>("UnresolvedParallelCharge")
+            .Step<WorkflowInvocationTests.PrepareDataActivity>(_ => { })
+            .Parallel(join => join.WaitAny()
+                .Do(branch => branch.Step<OrdinaryChargeActivity>(step => step
+                    .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
+                .Do(branch => branch.Step<RecoverableChargeActivity>(step => step
+                    .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId))))
+            .Build();
+
+        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition,
+            new ChargeData { OrderId = "order-7" }));
+        var saved = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+
+        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, recovered.Status);
+        Assert.Equal(2, ledger.ChargeCount);
+        var after = (await store.GetWorkflowInstanceAsync(saved.InstanceId))!;
+        Assert.Equal(WorkflowStatus.NeedsResolution, after.Status);
+    }
+
+    [Theory]
+    [InlineData(ActivityRecoveryDisposition.Execute)]
+    [InlineData(ActivityRecoveryDisposition.Faulted)]
+    public async Task CancelledBranchRecoveryKeepsAnUnconfirmedEffectForResolution(
+        ActivityRecoveryDisposition disposition)
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var probe = new CancelledRecoveryProbe { Disposition = disposition };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
+        services.AddSingleton(probe);
+        services.AddTransient<CancelledRecoveryActivity>();
+        using var provider = services.BuildServiceProvider();
+        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var definition = Workflow.Create<ChargeData>("CancelledRecovery")
+            .Step<StepIndexActivity>()
+            .Parallel(join => join.WaitAny()
+                .Do(branch => branch.WaitFor<RecoveryReply>("a")
+                    .Step<CancelledRecoveryActivity>())
+                .Do(branch => branch.WaitFor<RecoveryReply>("b")))
+            .Build();
+        var started = await engine.ExecuteWorkflowAsync(definition, new ChargeData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
+        var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
+        var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
+        var losingWait = checkpoint.Waits.Single(wait => wait.Key == "a");
+        var winningWait = checkpoint.Waits.Single(wait => wait.Key == "b");
+        var losing = checkpoint.Continuations.Single(item => item.Id == losingWait.ContinuationId);
+        var winning = checkpoint.Continuations.Single(item => item.Id == winningWait.ContinuationId);
+        var scopes = new WorkflowScopeCatalog(definition);
+        losing.Stack[^1].NextStepIndex++;
+        losing.Status = ContinuationStatus.Cancelling;
+        losing.CancellationUnwind = true;
+        losing.PendingActivity = new ActivityInvocationState
+        {
+            StepId = scopes.Id(definition.Steps[1].ParallelBranches[0][1]),
+            RecoveryState = SerializedValue.From("ready"),
+            Attempts = [new ActivityAttemptState()]
+        };
+        winning.Status = ContinuationStatus.Completed;
+        checkpoint.Joins.Single().IsCompleting = true;
+        checkpoint.Waits.Clear();
+        saved.Status = WorkflowStatus.Running;
+        saved.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+        var committed = await repository.CommitWorkflowInstanceAsync(
+            saved, saved.Revision, Guid.NewGuid().ToString("N"));
+        Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
+
+        var recovered = await engine.RecoverWorkflowAsync(started.InstanceId);
+
+        Assert.Equal(disposition == ActivityRecoveryDisposition.Execute
+            ? WorkflowExecutionStatus.NeedsResolution
+            : WorkflowExecutionStatus.Success, recovered.Status);
+        Assert.Equal(1, probe.RecoveryCount);
+        Assert.Equal(0, probe.ExecuteCount);
+    }
+
+    [Fact]
+    public async Task ActivityContextAndStartEndTraceUseTheSameStepNumber()
+    {
+        var store = new FaultStore();
+        using var services = CreateServices(store, new ChargeLedger(store));
+        var definition = Workflow.Create<ChargeData>("StepPositions")
+            .Step<StepIndexActivity>(step => step
+                .Output(activity => activity.Index).To(ctx => ctx.WorkflowData.FirstIndex))
+            .Step<StepIndexActivity>(step => step
+                .Output(activity => activity.Index).To(ctx => ctx.WorkflowData.SecondIndex))
+            .Build();
+
+        var result = await services.GetRequiredService<WorkflowEngine>()
+            .ExecuteWorkflowAsync(definition, new ChargeData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        var data = Assert.IsType<ChargeData>(result.WorkflowData);
+        Assert.Equal(0, data.FirstIndex);
+        Assert.Equal(1, data.SecondIndex);
+        var saved = (await store.GetWorkflowInstanceAsync(result.InstanceId))!;
+        Assert.Equal([0, 1], saved.ExecutionHistory
+            .Where(entry => entry.EntryType == TraceEntryType.ActivityStarted)
+            .Select(entry => entry.StepNumber));
+        Assert.Equal([0, 1], saved.ExecutionHistory
+            .Where(entry => entry.EntryType == TraceEntryType.ActivityCompleted)
+            .Select(entry => entry.StepNumber));
+    }
+
+    private static WorkflowDefinition ChargeWorkflow() => Workflow
+        .Create<ChargeData>("RecoverableCharge")
+        .Step<RecoverableChargeActivity>(step => step
+            .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+            .Output(activity => activity.ChargeId).To(ctx => ctx.WorkflowData.ChargeId))
+        .Build();
+
+    private static WorkflowDefinition OrdinaryChargeWorkflow() => Workflow
+        .Create<ChargeData>("OrdinaryCharge")
+        .Step<OrdinaryChargeActivity>(step => step
+            .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+            .Output(activity => activity.ChargeId).To(ctx => ctx.WorkflowData.ChargeId))
+        .Build();
+
+    private static ServiceProvider CreateServices(FaultStore store, ChargeLedger ledger,
+        InvocationProbe? invocation = null)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(store));
+        services.AddSingleton(ledger);
+        if (invocation != null)
+        {
+            services.AddSingleton(invocation);
+            services.Replace(ServiceDescriptor.Singleton<IWorkflowInvoker>(invocation));
+        }
+        services.AddTransient<RecoverableChargeActivity>();
+        services.AddTransient<OrdinaryChargeActivity>();
+        services.AddTransient<StepIndexActivity>();
+        services.AddTransient<HandleOperatorFaultActivity>();
+        services.AddSingleton<WorkflowEngine>();
+        return services.BuildServiceProvider();
+    }
+
+    public sealed class ChargeData
+    {
+        public string OrderId { get; set; } = "";
+        public string? ChargeId { get; set; }
+        public int FirstIndex { get; set; }
+        public int SecondIndex { get; set; }
+        public int FaultCode { get; set; }
+        public string? ChildResult { get; set; }
+        public bool FinallyRan { get; set; }
+        public bool Caught { get; set; }
+    }
+
+    public sealed class OperatorFaultException(int code) : Exception($"operator fault {code}")
+    {
+        public int Code { get; } = code;
+    }
+
+    public sealed class OperatorFaultData
+    {
+        public int Code { get; set; }
+    }
+
+    public sealed class HandleOperatorFaultActivity : IAsyncActivity
+    {
+        public int Code { get; set; }
+        public Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    public sealed class CheckpointData
+    {
+        public object? Payload { get; set; }
+    }
+
+    public sealed class InvalidActivityStateActivity : IAsyncActivity
+    {
+        public object? State { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            State = (Action)(() => { });
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class InvalidWorkflowDataActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            ((CheckpointData)context.WorkflowData).Payload = (Action)(() => { });
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class StepIndexActivity : IAsyncActivity
+    {
+        public int Index { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken)
+        {
+            Index = context.StepNumber;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class MarkFinallyActivity : IAsyncActivity
+    {
+        public bool Ran { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Ran = true;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class MarkCaughtActivity : IAsyncActivity
+    {
+        public bool Ran { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Ran = true;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class ChargeLedger(FaultStore store)
+    {
+        private readonly Dictionary<string, string> _charges = [];
+        public int ChargeCount { get; private set; }
+        public int RecoveryCount { get; private set; }
+        public bool SawCommittedStart { get; private set; }
+        public bool FailCompletionAfterCharge { get; set; }
+
+        public async Task<string> ChargeAsync(string instanceId, string invocationId)
+        {
+            var saved = await store.GetWorkflowInstanceAsync(instanceId);
+            SawCommittedStart = saved?.ExecutionHistory.Any(entry =>
+                entry.EntryType == TraceEntryType.ActivityStarted &&
+                entry.Metadata.TryGetValue("InvocationId", out var id) &&
+                id?.ToString() == invocationId) == true;
+            if (!_charges.TryGetValue(invocationId, out var chargeId))
+            {
+                chargeId = $"charge-{++ChargeCount}";
+                _charges.Add(invocationId, chargeId);
+            }
+            if (FailCompletionAfterCharge)
+            {
+                store.FailCompletionBeforeApply = 3;
+                FailCompletionAfterCharge = false;
+            }
+            return chargeId;
+        }
+
+        public string? Resolve(string invocationId)
+        {
+            RecoveryCount++;
+            return _charges.GetValueOrDefault(invocationId);
+        }
+    }
+
+    public sealed class RecoverableChargeActivity(ChargeLedger ledger)
+        : IRecoverableActivity<string>
+    {
+        public string OrderId { get; set; } = "";
+        public string? ChargeId { get; set; }
+
+        public string CaptureRecoveryState(IActivityContext context) => context.InvocationId;
+
+        public Task<ActivityRecoveryResult<string>> RecoverAsync(
+            string state, IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            var chargeId = ledger.Resolve(state);
+            if (chargeId != null)
+            {
+                ChargeId = chargeId;
+                return Task.FromResult<ActivityRecoveryResult<string>>(
+                    new ActivityRecoveryResult<string>.Completed());
+            }
+            return Task.FromResult<ActivityRecoveryResult<string>>(
+                new ActivityRecoveryResult<string>.Execute());
+        }
+
+        public async Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default) =>
+            ChargeId = await ledger.ChargeAsync(context.WorkflowInstanceId,
+                context.GetRecoveryState<string>());
+    }
+
+    public sealed class OrdinaryChargeActivity(ChargeLedger ledger) : IAsyncActivity
+    {
+        public string OrderId { get; set; } = "";
+        public string? ChargeId { get; set; }
+
+        public async Task ExecuteAsync(IActivityContext context,
+            CancellationToken cancellationToken = default) =>
+            ChargeId = await ledger.ChargeAsync(context.WorkflowInstanceId, context.InvocationId);
+    }
+
+    public sealed class FaultStore : IWorkflowStateRepository
+    {
+        private readonly InMemoryWorkflowStateRepository _inner = new();
+        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
+            _inner.RequestCancellationAsync(instanceId, reason);
+        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
+            _inner.GetCancellationRequestAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
+            _inner.GetWorkflowsRequiringRecoveryAsync();
+        public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
+        public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+            _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
+        public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+            _inner.ReleaseExecutionLeaseAsync(instanceId, token);
+        public int FailNextCommits { get; set; }
+        public int FailStartAfterApply { get; set; }
+        public int FailCompletionBeforeApply { get; set; }
+        public int FailCompletionAfterApply { get; set; }
+        public int FailFailureCommits { get; set; }
+
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
+            WorkflowInstance instance, long expectedRevision, string commitId)
+        {
+            if (FailNextCommits-- > 0)
+            {
+                throw new IOException("Checkpoint unavailable");
+            }
+            if (instance.Status == WorkflowStatus.Failed && FailFailureCommits-- > 0)
+                throw new IOException("Checkpoint unavailable");
+            var started = instance.ExecutionHistory.LastOrDefault()?.EntryType ==
+                TraceEntryType.ActivityStarted;
+            var completed = instance.ExecutionHistory.LastOrDefault()?.EntryType ==
+                TraceEntryType.ActivityCompleted;
+            if (completed && FailCompletionBeforeApply-- > 0)
+                throw new IOException("Completion commit unavailable");
+            var result = await _inner.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
+            if (started && FailStartAfterApply-- > 0)
+                throw new IOException("Start acknowledgment lost");
+            if (completed && FailCompletionAfterApply-- > 0)
+                throw new IOException("Completion acknowledgment lost");
+            return result;
+        }
+
+        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
+            _inner.SaveWorkflowInstanceAsync(instance);
+        public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance) =>
+            _inner.TryClaimSuspendedWorkflowAsync(instance);
+        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
+            _inner.GetWorkflowInstanceAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
+            _inner.GetWorkflowInstancesByNameAsync(workflowName);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
+            _inner.GetWorkflowInstancesByStatusAsync(status);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
+            _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task DeleteWorkflowInstanceAsync(string instanceId) =>
+            _inner.DeleteWorkflowInstanceAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync() =>
+            _inner.GetSuspendedWorkflowsReadyForResumptionAsync();
+    }
+
+    public sealed class RecoveryReply;
+
+    public sealed class NoopActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    public sealed class ThrowActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("business failure");
+    }
+
+    public sealed class CancelledRecoveryProbe
+    {
+        public ActivityRecoveryDisposition Disposition { get; set; }
+        public int RecoveryCount { get; set; }
+        public int ExecuteCount { get; set; }
+    }
+
+    public sealed class CancelledRecoveryActivity(CancelledRecoveryProbe probe) : IRecoverableActivity<string>
+    {
+        public string CaptureRecoveryState(IActivityContext context) => "ready";
+
+        public Task<ActivityRecoveryResult<string>> RecoverAsync(
+            string state, IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.RecoveryCount++;
+            ActivityRecoveryResult<string> result = probe.Disposition switch
+            {
+                ActivityRecoveryDisposition.Execute => new ActivityRecoveryResult<string>.Execute(),
+                ActivityRecoveryDisposition.Faulted =>
+                    new ActivityRecoveryResult<string>.Faulted(new InvalidOperationException("losing branch failed")),
+                _ => throw new InvalidOperationException("Unsupported test disposition")
+            };
+            return Task.FromResult(result);
+        }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.ExecuteCount++;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class InvocationProbe(FaultStore store) : IWorkflowInvoker
+    {
+        public int Calls { get; private set; }
+
+        public Task<StepExecutionResult> ExecuteWorkflowInvocationAsync<TWorkflowData>(
+            WorkflowStep step, StepExecutionContext<TWorkflowData> context,
+            ExecutionState executionState, string invocationId,
+            CancellationToken cancellationToken)
+            where TWorkflowData : class
+        {
+            Calls++;
+            store.FailCompletionBeforeApply = 3;
+            return Task.FromResult(new StepExecutionResult
+            {
+                IsSuccess = true,
+                OutputData = new WorkflowInvocationTests.ChildWorkflowData()
+            });
+        }
+    }
+}

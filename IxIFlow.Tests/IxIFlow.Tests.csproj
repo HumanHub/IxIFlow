@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -17,6 +17,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
+    <ProjectReference Include="..\IxIFlow.Authoring\IxIFlow.Authoring.csproj" />
+    <ProjectReference Include="..\IxIFlow.ActivitySdk\IxIFlow.ActivitySdk.csproj" />
+    <ProjectReference Include="..\IxIFlow.Distributed\IxIFlow.Distributed.csproj" />
+    <ProjectReference Include="..\IxIFlow.Distributed.SqlServer\IxIFlow.Distributed.SqlServer.csproj" />
+    <ProjectReference Include="..\Activities\IxIFlow.DemoActivities\IxIFlow.DemoActivities.csproj" />
   </ItemGroup>
 
   <ItemGroup>

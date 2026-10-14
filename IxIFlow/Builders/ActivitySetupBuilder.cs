@@ -113,6 +113,7 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty> : IA
         {
             TargetProperty = propertyName,
             SourceFunction = wrappedFunction,
+            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Input
@@ -192,6 +193,7 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPre
         {
             TargetProperty = propertyName,
             SourceFunction = wrappedFunction,
+            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Input
@@ -279,6 +281,7 @@ public class ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : I
             TargetProperty = propertyName,
             SourceFunction = dummySourceFunction, // Not used for outputs
             TargetAssignmentFunction = assignmentFunction,
+            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Output

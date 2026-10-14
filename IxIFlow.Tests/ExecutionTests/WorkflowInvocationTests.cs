@@ -1,6 +1,7 @@
 using IxIFlow.Builders;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
+using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -18,8 +19,6 @@ public class WorkflowInvocationTests
         services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
         services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
         services.AddSingleton<IActivityExecutor, ActivityExecutor>();
-        services.AddSingleton<ISuspendResumeExecutor, SuspendResumeExecutor>();
-        services.AddSingleton<ISagaExecutor, SagaExecutor>();
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
         services.AddSingleton<IEventCorrelator, EventCorrelator>();
         services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
@@ -30,6 +29,42 @@ public class WorkflowInvocationTests
 
         _serviceProvider = services.BuildServiceProvider();
         _workflowEngine = _serviceProvider.GetRequiredService<WorkflowEngine>();
+    }
+
+    [Fact]
+    public async Task StructuredInvocationUsesItsCheckpointTrace()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        services.AddSingleton<IWorkflowTracer, RejectingTracer>();
+        using var provider = services.BuildServiceProvider();
+        var builder = new WorkflowBuilder<ParentWorkflowData>("InvocationTrace");
+        new ParentWorkflow().Build(builder);
+
+        var result = await provider.GetRequiredService<IWorkflowEngine>()
+            .ExecuteWorkflowAsync(builder.Build(), new ParentWorkflowData { OrderId = "O-1" });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        var saved = await provider.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(result.InstanceId);
+        Assert.Contains(saved!.ExecutionHistory, entry =>
+            entry.EntryType == TraceEntryType.ActivityCompleted &&
+            entry.ActivityName.Contains("ChildWorkflow"));
+    }
+
+    private sealed class RejectingTracer : IWorkflowTracer
+    {
+        public Task TraceAsync(string workflowInstanceId, ExecutionTraceEntry traceEntry,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("The legacy tracer must not save a structured checkpoint");
+
+        public Task<IEnumerable<ExecutionTraceEntry>> GetTraceEntriesAsync(string workflowInstanceId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IEnumerable<ExecutionTraceEntry>>([]);
+
+        public Task ClearTracesAsync(string workflowInstanceId,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     [Fact]
@@ -113,6 +148,32 @@ public class WorkflowInvocationTests
         Assert.Equal(expectedProcessedData, finalData.ProcessedData);
         Assert.Equal(expectedSubWorkflowOutput, finalData.SubWorkflowOutput);
         Assert.Equal(expectedValidationResult, finalData.ValidationResult);
+    }
+
+    [Fact]
+    public async Task TypedChildWorkflowCanBeInvokedTwice()
+    {
+        var definition = Workflow.Create<ParentWorkflowData>("RepeatedChildInvocation")
+            .Step<PrepareDataActivity>(setup => setup
+                .Input(activity => activity.RawInput).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(activity => activity.PreparedOutput).To(ctx => ctx.WorkflowData.ProcessedData))
+            .Invoke<ChildWorkflow, ChildWorkflowData>(setup => setup
+                .Input(child => child.InputData).From(ctx => ctx.WorkflowData.ProcessedData)
+                .Input(child => child.ProcessingStep).From(ctx => ctx.WorkflowData.ProcessingCount)
+                .Output(child => child.ProcessedResult).To(ctx => ctx.WorkflowData.SubWorkflowOutput))
+            .Invoke<ChildWorkflow, ChildWorkflowData>(setup => setup
+                .Input(child => child.InputData).From(ctx => ctx.WorkflowData.ProcessedData)
+                .Input(child => child.ProcessingStep).From(ctx => ctx.WorkflowData.ProcessingCount)
+                .Output(child => child.ProcessedResult).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Build();
+
+        var result = await _workflowEngine.ExecuteWorkflowAsync(definition,
+            new ParentWorkflowData { OrderId = "ORD-004", ProcessingCount = 4 });
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        var data = Assert.IsType<ParentWorkflowData>(result.WorkflowData);
+        Assert.Equal("Processed[4]: Prepared: ORD-004", data.SubWorkflowOutput);
+        Assert.Equal(data.SubWorkflowOutput, data.ValidationResult);
     }
 
     [Fact]

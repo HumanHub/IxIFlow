@@ -7,6 +7,12 @@ namespace IxIFlow.Core;
 /// </summary>
 public interface ISuspensionManager
 {
+    /// <summary>Resumes one suspended workflow with an event.</summary>
+    Task ResumeInstanceAsync<TEventData>(
+        string instanceId,
+        TEventData @event,
+        CancellationToken cancellationToken = default) where TEventData : class;
+
     /// <summary>
     ///     Processes an event and resumes matching workflows
     /// </summary>
@@ -63,6 +69,17 @@ public class SuspensionManager : ISuspensionManager
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
+    public async Task ResumeInstanceAsync<TEventData>(
+        string instanceId,
+        TEventData @event,
+        CancellationToken cancellationToken = default) where TEventData : class
+    {
+        var result = await _workflowEngine.ResumeWorkflowAsync(instanceId, @event, cancellationToken);
+        if (!result.EventAccepted)
+            throw new InvalidOperationException(result.ErrorMessage ??
+                $"Workflow {instanceId} did not accept the event; retry after it becomes idle");
+    }
+
     /// <inheritdoc />
     public async Task<IEnumerable<string>> ProcessEventAsync<TEventData>(
         TEventData @event,
@@ -76,6 +93,7 @@ public class SuspensionManager : ISuspensionManager
 
         // Resume each matching workflow
         var resumedWorkflowIds = new List<string>();
+        var pendingWorkflowIds = new List<string>();
         foreach (var workflow in matchingWorkflows)
             try
             {
@@ -83,18 +101,31 @@ public class SuspensionManager : ISuspensionManager
                     workflow.InstanceId, typeof(TEventData).Name);
 
                 // Resume the workflow with the event
-                await _workflowEngine.ResumeWorkflowAsync(workflow.InstanceId, @event, cancellationToken);
+                var result = await _workflowEngine.ResumeWorkflowAsync(workflow.InstanceId, @event, cancellationToken);
+                if (!result.EventAccepted)
+                {
+                    pendingWorkflowIds.Add(workflow.InstanceId);
+                    continue;
+                }
 
                 resumedWorkflowIds.Add(workflow.InstanceId);
 
                 _logger.LogInformation("Successfully resumed workflow {InstanceId} with event of type {EventType}",
                     workflow.InstanceId, typeof(TEventData).Name);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to resume workflow {InstanceId} with event of type {EventType}",
                     workflow.InstanceId, typeof(TEventData).Name);
+                pendingWorkflowIds.Add(workflow.InstanceId);
             }
+
+        if (pendingWorkflowIds.Count > 0)
+            throw new WorkflowEventDeliveryException(resumedWorkflowIds, pendingWorkflowIds);
 
         _logger.LogDebug("Resumed {Count} workflows with event of type {EventType}",
             resumedWorkflowIds.Count, typeof(TEventData).Name);
@@ -223,6 +254,22 @@ public class WorkflowTimeoutEvent
 /// </summary>
 public interface IWorkflowEngine
 {
+    /// <summary>Lists the saved activity attempts awaiting an operator decision.</summary>
+    Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId);
+
+    /// <summary>
+    /// Resolves one committed activity Start whose external outcome is unknown.
+    /// The decision is saved before execution continues.
+    /// </summary>
+    Task<WorkflowExecutionResult> ResolveActivityAsync(
+        string instanceId, string invocationId, ActivityResolution resolution,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Requests durable cancellation and unwinds an idle workflow immediately.</summary>
+    Task<WorkflowExecutionResult> CancelWorkflowAsync(
+        string instanceId, CancellationReason reason,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     ///     Executes a workflow from start to completion
     /// </summary>
@@ -247,4 +294,30 @@ public interface IWorkflowEngine
         TEventData @event,
         CancellationToken cancellationToken = default)
         where TEventData : class;
+
+    /// <summary>
+    /// Resumes the wait identified by its correlation key.
+    /// </summary>
+    Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(
+        string instanceId,
+        string key,
+        TEventData @event,
+        CancellationToken cancellationToken = default)
+        where TEventData : class;
+
+    /// <summary>Resumes a wait once for a durable message delivery ID.</summary>
+    Task<WorkflowExecutionResult> ResumeWorkflowDeliveryAsync<TEventData>(
+        string instanceId,
+        string? key,
+        TEventData @event,
+        string deliveryId,
+        CancellationToken cancellationToken = default)
+        where TEventData : class;
+
+    /// <summary>
+    /// Continues an interrupted, checkpointed workflow instance without an external event.
+    /// </summary>
+    Task<WorkflowExecutionResult> RecoverWorkflowAsync(
+        string instanceId,
+        CancellationToken cancellationToken = default);
 }

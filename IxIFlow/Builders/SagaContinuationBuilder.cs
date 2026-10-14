@@ -35,7 +35,8 @@ public class SagaContinuationBuilder<TWorkflowData, TPreviousStepData> : ISagaCo
             CompensationStrategy = _compensationHandler.Strategy,
             ContinuationAction = SagaContinuationAction.Continue,
             RetryPolicy = null,
-            CompensationTargetType = _compensationHandler.CompensationTargetType
+            CompensationTargetType = _compensationHandler.CompensationTargetType,
+            IgnoreCompensationErrors = ignoreCompensationErrors
         };
 
         var errorHandler = new ErrorHandler
