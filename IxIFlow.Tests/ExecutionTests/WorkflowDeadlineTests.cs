@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -124,6 +125,32 @@ public sealed class WorkflowDeadlineTests
         Assert.Equal(WorkflowStatus.TimedOut,
             (await services.GetRequiredService<IWorkflowStateRepository>()
                 .GetWorkflowInstanceAsync(result.InstanceId))!.Status);
+    }
+
+    [Fact]
+    public async Task InstanceDeadlinePassingAfterRootCompletionStillCompletes()
+    {
+        var timeout = TimeSpan.FromMilliseconds(300);
+        var repository = new DelayRootCompletionRepository(timeout * 2);
+        using var services = new ServiceCollection()
+            .AddLogging()
+            .AddTransient<SeedActivity>()
+            .AddIxIFlow()
+            .AddSingleton<IWorkflowStateRepository>(repository)
+            .BuildServiceProvider();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var definition = Workflow.Create<ApprovalData>("DeadlineAfterCompletion")
+            .Step<SeedActivity>()
+            .Build();
+
+        var result = await engine.ExecuteWorkflowAsync(definition, new ApprovalData(),
+                new WorkflowOptions { ExecutionTimeout = timeout })
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(repository.Delayed);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(WorkflowStatus.Completed,
+            (await repository.GetWorkflowInstanceAsync(result.InstanceId))!.Status);
     }
 
     [Fact]
@@ -325,6 +352,56 @@ public sealed class WorkflowDeadlineTests
             _probe.Started.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
+    }
+
+    // Holds the commit that records a completed root until the execution deadline has passed.
+    private sealed class DelayRootCompletionRepository(TimeSpan delay) : IWorkflowStateRepository
+    {
+        private readonly InMemoryWorkflowStateRepository _inner = new();
+        private int _delayed;
+
+        public bool Delayed => Volatile.Read(ref _delayed) != 0;
+
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
+            WorkflowInstance instance, long expectedRevision, string commitId)
+        {
+            if (instance.Status == WorkflowStatus.Running &&
+                ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) &&
+                ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations[0].Status ==
+                    ContinuationStatus.Completed &&
+                Interlocked.Exchange(ref _delayed, 1) == 0)
+                await Task.Delay(delay);
+            return await _inner.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
+        }
+
+        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
+            _inner.RequestCancellationAsync(instanceId, reason);
+        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
+            _inner.GetCancellationRequestAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
+            _inner.GetWorkflowsRequiringRecoveryAsync();
+        public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
+        public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+            _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
+        public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+            _inner.ReleaseExecutionLeaseAsync(instanceId, token);
+        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
+            _inner.SaveWorkflowInstanceAsync(instance);
+        public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance) =>
+            _inner.TryClaimSuspendedWorkflowAsync(instance);
+        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
+            _inner.GetWorkflowInstanceAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
+            _inner.GetWorkflowInstancesByNameAsync(workflowName);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
+            _inner.GetWorkflowInstancesByStatusAsync(status);
+        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
+            _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task DeleteWorkflowInstanceAsync(string instanceId) =>
+            _inner.DeleteWorkflowInstanceAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync() =>
+            _inner.GetSuspendedWorkflowsReadyForResumptionAsync();
     }
 
     public sealed class BlockingProbe
