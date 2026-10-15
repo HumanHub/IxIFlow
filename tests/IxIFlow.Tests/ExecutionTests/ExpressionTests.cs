@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "authoring")]
 public class ExpressionTests
 {
     private readonly IExpressionEvaluator _expressionEvaluator;

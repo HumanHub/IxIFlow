@@ -4,6 +4,7 @@ using Moq;
 
 namespace IxIFlow.Tests;
 
+[Trait("Feature", "waits")]
 public class EventManagementTests
 {
     [Fact]

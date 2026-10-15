@@ -11,6 +11,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>
 ///     Tests for saga pattern execution
 /// </summary>
+[Trait("Feature", "saga")]
 public class SagaExecutionTests
 {
     private readonly ServiceProvider _serviceProvider;

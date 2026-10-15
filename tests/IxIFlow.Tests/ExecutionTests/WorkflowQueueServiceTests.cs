@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "distribution")]
 public sealed class WorkflowQueueServiceTests
 {
     [Fact]

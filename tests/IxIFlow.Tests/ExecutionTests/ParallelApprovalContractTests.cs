@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "waits")]
 public class ParallelApprovalContractTests
 {
     [Fact]

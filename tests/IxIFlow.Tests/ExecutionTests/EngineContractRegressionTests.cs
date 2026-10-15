@@ -13,6 +13,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public class EngineContractRegressionTests
 {
+    [Trait("Feature", "registration")]
     [Fact]
     public async Task UnnamedDefinitionsHaveDistinctStableRecoveryNames()
     {
@@ -51,6 +52,7 @@ public class EngineContractRegressionTests
         Assert.Equal(waitingName, (await repository.GetWorkflowInstanceAsync(waitingId))!.WorkflowName);
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public void DefinitionFingerprintIncludesOutcomeLabelsAndErrorPolicies()
     {
@@ -135,6 +137,7 @@ public class EngineContractRegressionTests
             new WorkflowScopeCatalog(SagaPolicy(SagaContinuationAction.Terminate)).Fingerprint);
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public async Task UnsupportedExecutionOptionsFailBeforeAnInstanceStarts()
     {
@@ -156,6 +159,7 @@ public class EngineContractRegressionTests
             .GetWorkflowInstancesByNameAsync(definition.Name));
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public void DefinitionFingerprintChangesWhenOnlyConditionChanges()
     {
@@ -172,6 +176,7 @@ public class EngineContractRegressionTests
             new WorkflowScopeCatalog(never).Fingerprint);
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public void DefinitionFingerprintChangesWhenInputMappingChanges()
     {
@@ -188,6 +193,7 @@ public class EngineContractRegressionTests
             new WorkflowScopeCatalog(fromLiteral).Fingerprint);
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public void DefinitionFingerprintChangesWhenCapturedConditionValueChanges()
     {
@@ -200,6 +206,7 @@ public class EngineContractRegressionTests
             new WorkflowScopeCatalog(Build(false)).Fingerprint);
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public void DefinitionFingerprintChangesWhenCapturedMappingValueChanges()
     {
@@ -212,6 +219,7 @@ public class EngineContractRegressionTests
             new WorkflowScopeCatalog(Build("two")).Fingerprint);
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public void DefinitionFingerprintChangesWhenCapturedObjectStateChanges()
     {
@@ -229,6 +237,7 @@ public class EngineContractRegressionTests
             new WorkflowScopeCatalog(Build(false)).Fingerprint);
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public void DurableConditionRejectsAnUnfingerprintableCapture()
     {
@@ -248,6 +257,7 @@ public class EngineContractRegressionTests
         public bool Enabled { get; set; }
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public async Task EquivalentRebuiltWorkflowCanRunTwiceInOneHost()
     {
@@ -269,6 +279,7 @@ public class EngineContractRegressionTests
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
     }
 
+    [Trait("Feature", "tracing")]
     [Fact]
     public async Task ExecutionResultReturnsRecordedTraceEntries()
     {
@@ -286,6 +297,7 @@ public class EngineContractRegressionTests
         Assert.Contains(result.TraceEntries, entry => entry.EntryType == TraceEntryType.ActivityCompleted);
     }
 
+    [Trait("Feature", "tracing")]
     [Fact]
     public async Task DisablingTracingKeepsHistoryEmptyAcrossWaitAndResume()
     {
@@ -313,6 +325,7 @@ public class EngineContractRegressionTests
         Assert.Empty((await repository.GetWorkflowInstanceAsync(started.InstanceId))!.ExecutionHistory);
     }
 
+    [Trait("Feature", "durability")]
     [Fact]
     public async Task TerminatedInstanceReturnsTerminalStatusOnCancellation()
     {
@@ -335,6 +348,7 @@ public class EngineContractRegressionTests
         Assert.Equal(WorkflowExecutionStatus.Failed, result.Status);
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public async Task FluentBuilder_ExecutesInProcessWithoutHostRegistration()
     {
@@ -346,6 +360,7 @@ public class EngineContractRegressionTests
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
     }
 
+    [Trait("Feature", "durability")]
     [Fact]
     public async Task DefaultStateRepository_PreservesAnInstanceAcrossScopes()
     {
@@ -367,6 +382,7 @@ public class EngineContractRegressionTests
         Assert.NotNull(restored);
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public void ConfiguredStateRepository_ReplacesTheMemoryDefault()
     {
@@ -386,6 +402,7 @@ public class EngineContractRegressionTests
         Assert.NotNull(provider.GetRequiredService<IHostedService>());
     }
 
+    [Trait("Feature", "durability")]
     [Fact]
     public async Task InProcessWorkflow_ResumesFromAnotherScope()
     {
@@ -417,6 +434,7 @@ public class EngineContractRegressionTests
         Assert.True(Assert.IsType<RegressionData>(resumed.WorkflowData).ChildExecuted);
     }
 
+    [Trait("Feature", "durability")]
     [Fact]
     public async Task ConcurrentResume_WaitsForTheFirstAndDoesNotRepeatTheContinuation()
     {
@@ -462,6 +480,7 @@ public class EngineContractRegressionTests
         Assert.Equal(1, gate.ExecutionCount);
     }
 
+    [Trait("Feature", "durability")]
     [Fact]
     public Task MemoryStore_AppliesOneDeliveryOnceAcrossHosts()
     {
@@ -469,6 +488,7 @@ public class EngineContractRegressionTests
         return ResumeOnceScenario.RunAsync(repository, repository, "resume-once-memory");
     }
 
+    [Trait("Feature", "try")]
     [Fact]
     public async Task ExceptionFromPreviousStep_CannotBeCaughtByLaterTryBlock()
     {
@@ -492,6 +512,7 @@ public class EngineContractRegressionTests
         Assert.False(Assert.IsType<RegressionData>(result.WorkflowData).ChildExecuted);
     }
 
+    [Trait("Feature", "try")]
     [Fact]
     public async Task LoopBodyFailure_ReachesOuterCatchWithoutRepeatingTheBody()
     {
@@ -517,6 +538,7 @@ public class EngineContractRegressionTests
         Assert.True(Assert.IsType<RegressionData>(result.WorkflowData).CatchExecuted);
     }
 
+    [Trait("Feature", "control-flow")]
     [Fact]
     public async Task NestedConditional_PreservesPreviousResultInsideSequence()
     {
@@ -544,6 +566,7 @@ public class EngineContractRegressionTests
         Assert.Equal("outer", Assert.IsType<RegressionData>(result.WorkflowData).Result);
     }
 
+    [Trait("Feature", "control-flow")]
     [Fact]
     public async Task NestedConditional_PreservesPreviousResultInsideParallelBranch()
     {
@@ -571,6 +594,7 @@ public class EngineContractRegressionTests
         Assert.Equal("outer", Assert.IsType<RegressionData>(result.WorkflowData).Result);
     }
 
+    [Trait("Feature", "waits")]
     [Fact]
     public async Task ResumeInsideLoop_ReevaluatesLoopAndSuspendsOnNextIteration()
     {
@@ -605,6 +629,7 @@ public class EngineContractRegressionTests
         Assert.Equal(2, Assert.IsType<LoopResumeRegressionData>(completed.WorkflowData).Count);
     }
 
+    [Trait("Feature", "try")]
     [Fact]
     public async Task ResumeInsideTry_HandlesLaterFailureAndRunsFinallyOnce()
     {
@@ -641,6 +666,7 @@ public class EngineContractRegressionTests
         Assert.True(data.AfterTryExecuted);
     }
 
+    [Trait("Feature", "waits")]
     [Fact]
     public async Task ResumeInsideConditional_RestoresValueBeforeTheBranch()
     {
@@ -669,6 +695,7 @@ public class EngineContractRegressionTests
         Assert.Equal("entry", Assert.IsType<RegressionData>(resumed.WorkflowData).Result);
     }
 
+    [Trait("Feature", "try")]
     [Fact]
     public async Task ResumeInsideCatch_DoesNotReplayHandledStepsAndRunsFinally()
     {
@@ -709,6 +736,7 @@ public class EngineContractRegressionTests
         Assert.True(data.FinallyExecuted);
     }
 
+    [Trait("Feature", "try")]
     [Fact]
     public async Task ResumeInsideFinally_DoesNotReplayCleanup()
     {
@@ -749,6 +777,7 @@ public class EngineContractRegressionTests
         Assert.True(data.AfterTryExecuted);
     }
 
+    [Trait("Feature", "waits")]
     [Fact]
     public async Task ResumeInsideParallel_DoesNotReplayCompletedBranch()
     {
@@ -800,6 +829,7 @@ public class EngineContractRegressionTests
         Assert.True(data.AfterTryExecuted);
     }
 
+    [Trait("Feature", "waits")]
     [Fact]
     public async Task ParallelWithTwoWaitingBranches_ResumesEachBranch()
     {
@@ -834,6 +864,7 @@ public class EngineContractRegressionTests
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
     }
 
+    [Trait("Feature", "distribution")]
     [Fact]
     public void SqlHostRegistration_UsesSharedWorkflowState()
     {
@@ -845,6 +876,7 @@ public class EngineContractRegressionTests
         Assert.NotEqual(typeof(InMemoryWorkflowStateRepository), registration.ImplementationType);
     }
 
+    [Trait("Feature", "distribution")]
     [Fact]
     public void DistributedHostRegistration_ResolvesWithScopeValidation()
     {
@@ -865,6 +897,7 @@ public class EngineContractRegressionTests
             service is WorkflowRecoveryService);
     }
 
+    [Trait("Feature", "distribution")]
     [Fact]
     public void DistributedExecutionCommand_HasSerializableWorkflowReference()
     {
@@ -885,6 +918,7 @@ public class EngineContractRegressionTests
         Assert.DoesNotContain("Definition", json);
     }
 
+    [Trait("Feature", "registration")]
     [Fact]
     public async Task PublishedWorkflowVersion_CannotBeSilentlyReplaced()
     {
@@ -905,6 +939,7 @@ public class EngineContractRegressionTests
         Assert.Same(original, await registry.GetWorkflowDefinitionAsync("Order", 1));
     }
 
+    [Trait("Feature", "documents")]
     [Fact]
     public async Task DocumentCompiler_PreservesConditionalSteps()
     {
@@ -921,6 +956,7 @@ public class EngineContractRegressionTests
         Assert.Single(definition.Steps[0].ThenSteps);
     }
 
+    [Trait("Feature", "documents")]
     [Fact]
     public async Task DocumentCompiler_NeverSilentlyDropsExternalStepReferences()
     {
@@ -928,6 +964,7 @@ public class EngineContractRegressionTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => Compiler().CompileAsync(document, Registry()));
     }
 
+    [Trait("Feature", "documents")]
     [Fact]
     public async Task DocumentCompiler_BindsWorkflowInputAndOutputPaths()
     {
@@ -956,6 +993,7 @@ public class EngineContractRegressionTests
         Assert.Equal("output", data.Result);
     }
 
+    [Trait("Feature", "documents")]
     [Fact]
     public async Task DocumentCompiler_EvaluatesBinaryInputExpressions()
     {
@@ -982,6 +1020,7 @@ public class EngineContractRegressionTests
         }));
     }
 
+    [Trait("Feature", "documents")]
     [Fact]
     public async Task DocumentValidator_RejectsUnknownFunctionsInsteadOfCompilingNull()
     {
@@ -1000,6 +1039,7 @@ public class EngineContractRegressionTests
         Assert.False(result.IsValid);
     }
 
+    [Trait("Feature", "documents")]
     [Fact]
     public async Task DocumentCompiler_EnforcesSuspendResumeCondition()
     {
@@ -1022,6 +1062,7 @@ public class EngineContractRegressionTests
         }));
     }
 
+    [Trait("Feature", "documents")]
     [Fact]
     public async Task DocumentCompiler_DoesNotTreatChildDataTypeAsWorkflowClass()
     {
@@ -1036,6 +1077,7 @@ public class EngineContractRegressionTests
         Assert.Equal("Child", step.WorkflowName);
     }
 
+    [Trait("Feature", "children")]
     [Fact]
     public async Task NamedWorkflowInvocation_ExecutesTheRegisteredChildGraph()
     {
@@ -1065,6 +1107,7 @@ public class EngineContractRegressionTests
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);
     }
 
+    [Trait("Feature", "children")]
     [Fact]
     public async Task NamedWorkflowInvocation_RejectsAnUnknownVersion()
     {

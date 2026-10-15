@@ -11,6 +11,7 @@ using Xunit;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "authoring")]
 public class ActionFuncSerializationTests
 {
     private readonly IServiceProvider _serviceProvider;

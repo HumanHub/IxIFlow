@@ -9,6 +9,7 @@ using System.Text.Json;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "recovery")]
 public sealed class ActivityRecoveryTests
 {
     [Fact]

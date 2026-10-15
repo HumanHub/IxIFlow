@@ -3,6 +3,7 @@ using IxIFlow.Core;
 
 namespace IxIFlow.Tests.SyntaxTests;
 
+[Trait("Feature", "authoring")]
 public class WorkflowBuilderIdentityTests
 {
     [Fact]

@@ -7,6 +7,7 @@ using Moq;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "distribution")]
 public sealed class SqlHostRegistryTests
 {
     [SqlServerFact]

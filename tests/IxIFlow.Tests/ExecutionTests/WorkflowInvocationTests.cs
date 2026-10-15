@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "children")]
 public class WorkflowInvocationTests
 {
     private readonly IServiceProvider _serviceProvider;

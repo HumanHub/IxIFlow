@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "saga")]
 public class StructuredSagaWaitTests
 {
     [Fact]

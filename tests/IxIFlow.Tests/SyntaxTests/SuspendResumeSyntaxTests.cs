@@ -13,6 +13,7 @@ namespace IxIFlow.Tests.SyntaxTests;
 ///         - Resume event access in subsequent steps
 ///         - Nested suspend/resume in conditional branches
 /// </summary>
+[Trait("Feature", "authoring")]
 public class SuspendResumeSyntaxTests
 {
     [Fact]

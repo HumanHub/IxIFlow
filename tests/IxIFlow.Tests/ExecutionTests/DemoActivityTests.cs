@@ -5,6 +5,7 @@ using Moq;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "documents")]
 public sealed class DemoActivityTests
 {
     [Fact]

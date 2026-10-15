@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "authoring")]
 public class FluentApiTests
 {
     private readonly IServiceProvider _serviceProvider;

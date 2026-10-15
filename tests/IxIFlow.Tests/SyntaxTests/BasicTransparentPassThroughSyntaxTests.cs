@@ -7,6 +7,7 @@ namespace IxIFlow.Tests.SyntaxTests;
 /// <summary>
 /// Tests basic workflow with transparent pass-through syntax validation.
 /// </summary>
+[Trait("Feature", "authoring")]
 public class BasicTransparentPassThroughSyntaxTests
 {
     [Fact]
