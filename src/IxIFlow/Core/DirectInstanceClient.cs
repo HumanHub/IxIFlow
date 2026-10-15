@@ -3,13 +3,15 @@ using IxIFlow.Core.Runtime;
 namespace IxIFlow.Core;
 
 /// <summary>
-/// The in-process client: each call runs on the instance host in the caller's scope.
+/// Runs instance operations inline on the instance host of the current scope. The local host
+/// uses it for each work item, and a running parent uses it for its children, which run inside
+/// the parent's slot until children become independent instances (D-17).
 /// </summary>
-internal sealed class WorkflowClient : IWorkflowClient
+internal sealed class DirectInstanceClient
 {
     private readonly InstanceHost _runner;
 
-    public WorkflowClient(InstanceHost runner)
+    public DirectInstanceClient(InstanceHost runner)
     {
         _runner = runner ?? throw new ArgumentNullException(nameof(runner));
     }
@@ -64,6 +66,27 @@ internal sealed class WorkflowClient : IWorkflowClient
         string instanceId, CancellationReason reason,
         CancellationToken cancellationToken = default) =>
         ForInstanceAsync(instanceId, _runner.CancelAsync(instanceId, reason, cancellationToken));
+
+    /// <summary>
+    /// Saves a cancellation request. Returns the result when nothing has to run, or null when
+    /// the instance is idle and must be recovered to unwind.
+    /// </summary>
+    public async Task<WorkflowExecutionResult?> RequestCancellationAsync(string instanceId,
+        CancellationReason reason, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await _runner.RequestCancellationAsync(instanceId, reason, cancellationToken);
+        }
+        catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error))
+        {
+            error.At(instanceId);
+            throw;
+        }
+    }
+
+    /// <summary>The saved state of an instance as a result, or null when it does not exist.</summary>
+    public Task<WorkflowExecutionResult?> ReadAsync(string instanceId) => _runner.ReadAsync(instanceId);
 
     public Task<WorkflowExecutionResult> ResolveAsync(
         string instanceId, string invocationId, ActivityResolution resolution,

@@ -15,6 +15,26 @@ public interface IWorkflowClient
         CancellationToken cancellationToken = default)
         where TWorkflowData : class;
 
+    /// <summary>
+    /// Starts an instance and returns its ID as soon as the start is saved, without waiting for it
+    /// to run. The instance must persist its state. The token only stops the wait for the start.
+    /// </summary>
+    Task<string> StartAsync<TWorkflowData>(
+        WorkflowDefinition definition,
+        TWorkflowData workflowData,
+        WorkflowOptions? options = null,
+        CancellationToken cancellationToken = default)
+        where TWorkflowData : class;
+
+    /// <summary>
+    /// Waits until the instance is idle or finished and returns its saved state. Work finished by
+    /// this process is noticed at once; work finished elsewhere within about a second.
+    /// </summary>
+    Task<WorkflowExecutionResult> AwaitAsync(
+        string instanceId,
+        WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Delivers an event to the instance's only matching wait and runs it until it is idle.</summary>
     Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
         string instanceId,
@@ -62,4 +82,14 @@ public interface IWorkflowClient
 
     /// <summary>Lists the saved activity attempts awaiting an operator decision.</summary>
     Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId);
+}
+
+/// <summary>What <see cref="IWorkflowClient.AwaitAsync"/> waits for.</summary>
+public enum WorkflowAwaitCondition
+{
+    /// <summary>Not running: suspended, stopped for resolution, or finished.</summary>
+    Idle,
+
+    /// <summary>Completed, failed, cancelled or timed out.</summary>
+    Finished
 }

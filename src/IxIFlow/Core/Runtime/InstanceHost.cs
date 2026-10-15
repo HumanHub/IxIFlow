@@ -19,7 +19,8 @@ internal sealed class InstanceHost(
     InProcessInstanceGate gate,
     ExecutionLeaseSettings? leaseSettings = null,
     TimeProvider? timeProvider = null,
-    ExecutionLimits? limits = null)
+    ExecutionLimits? limits = null,
+    RunControl? control = null)
 {
     private readonly IWorkflowStateRepository _store = GuardedStateRepository.Wrap(repository);
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
@@ -27,6 +28,7 @@ internal sealed class InstanceHost(
     private readonly bool _childStartIsCheckpointed = workflowInvoker is ICheckpointedWorkflowInvoker;
     private readonly ExecutionLeaseSettings _leaseSettings = leaseSettings ?? ExecutionLeaseSettings.Default;
     private readonly ExecutionLimits _limits = limits ?? ExecutionLimits.Default;
+    private readonly RunControl _control = control ?? new RunControl();
     private readonly WorkflowExecutor _executor = new(services, activityExecutor,
         timeProvider ?? TimeProvider.System);
     private readonly ContinuationTransitions _transitions = new(services, timeProvider ?? TimeProvider.System);
@@ -37,6 +39,15 @@ internal sealed class InstanceHost(
         instance != null && ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson);
 
     public async Task<WorkflowExecutionResult> CancelAsync(string instanceId,
+        CancellationReason reason, CancellationToken cancellationToken) =>
+        await RequestCancellationAsync(instanceId, reason, cancellationToken)
+        ?? await RecoverAsync(instanceId, cancellationToken);
+
+    /// <summary>
+    /// Saves a durable cancellation request. Returns the result when nothing has to run here, or
+    /// null when the instance is idle and must be recovered to unwind.
+    /// </summary>
+    public async Task<WorkflowExecutionResult?> RequestCancellationAsync(string instanceId,
         CancellationReason reason, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
@@ -66,7 +77,15 @@ internal sealed class InstanceHost(
         if (instance?.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
             WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
             return ExistingResult(instance);
-        return await RecoverAsync(instanceId, cancellationToken);
+        return null;
+    }
+
+    /// <summary>The saved state of an instance as a result, or null when it does not exist.</summary>
+    public async Task<WorkflowExecutionResult?> ReadAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+        return instance == null ? null : ExistingResult(instance);
     }
 
     public async Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
@@ -345,6 +364,8 @@ internal sealed class InstanceHost(
             {
                 await registry.RegisterWorkflowAsync(definition);
                 await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
+                // The start is durable from here; a caller waiting only for acceptance continues.
+                _control.Accept(instance.InstanceId);
             }
             return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                 options.PersistState, owner, cancellationToken);
@@ -701,8 +722,9 @@ internal sealed class InstanceHost(
                 "raise the limit and recover it, or cancel it")
             : null;
 
-    private IWorkflowClient Engine =>
-        (IWorkflowClient?)services.GetService(typeof(IWorkflowClient))
+    // Children run inline in the parent's slot and scope (D-17 makes them independent later).
+    private DirectInstanceClient Children =>
+        (DirectInstanceClient?)services.GetService(typeof(DirectInstanceClient))
         ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
             "The workflow engine is not registered");
 
@@ -711,6 +733,7 @@ internal sealed class InstanceHost(
         bool persistState) : IExecutionHost
     {
         public bool PersistsState => persistState;
+        public CancellationToken Drain => host._control.Drain;
         public long Epoch => owner?.Epoch ?? 0;
         public long MaxCheckpointBytes => host._limits.MaxCheckpointBytes;
         public bool ChildStartIsCheckpointed => host._childStartIsCheckpointed;
@@ -739,19 +762,19 @@ internal sealed class InstanceHost(
 
         public Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,
             CancellationToken cancellationToken = default) =>
-            host.Engine.RecoverAsync(childInstanceId, cancellationToken);
+            host.Children.RecoverAsync(childInstanceId, cancellationToken);
 
         public Task<WorkflowExecutionResult> CancelChildAsync(string childInstanceId, CancellationReason reason,
             CancellationToken cancellationToken) =>
-            host.Engine.CancelAsync(childInstanceId, reason, cancellationToken);
+            host.Children.CancelAsync(childInstanceId, reason, cancellationToken);
 
         public async Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key,
             object @event, string deliveryId, CancellationToken cancellationToken)
         {
-            var method = typeof(IWorkflowClient).GetMethods().Single(candidate =>
-                candidate.Name == nameof(IWorkflowClient.ResumeAsync) && candidate.GetParameters().Length == 5);
+            var method = typeof(DirectInstanceClient).GetMethods().Single(candidate =>
+                candidate.Name == nameof(DirectInstanceClient.ResumeAsync) && candidate.GetParameters().Length == 5);
             var task = (Task<WorkflowExecutionResult>)method.MakeGenericMethod(@event.GetType())
-                .Invoke(host.Engine, [childInstanceId, key, @event, deliveryId, cancellationToken])!;
+                .Invoke(host.Children, [childInstanceId, key, @event, deliveryId, cancellationToken])!;
             return await task;
         }
     }

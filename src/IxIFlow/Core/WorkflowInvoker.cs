@@ -298,8 +298,8 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
         CancellationToken cancellationToken)
     where TChildWorkflowData : class
     {
-        // Get the workflow engine from DI
-        var workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
+        // The child runs inline in the parent's slot and scope.
+        var workflowEngine = _serviceProvider.GetRequiredService<DirectInstanceClient>();
 
         // Create child workflow options
         var childOptions = new WorkflowOptions

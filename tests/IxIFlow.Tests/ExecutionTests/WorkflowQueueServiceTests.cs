@@ -730,6 +730,12 @@ public sealed class WorkflowQueueServiceTests
 
     private sealed class TransitionEngine : IWorkflowClient
     {
+        public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> AwaitAsync(string instanceId,
+            WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public int ExecuteCalls { get; private set; }
         public int RecoverCalls { get; private set; }
         public WorkflowExecutionStatus ResumeStatus { get; set; } = WorkflowExecutionStatus.Running;

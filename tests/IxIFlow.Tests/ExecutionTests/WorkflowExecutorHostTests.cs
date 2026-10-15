@@ -146,6 +146,7 @@ public sealed class WorkflowExecutorHostTests
         public Func<bool> CancellationWhen { get; init; } = () => false;
 
         public bool PersistsState => true;
+        public CancellationToken Drain => CancellationToken.None;
         public long Epoch => 1;
         public long MaxCheckpointBytes => long.MaxValue;
         public bool ChildStartIsCheckpointed => true;

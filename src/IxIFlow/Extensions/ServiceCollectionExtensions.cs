@@ -22,7 +22,12 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddIxIFlow(this IServiceCollection services)
     {
         // Core workflow services
-        services.AddScoped<IWorkflowClient, WorkflowClient>();
+        services.TryAddSingleton(HostSettings.Default);
+        services.AddSingleton<LocalWorkflowHost>();
+        services.AddHostedService(provider => provider.GetRequiredService<LocalWorkflowHost>());
+        services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
+        services.AddScoped<DirectInstanceClient>();
+        services.AddScoped<RunControl>();
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
         services.AddScoped<IWorkflowInvoker, WorkflowInvoker>();
         services.AddScoped<InstanceHost>();
@@ -65,6 +70,11 @@ public static class ServiceCollectionExtensions
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
         services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits(options.MaxCheckpointBytes)));
+        if (options.Slots <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The slot count must be positive");
+        if (options.DrainTimeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The drain timeout cannot be negative");
+        services.Replace(ServiceDescriptor.Singleton(new HostSettings(options.Slots, options.DrainTimeout)));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -344,4 +354,16 @@ public class IxIFlowOptions
     /// limit and recover the instance to continue.
     /// </summary>
     public long MaxCheckpointBytes { get; set; } = ExecutionLimits.DefaultMaxCheckpointBytes;
+
+    /// <summary>
+    /// How many instances this host runs at once. A run holds its slot until the instance is idle,
+    /// including while it sleeps on a retry delay or a deadline in the same run.
+    /// </summary>
+    public int Slots { get; set; } = HostSettings.DefaultSlots;
+
+    /// <summary>
+    /// How long a stopping host lets running instances reach their next commit before cancelling
+    /// them. Keep it below the application's shutdown timeout.
+    /// </summary>
+    public TimeSpan DrainTimeout { get; set; } = HostSettings.DefaultDrainTimeout;
 }
