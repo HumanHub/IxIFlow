@@ -846,7 +846,7 @@ internal sealed class StructuredWorkflowRunner(
                     {
                         await SettleAsync(scopes, checkpoint, activity, inFlight, workflowData, instance);
                     }
-                    catch (Exception error) when (error is not CheckpointPersistenceException)
+                    catch (Exception error) when (error is not (CheckpointPersistenceException or WorkflowInfrastructureException))
                     {
                         if (!CaptureFailure(scopes, checkpoint, activity.Continuation,
                                 error, !activity.ActivityReturned))
@@ -866,7 +866,7 @@ internal sealed class StructuredWorkflowRunner(
             }
             throw;
         }
-        catch (CheckpointPersistenceException ex)
+        catch (Exception ex) when (ex is CheckpointPersistenceException or WorkflowInfrastructureException)
         {
             foreach (var activity in inFlight.Values)
                 activity.Cancellation.Cancel();
@@ -1075,7 +1075,8 @@ internal sealed class StructuredWorkflowRunner(
         foreach (var childWaits in due)
         {
             var childId = childWaits.Key.ChildWorkflowId!;
-            var result = await engine.RecoverWorkflowAsync(childId);
+            var result = await WorkflowInfrastructureException.GuardAsync(
+                () => engine.RecoverWorkflowAsync(childId), $"Recovering child workflow '{childId}'");
             if (result.Status == WorkflowExecutionStatus.Running)
             {
                 foreach (var wait in childWaits)
@@ -1109,7 +1110,9 @@ internal sealed class StructuredWorkflowRunner(
             .GroupBy(wait => (wait.ContinuationId, wait.ChildWorkflowId)).ToArray();
         foreach (var group in childWaits)
         {
-            var child = await repository.GetWorkflowInstanceAsync(group.Key.ChildWorkflowId!);
+            var child = await WorkflowInfrastructureException.GuardAsync(
+                () => repository.GetWorkflowInstanceAsync(group.Key.ChildWorkflowId!),
+                $"Reading child workflow '{group.Key.ChildWorkflowId}'");
             if (child == null)
                 throw new InvalidOperationException(
                     $"Saved child workflow '{group.Key.ChildWorkflowId}' is missing");
@@ -1588,7 +1591,8 @@ internal sealed class StructuredWorkflowRunner(
         var pending = continuation.PendingActivity;
         if (pending != null && pending.Resolution == null)
         {
-            var savedChild = await repository.GetWorkflowInstanceAsync(pending.Id);
+            var savedChild = await WorkflowInfrastructureException.GuardAsync(
+                () => repository.GetWorkflowInstanceAsync(pending.Id), $"Reading child workflow '{pending.Id}'");
             // The child commits its initial checkpoint before running any activity.
             // No child record means the invocation can be started with the same ID.
             if (savedChild == null && !_childStartIsCheckpointed)
@@ -1641,7 +1645,9 @@ internal sealed class StructuredWorkflowRunner(
             pending.Resolution == null &&
             pending.ChildWorkflowId != null)
         {
-            var child = await repository.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
+            var child = await WorkflowInfrastructureException.GuardAsync(
+                () => repository.GetWorkflowInstanceAsync(pending.ChildWorkflowId),
+                $"Reading child workflow '{pending.ChildWorkflowId}'");
             if (child == null && _childStartIsCheckpointed)
                 return new RunningActivity(continuation, step,
                     Task.FromResult(ActivityRunResult.Skipped()), cancellation, null,
@@ -1723,7 +1729,8 @@ internal sealed class StructuredWorkflowRunner(
     private async Task ProjectChildStateAsync(ExecutionCheckpoint checkpoint,
         ContinuationState continuation, string childInstanceId)
     {
-        var child = await repository.GetWorkflowInstanceAsync(childInstanceId)
+        var child = await WorkflowInfrastructureException.GuardAsync(
+            () => repository.GetWorkflowInstanceAsync(childInstanceId), $"Reading child workflow '{childInstanceId}'")
             ?? throw new InvalidOperationException($"Child workflow '{childInstanceId}' was not saved");
         if (child.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
             child.Status == WorkflowStatus.Suspended && ShouldCancelInvokedChild(continuation))
@@ -1837,7 +1844,8 @@ internal sealed class StructuredWorkflowRunner(
                     activity.Step.StepType == WorkflowStepType.WorkflowInvocation &&
                     ShouldCancelInvokedChild(activity.Continuation) &&
                     activity.Continuation.PendingActivity?.ChildWorkflowId is { } childId &&
-                    (await repository.GetWorkflowInstanceAsync(childId))?.Status is
+                    (await WorkflowInfrastructureException.GuardAsync(() => repository.GetWorkflowInstanceAsync(childId),
+                        $"Reading child workflow '{childId}'"))?.Status is
                         (WorkflowStatus.Running or WorkflowStatus.Suspended or
                             WorkflowStatus.NeedsResolution))
                 {
@@ -1898,7 +1906,7 @@ internal sealed class StructuredWorkflowRunner(
             }
         }
         catch (Exception error) when (
-            error is not CheckpointPersistenceException &&
+            error is not (CheckpointPersistenceException or WorkflowInfrastructureException) &&
             (activity.Continuation.Status is (ContinuationStatus.Cancelling or ContinuationStatus.Cancelled) ||
              activity.Continuation.CancellationUnwind &&
              !TryScopeTransitions.IsInsideFinally(activity.Continuation) &&
@@ -2111,6 +2119,8 @@ internal sealed class StructuredWorkflowRunner(
     private bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, Exception error, bool allowStepRetry = true)
     {
+        if (error is WorkflowInfrastructureException)
+            return false;
         if (allowStepRetry && !continuation.CancellationUnwind &&
             SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, Now))
             return true;
