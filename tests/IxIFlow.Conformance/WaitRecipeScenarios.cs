@@ -287,47 +287,62 @@ public sealed class WaitRecipeScenarios
 
     [Theory]
     [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
-    public async Task ACallbackReceivedBeforeTheDeadlineBeatsItWhenTheOwnerWasBusy(string profile)
+    public async Task ACallbackReceivedBeforeTheDeadlineBeatsItWhenTakenAfterIt(string profile)
     {
         var payments = new RecordingPayments();
-        var fraud = new GatedFraudChecks();
-        await using var cluster = await ClusterAsync(profile, payments: payments, fraud: fraud);
+        await using var cluster = await ClusterAsync(profile, payments: payments);
         var engine = cluster.AddHost();
-        var started = await engine.StartAsync(PaymentRecipe.Definition(TimeSpan.FromMilliseconds(500)),
+        var started = await engine.RunAsync(PaymentRecipe.Definition(TimeSpan.FromMilliseconds(600)),
             new Payment { OrderId = "order-14", Amount = 40 });
-        await fraud.Entered.Task.WaitAsync(Patience);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        Assert.True(ReplyToken.TryRead(payments.Token, out var instanceId, out var waitId, out var subject));
 
-        // The callback arrives in time; the fraud check then runs well past the payment's deadline.
-        var paid = engine.ReplyAsync(payments.Token, new PaymentReceived { Status = "paid" });
-        await WaitUntilStoredAsync(cluster, started, 1);
-        await Task.Delay(TimeSpan.FromSeconds(1.5));
-        fraud.Release.TrySetResult();
+        // The callback is stored in time, but nothing runs the instance until the host's timer does so
+        // at the deadline, as when the owner is gone or slow: the callback still wins.
+        var inbox = cluster.NewRepository();
+        var stored = await inbox.AppendEventAsync(new WorkflowEvent(instanceId, "callback-1",
+            typeof(PaymentReceived).AssemblyQualifiedName!,
+            System.Text.Json.JsonSerializer.Serialize(new PaymentReceived { Status = "paid" }),
+            TargetWaitId: waitId, Subject: subject));
+        Assert.Equal(EventAppendStatus.Stored, stored.Status);
 
-        var result = await paid.WaitAsync(Patience);
-        EventAssert.Consumed(result);
-        Assert.Equal(("paid", false), (Data<Payment>(result).PaymentStatus, Data<Payment>(result).Cancelled));
+        var finished = await engine.AwaitAsync(instanceId, WorkflowAwaitCondition.Finished).WaitAsync(Patience);
+        Assert.Equal(("paid", false), (Data<Payment>(finished).PaymentStatus, Data<Payment>(finished).Cancelled));
+        Assert.Equal(EventOutcome.Consumed, (await inbox.GetEventAsync(instanceId, "callback-1"))!.Outcome);
+        Assert.Equal(started.InstanceId, instanceId);
     }
 
     [Theory]
     [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
-    public async Task AnAnswerReachesTheInstanceOnAHostThatDidNotSendTheRequest(string profile)
+    public async Task AHostDiesAfterSendingAndRecoverySendsTheSameToken(string profile)
     {
         var mailer = new RecordingMailer();
         await using var cluster = await ClusterAsync(profile, mailer);
-        var sender = cluster.AddHost();
-        var other = cluster.AddHost();
+        // The first host dies after the email went out and before it could save that it did.
+        FaultRepository? dying = null;
+        var first = cluster.AddHost(repository => dying = new FaultRepository(repository)
+        {
+            FailCommit = instance => instance.Status == WorkflowStatus.Running && mailer.Sent.Count > 0
+        });
+        var second = cluster.AddHost();
         var definition = OneApproverRecipe.Definition(TimeSpan.FromHours(4));
         await cluster.Registry.RegisterWorkflowAsync(definition);
+        const string instanceId = "order-15";
 
-        // The host that sent the request is gone; another host takes the answer.
-        var started = await sender.RunAsync(definition, new Order { OrderId = "order-15", Amount = 30 });
-        var answered = await other.ReplyAsync(mailer.To("manager").ReplyToken,
-            new ApprovalDecision { Approved = true, By = "lee" });
+        await Assert.ThrowsAnyAsync<Exception>(() => first.RunAsync(definition,
+            new Order { OrderId = instanceId, Amount = 30 }, new WorkflowOptions { InstanceId = instanceId }));
+        var sent = Assert.Single(mailer.Sent);
 
+        // Another host recovers the instance; the request is sent again under the same token.
+        dying!.FailCommit = _ => false;
+        var recovered = await second.RecoverAsync(instanceId);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
+        Assert.Equal(2, mailer.Sent.Count);
+        Assert.Equal(sent.ReplyToken, mailer.Sent[1].ReplyToken);
+
+        var answered = await second.ReplyAsync(sent.ReplyToken, new ApprovalDecision { Approved = true, By = "lee" });
         EventAssert.Consumed(answered);
-        Assert.Equal(started.InstanceId, answered.InstanceId);
         Assert.Equal("approved", Data<Order>(answered).Outcome);
-        Assert.Single(mailer.Sent);
     }
 
     private static async Task<ConformanceCluster> ClusterAsync(string profile, RecordingMailer? mailer = null,

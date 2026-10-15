@@ -22,8 +22,13 @@ public sealed class ApprovalDecision
     public string By { get; set; } = "";
 }
 
-/// <summary>Asks one approver; the answer can only come back with this request's token.</summary>
-public sealed class RequestApproval(IApprovalMailer mailer) : IRequestActivity<ApprovalDecision>
+/// <summary>
+/// Asks one approver; the answer can only come back with this request's token. If the host dies while
+/// sending, recovery sends the request again: a retry of the step carries the same token, so whichever
+/// email the approver answers, the answer reaches the same wait.
+/// </summary>
+public sealed class RequestApproval(IApprovalMailer mailer) : IRequestActivity<ApprovalDecision>,
+    IRecoverableActivity<bool>
 {
     public string Approver { get; set; } = "";
     public string OrderId { get; set; } = "";
@@ -31,6 +36,12 @@ public sealed class RequestApproval(IApprovalMailer mailer) : IRequestActivity<A
 
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
         mailer.SendAsync(new ApprovalRequest(Approver, OrderId, Amount, context.Reply!.Token), cancellationToken);
+
+    public bool CaptureRecoveryState(IActivityContext context) => true;
+
+    public Task<ActivityRecoveryResult<bool>> RecoverAsync(bool state, IActivityContext context,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<ActivityRecoveryResult<bool>>(new ActivityRecoveryResult<bool>.Execute());
 }
 
 public sealed class Order
