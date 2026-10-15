@@ -80,12 +80,53 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
     // The event is stored without a slot, so a busy owner on this host takes it at its next pass (D-32);
     // then the instance runs in a slot. When another host runs the instance, its owner decides the
     // event, and the caller waits for that decision.
-    private async Task<WorkflowExecutionResult> SendAsync<TEventData>(string instanceId, string? key,
+    private Task<WorkflowExecutionResult> SendAsync<TEventData>(string instanceId, string? key,
         TEventData @event, string eventId, CancellationToken cancellationToken) where TEventData : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(@event);
-        var appended = await host.ReadAsync(client => client.DeliverAsync(instanceId, key, @event, eventId));
+        return DecideAsync(instanceId, eventId,
+            client => client.DeliverAsync(instanceId, key, @event, eventId), cancellationToken);
+    }
+
+    public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply,
+        CancellationToken cancellationToken = default) where TReply : class =>
+        ReplyAsync(token, reply, Guid.NewGuid().ToString("N"), cancellationToken);
+
+    public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply, string eventId,
+        CancellationToken cancellationToken = default) where TReply : class
+    {
+        ArgumentNullException.ThrowIfNull(reply);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
+        if (!ReplyToken.TryRead(token, out var instanceId, out var waitId, out _))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "The text is not a reply token");
+        return DecideAsync(instanceId, eventId,
+            client => client.DeliverReplyAsync(instanceId, waitId, reply, eventId), cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        // A child's waits shown on its parent are answered on the child, where they are listed too.
+        var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(query));
+        return waits.Where(wait => wait.Kind != WaitKind.Child)
+            .Select(wait => new OpenWait(wait.InstanceId, wait.WaitId, wait.Kind, wait.Key, wait.EventType,
+                EventSchema(wait.EventType), wait.DeadlineUtc, wait.OpenedAtUtc,
+                ReplyToken.Create(wait.InstanceId, wait.WaitId)))
+            .ToArray();
+    }
+
+    // The JSON schema of an event type that this process can load, or null.
+    private static string? EventSchema(string typeName) =>
+        WorkflowTypeIdentity.Resolve(typeName) is { } type
+            ? System.Text.Json.Schema.JsonSchemaExporter.GetJsonSchemaAsNode(
+                System.Text.Json.JsonSerializerOptions.Default, type).ToJsonString()
+            : null;
+
+    private async Task<WorkflowExecutionResult> DecideAsync(string instanceId, string eventId,
+        Func<DirectInstanceClient, Task<EventAppendResult>> deliver, CancellationToken cancellationToken)
+    {
+        var appended = await host.ReadAsync(deliver);
         if (await host.ReadAsync(client => client.AnswerAsync(instanceId, eventId, appended)) is { } answered)
             return answered;
         var result = await UntilIdleAsync(host.RunAsync(instanceId,

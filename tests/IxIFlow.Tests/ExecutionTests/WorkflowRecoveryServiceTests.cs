@@ -253,6 +253,14 @@ public sealed class WorkflowRecoveryServiceTests
             string instanceId, string? key, TEventData @event, string eventId,
             CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply,
+            CancellationToken cancellationToken = default) where TReply : class =>
+            throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply, string eventId,
+            CancellationToken cancellationToken = default) where TReply : class =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query) =>
+            throw new NotSupportedException();
         public Task<IReadOnlyList<EventDelivery>> PublishAsync<TEventData>(string key, TEventData @event,
             string eventId, CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
@@ -329,6 +337,14 @@ public sealed class WorkflowRecoveryServiceTests
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
             string instanceId, string? key, TEventData @event, string eventId,
             CancellationToken cancellationToken = default) where TEventData : class =>
+            throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply,
+            CancellationToken cancellationToken = default) where TReply : class =>
+            throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply, string eventId,
+            CancellationToken cancellationToken = default) where TReply : class =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query) =>
             throw new NotSupportedException();
         public Task<IReadOnlyList<EventDelivery>> PublishAsync<TEventData>(string key, TEventData @event,
             string eventId, CancellationToken cancellationToken = default) where TEventData : class =>
