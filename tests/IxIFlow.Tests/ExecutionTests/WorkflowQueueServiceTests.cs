@@ -234,7 +234,7 @@ public sealed class WorkflowQueueServiceTests
         };
         await service.ProcessResumeCommandAsync(first);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
             service.ProcessResumeCommandAsync(new ResumeWorkflowCommand
             {
                 CommandId = first.CommandId,
@@ -438,7 +438,7 @@ public sealed class WorkflowQueueServiceTests
             new InMemoryHostRegistry());
         using var service = new TestQueueService(provider, new RecordingBus(), coordinator);
 
-        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
             service.ProcessCancelCommandAsync(new CancelWorkflowCommand
             {
                 InstanceId = Guid.NewGuid().ToString("N"),

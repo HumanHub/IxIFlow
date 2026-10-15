@@ -132,21 +132,25 @@ internal sealed class SerializedException
     public Exception Restore()
     {
         if (!IsRestorable)
-            throw new InvalidOperationException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Saved exception '{Type}' cannot be restored: {RestorationFailureReason ?? "constructor values were unavailable"}");
         var type = WorkflowTypeIdentity.Resolve(Type);
         if (type == null || !typeof(Exception).IsAssignableFrom(type))
-            throw new InvalidOperationException($"Saved exception type '{Type}' is unavailable");
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Saved exception type '{Type}' is unavailable");
 
         var parameterTypes = Arguments.Select(argument => WorkflowTypeIdentity.Resolve(argument.Type)
-            ?? throw new InvalidOperationException($"Saved constructor type '{argument.Type}' is unavailable"))
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Saved constructor type '{argument.Type}' is unavailable"))
             .ToArray();
         var constructor = type.GetConstructor(parameterTypes)
-            ?? throw new InvalidOperationException($"Saved constructor for '{Type}' is unavailable");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Saved constructor for '{Type}' is unavailable");
         var values = Arguments.Select((argument, index) => argument.InnerException != null
             ? argument.InnerException.Restore()
             : JsonSerializer.Deserialize(argument.Json, parameterTypes[index])).ToArray();
-        return (Exception)constructor.Invoke(values);
+        // A saved failure was raised by workflow code, so it stays that step's failure when restored.
+        return WorkflowEngineException.FromWorkflowCode((Exception)constructor.Invoke(values));
     }
 
     private static bool TryCaptureArguments(Exception error, ConstructorInfo constructor,

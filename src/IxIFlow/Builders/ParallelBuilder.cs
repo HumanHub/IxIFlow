@@ -38,7 +38,8 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
     private void SetJoinMode(ParallelJoinMode mode)
     {
         if (_step.ParallelJoinMode != ParallelJoinMode.WaitAll)
-            throw new InvalidOperationException("The parallel join mode has already been set");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                "The parallel join mode has already been set");
 
         _step.ParallelJoinMode = mode;
     }

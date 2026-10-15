@@ -149,10 +149,10 @@ public class EngineContractRegressionTests
         var definition = Workflow.Create<RegressionData>("OptionsMustBeHonest")
             .Step<MarkChildActivity>().Build();
 
-        await Assert.ThrowsAsync<NotSupportedException>(() =>
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
             engine.ExecuteWorkflowAsync(definition, new RegressionData(),
                 new WorkflowOptions { EnableDebugging = true }));
-        await Assert.ThrowsAsync<NotSupportedException>(() =>
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
             engine.ExecuteWorkflowAsync(definition, new RegressionData(),
                 new WorkflowOptions { WorkflowRetryPolicy = new RetryPolicy(2) }));
         Assert.Empty(await provider.GetRequiredService<IWorkflowStateRepository>()
@@ -243,7 +243,7 @@ public class EngineContractRegressionTests
     {
         using var source = new CancellationTokenSource();
 
-        var error = Assert.Throws<NotSupportedException>(() =>
+        var error = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () =>
             Workflow.Create<RegressionData>("UnsafeCapture")
                 .Step<MarkChildActivity>()
                 .If(ctx => source.IsCancellationRequested,
@@ -927,14 +927,8 @@ public class EngineContractRegressionTests
         await registry.RegisterWorkflowAsync(original);
 
         var replacement = new WorkflowDefinition { Name = "Order", Version = 1, Description = "different graph" };
-        try
-        {
-            await registry.RegisterWorkflowAsync(replacement);
-        }
-        catch (InvalidOperationException)
-        {
-            return;
-        }
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest,
+            () => registry.RegisterWorkflowAsync(replacement));
 
         Assert.Same(original, await registry.GetWorkflowDefinitionAsync("Order", 1));
     }
@@ -1109,23 +1103,36 @@ public class EngineContractRegressionTests
 
     [Trait("Feature", "children")]
     [Fact]
-    public async Task NamedWorkflowInvocation_RejectsAnUnknownVersion()
+    public async Task NamedWorkflowInvocation_WaitsForAnUnknownVersion()
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
 
         var parent = Workflow.Create<RegressionData>("MissingChildParent")
             .Step<MarkChildActivity>()
-            .Invoke<ChildData>("MissingChild", 1, _ => { })
+            .Invoke<ChildData>("MissingChild", 1, setup => setup
+                .Output(data => data.Executed).To(ctx => ctx.WorkflowData.ChildExecuted))
             .Build();
-        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(parent, new RegressionData());
+        var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
+            () => engine.ExecuteWorkflowAsync(parent, new RegressionData()));
+        Assert.Contains("Workflow definition not found: MissingChild v1", error.Message);
+        var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("MissingChildParent"));
+        Assert.NotEqual(WorkflowStatus.Failed, saved.Status);
 
-        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
-        Assert.Contains("Workflow definition not found: MissingChild v1", result.ErrorMessage);
+        await scope.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+            Workflow.Create<ChildData>("MissingChild")
+                .Step<MarkChildActivity>(setup => setup
+                    .Output(a => a.Executed).To(ctx => ctx.WorkflowData.Executed))
+                .Build());
+        var result = await engine.RecoverWorkflowAsync(saved.InstanceId);
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);
     }
 
     private static WorkflowDocument Document(WorkflowStepDocument step) => new()

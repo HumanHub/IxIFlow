@@ -36,10 +36,10 @@ internal sealed class FaultProjection
         {
             var source = FindSourceProperty(exceptionType, target.Name);
             if (source?.GetMethod?.IsPublic != true || source.GetIndexParameters().Length != 0)
-                throw new NotSupportedException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Fault '{faultType.Name}.{target.Name}' has no matching public property on '{exceptionType.Name}'");
             if (source.PropertyType != target.PropertyType)
-                throw new NotSupportedException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Fault '{faultType.Name}.{target.Name}' has type '{target.PropertyType.Name}', " +
                     $"but '{exceptionType.Name}.{source.Name}' has type '{source.PropertyType.Name}'");
             return (target, source);
@@ -85,16 +85,17 @@ internal sealed class FaultProjection
         if (savedFault?.Type == _faultType.AssemblyQualifiedName &&
             error.FaultCatchType == _exceptionType.AssemblyQualifiedName)
             return JsonSerializer.Deserialize(savedFault.Json, _faultType)
-                ?? throw new InvalidOperationException($"Saved fault '{_faultType.Name}' could not be restored");
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    $"Saved fault '{_faultType.Name}' could not be restored");
 
         var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         foreach (var (target, source) in _properties)
         {
             if (!error.Properties.TryGetValue(PropertyKey(source), out var saved))
-                throw new InvalidOperationException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Saved exception property '{source.Name}' is unavailable for fault '{_faultType.Name}'");
             if (saved.Error != null)
-                throw new InvalidOperationException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Saved exception property '{source.Name}' cannot be projected: {saved.Error}");
             values[target.Name] = JsonSerializer.Deserialize(saved.Json ?? "null", target.PropertyType);
         }
@@ -115,9 +116,11 @@ internal sealed class FaultProjection
 
         var json = JsonSerializer.Serialize(fault, _faultType);
         var restored = JsonSerializer.Deserialize(json, _faultType)
-            ?? throw new InvalidOperationException($"Fault '{_faultType.Name}' could not be restored");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"Fault '{_faultType.Name}' could not be restored");
         if (JsonSerializer.Serialize(restored, _faultType) != json)
-            throw new InvalidOperationException($"Fault '{_faultType.Name}' does not survive a JSON round trip");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Fault '{_faultType.Name}' does not survive a JSON round trip");
         return restored;
     }
 
@@ -129,22 +132,24 @@ internal sealed class FaultProjection
         var marked = constructors.Where(candidate =>
             candidate.GetCustomAttribute<JsonConstructorAttribute>() != null).ToArray();
         if (marked.Length > 1)
-            throw new NotSupportedException($"Fault '{type.Name}' has more than one JSON constructor");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Fault '{type.Name}' has more than one JSON constructor");
         var constructor = marked.SingleOrDefault() ??
             constructors.FirstOrDefault(candidate => candidate.GetParameters().Length == 0) ??
             (constructors.Length == 1 ? constructors[0] : null);
         if (constructor == null)
-            throw new NotSupportedException($"Fault '{type.Name}' needs one usable public constructor");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Fault '{type.Name}' needs one usable public constructor");
         foreach (var parameter in constructor.GetParameters())
             if (!properties.Any(property =>
                     string.Equals(property.Name, parameter.Name, StringComparison.OrdinalIgnoreCase) &&
                     property.PropertyType == parameter.ParameterType))
-                throw new NotSupportedException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Fault constructor parameter '{type.Name}.{parameter.Name}' needs a matching property");
         foreach (var property in properties)
             if (property.SetMethod?.IsPublic != true && !constructor.GetParameters().Any(parameter =>
                     string.Equals(property.Name, parameter.Name, StringComparison.OrdinalIgnoreCase)))
-                throw new NotSupportedException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Fault property '{type.Name}.{property.Name}' must be writable or constructor-bound");
         return constructor;
     }
@@ -177,16 +182,19 @@ internal sealed class FaultProjection
             typeof(MemberInfo).IsAssignableFrom(type) || type.IsPointer || type.IsByRef ||
             type.ContainsGenericParameters || type.Namespace?.StartsWith("System", StringComparison.Ordinal) == true ||
             !seen.Add(type))
-            throw new NotSupportedException($"Fault value type '{type.FullName}' cannot be checkpointed");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Fault value type '{type.FullName}' cannot be checkpointed");
         var properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public)
             .Where(property => property.GetMethod?.IsPublic == true).ToArray();
         if (properties.Length == 0 || type.GetFields(BindingFlags.Instance | BindingFlags.Public).Length != 0)
-            throw new NotSupportedException($"Fault '{type.Name}' needs public properties and no public fields");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Fault '{type.Name}' needs public properties and no public fields");
         foreach (var property in properties)
         {
             if (property.GetIndexParameters().Length != 0 ||
                 property.GetCustomAttribute<JsonIgnoreAttribute>() != null)
-                throw new NotSupportedException($"Fault property '{type.Name}.{property.Name}' cannot be checkpointed");
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Fault property '{type.Name}.{property.Name}' cannot be checkpointed");
             ValidateValueType(property.PropertyType, seen);
         }
         SelectConstructor(type, properties);

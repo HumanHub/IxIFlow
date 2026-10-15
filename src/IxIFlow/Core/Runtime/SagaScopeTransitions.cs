@@ -58,7 +58,7 @@ internal static class SagaScopeTransitions
                     if (state.RetryCount >= state.MaximumRetries)
                     {
                         owner.SagaState = null;
-                        throw new InvalidOperationException("Saga retry exhausted", error);
+                        throw Terminated("retry exhausted", error);
                     }
                     state.RetryCount++;
                     var retryConfiguration = step.CatchBlocks[state.ErrorHandlerIndex]
@@ -82,8 +82,7 @@ internal static class SagaScopeTransitions
             owner.SagaState = null;
             owner.NextStepIndex++;
             if (compensationErrors.Count > 0)
-                throw new InvalidOperationException(
-                    $"Saga compensation failed: {string.Join("; ", compensationErrors)}", error);
+                throw Terminated($"compensation failed: {string.Join("; ", compensationErrors)}", error);
             if (state.ErrorAction == SagaContinuationAction.Terminate && error != null)
                 throw new SagaTerminatedException("Error policy requested termination", error);
             if (error != null)
@@ -106,6 +105,10 @@ internal static class SagaScopeTransitions
             RestorePreviousOnExit = true
         });
     }
+
+    // A saga that cannot recover ends as the saga's own failure, which a surrounding Catch can handle.
+    private static SagaTerminatedException Terminated(string reason, Exception? error) =>
+        error == null ? new SagaTerminatedException(reason) : new SagaTerminatedException(reason, error);
 
     public static void CompleteForwardActivity(WorkflowScopeCatalog scopes,
         ContinuationState continuation, WorkflowStep activity, object? output,

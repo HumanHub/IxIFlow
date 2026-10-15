@@ -3,6 +3,7 @@ using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
+using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -88,7 +89,7 @@ public sealed class WorkflowRegistrationTests
             new RegistrationEvent());
         Assert.True(resumed.Status == WorkflowExecutionStatus.Success, resumed.ErrorMessage);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable, () =>
             engine.ExecuteWorkflowAsync(definition, new RegistrationData()));
     }
 

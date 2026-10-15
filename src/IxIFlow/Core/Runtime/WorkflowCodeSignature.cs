@@ -57,13 +57,13 @@ internal static class WorkflowCodeSignature
             catch (Exception error) when (error is NotSupportedException or
                 System.Text.Json.JsonException)
             {
-                throw new NotSupportedException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Captured value of type '{runtimeType.FullName}' cannot be fingerprinted; " +
                     "capture serializable values instead", error);
             }
         }
         if (depth >= 8 || !visited.Add(value))
-            throw new NotSupportedException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 "Captured closure is recursive or too deep to fingerprint");
         try
         {

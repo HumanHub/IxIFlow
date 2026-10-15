@@ -34,7 +34,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         _versionRegistry = versionRegistry ?? throw new ArgumentNullException(nameof(versionRegistry));
-        _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+        _repository = GuardedStateRepository.Wrap(repository ?? throw new ArgumentNullException(nameof(repository)));
     }
 
     /// <summary>
@@ -65,7 +65,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                     .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IWorkflow<>));
 
                 if (workflowInterface == null)
-                    throw new InvalidOperationException(
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                         $"Workflow type {step.WorkflowType} does not implement IWorkflow<>");
 
                 childWorkflowDataType = workflowInterface.GetGenericArguments()[0];
@@ -77,20 +77,22 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             else
             {
                 if (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowVersion == null)
-                    throw new InvalidOperationException($"Workflow reference is incomplete for step {step.Id}");
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"Workflow reference is incomplete for step {step.Id}");
 
                 registeredDefinition = await _versionRegistry.GetWorkflowDefinitionAsync(step.WorkflowName, step.WorkflowVersion.Value)
-                    ?? throw new InvalidOperationException(
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                         $"Workflow definition not found: {step.WorkflowName} v{step.WorkflowVersion}");
                 childWorkflowDataType = registeredDefinition.WorkflowDataType
-                    ?? throw new InvalidOperationException($"Workflow {step.WorkflowName} has no data type");
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"Workflow {step.WorkflowName} has no data type");
             }
 
             var savedChild = await _repository.GetWorkflowInstanceAsync(invocationId);
             if (savedChild == null)
             {
                 childWorkflowData = Activator.CreateInstance(childWorkflowDataType)
-                                    ?? throw new InvalidOperationException(
+                                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                                         $"Failed to create instance of {childWorkflowDataType}");
                 await ApplyInputMappingsAsync(childWorkflowData, step.InputMappings, context,
                     context.PreviousStepData, step.PreviousStepDataType, cancellationToken);
@@ -98,7 +100,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             else
             {
                 childWorkflowData = JsonSerializer.Deserialize(savedChild.WorkflowDataJson,
-                    childWorkflowDataType) ?? throw new InvalidOperationException(
+                    childWorkflowDataType) ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Saved child workflow data for '{invocationId}' cannot be read");
             }
 
@@ -115,7 +117,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                 var childWorkflow = ActivatorUtilities.GetServiceOrCreateInstance(
                     _serviceProvider, step.WorkflowType);
                 if (childWorkflow == null)
-                    throw new InvalidOperationException(
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                         $"Failed to create workflow instance of type {step.WorkflowType}");
 
                 // Create builder and get definition
@@ -123,7 +125,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                 var workflowInterface = step.WorkflowType.GetInterfaces().First(i =>
                     i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IWorkflow<>));
                 var workflowVersion = (int)(workflowInterface.GetProperty("Version")!
-                    .GetValue(childWorkflow) ?? throw new InvalidOperationException(
+                    .GetValue(childWorkflow) ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Workflow {step.WorkflowType} has no version"));
                 var builder = Activator.CreateInstance(builderType, step.WorkflowName ?? step.WorkflowType.Name,
                     step.WorkflowVersion ?? workflowVersion);
@@ -131,7 +133,8 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                 // Call Build method on the workflow
                 var buildMethod = step.WorkflowType.GetMethod("Build");
                 if (buildMethod == null)
-                    throw new InvalidOperationException($"Workflow {step.WorkflowType} does not have a Build method");
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"Workflow {step.WorkflowType} does not have a Build method");
 
                 buildMethod.Invoke(childWorkflow, new[] { builder });
 
@@ -139,7 +142,8 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                 var buildDefinitionMethod = builderType.GetMethod("Build",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                 if (buildDefinitionMethod == null)
-                    throw new InvalidOperationException($"Builder {builderType} does not have a Build method");
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"Builder {builderType} does not have a Build method");
 
                 childWorkflowDefinition = (WorkflowDefinition)buildDefinitionMethod.Invoke(builder, null)!;
                 var published = await _versionRegistry.GetWorkflowDefinitionAsync(
@@ -148,7 +152,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                 {
                     if (new WorkflowScopeCatalog(published).Fingerprint !=
                         new WorkflowScopeCatalog(childWorkflowDefinition).Fingerprint)
-                        throw new InvalidOperationException(
+                        throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                             $"Workflow {childWorkflowDefinition.Name} v{childWorkflowDefinition.Version} " +
                             "differs from its registered definition");
                     childWorkflowDefinition = published;
@@ -173,9 +177,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
 
             // Execute child workflow using generic method
             var executeMethod = GetType().GetMethod(nameof(ExecuteChildWorkflowAsync),
-                BindingFlags.NonPublic | BindingFlags.Instance);
-            if (executeMethod == null)
-                throw new InvalidOperationException("ExecuteChildWorkflowAsync method not found");
+                BindingFlags.NonPublic | BindingFlags.Instance)!;
 
             var genericExecuteMethod = executeMethod.MakeGenericMethod(childWorkflowDataType);
             var childResult = await (Task<WorkflowExecutionResult>)genericExecuteMethod.Invoke(this,
@@ -251,7 +253,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                 ChildInstanceId = invocationId
             };
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!WorkflowEngineException.IsEngineFailure(ex))
         {
             _logger.LogError(ex, "Workflow invocation step failed: {StepId}", step.Id);
 
@@ -415,7 +417,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             // Create WorkflowContext<TWorkflowData, TPreviousStepData>
             var previousStepDataType = previousStepType ?? previousStepData.GetType();
             if (!previousStepDataType.IsInstanceOfType(previousStepData))
-                throw new InvalidOperationException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Previous step value does not match the declared type '{previousStepDataType}'");
             var contextType = typeof(WorkflowContext<,>).MakeGenericType(typeof(TWorkflowData), previousStepDataType);
 
