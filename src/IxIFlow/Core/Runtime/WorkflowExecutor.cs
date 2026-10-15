@@ -34,6 +34,11 @@ internal sealed class WorkflowExecutor
         // Set when a step hit a resource limit: the run starts nothing new and stops once its
         // running activities are committed (D-28).
         string? limitStop = null;
+        var limitHitWhileCancelling = false;
+        // Continuations that found the activity cap full, in the order they first waited, so a
+        // freed permit goes to the one that has waited longest rather than the first in the list.
+        var waitingForActivity = new Dictionary<string, long>(StringComparer.Ordinal);
+        long waitOrder = 0;
         // A saved wait, a completed join or a branch stopped for resolution must be committed
         // before the run blocks or ends; the next commit of any kind covers it (A-04).
         var uncommitted = new UncommittedBoundary();
@@ -68,6 +73,10 @@ internal sealed class WorkflowExecutor
                         clearsCrashCount: progressed);
                 await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
                     scopes, host, host.ObservedCancellation);
+                // A tree cancelled after the limit was hit never runs the step that hit it; it unwinds
+                // instead. A limit hit by cleanup code during cancellation still stops.
+                if (limitStop != null && checkpoint.CancellationRequested && !limitHitWhileCancelling)
+                    limitStop = null;
                 await SignalCancellationsAsync(inFlight, uncommitted, host, instance, checkpoint, workflowData,
                     scopes);
 
@@ -110,11 +119,20 @@ internal sealed class WorkflowExecutor
                     // the rest keep advancing (B-09).
                     var activitiesFull = inFlight.Values.Count(item =>
                         item.Step.StepType == WorkflowStepType.Activity) >= host.Limits.MaxActivitiesPerRun;
-                    var runnable = checkpoint.Continuations.FirstOrDefault(item =>
+                    var ready = checkpoint.Continuations.Where(item =>
                         item.Status == ContinuationStatus.Active &&
                         !inFlight.ContainsKey(item.Id) &&
-                        (item.RetryAfterUtc == null || item.RetryAfterUtc <= Now) &&
-                        !(activitiesFull && NextStep(scopes, item)?.StepType == WorkflowStepType.Activity));
+                        (item.RetryAfterUtc == null || item.RetryAfterUtc <= Now)).ToList();
+                    var runnable = activitiesFull
+                        ? ready.FirstOrDefault(item => NextStep(scopes, item)?.StepType != WorkflowStepType.Activity)
+                        : ready.Where(item => waitingForActivity.ContainsKey(item.Id))
+                              .MinBy(item => waitingForActivity[item.Id]) ?? ready.FirstOrDefault();
+                    if (activitiesFull)
+                        foreach (var waiting in ready.Where(item =>
+                                     NextStep(scopes, item)?.StepType == WorkflowStepType.Activity))
+                            waitingForActivity.TryAdd(waiting.Id, waitOrder++);
+                    if (runnable != null)
+                        waitingForActivity.Remove(runnable.Id);
                     if (runnable == null)
                         break;
                     runnable.RetryAfterUtc = null;
@@ -164,6 +182,7 @@ internal sealed class WorkflowExecutor
                         {
                             // Nothing was forked; the parallel step runs after a release.
                             limitStop = limit.Message;
+                            limitHitWhileCancelling = checkpoint.CancellationRequested;
                             break;
                         }
                         catch (Exception error)

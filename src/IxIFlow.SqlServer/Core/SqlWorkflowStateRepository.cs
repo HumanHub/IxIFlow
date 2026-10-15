@@ -110,13 +110,20 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             ? throw new ArgumentException("A SQL Server connection string is required", nameof(connectionString))
             : connectionString;
         ArgumentOutOfRangeException.ThrowIfLessThan(ownershipPoolSize, 1);
-        // A different application name keeps a separate pool in the client.
+        // A different application name keeps a separate pool in the client; names are at most 128.
         var ownership = new SqlConnectionStringBuilder(connectionString);
-        ownership.ApplicationName = $"{ownership.ApplicationName} IxIFlow ownership".Trim();
+        const string suffix = " IxIFlow ownership";
+        var name = ownership.ApplicationName ?? "";
+        ownership.ApplicationName =
+            (name.Length > 128 - suffix.Length ? name[..(128 - suffix.Length)] : name) + suffix;
         ownership.MaxPoolSize = ownershipPoolSize;
         ownership.MinPoolSize = Math.Min(ownership.MinPoolSize, ownershipPoolSize);
         _ownershipConnectionString = ownership.ConnectionString;
+        // A burst of claims that wait on commit locks must leave connections for renewals.
+        _claims = new SemaphoreSlim(Math.Max(1, ownershipPoolSize / 2));
     }
+
+    private readonly SemaphoreSlim _claims;
 
     private readonly string _ownershipConnectionString;
 
@@ -196,6 +203,19 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         var milliseconds = LeaseMilliseconds(instanceId, token, duration);
         await EnsureSchemaAsync();
+        await _claims.WaitAsync();
+        try
+        {
+            return await ClaimAsync(instanceId, token, milliseconds);
+        }
+        finally
+        {
+            _claims.Release();
+        }
+    }
+
+    private async Task<ExecutionLeaseGrant?> ClaimAsync(string instanceId, string token, int milliseconds)
+    {
         await using var connection = await OpenOwnershipConnectionAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
         // The instance row is locked before the lease row, in the same order as a commit. No range
