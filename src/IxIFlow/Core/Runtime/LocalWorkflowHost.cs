@@ -37,8 +37,13 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     // earliest (C-12). Work saved by other hosts, and anything lost here, is found by the poll.
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
-    private readonly SortedSet<(DateTime Due, string InstanceId)> _due = [];
+    private readonly SortedSet<(DateTime Due, string InstanceId)> _due = new(Comparer<(DateTime Due, string InstanceId)>
+        .Create((left, right) => left.Due != right.Due
+            ? left.Due.CompareTo(right.Due)
+            : string.CompareOrdinal(left.InstanceId, right.InstanceId)));
     private readonly Dictionary<string, DateTime> _dueOf = new(StringComparer.Ordinal);
+    // Resumes that found the instance owned or failed, by instance, for their backoff.
+    private readonly Dictionary<string, int> _resumeRetries = new(StringComparer.Ordinal);
     private ITimer? _timer;
     private DateTime? _armedFor;
 
@@ -50,14 +55,19 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
         _slots = new SemaphoreSlim(settings.Slots, settings.Slots);
         _time = time ?? TimeProvider.System;
         _logger = logger ?? NullLogger<LocalWorkflowHost>.Instance;
+        // The timer must not carry the context of whoever first scheduled something: its callbacks
+        // would then look like calls from inside that run.
+        using (ExecutionContext.SuppressFlow())
+            _timer = _time.CreateTimer(_ => ResumeDue(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
     /// <summary>Slots not running anything now; the poll claims at most this many instances.</summary>
     public int FreeSlots => _slots.CurrentCount;
 
     /// <summary>
-    /// Resumes an instance at <paramref name="dueUtc"/>. The latest time given for an instance
-    /// replaces the one before.
+    /// Resumes an instance at <paramref name="dueUtc"/>, or earlier if an earlier time is already
+    /// known for it. Keeping the earliest never loses a wake-up, such as a cancellation's, to a
+    /// stale later time; a wake-up that finds nothing due is a cheap rejected recovery.
     /// </summary>
     public void Schedule(string instanceId, DateTime dueUtc)
     {
@@ -65,20 +75,40 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
         {
             if (!_accepting)
                 return;
-            if (_dueOf.Remove(instanceId, out var previous))
+            if (_dueOf.TryGetValue(instanceId, out var previous))
+            {
+                if (previous <= dueUtc)
+                    return;
                 _due.Remove((previous, instanceId));
+            }
             _dueOf[instanceId] = dueUtc;
             _due.Add((dueUtc, instanceId));
             ArmLocked();
         }
     }
 
+    /// <summary>Forgets an instance that has finished; nothing will be due for it.</summary>
+    public void Unschedule(string instanceId)
+    {
+        lock (_lock)
+        {
+            _resumeRetries.Remove(instanceId);
+            if (_dueOf.Remove(instanceId, out var previous))
+            {
+                _due.Remove((previous, instanceId));
+                ArmLocked();
+            }
+        }
+    }
+
     // Caller holds _lock.
     private void ArmLocked()
     {
+        if (_timer == null)
+            return;
         if (_due.Count == 0)
         {
-            _timer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            _timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             _armedFor = null;
             return;
         }
@@ -90,7 +120,6 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
         // A timer cannot wait arbitrarily long; a far time is re-armed when the timer fires.
         delay = delay < TimeSpan.Zero ? TimeSpan.Zero
             : delay > TimeSpan.FromHours(1) ? TimeSpan.FromHours(1) : delay;
-        _timer ??= _time.CreateTimer(_ => ResumeDue(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         _timer.Change(delay, Timeout.InfiniteTimeSpan);
     }
 
@@ -118,18 +147,45 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     // Goes through the same queue and slots as every other call.
     private async Task ResumeAsync(string instanceId)
     {
+        WorkflowExecutionResult? result = null;
         try
         {
-            await RunAsync(instanceId, (client, _, token) => client.RecoverAsync(instanceId, token),
+            result = await RunAsync(instanceId, (client, _, token) => client.RecoverAsync(instanceId, token),
                 CancellationToken.None);
         }
         catch (OperationCanceledException)
         {
             // The host is stopping; the instance stays runnable in the store.
+            return;
         }
         catch (Exception error)
         {
             _logger.LogError(error, "Could not resume workflow {InstanceId} at its runnable time", instanceId);
+        }
+        lock (_lock)
+        {
+            // An owner held it, or the resume failed: look again after a backoff. An owner that
+            // finishes reschedules the instance itself.
+            if (result == null || result.Status == WorkflowExecutionStatus.Running)
+            {
+                var attempt = _resumeRetries.GetValueOrDefault(instanceId);
+                _resumeRetries[instanceId] = attempt + 1;
+                var backoff = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(attempt, 5))));
+                if (_accepting)
+                {
+                    var due = _time.GetUtcNow().UtcDateTime + backoff;
+                    if (!_dueOf.TryGetValue(instanceId, out var previous) || previous > due)
+                    {
+                        if (_dueOf.Remove(instanceId, out previous))
+                            _due.Remove((previous, instanceId));
+                        _dueOf[instanceId] = due;
+                        _due.Add((due, instanceId));
+                        ArmLocked();
+                    }
+                }
+            }
+            else
+                _resumeRetries.Remove(instanceId);
         }
     }
 
@@ -258,6 +314,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
                 control.Drain = _draining.Token;
                 control.OnInstanceKnown(instanceId => Register(item, instanceId));
                 control.OnScheduled(Schedule);
+                control.OnUnscheduled(Unschedule);
                 var client = scope.ServiceProvider.GetRequiredService<DirectInstanceClient>();
                 context = new RunContext(client, control);
                 CurrentRun.Value = context;
@@ -384,6 +441,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
             // Due instances stay runnable in the store for the next host.
             _due.Clear();
             _dueOf.Clear();
+            _resumeRetries.Clear();
             _timer?.Dispose();
             _timer = null;
         }
@@ -565,6 +623,13 @@ internal sealed class RunControl
     public void OnScheduled(Action<string, DateTime> scheduled) => _scheduled = scheduled;
 
     public void Schedule(string instanceId, DateTime dueUtc) => _scheduled?.Invoke(instanceId, dueUtc);
+
+    private Action<string>? _unscheduled;
+
+    /// <summary>Called when a run in this scope finishes an instance, so nothing is due for it.</summary>
+    public void OnUnscheduled(Action<string> unscheduled) => _unscheduled = unscheduled;
+
+    public void Unschedule(string instanceId) => _unscheduled?.Invoke(instanceId);
 
     /// <summary>Cancelled when the host drains; runs stop starting new steps.</summary>
     public CancellationToken Drain { get; set; }

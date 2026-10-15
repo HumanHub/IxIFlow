@@ -94,9 +94,12 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
         CancellationToken cancellationToken)
     {
         var result = await run;
-        return result.Status == WorkflowExecutionStatus.Scheduled
-            ? await AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Idle, cancellationToken)
-            : result;
+        if (result.Status != WorkflowExecutionStatus.Scheduled)
+            return result;
+        var idle = await AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Idle, cancellationToken);
+        // The event was taken before the park; the later result must still say so.
+        idle.EventAccepted = result.EventAccepted;
+        return idle;
     }
 
     /// <summary>

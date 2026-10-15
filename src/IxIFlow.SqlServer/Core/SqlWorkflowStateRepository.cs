@@ -138,7 +138,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             SET CancellationJson = COALESCE(CancellationJson, @ReasonJson),
                 CancellationAcknowledged = CASE WHEN CancellationJson IS NULL
                     THEN 0 ELSE CancellationAcknowledged END,
-                RunnableAtUtc = SYSUTCDATETIME()
+                RunnableAtUtc = CASE WHEN CancellationJson IS NULL OR CancellationAcknowledged = 0
+                    THEN SYSUTCDATETIME() ELSE RunnableAtUtc END
             WHERE InstanceId = @InstanceId AND Status IN ('Running', 'Suspended', 'NeedsResolution')
             """, new { InstanceId = instanceId, ReasonJson = JsonSerializer.Serialize(reason) });
         return changed == 1;
@@ -630,7 +631,19 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'SuspensionId') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD SuspensionId NVARCHAR(100) NULL;
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'RunnableAtUtc') IS NULL
+                BEGIN
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD RunnableAtUtc DATETIME2 NULL;
+                    -- Rows saved before the runnable time existed: running ones are runnable now,
+                    -- idle ones at their earlier due time.
+                    IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'NextDueAtUtc') IS NOT NULL
+                        EXEC(N'UPDATE dbo.IxIFlowWorkflowInstances
+                            SET RunnableAtUtc = CASE WHEN Status = ''Running'' THEN SYSUTCDATETIME()
+                                ELSE NextDueAtUtc END
+                            WHERE Status IN (''Running'', ''Suspended'', ''NeedsResolution'')');
+                    ELSE
+                        EXEC(N'UPDATE dbo.IxIFlowWorkflowInstances SET RunnableAtUtc = SYSUTCDATETIME()
+                            WHERE Status = ''Running''');
+                END
                 IF NOT EXISTS (SELECT 1 FROM sys.indexes
                     WHERE name = N'IX_IxIFlowWorkflowInstances_Runnable'
                       AND object_id = OBJECT_ID(N'dbo.IxIFlowWorkflowInstances'))

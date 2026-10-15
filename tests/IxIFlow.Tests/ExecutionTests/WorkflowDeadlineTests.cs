@@ -282,13 +282,28 @@ public sealed class WorkflowDeadlineTests
     public async Task TimedWaitInFinallyCompletesExecutionTimeout()
     {
         using var services = Services();
-        var definition = CleanupWaitWorkflow("DeadlineCleanupTimeout");
+        var definition = CleanupWaitWorkflow("DeadlineCleanupTimeout", TimeSpan.FromMilliseconds(800));
         var engine = services.GetRequiredService<IWorkflowClient>();
+        var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var started = await engine.RunAsync(definition, new ApprovalData(),
             new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(80) });
 
-        // The host wakes the instance at its deadline, into the cleanup wait, and again when the
-        // cleanup wait times out.
+        // The host wakes the instance at its deadline; it then waits in its cleanup wait.
+        var deadline = DateTime.UtcNow + Patience;
+        while (true)
+        {
+            var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
+            if (saved!.Status == WorkflowStatus.Suspended &&
+                ExecutionCheckpoint.Read(saved.ExecutionStateJson).TimedOut)
+            {
+                Assert.False(JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.After);
+                break;
+            }
+            Assert.True(DateTime.UtcNow < deadline, "The instance did not stop in its cleanup wait");
+            await Task.Delay(10);
+        }
+
+        // The cleanup wait times out and the instance ends.
         var result = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(Patience);
 
@@ -296,12 +311,12 @@ public sealed class WorkflowDeadlineTests
         Assert.True(Assert.IsType<ApprovalData>(result.WorkflowData).After);
     }
 
-    private static WorkflowDefinition CleanupWaitWorkflow(string name) =>
+    private static WorkflowDefinition CleanupWaitWorkflow(string name, TimeSpan? cleanupTimeout = null) =>
         Workflow.Create<ApprovalData>(name)
             .Step<SeedActivity>()
             .Try(body => body.WaitFor<Approval>("start"))
             .Finally(body => body.WaitFor<Approval>("cleanup", configure: wait => wait
-                .TimeoutAfter(TimeSpan.FromMilliseconds(80))
+                .TimeoutAfter(cleanupTimeout ?? TimeSpan.FromMilliseconds(80))
                 .OnTimeout(path => path.Step<AfterActivity>(step => step
                     .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After)))))
             .Build();
