@@ -44,9 +44,6 @@ public static class ServiceCollectionExtensions
         
         // Suspension management
         services.AddScoped<ISuspensionManager, SuspensionManager>();
-        
-        // Workflow event management
-
         return services;
     }
 
@@ -335,14 +332,4 @@ public class IxIFlowOptions
     /// Custom workflow tracer implementation
     /// </summary>
     public Type? UseCustomTracer { get; set; }
-
-    /// <summary>
-    /// Whether to enable detailed logging
-    /// </summary>
-    public bool EnableDetailedLogging { get; set; } = false;
-
-    /// <summary>
-    /// Whether to persist workflow state by default
-    /// </summary>
-    public bool PersistStateByDefault { get; set; } = true;
 }

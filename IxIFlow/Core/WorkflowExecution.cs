@@ -209,11 +209,6 @@ public class WorkflowOptions
     // ========== IMMEDIATE EXECUTION CONTROLS ==========
 
     /// <summary>
-    ///     Execute immediately, bypassing the normal queue
-    /// </summary>
-    public bool ExecuteImmediately { get; set; } = false;
-
-    /// <summary>
     ///     Force execution even if host is at capacity (emergency execution)
     /// </summary>
     public bool OverrideCapacityLimit { get; set; } = false;

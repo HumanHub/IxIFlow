@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Extensions;
 using IxIFlow.Tests.ExecutionTests.Models;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -11,33 +12,23 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class SuspendResumeExecutionTests
 {
     private readonly ServiceProvider _serviceProvider;
-    private readonly WorkflowEngine _workflowEngine;
+    private readonly IWorkflowEngine _workflowEngine;
     private readonly IWorkflowStateRepository _stateRepository;
 
     public SuspendResumeExecutionTests()
     {
         var services = new ServiceCollection();
 
-        // Register interfaces for WorkflowEngine dependencies
-        services.AddSingleton<IActivityExecutor, ActivityExecutor>();
-        services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
-        services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
-        services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
-        services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
-
-        // Register event management services
-        services.AddSingleton<IEventCorrelator, EventCorrelator>();
-
         // Register mock implementations for persistence dependencies
         services.AddSingleton<IWorkflowStateRepository, MockWorkflowStateRepository>();
 
-        // Register the main engine
-        services.AddSingleton<WorkflowEngine>();
+        // Register IxIFlow
+        services.AddIxIFlow();
 
         services.AddLogging();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<WorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
         _stateRepository = _serviceProvider.GetRequiredService<IWorkflowStateRepository>();
     }
 

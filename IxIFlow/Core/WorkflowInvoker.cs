@@ -288,8 +288,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
     where TChildWorkflowData : class
     {
         // Get the workflow engine from DI
-        var workflowEngine = _serviceProvider.GetService<IWorkflowEngine>()
-            ?? _serviceProvider.GetRequiredService<WorkflowEngine>();
+        var workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
 
         // Create child workflow options
         var childOptions = new WorkflowOptions
