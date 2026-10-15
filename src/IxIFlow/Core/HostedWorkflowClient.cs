@@ -137,7 +137,7 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
         // A running instance may be parked with nobody to notice the request; resume it now. If an
         // owner holds it, the recovery answers busy and the owner unwinds.
         if (requested.Status == WorkflowExecutionStatus.Running)
-            host.Schedule(instanceId, DateTime.MinValue);
+            host.WakeNow(instanceId);
         return requested;
     }
 

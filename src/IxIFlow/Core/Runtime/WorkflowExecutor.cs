@@ -231,15 +231,13 @@ internal sealed class WorkflowExecutor
                 var runningTasks = inFlight.Values.Select(item => (Task)item.Task).ToList();
                 using var retryTimerCancellation = new CancellationTokenSource();
                 Task? retryTimer = null;
-                var nextWake = new[] { nextRetry,
-                        inFlight.Count > 0 ? nextWaitDeadline : null,
+                // A sibling's wait deadline may come before a retry; the run wakes for whichever is first.
+                var nextWake = new[] { nextRetry, nextWaitDeadline,
                         checkpoint.CancellationRequested ? null : checkpoint.ExecutionDeadlineUtc }
                     .Where(due => due != null).Min();
                 // With nothing in flight, a long wait for a retry gives the slot and lease back; the
                 // host resumes the run on time (C-03). A request that arrived meanwhile keeps it here.
-                // A sibling's wait deadline may come before the retry; the park ends at whichever is first.
-                if (inFlight.Count == 0 && host.CanPark &&
-                    new[] { nextWake, nextWaitDeadline }.Where(due => due != null).Min() is { } parkUntil &&
+                if (inFlight.Count == 0 && host.CanPark && nextWake is { } parkUntil &&
                     parkUntil - Now > host.Limits.ParkRetriesLongerThan)
                 {
                     if (await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData,

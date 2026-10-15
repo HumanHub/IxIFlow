@@ -716,9 +716,8 @@ internal sealed class InstanceHost(
                 result.Status is WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended or
                     WorkflowExecutionStatus.NeedsResolution)
                 _control.Schedule(instance.InstanceId, due);
-            else if (persistState && result.Status is WorkflowExecutionStatus.Success or
-                         WorkflowExecutionStatus.Failed or WorkflowExecutionStatus.Cancelled or
-                         WorkflowExecutionStatus.TimedOut)
+            else if (persistState && instance.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
+                         WorkflowStatus.Cancelled or WorkflowStatus.TimedOut or WorkflowStatus.Terminated)
                 _control.Unschedule(instance.InstanceId);
             return result;
         }
