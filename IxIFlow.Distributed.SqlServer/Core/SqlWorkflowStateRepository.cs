@@ -188,6 +188,18 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         return changed == 1;
     }
 
+    public async Task MakeRunnableAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        await connection.ExecuteAsync("""
+            UPDATE dbo.IxIFlowWorkflowInstances
+            SET NextDueAtUtc = SYSUTCDATETIME()
+            WHERE InstanceId = @InstanceId AND Status = 'Suspended'
+            """, new { InstanceId = instanceId });
+    }
+
     public async Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);

@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.Conformance;
@@ -101,6 +102,44 @@ public sealed class CoreScenarios
         Assert.NotEqual(WorkflowExecutionStatus.Success, resumed.Status);
         var saved = await cluster.GetInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Cancelled, saved!.Status);
+    }
+
+    [Theory]
+    [Trait("Spec", "D-06")]
+    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    public async Task EventOnAnotherHostCompletesChildAndWakesParent(string profile)
+    {
+        // The child's event arrives on a second host, as a webhook landing on another machine would.
+        await using var cluster = await CreateClusterAsync(profile);
+        var engine = cluster.AddHost();
+        var receivingHost = cluster.AddHost();
+        var child = Workflow.Create<CounterData>("ConformanceChild")
+            .Step<NoopActivity>()
+            .WaitFor<Approval>("approval")
+            .Step<IncrementActivity>(step => step
+                .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Count)
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Count))
+            .Build();
+        var parent = Workflow.Create<CounterData>("ConformanceParent")
+            .Step<NoopActivity>()
+            .Invoke<CounterData>("ConformanceChild", 1, step => step
+                .Output(data => data.Count).To(ctx => ctx.WorkflowData.Count))
+            .Build();
+        await cluster.Registry.RegisterWorkflowAsync(child);
+        await cluster.Registry.RegisterWorkflowAsync(parent);
+        var started = await engine.ExecuteWorkflowAsync(parent, new CounterData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        var childId = ExecutionCheckpoint.Read((await cluster.GetInstanceAsync(started.InstanceId))!.ExecutionStateJson)
+            .Continuations.Single(item => item.PendingActivity?.ChildWorkflowId != null)
+            .PendingActivity!.ChildWorkflowId!;
+
+        var childResult = await receivingHost.ResumeWorkflowAsync(childId, "approval", new Approval());
+        Assert.Equal(WorkflowExecutionStatus.Success, childResult.Status);
+        await cluster.RecoverOnceAsync();
+
+        var saved = await cluster.GetInstanceAsync(started.InstanceId);
+        Assert.Equal(WorkflowStatus.Completed, saved!.Status);
+        Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<CounterData>(saved.WorkflowDataJson)!.Count);
     }
 
     private static Task<ConformanceCluster> CreateClusterAsync(string profile,

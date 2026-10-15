@@ -48,6 +48,12 @@ public interface IWorkflowStateRepository
     Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token);
 
     /// <summary>
+    /// Makes a suspended instance due for recovery now, for example when a child it waits for finishes.
+    /// Stores that cannot do this leave the instance on its own schedule.
+    /// </summary>
+    Task MakeRunnableAsync(string instanceId) => Task.CompletedTask;
+
+    /// <summary>
     ///     Save workflow instance state
     /// </summary>
     Task SaveWorkflowInstanceAsync(WorkflowInstance instance);
@@ -255,6 +261,18 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             _leases[instanceId] = (token, now.Add(duration));
             return Task.FromResult(true);
         }
+    }
+
+    public Task MakeRunnableAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        lock (_claimLock)
+        {
+            if (_instances.TryGetValue(instanceId, out var instance) &&
+                instance.Status == WorkflowStatus.Suspended)
+                instance.NextDueAtUtc = DateTime.UtcNow;
+        }
+        return Task.CompletedTask;
     }
 
     public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token)
