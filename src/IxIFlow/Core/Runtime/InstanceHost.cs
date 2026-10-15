@@ -561,6 +561,14 @@ internal sealed class InstanceHost(
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         if (release && checkpoint.OperatorStop == null)
             return Rejected(instanceId, "The workflow instance is not stopped for an operator");
+        // A request already applied is being unwound; only a new one changes what the run does.
+        var newCancellation = cancellationReason != null && !checkpoint.CancellationRequested &&
+            checkpoint.Continuations[0].Status != ContinuationStatus.Completed;
+        // Only a release or a new cancellation moves a stopped instance, so recovery, including a
+        // parent checking its child, answers it without claiming it. A cancellation that is already
+        // unwinding and stopped again needs a release.
+        if (checkpoint.OperatorStop is { } held && !release && !newCancellation)
+            return Stopped(instance, held);
 
         var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
         if (definition == null)
@@ -583,12 +591,9 @@ internal sealed class InstanceHost(
         // records progress and clears the count, and other entry points refuse running instances.
         if (owner.CrashCount >= _limits.MaxCrashes)
             return await QuarantineAsync(instance, checkpoint, scopes, owner);
-        if (checkpoint.OperatorStop is { } stop)
+        var stopCleared = checkpoint.OperatorStop != null;
+        if (stopCleared)
         {
-            // Only a release or a cancellation moves a stopped instance. A cancelled one unwinds,
-            // and stops again if its cleanup crashes its owners or exceeds a limit.
-            if (!release && cancellationReason == null)
-                return Stopped(instance, stop);
             checkpoint.OperatorStop = null;
             instance.LastError = null;
             instance.LastErrorStackTrace = null;
@@ -599,11 +604,19 @@ internal sealed class InstanceHost(
                          ContinuationStatus.Cancelling)))
             continuation.Status = ContinuationStatus.Active;
         instance.Status = WorkflowStatus.Running;
-        if (release)
+        if (newCancellation)
         {
-            // The release is saved before any workflow code runs: a crash after it is counted again.
-            // It saves the stopped checkpoint without its marker, so no limit applies; a run that
-            // still exceeds a limit stops again at its next commit.
+            instance.CancellationReason = cancellationReason;
+            checkpoint.CancellationRequested = true;
+            checkpoint.UnhandledError = null;
+            checkpoint.RuntimeUnhandledError = null;
+            ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
+        }
+        if (stopCleared)
+        {
+            // Leaving a stop is saved before any workflow code runs, so a crash after it is counted
+            // and a cancellation is not left waiting. It saves the stopped checkpoint without its
+            // marker, so no limit applies; a run that still exceeds a limit stops again at its next commit.
             await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner, true), instance,
                 checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
         }
@@ -612,15 +625,6 @@ internal sealed class InstanceHost(
                 $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
         var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
-        if (cancellationReason != null && !checkpoint.CancellationRequested &&
-            checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
-        {
-            instance.CancellationReason = cancellationReason;
-            checkpoint.CancellationRequested = true;
-            checkpoint.UnhandledError = null;
-            checkpoint.RuntimeUnhandledError = null;
-            ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
-        }
         return await RunAndSaveAsync(definition, instance, checkpoint,
             workflowData, true, owner, cancellationToken);
     }
@@ -637,11 +641,13 @@ internal sealed class InstanceHost(
     private static WorkflowExecutionResult ExistingStart(WorkflowInstance existing, WorkflowDefinition definition,
         WorkflowScopeCatalog scopes)
     {
+        var checkpoint = ExecutionCheckpoint.Read(existing.ExecutionStateJson);
         if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version ||
-            ExecutionCheckpoint.Read(existing.ExecutionStateJson).DefinitionFingerprint != scopes.Fingerprint)
+            checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 $"Workflow instance '{existing.InstanceId}' belongs to a different definition");
-        return ExistingResult(existing);
+        // A stopped instance is answered without reading its data, which may be what stopped it.
+        return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : ExistingResult(existing);
     }
 
     private static WorkflowExecutionResult Rejected(string instanceId, string reason) => new()

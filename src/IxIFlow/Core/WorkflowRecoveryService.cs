@@ -30,6 +30,9 @@ public sealed class WorkflowRecoveryService(
                 if (result.Status == WorkflowExecutionStatus.Faulted)
                     logger.LogWarning("Recovery of workflow {InstanceId} was rejected: {Reason}",
                         instance.InstanceId, result.ErrorMessage);
+                else if (result.Status == WorkflowExecutionStatus.NeedsResolution && result.ErrorMessage != null)
+                    logger.LogWarning("Workflow {InstanceId} needs an operator: {Reason}",
+                        instance.InstanceId, result.ErrorMessage);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {

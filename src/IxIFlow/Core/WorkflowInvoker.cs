@@ -89,6 +89,14 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             }
 
             var savedChild = await _repository.GetWorkflowInstanceAsync(invocationId);
+            // A stopped child waits for an operator; its data is not read, since it may be what stopped it.
+            if (savedChild != null && ExecutionCheckpoint.StopOf(savedChild) != null)
+                return new StepExecutionResult
+                {
+                    IsSuccess = true,
+                    WorkflowStatus = WorkflowExecutionStatus.NeedsResolution,
+                    ChildInstanceId = invocationId
+                };
             if (savedChild == null)
             {
                 childWorkflowData = Activator.CreateInstance(childWorkflowDataType)
