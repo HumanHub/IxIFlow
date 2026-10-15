@@ -165,7 +165,7 @@ public sealed class WorkflowDeadlineTests
         var started = await engine.RunAsync(ApprovalWorkflow("ScannedApproval"),
             new ApprovalData());
         await Task.Delay(160);
-        Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+        Assert.Contains(await repository.GetRunnableInstancesAsync(100),
             instance => instance.InstanceId == started.InstanceId);
         using var scanner = new WorkflowRecoveryService(
             services.GetRequiredService<IServiceScopeFactory>(), repository,
@@ -186,11 +186,11 @@ public sealed class WorkflowDeadlineTests
         {
             InstanceId = Guid.NewGuid().ToString("N"),
             Status = WorkflowStatus.NeedsResolution,
-            NextDueAtUtc = DateTime.UtcNow.AddMinutes(-1)
+            RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1)
         };
         await repository.SaveWorkflowInstanceAsync(instance);
 
-        Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+        Assert.Contains(await repository.GetRunnableInstancesAsync(100),
             candidate => candidate.InstanceId == instance.InstanceId);
     }
 
@@ -378,8 +378,8 @@ public sealed class WorkflowDeadlineTests
             _inner.RequestCancellationAsync(instanceId, reason);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
-            _inner.GetWorkflowsRequiringRecoveryAsync();
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
+            _inner.GetRunnableInstancesAsync(limit);
         public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>

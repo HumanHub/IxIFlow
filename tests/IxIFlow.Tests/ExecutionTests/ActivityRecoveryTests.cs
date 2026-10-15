@@ -422,7 +422,7 @@ public sealed class ActivityRecoveryTests
             new CancellationReason { ReasonCode = "withdrawn" }));
         var awaitingResolution = await engine.RecoverAsync(running.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, awaitingResolution.Status);
-        Assert.Null((await store.GetWorkflowInstanceAsync(running.InstanceId))!.NextDueAtUtc);
+        Assert.Null((await store.GetWorkflowInstanceAsync(running.InstanceId))!.RunnableAtUtc);
 
         var resolved = await engine.ResolveAsync(running.InstanceId, pending.InvocationId,
             ActivityResolution.Completed(new Dictionary<string, object?>
@@ -877,8 +877,8 @@ public sealed class ActivityRecoveryTests
             _inner.RequestCancellationAsync(instanceId, reason);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
-            _inner.GetWorkflowsRequiringRecoveryAsync();
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
+            _inner.GetRunnableInstancesAsync(limit);
         public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>

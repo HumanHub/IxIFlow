@@ -70,10 +70,11 @@ internal static class ExecutionCheckpointWriter
             instance.WorkflowDataJson = dataJson;
             instance.ExecutionStateJson = stateJson;
             instance.ExecutionSnapshot = snapshot;
-            // A stopped instance stays put until an operator acts on it.
-            instance.NextDueAtUtc = checkpoint.OperatorStop == null &&
-                    instance.Status is WorkflowStatus.Running or WorkflowStatus.Suspended or
-                        WorkflowStatus.NeedsResolution
+            // A stopped instance stays put until an operator acts on it. A running one is runnable
+            // from now, so it can be claimed as soon as its owner's lease ends.
+            instance.RunnableAtUtc = checkpoint.OperatorStop != null ? null
+                : instance.Status == WorkflowStatus.Running ? now
+                : instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution
                 ? new[] { checkpoint.CancellationRequested ? null : checkpoint.ExecutionDeadlineUtc }
                     .Concat(checkpoint.Waits.Select(wait => wait.DeadlineUtc))
                     .Concat(checkpoint.Waits.Any(wait => wait.ChildWorkflowId != null)
@@ -96,17 +97,17 @@ internal static class ExecutionCheckpointWriter
         $"The workflow state could not be checkpointed: {inner.Message}", inner);
 
     private sealed record SavedForm(string WorkflowDataJson, string ExecutionStateJson,
-        WorkflowExecutionSnapshot? ExecutionSnapshot, DateTime? NextDueAtUtc)
+        WorkflowExecutionSnapshot? ExecutionSnapshot, DateTime? RunnableAtUtc)
     {
         public static SavedForm Of(WorkflowInstance instance) => new(instance.WorkflowDataJson,
-            instance.ExecutionStateJson, instance.ExecutionSnapshot, instance.NextDueAtUtc);
+            instance.ExecutionStateJson, instance.ExecutionSnapshot, instance.RunnableAtUtc);
 
         public void RestoreTo(WorkflowInstance instance)
         {
             instance.WorkflowDataJson = WorkflowDataJson;
             instance.ExecutionStateJson = ExecutionStateJson;
             instance.ExecutionSnapshot = ExecutionSnapshot;
-            instance.NextDueAtUtc = NextDueAtUtc;
+            instance.RunnableAtUtc = RunnableAtUtc;
         }
     }
 }

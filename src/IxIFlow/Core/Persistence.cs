@@ -8,6 +8,24 @@ namespace IxIFlow.Core;
 /// <summary>
 ///     Repository interface for workflow state persistence
 /// </summary>
+/// <summary>An instance a host may claim now, and the time it became runnable.</summary>
+public sealed record RunnableInstance(string InstanceId, DateTime RunnableAtUtc);
+
+/// <summary>Rules every state store applies when it saves an instance.</summary>
+public static class WorkflowStoreRules
+{
+    /// <summary>
+    /// When a saved instance becomes runnable (C-01). A running instance is runnable from its save,
+    /// so it can be claimed as soon as its owner's lease ends. An idle save that leaves a
+    /// cancellation request unacknowledged is runnable now, so the request is unwound.
+    /// </summary>
+    public static DateTime? RunnableAt(WorkflowInstance instance, bool unacknowledgedCancellation, DateTime now) =>
+        unacknowledgedCancellation && instance.CancellationReason == null &&
+        instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution
+            ? now
+            : instance.RunnableAtUtc ?? (instance.Status == WorkflowStatus.Running ? now : null);
+}
+
 public interface IWorkflowStateRepository
 {
     /// <summary>
@@ -51,10 +69,10 @@ public interface IWorkflowStateRepository
     }
 
     /// <summary>
-    /// Lists running instances without a live owner and suspended instances whose
-    /// durable cancellation request still needs to be unwound.
+    /// Lists up to <paramref name="limit"/> instances a host may claim now: their runnable time has
+    /// passed and nobody holds their lease. The earliest come first (C-01, C-05).
     /// </summary>
-    Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync();
+    Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit);
 
     /// <summary>
     /// Atomically saves the commit's payload at its expected revision + 1. Revision zero also
@@ -252,6 +270,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                     JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!);
                 _acknowledgedCancellations.Remove(instanceId);
             }
+            // The request makes the instance runnable now, in the same step (C-01).
+            instance.RunnableAtUtc = Now;
             return Task.FromResult(true);
         }
     }
@@ -283,23 +303,21 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         }
     }
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync()
+    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(limit);
         lock (_claimLock)
         {
             var now = Now;
-            var instances = _instances.Values
-                .Where(instance =>
-                    (instance.Status == WorkflowStatus.Running &&
-                     (!_leases.TryGetValue(instance.InstanceId, out var lease) || lease.ExpiresAtUtc <= now)) ||
-                    (instance.Status == WorkflowStatus.Suspended &&
-                     _cancellations.ContainsKey(instance.InstanceId) &&
-                     !_acknowledgedCancellations.Contains(instance.InstanceId)) ||
-                    (instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution &&
-                     instance.NextDueAtUtc <= now))
-                .Select(SnapshotStructured)
+            var runnable = _instances.Values
+                .Where(instance => instance.RunnableAtUtc <= now &&
+                    !(_leases.TryGetValue(instance.InstanceId, out var lease) && lease.ExpiresAtUtc > now))
+                .OrderBy(instance => instance.RunnableAtUtc)
+                .ThenBy(instance => instance.InstanceId, StringComparer.Ordinal)
+                .Take(limit)
+                .Select(instance => new RunnableInstance(instance.InstanceId, instance.RunnableAtUtc!.Value))
                 .ToArray();
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
+            return Task.FromResult<IReadOnlyList<RunnableInstance>>(runnable);
         }
     }
 
@@ -344,7 +362,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         {
             if (_instances.TryGetValue(instanceId, out var instance) &&
                 instance.Status == WorkflowStatus.Suspended)
-                instance.NextDueAtUtc = Now;
+                instance.RunnableAtUtc = Now;
         }
         return Task.CompletedTask;
     }
@@ -393,6 +411,9 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+            snapshot.RunnableAtUtc = WorkflowStoreRules.RunnableAt(snapshot,
+                _cancellations.ContainsKey(commit.InstanceId) &&
+                !_acknowledgedCancellations.Contains(commit.InstanceId), Now);
             _instances[commit.InstanceId] = snapshot;
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (snapshot.CancellationReason != null && _cancellations.ContainsKey(commit.InstanceId))
@@ -432,7 +453,9 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             if (instance.Revision != 0 ||
                 (_instances.TryGetValue(instance.InstanceId, out var stored) && stored.Revision != 0))
                 throw new InvalidOperationException("Revisioned instances require an atomic commit");
-            _instances[instance.InstanceId] = SnapshotStructured(instance);
+            var saved = SnapshotStructured(instance);
+            saved.RunnableAtUtc = WorkflowStoreRules.RunnableAt(saved, false, Now);
+            _instances[instance.InstanceId] = saved;
         }
         return Task.CompletedTask;
     }

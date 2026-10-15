@@ -611,7 +611,7 @@ public sealed class ExecutionLeaseContractTests
             await scanner.RecoverOnceAsync(CancellationToken.None);
             var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
             Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
-            Assert.DoesNotContain(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
                 item => item.InstanceId == started.InstanceId);
         }
         finally
@@ -1275,14 +1275,14 @@ public sealed class ExecutionLeaseContractTests
                 WorkflowName = "RecoveryQuery",
                 Status = WorkflowStatus.Running
             });
-            Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 instance => instance.InstanceId == instanceId);
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "worker",
                 TimeSpan.FromMilliseconds(150)));
-            Assert.DoesNotContain(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
                 instance => instance.InstanceId == instanceId);
             await Task.Delay(300);
-            Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 instance => instance.InstanceId == instanceId);
         }
         finally
@@ -1408,8 +1408,8 @@ public sealed class ExecutionLeaseContractTests
             }
             return reason;
         }
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
-            inner.GetWorkflowsRequiringRecoveryAsync();
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
+            inner.GetRunnableInstancesAsync(limit);
         private int _reads;
         public bool FailRelease { get; set; }
         public TaskCompletionSource ReadCompleted { get; } =

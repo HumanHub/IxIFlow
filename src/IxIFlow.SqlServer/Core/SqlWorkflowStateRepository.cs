@@ -137,7 +137,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             UPDATE dbo.IxIFlowWorkflowInstances
             SET CancellationJson = COALESCE(CancellationJson, @ReasonJson),
                 CancellationAcknowledged = CASE WHEN CancellationJson IS NULL
-                    THEN 0 ELSE CancellationAcknowledged END
+                    THEN 0 ELSE CancellationAcknowledged END,
+                RunnableAtUtc = SYSUTCDATETIME()
             WHERE InstanceId = @InstanceId AND Status IN ('Running', 'Suspended', 'NeedsResolution')
             """, new { InstanceId = instanceId, ReasonJson = JsonSerializer.Serialize(reason) });
         return changed == 1;
@@ -179,23 +180,21 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         return requests;
     }
 
-    public async Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync()
+    public async Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(limit);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<string>("""
-            SELECT instance.StateJson FROM dbo.IxIFlowWorkflowInstances AS instance
+        var rows = await connection.QueryAsync<RunnableRow>("""
+            SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
+            FROM dbo.IxIFlowWorkflowInstances AS instance
             LEFT JOIN dbo.IxIFlowWorkflowLeases AS lease
                 ON lease.InstanceId = instance.InstanceId
-            WHERE (instance.Status = 'Running' AND
-                   (lease.InstanceId IS NULL OR lease.ExpiresAtUtc <= SYSUTCDATETIME()))
-               OR (instance.Status = 'Suspended' AND
-                   instance.CancellationJson IS NOT NULL AND
-                   instance.CancellationAcknowledged = 0)
-               OR (instance.Status IN ('Suspended', 'NeedsResolution') AND
-                   instance.NextDueAtUtc <= SYSUTCDATETIME())
-            """);
-        return rows.Select(Deserialize).ToArray();
+            WHERE instance.RunnableAtUtc <= SYSUTCDATETIME()
+              AND (lease.InstanceId IS NULL OR lease.ExpiresAtUtc <= SYSUTCDATETIME())
+            ORDER BY instance.RunnableAtUtc, instance.InstanceId
+            """, new { Limit = limit });
+        return rows.Select(row => new RunnableInstance(row.InstanceId, row.RunnableAtUtc)).ToArray();
     }
 
     public async Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
@@ -276,9 +275,15 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await using var connection = await OpenConnectionAsync();
         await connection.ExecuteAsync("""
             UPDATE dbo.IxIFlowWorkflowInstances
-            SET NextDueAtUtc = SYSUTCDATETIME()
+            SET RunnableAtUtc = SYSUTCDATETIME()
             WHERE InstanceId = @InstanceId AND Status = 'Suspended'
             """, new { InstanceId = instanceId });
+    }
+
+    private sealed class RunnableRow
+    {
+        public string InstanceId { get; set; } = "";
+        public DateTime RunnableAtUtc { get; set; }
     }
 
     public async Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token)
@@ -308,13 +313,13 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             WHEN MATCHED AND target.Revision = 0 THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
-                SuspensionId = @SuspensionId, NextDueAtUtc = @NextDueAtUtc,
+                SuspensionId = @SuspensionId, RunnableAtUtc = @RunnableAtUtc,
                 StateJson = @StateJson
             WHEN NOT MATCHED THEN INSERT
                 (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt,
-                 SuspensionId, NextDueAtUtc, StateJson)
+                 SuspensionId, RunnableAtUtc, StateJson)
                 VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
-                        @SuspensionExpiresAt, @SuspensionId, @NextDueAtUtc, @StateJson);
+                        @SuspensionExpiresAt, @SuspensionId, @RunnableAtUtc, @StateJson);
             IF @@ROWCOUNT = 0
                 THROW 51000, 'Revisioned instances require an atomic commit', 1;
             """, new
@@ -325,7 +330,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             instance.CorrelationId,
             SuspensionExpiresAt = instance.SuspensionInfo?.ExpiresAt,
             SuspensionId = instance.SuspensionInfo?.SuspensionId,
-            instance.NextDueAtUtc,
+            RunnableAtUtc = WorkflowStoreRules.RunnableAt(instance, false, DateTime.UtcNow),
             StateJson = JsonSerializer.Serialize(instance)
         });
     }
@@ -358,7 +363,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
         var current = await connection.QuerySingleOrDefaultAsync<CommitState>("""
-            SELECT Revision, CancellationJson FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+            SELECT Revision, CancellationJson, CancellationAcknowledged
+            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
             WHERE InstanceId = @InstanceId
             """, new { commit.InstanceId }, transaction);
         var currentRevision = current?.Revision ?? 0;
@@ -409,15 +415,15 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             WHEN MATCHED THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
-                SuspensionId = @SuspensionId, NextDueAtUtc = @NextDueAtUtc,
+                SuspensionId = @SuspensionId, RunnableAtUtc = @RunnableAtUtc,
                 StateJson = @StateJson, Revision = @Revision,
                 CancellationAcknowledged = CASE WHEN @AcknowledgesCancellation = 1 AND
                     target.CancellationJson IS NOT NULL THEN 1 ELSE target.CancellationAcknowledged END
             WHEN NOT MATCHED THEN INSERT
                 (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt,
-                 SuspensionId, NextDueAtUtc, StateJson, Revision)
+                 SuspensionId, RunnableAtUtc, StateJson, Revision)
                 VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
-                        @SuspensionExpiresAt, @SuspensionId, @NextDueAtUtc, @StateJson, @Revision);
+                        @SuspensionExpiresAt, @SuspensionId, @RunnableAtUtc, @StateJson, @Revision);
             INSERT INTO dbo.IxIFlowWorkflowCommits (InstanceId, CommitId, ExpectedRevision, Revision, PayloadHash)
             VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
             """, new
@@ -426,7 +432,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             Status = snapshot.Status.ToString(),
             SuspensionExpiresAt = snapshot.SuspensionInfo?.ExpiresAt,
             SuspensionId = snapshot.SuspensionInfo?.SuspensionId,
-            snapshot.NextDueAtUtc,
+            RunnableAtUtc = WorkflowStoreRules.RunnableAt(snapshot,
+                current is { CancellationJson: not null, CancellationAcknowledged: false }, DateTime.UtcNow),
             StateJson = json, snapshot.Revision,
             commit.ExpectedRevision, commit.CommitId, PayloadHash = commit.ContentHash,
             AcknowledgesCancellation = snapshot.CancellationReason != null
@@ -476,6 +483,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         public long Revision { get; set; }
         public string? CancellationJson { get; set; }
+        public bool CancellationAcknowledged { get; set; }
     }
 
     private sealed class LeaseRecord
@@ -489,10 +497,10 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var json = await connection.QuerySingleOrDefaultAsync<string>(
-            "SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId",
+        var row = await connection.QuerySingleOrDefaultAsync<StoredRow>(
+            "SELECT StateJson, RunnableAtUtc FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId",
             new { InstanceId = instanceId });
-        return json == null ? null : Deserialize(json);
+        return row == null ? null : row.Read();
     }
 
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
@@ -521,9 +529,24 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<string>(
-            $"SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WHERE {predicate}", new { Value = value });
-        return rows.Select(Deserialize).ToArray();
+        var rows = await connection.QueryAsync<StoredRow>(
+            $"SELECT StateJson, RunnableAtUtc FROM dbo.IxIFlowWorkflowInstances WHERE {predicate}",
+            new { Value = value });
+        return rows.Select(row => row.Read()).ToArray();
+    }
+
+    // The runnable time is kept in its column, which the store may change without rewriting the state.
+    private sealed class StoredRow
+    {
+        public string StateJson { get; set; } = "";
+        public DateTime? RunnableAtUtc { get; set; }
+
+        public WorkflowInstance Read()
+        {
+            var instance = Deserialize(StateJson);
+            instance.RunnableAtUtc = RunnableAtUtc;
+            return instance;
+        }
     }
 
     private async Task<SqlConnection> OpenConnectionAsync()
@@ -579,7 +602,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                         Status NVARCHAR(50) NOT NULL,
                         CorrelationId NVARCHAR(100) NULL,
                         SuspensionExpiresAt DATETIME2 NULL,
-                        NextDueAtUtc DATETIME2 NULL,
+                        RunnableAtUtc DATETIME2 NULL,
                         SuspensionId NVARCHAR(100) NULL,
                         StateJson NVARCHAR(MAX) NOT NULL,
                         CancellationJson NVARCHAR(MAX) NULL,
@@ -598,13 +621,14 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 END
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'SuspensionId') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD SuspensionId NVARCHAR(100) NULL;
-                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'NextDueAtUtc') IS NULL
-                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD NextDueAtUtc DATETIME2 NULL;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'RunnableAtUtc') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD RunnableAtUtc DATETIME2 NULL;
                 IF NOT EXISTS (SELECT 1 FROM sys.indexes
-                    WHERE name = N'IX_IxIFlowWorkflowInstances_Due'
+                    WHERE name = N'IX_IxIFlowWorkflowInstances_Runnable'
                       AND object_id = OBJECT_ID(N'dbo.IxIFlowWorkflowInstances'))
-                    CREATE INDEX IX_IxIFlowWorkflowInstances_Due
-                        ON dbo.IxIFlowWorkflowInstances (Status, NextDueAtUtc);
+                    EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_Runnable
+                        ON dbo.IxIFlowWorkflowInstances (RunnableAtUtc, InstanceId)
+                        WHERE RunnableAtUtc IS NOT NULL');
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'Revision') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD Revision BIGINT NOT NULL DEFAULT 0;
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CancellationJson') IS NULL

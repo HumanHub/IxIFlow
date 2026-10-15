@@ -13,7 +13,7 @@ public sealed class WorkflowRecoveryService(
 {
     internal async Task RecoverOnceAsync(CancellationToken cancellationToken)
     {
-        var instances = await repository.GetWorkflowsRequiringRecoveryAsync();
+        var instances = await repository.GetRunnableInstancesAsync(100);
         await Parallel.ForEachAsync(instances, new ParallelOptions
         {
             MaxDegreeOfParallelism = 8,
