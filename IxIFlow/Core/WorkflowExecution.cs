@@ -160,6 +160,11 @@ public class WorkflowOptions
     public string? CorrelationId { get; set; }
 
     /// <summary>
+    ///     The parent instance that invoked this workflow as a child
+    /// </summary>
+    internal string? ParentInstanceId { get; set; }
+
+    /// <summary>
     ///     Custom properties for the workflow execution
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
@@ -252,6 +257,11 @@ public class WorkflowInstance
     ///     Correlation ID for tracking
     /// </summary>
     public string CorrelationId { get; set; } = "";
+
+    /// <summary>
+    ///     The parent instance that invoked this workflow as a child, if any
+    /// </summary>
+    public string? ParentInstanceId { get; set; }
 
     /// <summary>
     ///     When the workflow was created

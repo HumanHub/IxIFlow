@@ -3,6 +3,7 @@ using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IxIFlow.Tests.Conformance;
 
@@ -44,6 +45,15 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         var host = services.BuildServiceProvider();
         _hosts.Add(host);
         return host.GetRequiredService<IWorkflowEngine>();
+    }
+
+    /// <summary>Runs one recovery scan on the first host, as its background service would.</summary>
+    public async Task RecoverOnceAsync()
+    {
+        var host = _hosts[0];
+        using var scanner = new WorkflowRecoveryService(host.GetRequiredService<IServiceScopeFactory>(),
+            host.GetRequiredService<IWorkflowStateRepository>(), NullLogger<WorkflowRecoveryService>.Instance);
+        await scanner.RecoverOnceAsync(CancellationToken.None);
     }
 
     /// <summary>Reads an instance directly from the shared store.</summary>

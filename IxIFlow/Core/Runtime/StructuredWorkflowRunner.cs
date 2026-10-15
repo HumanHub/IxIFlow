@@ -264,6 +264,7 @@ internal sealed class StructuredWorkflowRunner(
             WorkflowDataJson = JsonSerializer.Serialize(workflowData),
             Status = WorkflowStatus.Running,
             CorrelationId = options.CorrelationId ?? Guid.NewGuid().ToString("N"),
+            ParentInstanceId = options.ParentInstanceId,
             CreatedAt = DateTime.UtcNow,
             StartedAt = DateTime.UtcNow,
             TotalSteps = definition.Steps.Count,
@@ -2287,12 +2288,31 @@ internal sealed class StructuredWorkflowRunner(
                     throw new InvalidOperationException(
                         $"Workflow instance '{instance.InstanceId}' changed at revision {result.Revision}");
                 instance.Revision = result.Revision;
+                await MakeParentRunnableAsync(instance);
                 return;
             }
         }
         catch (Exception ex)
         {
             throw new CheckpointPersistenceException(ex);
+        }
+    }
+
+    // A finished child makes its parent due now instead of waiting for the parent's next check.
+    // If this fails, the parent still finds the result when it next checks its children.
+    private async Task MakeParentRunnableAsync(WorkflowInstance instance)
+    {
+        if (instance.ParentInstanceId == null || instance.Status is not (WorkflowStatus.Completed or
+                WorkflowStatus.Failed or WorkflowStatus.Cancelled or WorkflowStatus.TimedOut or
+                WorkflowStatus.Terminated))
+            return;
+        try
+        {
+            await repository.MakeRunnableAsync(instance.ParentInstanceId);
+        }
+        catch (Exception)
+        {
+            // Not a commit failure: the child's result is already saved.
         }
     }
 
