@@ -384,8 +384,10 @@ internal sealed class WorkflowExecutor
                     // execution history even if live state cannot be serialized or is over the limit.
                     checkpoint.Continuations.Clear();
                     checkpoint.UnhandledError = null;
+                    // The failure record is the last committed data without continuations; it is
+                    // not held to the limit, so a failure is never lost.
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
-                        preserveSavedWorkflowData: true);
+                        preserveSavedWorkflowData: true, enforceLimit: false);
                 }
             }
             return new WorkflowExecutionResult
@@ -609,17 +611,13 @@ internal sealed class WorkflowExecutor
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         checkpoint.ResourceStop = new ResourceStopState { Reason = limit.Message, StoppedAtUtc = Now };
         instance.Status = WorkflowStatus.NeedsResolution;
-        try
-        {
-            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData,
-                new WorkflowScopeCatalog(definition), Now, preserveSavedWorkflowData: true);
-        }
-        catch (CheckpointLimitExceededException error)
-        {
-            // The limit was lowered below the last checkpoint; the instance stays as it was saved.
-            throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, error.Message, error)
-                .At(instance.InstanceId);
-        }
+        instance.LastError = limit.Message;
+        instance.SuspensionInfo = null;
+        instance.CompletedAt = null;
+        // The stop saves the last committed checkpoint plus a small marker, so it is not held to the
+        // limit; otherwise a checkpoint just under the limit could never stop.
+        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData,
+            new WorkflowScopeCatalog(definition), Now, preserveSavedWorkflowData: true, enforceLimit: false);
         return new WorkflowExecutionResult
         {
             InstanceId = instance.InstanceId,

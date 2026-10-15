@@ -401,7 +401,9 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         lock (_claimLock)
         {
             _instances.TryRemove(instanceId, out _);
-            _leases.Remove(instanceId);
+            // The lease record stays so a recreated instance never reuses an epoch.
+            if (_leases.TryGetValue(instanceId, out var lease))
+                _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue };
             _cancellations.Remove(instanceId);
             _acknowledgedCancellations.Remove(instanceId);
             _publishedCompletions.Remove(instanceId);

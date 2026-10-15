@@ -399,8 +399,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
+        // The lease row stays so a recreated instance never reuses an epoch.
         await connection.ExecuteAsync(
-            "DELETE FROM dbo.IxIFlowWorkflowLeases WHERE InstanceId = @InstanceId",
+            "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = CAST('0001-01-01' AS DATETIME2) WHERE InstanceId = @InstanceId",
             new { InstanceId = instanceId });
         await connection.ExecuteAsync(
             "DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId",

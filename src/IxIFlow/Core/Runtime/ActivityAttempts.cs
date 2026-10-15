@@ -227,6 +227,11 @@ internal sealed class ActivityAttempts(
         {
             return ActivityRunResult.Threw(error);
         }
+        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.ResourceExhausted)
+        {
+            // Retrying would be refused the same way, so an operator decides (D-28).
+            return ActivityRunResult.Unresolved($"The child workflow could not start: {error.Message}");
+        }
     }
 
     public async Task<RunningActivity?> StartInvocationAsync(

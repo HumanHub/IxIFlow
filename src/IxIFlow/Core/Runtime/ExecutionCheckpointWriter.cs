@@ -12,14 +12,14 @@ internal static class ExecutionCheckpointWriter
 
     public static async Task CommitAsync(IExecutionHost host, WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes, DateTime now,
-        bool preserveSavedWorkflowData = false)
+        bool preserveSavedWorkflowData = false, bool enforceLimit = true)
     {
         if (!host.PersistsState)
             return;
         var lastCommitted = SavedForm.Of(instance);
         Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData);
         var size = CheckpointBytes(instance);
-        if (size > host.MaxCheckpointBytes)
+        if (enforceLimit && size > host.MaxCheckpointBytes)
         {
             // The instance keeps the last checkpoint that was committed.
             lastCommitted.RestoreTo(instance);
@@ -51,6 +51,9 @@ internal static class ExecutionCheckpointWriter
     {
         try
         {
+            // A running instance is past any resource stop.
+            if (instance.Status == WorkflowStatus.Running)
+                checkpoint.ResourceStop = null;
             ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson

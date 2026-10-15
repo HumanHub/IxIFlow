@@ -87,6 +87,8 @@ internal sealed class InstanceHost(
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
+        if (StoppedAtLimit(instanceId, checkpoint) is { } stopped)
+            return stopped;
         var continuation = checkpoint.Continuations.SingleOrDefault(item =>
             item.PendingActivity?.Id == invocationId && item.Status == ContinuationStatus.WaitingResolution)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
@@ -394,6 +396,8 @@ internal sealed class InstanceHost(
                 return Rejected(instanceId, "The workflow instance is not waiting");
 
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+            if (StoppedAtLimit(instanceId, checkpoint) is { } stopped)
+                return stopped;
             var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
             if (definition == null)
                 return Rejected(instanceId, "The registered workflow definition is unavailable");
@@ -549,7 +553,11 @@ internal sealed class InstanceHost(
                          ContinuationStatus.Cancelling)))
             continuation.Status = ContinuationStatus.Active;
         // An instance stopped at a resource limit runs again; it stops again if the limit still applies.
-        checkpoint.ResourceStop = null;
+        if (checkpoint.ResourceStop != null)
+        {
+            checkpoint.ResourceStop = null;
+            instance.LastError = null;
+        }
         instance.Status = WorkflowStatus.Running;
         if (cancellationReason != null && !checkpoint.CancellationRequested &&
             checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
@@ -644,6 +652,12 @@ internal sealed class InstanceHost(
     private async Task<CheckpointReply> CommitAsync(WorkflowInstance instance, CheckpointCommit commit,
         long epoch)
     {
+        if (epoch == 0)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"A run of workflow instance '{commit.InstanceId}' without an execution lease cannot commit");
+        if (commit.InstanceId != instance.InstanceId)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"A commit for workflow instance '{commit.InstanceId}' reached the run of '{instance.InstanceId}'");
         if (commit.Epoch != epoch)
             return new CheckpointReply(CheckpointReplyKind.Conflict, Error: new WorkflowEngineException(
                 WorkflowErrorKind.InvalidState,
@@ -678,6 +692,14 @@ internal sealed class InstanceHost(
                     $"Saving workflow instance '{commit.InstanceId}' was not applied; the store asked for a retry"));
         }
     }
+
+    // Only an operator moves an instance stopped at a resource limit, by recovering or cancelling it.
+    private static WorkflowExecutionResult? StoppedAtLimit(string instanceId, ExecutionCheckpoint checkpoint) =>
+        checkpoint.ResourceStop is { } stop
+            ? Rejected(instanceId,
+                $"The workflow instance is stopped at a resource limit ({stop.Reason}); " +
+                "raise the limit and recover it, or cancel it")
+            : null;
 
     private IWorkflowEngine Engine =>
         (IWorkflowEngine?)services.GetService(typeof(IWorkflowEngine))

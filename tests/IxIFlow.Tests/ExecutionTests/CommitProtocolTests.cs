@@ -89,6 +89,15 @@ public sealed class CommitProtocolTests
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 2, 1))).Status);
             // A terminal commit releases the lease but not the epoch.
             Assert.Equal(3, await repository.TryAcquireExecutionLeaseAsync(instanceId, "third", TimeSpan.FromSeconds(10)));
+            Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "third"));
+
+            // A deleted and recreated instance never reuses an epoch, so a former owner stays fenced.
+            await repository.DeleteWorkflowInstanceAsync(instanceId);
+            Assert.Equal(4, await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10)));
+            instance.Status = WorkflowStatus.Running;
+            instance.Revision = 0;
+            Assert.Equal(WorkflowCommitStatus.StaleEpoch,
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 3, 0))).Status);
         }
         finally
         {
