@@ -16,15 +16,16 @@ public sealed record WorkflowEvent(
     string EventType,
     string PayloadJson,
     string? Key = null,
-    string? TargetWaitId = null)
+    string? TargetWaitId = null,
+    string? Subject = null)
 {
     /// <summary>
-    /// SHA-256 of the type, key, target wait and payload, each a separate JSON string. An event ID
-    /// sent again with another hash is a different event and is refused; the payload is compared byte
-    /// for byte, so a retry sends the same text.
+    /// SHA-256 of the type, key, target wait, subject and payload, each a separate JSON string. An
+    /// event ID sent again with another hash is a different event and is refused; the payload is
+    /// compared byte for byte, so a retry sends the same text.
     /// </summary>
     public byte[] ContentHash() => SHA256.HashData(Encoding.UTF8.GetBytes(
-        JsonSerializer.Serialize(new[] { EventType, Key, TargetWaitId, PayloadJson })));
+        JsonSerializer.Serialize(new[] { EventType, Key, TargetWaitId, Subject, PayloadJson })));
 
     /// <summary>Checks the fields every store can hold.</summary>
     public void Validate()
@@ -33,8 +34,8 @@ public sealed record WorkflowEvent(
         ArgumentException.ThrowIfNullOrWhiteSpace(EventId);
         ArgumentException.ThrowIfNullOrWhiteSpace(EventType);
         ArgumentNullException.ThrowIfNull(PayloadJson);
-        if (InstanceId.Length > 100 || EventId.Length > 100 || TargetWaitId?.Length > 100)
-            throw new ArgumentException("Instance, event and wait IDs are at most 100 characters");
+        if (InstanceId.Length > 100 || EventId.Length > 100 || TargetWaitId?.Length > 100 || Subject?.Length > 100)
+            throw new ArgumentException("Instance, event and wait IDs and subjects are at most 100 characters");
         if (EventType.Length > 400 || Key?.Length > 400)
             throw new ArgumentException("Event types and keys are at most 400 characters");
     }
@@ -155,7 +156,8 @@ public sealed record StoredWorkflowEvent(
     DateTime ReceivedAtUtc,
     EventOutcome Outcome,
     string? WaitId = null,
-    EventRejection? Rejection = null);
+    EventRejection? Rejection = null,
+    string? Subject = null);
 
 /// <summary>How a commit settles one pending event: consumed by a wait, or rejected with a reason.</summary>
 public sealed record EventSettlement(string EventId, EventOutcome Outcome, string? WaitId = null,

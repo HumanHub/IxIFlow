@@ -20,6 +20,13 @@ public static class ReplyToken
         return Convert.ToBase64String(json).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
+    /// <summary>The digest a token carries for what a request is about.</summary>
+    public static string Digest(string subject)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(subject)));
+    }
+
     /// <summary>Reads a token, or returns false when the text is not one.</summary>
     public static bool TryRead(string? token, out string instanceId, out string waitId, out string? subject)
     {

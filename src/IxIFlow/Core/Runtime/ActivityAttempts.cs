@@ -83,6 +83,9 @@ internal sealed class ActivityAttempts(
                             .SetValue(prepared.Activity, value?.Read(services));
                 }
             }
+            if (step.RequestName != null)
+                prepared.SetReply(ReplyAddressFor(scopes, checkpoint, continuation, step, instance, pending,
+                    workflowData));
         }
         catch (Exception error) when (!isRecovery && !WorkflowEngineException.IsEngineFailure(error))
         {
@@ -203,6 +206,39 @@ internal sealed class ActivityAttempts(
         {
             return ActivityRunResult.Threw(error);
         }
+    }
+
+    // A request's answer gets its wait before the activity runs, so no answer can come too early for it
+    // (D-33). A retry of the step keeps the wait and its token, even once the answer has arrived.
+    private ReplyAddress ReplyAddressFor(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, WorkflowStep step, WorkflowInstance instance,
+        ActivityInvocationState pending, object workflowData)
+    {
+        if (checkpoint.Waits.FirstOrDefault(wait => wait.IsReply && wait.InvocationId == pending.Id) is { } open)
+            return new ReplyAddress(ReplyToken.Create(instance.InstanceId, open.Id, open.Subject));
+        if (checkpoint.BoundReplies.FirstOrDefault(reply => reply.InvocationId == pending.Id) is { } answered)
+            return new ReplyAddress(ReplyToken.Create(instance.InstanceId, answered.WaitId, answered.Subject));
+        var position = continuation.Stack[^1];
+        var waitFor = scopes.Steps(position.ScopeId).Skip(position.NextStepIndex + 1)
+            .First(candidate => candidate.ReplyToRequest == step.RequestName);
+        var subject = step.RequestSubject is { } describe
+            ? ReplyToken.Digest(describe(WorkflowValueBinding.EvaluationContext(workflowData,
+                step.PreviousStepDataType, continuation.GetPrevious(services))))
+            : null;
+        var wait = new WaitState
+        {
+            RegisteredAtUtc = Now,
+            ContinuationId = continuation.Id,
+            StepId = scopes.Id(waitFor),
+            Key = step.RequestName!,
+            EventType = step.ReplyType!.AssemblyQualifiedName!,
+            IsReply = true,
+            InvocationId = pending.Id,
+            ScopeActivationId = position.ActivationId,
+            Subject = subject
+        };
+        checkpoint.Waits.Add(wait);
+        return new ReplyAddress(ReplyToken.Create(instance.InstanceId, wait.Id, subject));
     }
 
     private static string NewInvocationId(WorkflowInstance instance,

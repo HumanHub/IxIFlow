@@ -13,6 +13,12 @@ internal sealed class ExecutionCheckpoint
     public List<ContinuationState> Continuations { get; set; } = [];
     public List<ParallelJoinState> Joins { get; set; } = [];
     public List<WaitState> Waits { get; set; } = [];
+
+    /// <summary>
+    /// Answers to requests that arrived before their <c>WaitFor</c> was reached (D-33). Each is taken
+    /// by the <c>WaitFor</c> of its request's scope occurrence, or dropped when that scope ends.
+    /// </summary>
+    public List<BoundReplyState> BoundReplies { get; set; } = [];
     public DateTime? ExecutionDeadlineUtc { get; set; }
     public bool TimedOut { get; set; }
     public SerializedException? UnhandledError { get; set; }
@@ -43,6 +49,21 @@ internal sealed class ExecutionCheckpoint
         // Every wait in a saved checkpoint was committed with it.
         checkpoint.Inbox = InboxProgress.Committed(checkpoint.Waits);
         return checkpoint;
+    }
+
+    /// <summary>
+    /// Closes the reply waits, and drops the answers kept, of scope occurrences that have ended: their
+    /// iteration or branch finished, failed or was cancelled before the request's <c>WaitFor</c> took the
+    /// answer (D-33).
+    /// </summary>
+    public void CloseEndedRequests()
+    {
+        var live = Continuations
+            .Where(item => item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled))
+            .SelectMany(item => item.Stack.Select(position => position.ActivationId))
+            .ToHashSet(StringComparer.Ordinal);
+        RemoveWaits(wait => wait.IsReply && !live.Contains(wait.ScopeActivationId ?? ""), WaitCloseReason.Cancelled);
+        BoundReplies.RemoveAll(reply => !live.Contains(reply.ScopeActivationId));
     }
 
     /// <summary>Removes the waits that match and records why each one closed, for the next commit (D-33).</summary>
@@ -346,13 +367,43 @@ internal sealed class WaitState
     public string? ChildWaitId { get; set; }
 
     /// <summary>
+    /// True for the answer to a request: opened when the request's activity starts, answered only by
+    /// its token, and taken by the request's <c>WaitFor</c> (D-33).
+    /// </summary>
+    public bool IsReply { get; set; }
+
+    /// <summary>For a reply wait, the request's activity invocation; a retry of the step keeps the wait.</summary>
+    public string? InvocationId { get; set; }
+
+    /// <summary>For a reply wait, the scope occurrence of the request and its <c>WaitFor</c>.</summary>
+    public string? ScopeActivationId { get; set; }
+
+    /// <summary>For a reply wait, the digest of what the request is about; an answer must carry it.</summary>
+    public string? Subject { get; set; }
+
+    /// <summary>
     /// How the waits table knows this wait, or null for a wait no event can answer: a delay, or a
     /// child shown only as running (D-33).
     /// </summary>
     [JsonIgnore]
     public WaitKind? TableKind => string.IsNullOrEmpty(EventType) ? null
+        : IsReply ? WaitKind.Reply
         : ChildWorkflowId != null ? WaitKind.Child
         : WaitKind.Event;
+}
+
+/// <summary>An answer to a request kept until its <c>WaitFor</c> takes it (D-33).</summary>
+internal sealed class BoundReplyState
+{
+    public string WaitId { get; set; } = "";
+    public string EventId { get; set; } = "";
+
+    /// <summary>The <c>WaitFor</c> step that takes it.</summary>
+    public string StepId { get; set; } = "";
+    public string ScopeActivationId { get; set; } = "";
+    public string? InvocationId { get; set; }
+    public string? Subject { get; set; }
+    public SerializedValue Event { get; set; } = new();
 }
 
 internal sealed class AcceptedWaitState

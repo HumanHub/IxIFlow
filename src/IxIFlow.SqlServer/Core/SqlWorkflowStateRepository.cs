@@ -328,7 +328,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             await transaction.CommitAsync();
             return new EventAppendResult(EventAppendStatus.NotFound);
         }
-        if (instance.Status is "Completed" or "Failed" or "Cancelled" or "Terminated" or "TimedOut")
+        var finished = instance.Status is "Completed" or "Failed" or "Cancelled" or "Terminated" or "TimedOut";
+        // A finished instance takes no events; one sent to a wait is told why that wait closed.
+        if (finished && workflowEvent.TargetWaitId == null)
         {
             await transaction.CommitAsync();
             return new EventAppendResult(EventAppendStatus.Closed);
@@ -343,7 +345,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             workflowEvent.InstanceId, workflowEvent.TargetWaitId, workflowEvent.Key,
             Child = (byte)WaitKind.Child, Event = (byte)WaitKind.Event
         }, transaction)).Select(row => row.Read()).ToArray();
-        var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent, waits.SingleOrDefault(), waits);
+        var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent, waits.SingleOrDefault(), waits)
+            ?? (finished ? EventRejection.InstanceFinished : null);
         // A refused event is recorded so a resend is recognized, but takes no place in the inbox.
         var sequence = rejection == null ? instance.InboxSequence + 1 : 0;
         // A stopped instance waits for its operator; the event is consumed after the release.
@@ -355,15 +358,15 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                     RunnableAtUtc = CASE WHEN @MadeRunnable = 1 THEN SYSUTCDATETIME() ELSE RunnableAtUtc END
                 WHERE InstanceId = @InstanceId;
             INSERT INTO dbo.IxIFlowWorkflowEvents
-                (InstanceId, EventId, Sequence, EventType, EventKey, TargetWaitId, PayloadJson,
+                (InstanceId, EventId, Sequence, EventType, EventKey, TargetWaitId, Subject, PayloadJson,
                  PayloadHash, ReceivedAtUtc, Outcome, Rejection, SettledAtUtc)
-            VALUES (@InstanceId, @EventId, @Sequence, @EventType, @Key, @TargetWaitId, @PayloadJson,
+            VALUES (@InstanceId, @EventId, @Sequence, @EventType, @Key, @TargetWaitId, @Subject, @PayloadJson,
                 @Hash, SYSUTCDATETIME(), CASE WHEN @Rejection IS NULL THEN 0 ELSE 2 END, @Rejection,
                 CASE WHEN @Rejection IS NULL THEN NULL ELSE SYSUTCDATETIME() END);
             """, new
         {
             workflowEvent.InstanceId, workflowEvent.EventId, Sequence = sequence, MadeRunnable = madeRunnable,
-            workflowEvent.EventType, workflowEvent.Key, workflowEvent.TargetWaitId,
+            workflowEvent.EventType, workflowEvent.Key, workflowEvent.TargetWaitId, workflowEvent.Subject,
             workflowEvent.PayloadJson, Hash = hash, Rejection = (byte?)rejection
         }, transaction);
         await transaction.CommitAsync();
@@ -463,7 +466,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
 
     private const string EventColumns =
         "InstanceId, EventId, Sequence, EventType, EventKey, TargetWaitId, PayloadJson, ReceivedAtUtc, " +
-        "Outcome, WaitId, Rejection";
+        "Outcome, WaitId, Rejection, Subject";
 
     private const string WaitColumns =
         "InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, CloseReason, " +
@@ -494,10 +497,11 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         public byte Outcome { get; set; }
         public string? WaitId { get; set; }
         public byte? Rejection { get; set; }
+        public string? Subject { get; set; }
 
         public StoredWorkflowEvent Read() => new(InstanceId, EventId, Sequence, EventType, EventKey,
             TargetWaitId, PayloadJson, DateTime.SpecifyKind(ReceivedAtUtc, DateTimeKind.Utc),
-            (EventOutcome)Outcome, WaitId, (EventRejection?)Rejection);
+            (EventOutcome)Outcome, WaitId, (EventRejection?)Rejection, Subject);
     }
 
     private sealed class WaitRow
@@ -1013,6 +1017,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                         EventType NVARCHAR(400) NOT NULL,
                         EventKey NVARCHAR(400) NULL,
                         TargetWaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
+                        Subject NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
                         PayloadJson NVARCHAR(MAX) NOT NULL,
                         PayloadHash BINARY(32) NOT NULL,
                         ReceivedAtUtc DATETIME2 NOT NULL,

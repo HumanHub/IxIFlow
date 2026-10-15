@@ -29,6 +29,7 @@ public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : I
     public TWorkflowData WorkflowData { get; }
     public TPreviousStepData? PreviousStepData { get; }
     public IDictionary<string, object> Metadata { get; }
+    public ReplyAddress? Reply { get; internal set; }
 
     // Explicit interface implementation for untyped access
     object IActivityContext.WorkflowData => WorkflowData ??
@@ -116,19 +117,23 @@ public sealed class PreparedActivity
     private readonly Action<object?> _setRecoveryState;
 
     internal PreparedActivity(IAsyncActivity activity, IActivityContext context,
-        Func<Task> applyOutputs, Action<object?> setRecoveryState)
+        Func<Task> applyOutputs, Action<object?> setRecoveryState, Action<ReplyAddress> setReply)
     {
         Activity = activity;
         Context = context;
         _applyOutputs = applyOutputs;
         _setRecoveryState = setRecoveryState;
+        _setReply = setReply;
     }
+
+    private readonly Action<ReplyAddress> _setReply;
 
     public IAsyncActivity Activity { get; }
     public IActivityContext Context { get; }
 
     internal Task ApplyOutputsAsync() => _applyOutputs();
     internal void SetRecoveryState(object? state) => _setRecoveryState(state);
+    internal void SetReply(ReplyAddress reply) => _setReply(reply);
 }
 
 /// <summary>
@@ -245,7 +250,8 @@ public class ActivityExecutor : IActivityExecutor
             () => ApplyTypedOutputMappingsAsync(activity, request.OutputMappings,
                 request.WorkflowData, request.PreviousStepData, request.CatchFault,
                 new TypedActivityExecutionResult<object>()),
-            state => context.RecoveryState = state);
+            state => context.RecoveryState = state,
+            reply => context.Reply = reply);
     }
 
     public TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> CreateTypedActivityContext<TWorkflowData, TPreviousStepData>(

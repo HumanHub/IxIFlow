@@ -64,8 +64,8 @@ internal sealed class DirectInstanceClient
 
     /// <summary>Stores a reply addressed to one wait without running the instance.</summary>
     public Task<EventAppendResult> DeliverReplyAsync<TReply>(string instanceId, string waitId, TReply reply,
-        string eventId) where TReply : class =>
-        _runner.DeliverReplyAsync(instanceId, waitId, reply, eventId);
+        string eventId, string? subject) where TReply : class =>
+        _runner.DeliverReplyAsync(instanceId, waitId, reply, eventId, subject);
 
     /// <summary>The result for an event the inbox answered without keeping it, or null when it was stored.</summary>
     public Task<WorkflowExecutionResult?> AnswerAsync(string instanceId, string eventId, EventAppendResult appended) =>

@@ -47,6 +47,12 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         return _workflowBuilder.Step(configure);
     }
 
+    public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(string name,
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
+        where TActivity : class, IAsyncActivity =>
+        _workflowBuilder.Request(name, configure, subject);
+
     public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TWorkflow, TInvokedData>(
         Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TWorkflow : IWorkflow<TInvokedData> where TInvokedData : class

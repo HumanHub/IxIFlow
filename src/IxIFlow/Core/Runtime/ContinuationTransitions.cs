@@ -92,7 +92,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             var @event = accepted.Event.Read(services)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "The accepted event could not be restored");
-            SagaScopeTransitions.RecordAcceptedWait(continuation, accepted.StepId, @event);
+            // A saga retry asks again, so a request's answer is not kept for replay.
+            if (acceptedStep.ReplyToRequest == null)
+                SagaScopeTransitions.RecordAcceptedWait(continuation, accepted.StepId, @event);
             WorkflowValueBinding.ApplyEventOutputs(acceptedStep, @event, workflowData);
             continuation.SetPrevious(@event);
             acceptedPosition.NextStepIndex++;
@@ -224,6 +226,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 });
                 break;
 
+            case WorkflowStepType.SuspendResume when step.ReplyToRequest != null:
+                TryScopeTransitions.EnsureCanWait(checkpoint, continuation);
+                AwaitReply(scopes, checkpoint, continuation, step);
+                break;
+
             case WorkflowStepType.SuspendResume when step.StepMetadata.TryGetValue("WaitKey", out var keyValue):
                 TryScopeTransitions.EnsureCanWait(checkpoint, continuation);
                 if (SagaScopeTransitions.TryReuseAcceptedWait(continuation, scopes.Id(step),
@@ -270,6 +277,32 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     $"Structured execution does not yet support {step.StepType}");
         }
 
+    }
+
+    // A request's WaitFor takes an answer that arrived early at once; otherwise it waits on the wait its
+    // request opened in the same scope occurrence, from now until its own deadline (D-33). A saga retry
+    // sends the request again, so an answer is never replayed from an earlier attempt.
+    private void AwaitReply(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, WorkflowStep step)
+    {
+        var stepId = scopes.Id(step);
+        var activation = continuation.Stack[^1].ActivationId;
+        if (checkpoint.BoundReplies.FirstOrDefault(reply =>
+                reply.StepId == stepId && reply.ScopeActivationId == activation) is { } answer)
+        {
+            checkpoint.BoundReplies.Remove(answer);
+            continuation.AcceptedWait = new AcceptedWaitState
+            {
+                StepId = stepId, Event = answer.Event, EventId = answer.EventId, WaitId = answer.WaitId
+            };
+            return;
+        }
+        var wait = checkpoint.Waits.FirstOrDefault(item =>
+                item.IsReply && item.StepId == stepId && item.ScopeActivationId == activation)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"The request '{step.ReplyToRequest}' this wait answers has no open wait");
+        wait.DeadlineUtc = step.WaitTimeout is { } timeout ? Now.Add(timeout) : null;
+        continuation.Status = ContinuationStatus.Waiting;
     }
 
     public static bool ShouldCancelInvokedChild(ContinuationState continuation) =>

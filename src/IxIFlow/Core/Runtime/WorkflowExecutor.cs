@@ -69,7 +69,8 @@ internal sealed class WorkflowExecutor
                 // Events are taken before wait deadlines, so one received in time beats its deadline
                 // (D-33). A cancellation request the run has not applied yet goes first: its unwind
                 // closes the waits, and the events are then refused as cancelled.
-                if (host.ObservedInboxSequence > (checkpoint.Inbox.ReadThrough ?? long.MaxValue))
+                if (host.ObservedInboxSequence > (checkpoint.Inbox.ReadThrough ?? long.MaxValue) ||
+                    _transitions.HasDueDeadline(checkpoint))
                     checkpoint.Inbox.ExpectArrivals();
                 if (!CancellationPending(checkpoint, host))
                     progressed |= await _intake.TakeAsync(scopes, checkpoint, workflowData, host);
@@ -696,15 +697,15 @@ internal sealed class WorkflowExecutor
 
     /// <summary>
     /// What a control-flow step can change that must be saved before anything outside the instance
-    /// depends on it: the saved waits, which accept events; branches stopped for resolution;
-    /// scheduled retries, whose deadline must not move; and branches being cancelled, whose running
-    /// activities are told to stop. Other control flow is not committed and is re-derived from the
-    /// last checkpoint after a crash (A-04).
+    /// depends on it: the saved waits, which accept events, and their deadlines, which must not move;
+    /// branches stopped for resolution; scheduled retries, whose deadline must not move; and branches
+    /// being cancelled, whose running activities are told to stop. Other control flow is not committed
+    /// and is re-derived from the last checkpoint after a crash (A-04).
     /// </summary>
     private readonly record struct EffectBoundary(string Key)
     {
         public static EffectBoundary Of(ExecutionCheckpoint checkpoint) => new(string.Join("|",
-            string.Join(",", checkpoint.Waits.Select(wait => wait.Id)),
+            string.Join(",", checkpoint.Waits.Select(wait => $"{wait.Id}@{wait.DeadlineUtc:O}")),
             string.Join(",", checkpoint.Continuations
                 .Where(item => item.Status is ContinuationStatus.WaitingResolution or ContinuationStatus.Cancelling)
                 .Select(item => $"{item.Id}:{item.Status}")),
