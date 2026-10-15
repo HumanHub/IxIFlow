@@ -25,11 +25,11 @@ internal static class ExecutionCheckpointWriter
         var lastCommitted = SavedForm.Of(instance);
         Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData);
         var size = CheckpointBytes(instance);
-        if (enforceLimit && size > host.MaxCheckpointBytes)
+        if (enforceLimit && size > host.Limits.MaxCheckpointBytes)
         {
             // The instance keeps the last checkpoint that was committed.
             lastCommitted.RestoreTo(instance);
-            throw new CheckpointLimitExceededException(size, host.MaxCheckpointBytes);
+            throw new CheckpointLimitExceededException(size, host.Limits.MaxCheckpointBytes);
         }
 
         var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,
@@ -112,5 +112,5 @@ internal static class ExecutionCheckpointWriter
 }
 
 /// <summary>A checkpoint would exceed the configured size limit and was not committed (D-28).</summary>
-internal sealed class CheckpointLimitExceededException(long size, long limit) : Exception(
+internal sealed class CheckpointLimitExceededException(long size, long limit) : ResourceLimitExceededException(
     $"The checkpoint is {size} bytes, over the configured limit of {limit} bytes");

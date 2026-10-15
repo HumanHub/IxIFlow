@@ -69,11 +69,17 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         return due.Length != 0;
     }
 
+    /// <summary>
+    /// Moves a continuation past its next control-flow step. A parallel step that would make more
+    /// than <paramref name="maxActiveBranches"/> continuations live throws
+    /// <see cref="BranchLimitExceededException"/> before anything changes.
+    /// </summary>
     public void Advance(
         WorkflowScopeCatalog scopes,
         ExecutionCheckpoint checkpoint,
         ContinuationState continuation,
-        object workflowData)
+        object workflowData,
+        int maxActiveBranches = int.MaxValue)
     {
         if (continuation.AcceptedWait is { } accepted)
         {
@@ -181,7 +187,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 break;
 
             case WorkflowStepType.Parallel:
-                Fork(scopes, step, checkpoint, continuation);
+                Fork(scopes, step, checkpoint, continuation, maxActiveBranches);
                 break;
 
             case WorkflowStepType.TryCatch:
@@ -320,11 +326,17 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     }
 
     private static void Fork(WorkflowScopeCatalog scopes, WorkflowStep step, ExecutionCheckpoint checkpoint,
-        ContinuationState parent)
+        ContinuationState parent, int maxActiveBranches)
     {
         if (step.ParallelBranches.Count == 0)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Parallel step '{step.Id}' has no branches");
+        // Settling losers are left out, so the count depends only on the definition and the loop
+        // position, and a stop at the limit is the same on every run.
+        var live = checkpoint.Continuations.Count(item => item.Status is not (ContinuationStatus.Completed or
+            ContinuationStatus.Cancelled or ContinuationStatus.Cancelling));
+        if (live + step.ParallelBranches.Count > maxActiveBranches)
+            throw new BranchLimitExceededException(live, step.ParallelBranches.Count, maxActiveBranches);
 
         var join = new ParallelJoinState
         {

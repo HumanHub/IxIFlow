@@ -96,19 +96,36 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             """, new { InstanceId = instanceId, Token = token });
     }
 
-    public SqlWorkflowStateRepository(string connectionString)
+    public const int DefaultOwnershipPoolSize = 16;
+
+    /// <summary>
+    /// Creates a store on <paramref name="connectionString"/>. Lease and cancellation traffic uses a
+    /// second connection pool of at most <paramref name="ownershipPoolSize"/> connections, so a host
+    /// whose runs and the application's own work exhaust the main pool still renews its leases and
+    /// delivers cancellation (B-09). With pooling turned off the reservation has no effect.
+    /// </summary>
+    public SqlWorkflowStateRepository(string connectionString, int ownershipPoolSize = DefaultOwnershipPoolSize)
     {
         _connectionString = string.IsNullOrWhiteSpace(connectionString)
             ? throw new ArgumentException("A SQL Server connection string is required", nameof(connectionString))
             : connectionString;
+        ArgumentOutOfRangeException.ThrowIfLessThan(ownershipPoolSize, 1);
+        // A different application name keeps a separate pool in the client.
+        var ownership = new SqlConnectionStringBuilder(connectionString);
+        ownership.ApplicationName = $"{ownership.ApplicationName} IxIFlow ownership".Trim();
+        ownership.MaxPoolSize = ownershipPoolSize;
+        ownership.MinPoolSize = Math.Min(ownership.MinPoolSize, ownershipPoolSize);
+        _ownershipConnectionString = ownership.ConnectionString;
     }
+
+    private readonly string _ownershipConnectionString;
 
     public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
+        await using var connection = await OpenOwnershipConnectionAsync();
         var changed = await connection.ExecuteAsync("""
             UPDATE dbo.IxIFlowWorkflowInstances
             SET CancellationJson = COALESCE(CancellationJson, @ReasonJson),
@@ -123,7 +140,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
+        await using var connection = await OpenOwnershipConnectionAsync();
         var json = await connection.QuerySingleOrDefaultAsync<string>("""
             SELECT CancellationJson FROM dbo.IxIFlowWorkflowInstances
             WHERE InstanceId = @InstanceId
@@ -139,7 +156,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         if (instanceIds.Count == 0)
             return requests;
         await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
+        await using var connection = await OpenOwnershipConnectionAsync();
         // SQL Server allows about 2,100 parameters per statement.
         foreach (var batch in instanceIds.Distinct(StringComparer.Ordinal).Chunk(1000))
         {
@@ -179,11 +196,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         var milliseconds = LeaseMilliseconds(instanceId, token, duration);
         await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
+        await using var connection = await OpenOwnershipConnectionAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
-        // The instance row is locked before the lease row, in the same order as a commit.
+        // The instance row is locked before the lease row, in the same order as a commit. No range
+        // lock: a missing row is not a running instance, and a range lock would block other claims.
         var running = await connection.ExecuteScalarAsync<int>("""
-            SELECT COUNT(*) FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+            SELECT COUNT(*) FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId AND Status = 'Running'
             """, new { InstanceId = instanceId }, transaction) > 0;
         // The lease row outlives its lease, so a later owner always gets a higher epoch. A lease that
@@ -221,7 +239,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         var milliseconds = LeaseMilliseconds(instanceId, token, duration);
         await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
+        await using var connection = await OpenOwnershipConnectionAsync();
         var changed = await connection.ExecuteAsync("""
             UPDATE dbo.IxIFlowWorkflowLeases
             SET ExpiresAtUtc = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME())
@@ -248,7 +266,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
+        await using var connection = await OpenOwnershipConnectionAsync();
         var changed = await connection.ExecuteAsync("""
             UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = CAST('0001-01-01' AS DATETIME2)
             WHERE InstanceId = @InstanceId AND Token = @Token AND ExpiresAtUtc > SYSUTCDATETIME()
@@ -329,7 +347,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             WHERE InstanceId = @InstanceId AND CommitId = @CommitId
             """, new { commit.InstanceId, commit.CommitId }, transaction);
         var lease = await connection.QuerySingleOrDefaultAsync<LeaseRecord>("""
-            SELECT Epoch,
+            SELECT Epoch, CrashCount,
                 CAST(CASE WHEN ExpiresAtUtc > SYSUTCDATETIME() THEN 1 ELSE 0 END AS BIT) AS IsActive
             FROM dbo.IxIFlowWorkflowLeases WITH (UPDLOCK, HOLDLOCK)
             WHERE InstanceId = @InstanceId
@@ -393,7 +411,11 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             commit.ExpectedRevision, commit.CommitId, PayloadHash = commit.ContentHash,
             AcknowledgesCancellation = snapshot.CancellationReason != null
         }, transaction);
-        if (snapshot.Status != WorkflowStatus.Running || commit.ClearsCrashCount)
+        // The lease row is written only when something changes, so most commits touch only their
+        // instance row; a write to a missing lease row would take range locks other claims need.
+        var releases = snapshot.Status != WorkflowStatus.Running;
+        var clears = commit.ClearsCrashCount && lease?.CrashCount > 0;
+        if (lease != null && (releases || clears))
             await connection.ExecuteAsync("""
                 UPDATE dbo.IxIFlowWorkflowLeases
                 SET ExpiresAtUtc = CASE WHEN @Released = 1 THEN CAST('0001-01-01' AS DATETIME2)
@@ -402,7 +424,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 WHERE InstanceId = @InstanceId
                 """, new
             {
-                snapshot.InstanceId, Released = snapshot.Status != WorkflowStatus.Running, commit.ClearsCrashCount
+                snapshot.InstanceId, Released = releases, ClearsCrashCount = clears
             }, transaction);
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
@@ -439,6 +461,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     private sealed class LeaseRecord
     {
         public long Epoch { get; set; }
+        public int CrashCount { get; set; }
         public bool IsActive { get; set; }
     }
 
@@ -486,6 +509,14 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     private async Task<SqlConnection> OpenConnectionAsync()
     {
         var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync();
+        return connection;
+    }
+
+    // Leases and cancellation use the reserved pool.
+    private async Task<SqlConnection> OpenOwnershipConnectionAsync()
+    {
+        var connection = new SqlConnection(_ownershipConnectionString);
         await connection.OpenAsync();
         return connection;
     }

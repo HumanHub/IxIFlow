@@ -809,7 +809,7 @@ internal sealed class InstanceHost(
         public bool PersistsState => persistState;
         public CancellationToken Drain => host._control.Drain;
         public long Epoch => owner?.Epoch ?? 0;
-        public long MaxCheckpointBytes => host._limits.MaxCheckpointBytes;
+        public ExecutionLimits Limits => host._limits;
         public bool ChildStartIsCheckpointed => host._childStartIsCheckpointed;
         public Task? OwnershipLoss => owner?.Loss;
         public Task<CancellationReason>? CancellationSignal => owner?.Cancellation;

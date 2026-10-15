@@ -67,31 +67,52 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
             throw new ExecutionOwnershipLostException(_loss.Task.Result);
     }
 
+    private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(5);
+
+    // Loss is decided by the clock, not by when a store call returns: a renewal that has not
+    // succeeded by the time the lease may have expired ends ownership (B-09). The expiry counts
+    // from when the renewal was sent, since the store may have applied it at any point after.
     private async Task RenewUntilStoppedAsync(ExecutionLeaseSettings settings)
     {
         var expiresAtUtc = Now.Add(settings.Duration);
+        var delay = settings.RenewalInterval;
         try
         {
             while (true)
             {
-                await Task.Delay(settings.RenewalInterval, _time, _stop.Token);
+                await Task.Delay(delay, _time, _stop.Token);
+                var sentAtUtc = Now;
+                var renewal = _repository.RenewExecutionLeaseAsync(_instanceId, _token, settings.Duration);
+                var remaining = expiresAtUtc - Now;
                 try
                 {
-                    if (!await _repository.RenewExecutionLeaseAsync(_instanceId, _token,
-                            settings.Duration))
+                    var renewed = await renewal.WaitAsync(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero,
+                        _time, _stop.Token);
+                    if (!renewed)
                     {
                         _loss.TrySetResult(new InvalidOperationException(
                             $"Execution lease for workflow instance '{_instanceId}' was lost"));
                         return;
                     }
-                    expiresAtUtc = Now.Add(settings.Duration);
+                    expiresAtUtc = sentAtUtc.Add(settings.Duration);
+                    delay = settings.RenewalInterval;
                 }
-                catch (Exception error)
+                catch (TimeoutException)
                 {
-                    if (Now < expiresAtUtc)
-                        continue;
-                    _loss.TrySetResult(error);
+                    _loss.TrySetResult(new TimeoutException(
+                        $"Execution lease for workflow instance '{_instanceId}' could not be renewed before it expired"));
                     return;
+                }
+                catch (Exception error) when (error is not OperationCanceledException)
+                {
+                    if (Now >= expiresAtUtc)
+                    {
+                        _loss.TrySetResult(error);
+                        return;
+                    }
+                    // Try again soon, while the lease still holds.
+                    var left = (expiresAtUtc - Now) / 4;
+                    delay = left < settings.RenewalInterval ? left : settings.RenewalInterval;
                 }
             }
         }
@@ -112,7 +133,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         _stop.Dispose();
         try
         {
-            await _repository.ReleaseExecutionLeaseAsync(_instanceId, _token);
+            await _repository.ReleaseExecutionLeaseAsync(_instanceId, _token).WaitAsync(ReleaseTimeout, _time);
         }
         catch
         {

@@ -148,7 +148,7 @@ public sealed class WorkflowExecutorHostTests
         public bool PersistsState => true;
         public CancellationToken Drain => CancellationToken.None;
         public long Epoch => 1;
-        public long MaxCheckpointBytes => long.MaxValue;
+        public ExecutionLimits Limits { get; } = new() { MaxCheckpointBytes = long.MaxValue };
         public bool ChildStartIsCheckpointed => true;
         public Task? OwnershipLoss => null;
         public Task<CancellationReason>? CancellationSignal => null;
