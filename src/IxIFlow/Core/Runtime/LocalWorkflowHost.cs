@@ -44,6 +44,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     private readonly Dictionary<string, DateTime> _dueOf = new(StringComparer.Ordinal);
     // Resumes that found the instance owned or failed, by instance, for their backoff.
     private readonly Dictionary<string, int> _resumeRetries = new(StringComparer.Ordinal);
+    private const int MaxResumeRetries = 6;
     private ITimer? _timer;
     private DateTime? _armedFor;
 
@@ -89,8 +90,13 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
             if (!_accepting)
                 return;
         }
-        _ = ResumeAsync(instanceId);
+        DispatchResume(instanceId);
     }
+
+    // A resume starts on the thread pool with no caller context: whoever asked, a run, an activity
+    // or a timer firing on the caller's thread, it is never taken for a call from inside that run.
+    private void DispatchResume(string instanceId) =>
+        ThreadPool.UnsafeQueueUserWorkItem(state => _ = ResumeAsync(state), instanceId, preferLocal: false);
 
     // Caller holds _lock.
     private void SetDueLocked(string instanceId, DateTime dueUtc)
@@ -156,7 +162,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
                 ArmLocked();
         }
         foreach (var instanceId in due)
-            _ = ResumeAsync(instanceId);
+            DispatchResume(instanceId);
     }
 
     // Goes through the same queue and slots as every other call.
@@ -179,9 +185,10 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
         }
         lock (_lock)
         {
-            // An owner held it, or the resume failed: look again after a backoff. An owner that
-            // finishes reschedules the instance itself.
-            if (result == null || result.Status == WorkflowExecutionStatus.Running)
+            // An owner held it, or the resume failed: look again after a backoff, a few times. An
+            // owner that finishes reschedules the instance itself; after that the poll covers it.
+            if ((result == null || result.Status == WorkflowExecutionStatus.Running) &&
+                _resumeRetries.GetValueOrDefault(instanceId) < MaxResumeRetries)
             {
                 var attempt = _resumeRetries.GetValueOrDefault(instanceId);
                 _resumeRetries[instanceId] = attempt + 1;

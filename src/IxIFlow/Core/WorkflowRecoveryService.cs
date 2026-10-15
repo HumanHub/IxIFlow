@@ -19,8 +19,19 @@ internal sealed class WorkflowRecoveryService(
     // Instances a pass is recovering now, and instances this host could not run, with the time it
     // tries them again, so the earliest rows cannot keep every slot's worth of the poll to themselves.
     private readonly HashSet<string> _recovering = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, DateTime> _deferred = new(StringComparer.Ordinal);
-    private static readonly TimeSpan DeferRejected = TimeSpan.FromMinutes(1);
+    private readonly Dictionary<string, (DateTime Until, int Times)> _deferred = new(StringComparer.Ordinal);
+
+    // A rejection may be a race, such as another pass or the host's timer getting there first, or
+    // lasting, such as a definition this host lacks; the wait grows from seconds to minutes.
+    private void Defer(string instanceId)
+    {
+        lock (_lock)
+        {
+            var times = _deferred.TryGetValue(instanceId, out var previous) ? previous.Times + 1 : 1;
+            var wait = TimeSpan.FromSeconds(Math.Min(300, 5 * Math.Pow(2, Math.Min(times - 1, 6))));
+            _deferred[instanceId] = (_time.GetUtcNow().UtcDateTime + wait, times);
+        }
+    }
 
     internal async Task RecoverOnceAsync(CancellationToken cancellationToken)
     {
@@ -34,9 +45,12 @@ internal sealed class WorkflowRecoveryService(
         lock (_lock)
         {
             var now = _time.GetUtcNow().UtcDateTime;
-            foreach (var expired in _deferred.Where(item => item.Value <= now).Select(item => item.Key).ToArray())
-                _deferred.Remove(expired);
-            skipped = new HashSet<string>(_recovering.Concat(_deferred.Keys), StringComparer.Ordinal);
+            // Expired entries stay a while, so a row rejected again waits longer; long-expired ones go.
+            foreach (var stale in _deferred.Where(item => now - item.Value.Until > TimeSpan.FromMinutes(10))
+                         .Select(item => item.Key).ToArray())
+                _deferred.Remove(stale);
+            skipped = new HashSet<string>(_recovering.Concat(_deferred.Where(item => item.Value.Until > now)
+                .Select(item => item.Key)), StringComparer.Ordinal);
         }
         var candidates = await repository.GetRunnableInstancesAsync(limit + skipped.Count);
         // Reserve against the live sets, so a pass running alongside cannot take the same instance.
@@ -46,7 +60,7 @@ internal sealed class WorkflowRecoveryService(
             {
                 if (instances.Count == limit)
                     break;
-                if (!_deferred.ContainsKey(candidate.InstanceId) && _recovering.Add(candidate.InstanceId))
+                if (!skipped.Contains(candidate.InstanceId) && _recovering.Add(candidate.InstanceId))
                     instances.Add(candidate);
             }
         try
@@ -83,10 +97,12 @@ internal sealed class WorkflowRecoveryService(
                 else if (result.Status == WorkflowExecutionStatus.NeedsResolution && result.ErrorMessage != null)
                     logger.LogWarning("Workflow {InstanceId} needs an operator: {Reason}",
                         instance.InstanceId, result.ErrorMessage);
-                // A row this host rejected, or left stopped, is likely still due; let others go first.
+                // A row this host rejected, or left stopped, may still be due; let others go first.
                 if (result.Status is WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.NeedsResolution)
+                    Defer(instance.InstanceId);
+                else
                     lock (_lock)
-                        _deferred[instance.InstanceId] = _time.GetUtcNow().UtcDateTime + DeferRejected;
+                        _deferred.Remove(instance.InstanceId);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -100,8 +116,7 @@ internal sealed class WorkflowRecoveryService(
             {
                 logger.LogError(error, "Could not recover workflow {InstanceId}", instance.InstanceId);
                 // A row whose recovery throws, such as unreadable data, must not hold the poll.
-                lock (_lock)
-                    _deferred[instance.InstanceId] = _time.GetUtcNow().UtcDateTime + DeferRejected;
+                Defer(instance.InstanceId);
             }
             finally
             {
