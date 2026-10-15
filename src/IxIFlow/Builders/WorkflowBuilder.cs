@@ -130,7 +130,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Invokes a workflow by type reference
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TWorkflow, TInvokedData>(
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>> configure)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TWorkflow : IWorkflow<TInvokedData> where TInvokedData : class
     {
         var step = new WorkflowStep
@@ -146,7 +146,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         // Create invocation builder and configure it
         var invocationBuilder = new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(step);
-        configure(invocationBuilder);
+        configure?.Invoke(invocationBuilder);
 
         _steps.Add(step);
 
@@ -157,7 +157,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Invokes a workflow by name and version
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version,
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>> configure)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TInvokedData : class
     {
         var step = new WorkflowStep
@@ -174,7 +174,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         // Create invocation builder and configure it
         var invocationBuilder = new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(step);
-        configure(invocationBuilder);
+        configure?.Invoke(invocationBuilder);
 
         _steps.Add(step);
 

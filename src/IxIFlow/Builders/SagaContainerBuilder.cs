@@ -48,14 +48,14 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
     }
 
     public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TWorkflow, TInvokedData>(
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>> configure)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TWorkflow : IWorkflow<TInvokedData> where TInvokedData : class
     {
         return _workflowBuilder.Invoke<TWorkflow, TInvokedData>(configure);
     }
 
     public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version,
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>> configure)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TInvokedData : class
     {
         return _workflowBuilder.Invoke(workflowName, version, configure);

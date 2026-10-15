@@ -25,7 +25,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("NonpersistentParent")
             .Step<NoopActivity>()
-            .Invoke<ChildData>("PersistedChild", 1, _ => { })
+            .Invoke<ChildData>("PersistedChild", 1)
             .Build();
 
         await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
@@ -111,7 +111,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("UnresolvedChildParent")
             .Step<NoopActivity>()
-            .Invoke<ChildData>("UnresolvedChild", 1, _ => { })
+            .Invoke<ChildData>("UnresolvedChild", 1)
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(parent, new ParentData());
@@ -157,7 +157,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("ParentClearsChildResolution")
             .Step<NoopActivity>()
-            .Invoke<ChildData>("ChildReturnsToWait", 1, _ => { })
+            .Invoke<ChildData>("ChildReturnsToWait", 1)
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(parent, new ParentData());
@@ -274,7 +274,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("ParentOfRunningApproval")
             .Step<NoopActivity>()
-            .Invoke<ChildData>("RunningAfterApproval", 1, _ => { })
+            .Invoke<ChildData>("RunningAfterApproval", 1)
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(parent, new ParentData());
@@ -320,7 +320,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("DueUnresolvedParent")
             .Step<NoopActivity>()
-            .Invoke<ChildData>("DueUnresolvedChild", 1, _ => { })
+            .Invoke<ChildData>("DueUnresolvedChild", 1)
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(parent, new ParentData());
@@ -443,7 +443,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("CrashWindowParent")
             .Step<NoopActivity>()
-            .Invoke<ChildData>("CrashWindowChild", 1, _ => { })
+            .Invoke<ChildData>("CrashWindowChild", 1)
             .Build();
         var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(parent, new ParentData());
@@ -538,7 +538,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("CancellableParent")
             .Step<NoopActivity>()
-            .Try(body => body.Invoke<ChildData>("CancellableChild", 1, _ => { }))
+            .Try(body => body.Invoke<ChildData>("CancellableChild", 1))
             .Finally(body => body.Step<MarkFinallyActivity>(step => step
                 .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.FinallyRan)))
             .Build();
@@ -567,7 +567,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("ParentWithRemotelyOwnedChild")
             .Step<NoopActivity>()
-            .Try(body => body.Invoke<ChildData>("RemotelyOwnedChild", 1, _ => { }))
+            .Try(body => body.Invoke<ChildData>("RemotelyOwnedChild", 1))
             .Finally(body => body.Step<MarkFinallyActivity>(step => step
                 .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.FinallyRan)))
             .Build();
@@ -614,7 +614,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("ParentWithFailingCancellationChild")
             .Step<NoopActivity>()
-            .Invoke<ChildData>("FailingCancellationChild", 1, _ => { })
+            .Invoke<ChildData>("FailingCancellationChild", 1)
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
@@ -649,7 +649,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("ActiveChildParent")
             .Step<NoopActivity>()
-            .Try(body => body.Invoke<ChildData>("ActiveChild", 1, _ => { }))
+            .Try(body => body.Invoke<ChildData>("ActiveChild", 1))
             .Finally(body => body.Step<MarkFinallyActivity>(step => step
                 .Output(activity => activity.Ran).To(ctx => ctx.WorkflowData.FinallyRan)))
             .Build();
@@ -934,7 +934,7 @@ public sealed class StructuredChildWaitTests
             .RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("CatchingParent")
             .Step<NoopActivity>()
-            .Try(body => body.Invoke<ChildData>("FailingChild", 1, _ => { }))
+            .Try(body => body.Invoke<ChildData>("FailingChild", 1))
             .Catch<ChildFailureException, MessageFault>(body => body
                 .Step<CaptureFaultActivity>(step => step
                     .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
