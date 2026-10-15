@@ -38,6 +38,35 @@ public sealed class AddressedWaitTests
     }
 
     [Fact]
+    [Trait("Spec", "D-14")]
+    public async Task PagesListOnlyWaitsWithoutARequestAndSkipNone()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+            ApprovalWorkflow("ChildApproval", null));
+        // The parent shows the child's wait as its own; the child's wait is the one to answer.
+        await engine.RunAsync(Workflow.Create<LoopData>("ParentOfChildApproval")
+            .Step<StartActivity>()
+            .Invoke<LoopData>("ChildApproval", 1)
+            .Build(), new LoopData());
+        await engine.RunAsync(ApprovalWorkflow("SecondApproval", null), new LoopData());
+
+        var listed = new List<OpenWait>();
+        string? after = null;
+        while (await engine.GetOpenWaitsAsync(new WaitQuery(Key: "approval", AfterWaitId: after, Limit: 1)) is
+               [var wait])
+        {
+            listed.Add(wait);
+            after = wait.WaitId;
+        }
+
+        Assert.Equal(2, listed.Count);
+        Assert.All(listed, wait => Assert.Equal(WaitKind.Event, wait.Kind));
+        Assert.Empty(await engine.GetOpenWaitsAsync(new WaitQuery(Kind: WaitKind.Child)));
+    }
+
+    [Fact]
     [Trait("Spec", "D-03")]
     public async Task ATokenAnswersOnlyItsWaitAndALateReplyGetsTheReason()
     {
