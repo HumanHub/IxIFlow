@@ -19,7 +19,13 @@ public enum WorkflowCommitStatus
     StaleEpoch,
 
     /// <summary>The store did not apply the commit and it can be sent again unchanged.</summary>
-    Retry
+    Retry,
+
+    /// <summary>
+    /// An inbox event the commit settles is no longer pending, or expired before it was consumed.
+    /// Nothing was written; the owner still owns the instance and reads its inbox again.
+    /// </summary>
+    EventsChanged
 }
 
 /// <summary>
@@ -124,8 +130,23 @@ public sealed class CheckpointCommit
         ArgumentException.ThrowIfNullOrWhiteSpace(commitId);
         if (commitId.Length > 100)
             throw new ArgumentException("Commit IDs must be at most 100 characters", nameof(commitId));
+        if (inboxReadThrough < 0)
+            throw new ArgumentOutOfRangeException(nameof(inboxReadThrough), "An inbox read mark cannot be negative");
+        // A copy, so the settlements cannot change after the commit is hashed.
+        var settled = (settlements ?? []).ToArray();
+        foreach (var settlement in settled)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(settlement.EventId, nameof(settlements));
+            if (settlement.Outcome is not (EventOutcome.Consumed or EventOutcome.Rejected))
+                throw new ArgumentException("A commit settles an event only as consumed or rejected",
+                    nameof(settlements));
+            if (settlement.Outcome == EventOutcome.Consumed && string.IsNullOrWhiteSpace(settlement.ActivationId))
+                throw new ArgumentException("A consumed event names the activation that took it", nameof(settlements));
+        }
+        if (settled.Select(settlement => settlement.EventId).Distinct(StringComparer.Ordinal).Count() != settled.Length)
+            throw new ArgumentException("A commit settles each event once", nameof(settlements));
         return new CheckpointCommit(instance.InstanceId, JsonSerializer.Serialize(instance), epoch, commitId,
-            expectedRevision, clearsCrashCount, parks, settlements ?? [], inboxReadThrough);
+            expectedRevision, clearsCrashCount, parks, Array.AsReadOnly(settled), inboxReadThrough);
     }
 
     /// <summary>A fresh copy of the committed instance.</summary>

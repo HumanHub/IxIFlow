@@ -3,7 +3,7 @@
   "control-flow": 18,
   "try": 71,
   "saga": 65,
-  "waits": 69,
+  "waits": 70,
   "timers": 24,
   "children": 31,
   "recovery": 39,

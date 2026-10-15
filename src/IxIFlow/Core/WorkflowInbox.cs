@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace IxIFlow.Core;
 
@@ -17,12 +18,44 @@ public sealed record WorkflowEvent(
     string? TargetActivationId = null)
 {
     /// <summary>
-    /// SHA-256 of the type, key, target activation and payload. An event ID sent again with another
-    /// hash is a different event and is refused.
+    /// SHA-256 of the type, key, target activation and payload, each a separate JSON string. An
+    /// event ID sent again with another hash is a different event and is refused; the payload is
+    /// compared byte for byte, so a retry sends the same text.
     /// </summary>
     public byte[] ContentHash() => SHA256.HashData(Encoding.UTF8.GetBytes(
-        $"{EventType}\n{(Key == null ? "\0" : "k" + Key)}\n" +
-        $"{(TargetActivationId == null ? "\0" : "t" + TargetActivationId)}\n{PayloadJson}"));
+        JsonSerializer.Serialize(new[] { EventType, Key, TargetActivationId, PayloadJson })));
+
+    /// <summary>Checks the fields every store can hold.</summary>
+    public void Validate()
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(InstanceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(EventId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(EventType);
+        ArgumentNullException.ThrowIfNull(PayloadJson);
+        if (InstanceId.Length > 100 || EventId.Length > 100 || TargetActivationId?.Length > 100)
+            throw new ArgumentException("Instance, event and activation IDs are at most 100 characters");
+        if (EventType.Length > 400 || Key?.Length > 400)
+            throw new ArgumentException("Event types and keys are at most 400 characters");
+    }
+}
+
+/// <summary>
+/// One page of pending events. <see cref="ReadThrough"/> is the inbox sequence the page covers,
+/// including events already settled or expired, so a run that has seen the page can mark the inbox
+/// read up to it.
+/// </summary>
+public sealed record InboxPage(IReadOnlyList<StoredWorkflowEvent> Events, long ReadThrough)
+{
+    /// <summary>
+    /// A page of up to <paramref name="limit"/> events read after <paramref name="afterSequence"/> from
+    /// an inbox at <paramref name="inboxSequence"/>: a full page reads through its last event, a short
+    /// one through the whole inbox.
+    /// </summary>
+    public static InboxPage Of(IReadOnlyList<StoredWorkflowEvent> events, int limit, long afterSequence,
+        long inboxSequence) =>
+        new(events, limit == 0 ? afterSequence
+            : events.Count == limit ? events[^1].Sequence
+            : Math.Max(afterSequence, inboxSequence));
 }
 
 public enum EventAppendStatus
@@ -61,7 +94,10 @@ public enum EventOutcome
     Rejected,
 
     /// <summary>No wait took it before it expired.</summary>
-    Expired
+    Expired,
+
+    /// <summary>The instance finished before a wait took it.</summary>
+    Closed
 }
 
 /// <summary>An event as the inbox holds it.</summary>
@@ -97,8 +133,11 @@ public interface IWorkflowInbox
     /// </summary>
     Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent, TimeSpan retention);
 
-    /// <summary>Pending, unexpired events after <paramref name="afterSequence"/>, in arrival order.</summary>
-    Task<IReadOnlyList<StoredWorkflowEvent>> GetPendingEventsAsync(string instanceId, long afterSequence, int limit);
+    /// <summary>
+    /// Pending, unexpired events after <paramref name="afterSequence"/>, in arrival order, and how far
+    /// the page reads: the last event's sequence when the page is full, otherwise the inbox's.
+    /// </summary>
+    Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit);
 
     /// <summary>One event and its outcome, or null.</summary>
     Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId);
