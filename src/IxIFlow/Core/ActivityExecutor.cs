@@ -193,11 +193,14 @@ public class ActivityExecutor : IActivityExecutor
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ActivityExecutor> _logger;
+    private readonly TimeProvider _time;
 
     public ActivityExecutor(
         IServiceProvider serviceProvider,
-        ILogger<ActivityExecutor> logger)
+        ILogger<ActivityExecutor> logger,
+        TimeProvider? timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -219,7 +222,7 @@ public class ActivityExecutor : IActivityExecutor
             request.StepNumber,
             request.ExecutionContext.WorkflowDefinition.Name,
             request.ExecutionContext.WorkflowDefinition.Version,
-            DateTime.UtcNow,
+            _time.GetUtcNow().UtcDateTime,
             request.WorkflowData,
             request.PreviousStepData,
             request.StepMetadata,
@@ -259,7 +262,7 @@ public class ActivityExecutor : IActivityExecutor
             stepContext.WorkflowInstance.CurrentStepNumber,
             stepContext.WorkflowDefinition.Name,
             stepContext.WorkflowDefinition.Version,
-            DateTime.UtcNow,
+            _time.GetUtcNow().UtcDateTime,
             stepContext.WorkflowData,
             previousStepData,
             metadata: metadata,

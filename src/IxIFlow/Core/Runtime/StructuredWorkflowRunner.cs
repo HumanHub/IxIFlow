@@ -18,12 +18,16 @@ internal sealed class StructuredWorkflowRunner(
     IWorkflowStateRepository repository,
     IWorkflowVersionRegistry registry,
     InProcessInstanceGate gate,
-    ExecutionLeaseSettings? leaseSettings = null)
+    ExecutionLeaseSettings? leaseSettings = null,
+    TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
     private readonly WorkflowInvocationTransitionExecutor _invocations = new(workflowInvoker);
     private readonly bool _childStartIsCheckpointed = workflowInvoker is ICheckpointedWorkflowInvoker;
     private readonly ExecutionLeaseSettings _leaseSettings = leaseSettings ?? ExecutionLeaseSettings.Default;
+
+    private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
     public static bool HasStructuredCheckpoint(WorkflowInstance? instance) =>
         instance != null && ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson);
@@ -99,7 +103,7 @@ internal sealed class StructuredWorkflowRunner(
             ?? throw new InvalidOperationException("Saved workflow data cannot be read");
 
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-            repository, instance, _leaseSettings);
+            repository, instance, _leaseSettings, _time);
         if (owner == null)
             return Busy(instanceId);
         var current = await repository.GetWorkflowInstanceAsync(instanceId);
@@ -265,8 +269,8 @@ internal sealed class StructuredWorkflowRunner(
             Status = WorkflowStatus.Running,
             CorrelationId = options.CorrelationId ?? Guid.NewGuid().ToString("N"),
             ParentInstanceId = options.ParentInstanceId,
-            CreatedAt = DateTime.UtcNow,
-            StartedAt = DateTime.UtcNow,
+            CreatedAt = Now,
+            StartedAt = Now,
             TotalSteps = definition.Steps.Count,
             TracingEnabled = options.EnableTracing,
             Properties = new Dictionary<string, object>(options.Properties)
@@ -290,7 +294,7 @@ internal sealed class StructuredWorkflowRunner(
 
         using var lease = await gate.EnterAsync(instance.InstanceId, cancellationToken);
         await using var owner = options.PersistState
-            ? await WorkflowExecutionLease.TryAcquireAsync(repository, instance, _leaseSettings)
+            ? await WorkflowExecutionLease.TryAcquireAsync(repository, instance, _leaseSettings, _time)
                 ?? (options.InstanceId == null
                     ? throw new InvalidOperationException("The new workflow instance could not acquire execution ownership")
                     : null)
@@ -315,7 +319,7 @@ internal sealed class StructuredWorkflowRunner(
             throw new InvalidOperationException(
                 $"Workflow {definition.Name} v{definition.Version} is deactivated");
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-        instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes);
+        instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
         if (options.PersistState)
         {
             await registry.RegisterWorkflowAsync(definition);
@@ -373,7 +377,7 @@ internal sealed class StructuredWorkflowRunner(
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
                 return Rejected(instanceId, "The registered workflow definition differs from the saved version");
             await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-                repository, instance, _leaseSettings);
+                repository, instance, _leaseSettings, _time);
             if (owner == null)
                 return Busy(instanceId);
             var current = await repository.GetWorkflowInstanceAsync(instanceId);
@@ -499,7 +503,7 @@ internal sealed class StructuredWorkflowRunner(
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-            repository, instance, _leaseSettings);
+            repository, instance, _leaseSettings, _time);
         if (owner == null)
             return Busy(instanceId);
         var current = await repository.GetWorkflowInstanceAsync(instanceId);
@@ -600,7 +604,7 @@ internal sealed class StructuredWorkflowRunner(
                     var runnable = checkpoint.Continuations.FirstOrDefault(item =>
                         item.Status == ContinuationStatus.Active &&
                         !inFlight.ContainsKey(item.Id) &&
-                        (item.RetryAfterUtc == null || item.RetryAfterUtc <= DateTime.UtcNow));
+                        (item.RetryAfterUtc == null || item.RetryAfterUtc <= Now));
                     if (runnable == null)
                         break;
                     runnable.RetryAfterUtc = null;
@@ -668,10 +672,10 @@ internal sealed class StructuredWorkflowRunner(
                     continue;
                 var nextRetry = checkpoint.Continuations
                     .Where(item => item.Status == ContinuationStatus.Active &&
-                                   item.RetryAfterUtc > DateTime.UtcNow)
+                                   item.RetryAfterUtc > Now)
                     .Min(item => item.RetryAfterUtc);
                 var nextWaitDeadline = checkpoint.Waits
-                    .Where(wait => wait.DeadlineUtc > DateTime.UtcNow)
+                    .Where(wait => wait.DeadlineUtc > Now)
                     .Min(wait => wait.DeadlineUtc);
                 if (inFlight.Count == 0 && nextRetry == null)
                 {
@@ -694,11 +698,11 @@ internal sealed class StructuredWorkflowRunner(
                     .Where(due => due != null).Min();
                 if (nextWake is { } retryAt)
                 {
-                    var delay = retryAt - DateTime.UtcNow;
+                    var delay = retryAt - Now;
                     if (delay < TimeSpan.Zero)
                         delay = TimeSpan.Zero;
                     retryTimer = Task.Delay(delay > TimeSpan.FromDays(1)
-                        ? TimeSpan.FromDays(1) : delay, retryTimerCancellation.Token);
+                        ? TimeSpan.FromDays(1) : delay, _time, retryTimerCancellation.Token);
                     runningTasks.Add(retryTimer);
                 }
                 if (!checkpoint.CancellationRequested && callerCancellation != null)
@@ -748,12 +752,12 @@ internal sealed class StructuredWorkflowRunner(
             {
                 instance.Status = checkpoint.TimedOut
                     ? WorkflowStatus.TimedOut : WorkflowStatus.Cancelled;
-                instance.CompletedAt = DateTime.UtcNow;
+                instance.CompletedAt = Now;
             }
             else if (checkpoint.Continuations[0].Status == ContinuationStatus.Completed)
             {
                 instance.Status = WorkflowStatus.Completed;
-                instance.CompletedAt = DateTime.UtcNow;
+                instance.CompletedAt = Now;
             }
             else if (checkpoint.Continuations.Any(item =>
                          item.Status == ContinuationStatus.WaitingResolution))
@@ -803,7 +807,7 @@ internal sealed class StructuredWorkflowRunner(
                         $"Workflow suspended with {checkpoint.Waits.Count} active waits",
                     _ => null
                 },
-                ExecutionTime = DateTime.UtcNow - instance.StartedAt!.Value
+                ExecutionTime = Now - instance.StartedAt!.Value
             };
         }
         catch (ExecutionLeaseLostException)
@@ -913,7 +917,7 @@ internal sealed class StructuredWorkflowRunner(
                 continuation.Status = ContinuationStatus.Cancelled;
             instance.LastError = ex.Message;
             instance.LastErrorStackTrace = ex.StackTrace;
-            instance.CompletedAt = DateTime.UtcNow;
+            instance.CompletedAt = Now;
             if (instance.ExecutionSnapshot != null)
             {
                 instance.ExecutionSnapshot.Status = instance.Status;
@@ -989,29 +993,29 @@ internal sealed class StructuredWorkflowRunner(
         return true;
     }
 
-    private static bool HasDueDeadline(WorkflowInstance instance) =>
+    private bool HasDueDeadline(WorkflowInstance instance) =>
         HasStructuredCheckpoint(instance) &&
         HasDueDeadline(ExecutionCheckpoint.Read(instance.ExecutionStateJson));
 
-    private static bool HasChildWait(WorkflowInstance instance) =>
+    private bool HasChildWait(WorkflowInstance instance) =>
         HasStructuredCheckpoint(instance) &&
         ExecutionCheckpoint.Read(instance.ExecutionStateJson).Waits.Any(wait =>
             wait.ChildWorkflowId != null);
 
     // A deadline that passes after the root finishes has nothing left to interrupt.
-    private static bool HasDueDeadline(ExecutionCheckpoint checkpoint) =>
+    private bool HasDueDeadline(ExecutionCheckpoint checkpoint) =>
         (!checkpoint.CancellationRequested && !RootFinished(checkpoint) &&
-         checkpoint.ExecutionDeadlineUtc <= DateTime.UtcNow) ||
-        checkpoint.Waits.Any(wait => wait.DeadlineUtc <= DateTime.UtcNow);
+         checkpoint.ExecutionDeadlineUtc <= Now) ||
+        checkpoint.Waits.Any(wait => wait.DeadlineUtc <= Now);
 
-    private static bool RootFinished(ExecutionCheckpoint checkpoint) =>
+    private bool RootFinished(ExecutionCheckpoint checkpoint) =>
         checkpoint.Continuations[0].Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled;
 
-    private static bool ProcessExecutionDeadline(WorkflowInstance instance,
+    private bool ProcessExecutionDeadline(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint)
     {
         if (checkpoint.CancellationRequested || checkpoint.TimedOut ||
-            checkpoint.ExecutionDeadlineUtc > DateTime.UtcNow ||
+            checkpoint.ExecutionDeadlineUtc > Now ||
             checkpoint.ExecutionDeadlineUtc == null ||
             RootFinished(checkpoint))
             return false;
@@ -1021,17 +1025,17 @@ internal sealed class StructuredWorkflowRunner(
         {
             ReasonCode = "execution_timeout",
             Description = "The workflow execution deadline expired",
-            RequestedAt = DateTime.UtcNow
+            RequestedAt = Now
         };
         CancelTree(checkpoint, checkpoint.Continuations[0]);
         return true;
     }
 
-    private static bool ProcessDueWaits(ExecutionCheckpoint checkpoint,
+    private bool ProcessDueWaits(ExecutionCheckpoint checkpoint,
         WorkflowScopeCatalog scopes)
     {
         var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId == null &&
-            wait.DeadlineUtc <= DateTime.UtcNow).ToArray();
+            wait.DeadlineUtc <= Now).ToArray();
         foreach (var wait in due)
         {
             var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
@@ -1061,7 +1065,7 @@ internal sealed class StructuredWorkflowRunner(
     private async Task<bool> ProcessDueChildWaitsAsync(ExecutionCheckpoint checkpoint)
     {
         var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId != null &&
-            wait.DeadlineUtc <= DateTime.UtcNow)
+            wait.DeadlineUtc <= Now)
             .GroupBy(wait => (wait.ContinuationId, wait.ChildWorkflowId))
             .ToArray();
         if (due.Length == 0)
@@ -1075,7 +1079,7 @@ internal sealed class StructuredWorkflowRunner(
             if (result.Status == WorkflowExecutionStatus.Running)
             {
                 foreach (var wait in childWaits)
-                    wait.DeadlineUtc = DateTime.UtcNow.AddSeconds(5);
+                    wait.DeadlineUtc = Now.AddSeconds(5);
                 continue;
             }
             if (result.Status == WorkflowExecutionStatus.NeedsResolution)
@@ -1287,7 +1291,7 @@ internal sealed class StructuredWorkflowRunner(
                 break;
 
             case WorkflowStepType.Saga:
-                SagaScopeTransitions.Enter(scopes, step, position, continuation, services);
+                SagaScopeTransitions.Enter(scopes, step, position, continuation, services, Now);
                 break;
 
             case WorkflowStepType.Loop:
@@ -1329,11 +1333,12 @@ internal sealed class StructuredWorkflowRunner(
                     ?? throw new InvalidOperationException($"Wait step '{step.Id}' has an invalid key");
                 checkpoint.Waits.Add(new WaitState
                 {
+                    RegisteredAtUtc = Now,
                     ContinuationId = continuation.Id,
                     StepId = scopes.Id(step),
                     Key = key,
                     DeadlineUtc = step.WaitTimeout is { } timeout
-                        ? DateTime.UtcNow.Add(timeout) : null,
+                        ? Now.Add(timeout) : null,
                     EventType = step.ResumeEventType?.AssemblyQualifiedName
                         ?? throw new InvalidOperationException($"Wait step '{step.Id}' has no event type")
                 });
@@ -1344,10 +1349,11 @@ internal sealed class StructuredWorkflowRunner(
                 TryScopeTransitions.EnsureCanWait(checkpoint, continuation);
                 checkpoint.Waits.Add(new WaitState
                 {
+                    RegisteredAtUtc = Now,
                     ContinuationId = continuation.Id,
                     StepId = scopes.Id(step),
                     Key = "delay",
-                    DeadlineUtc = DateTime.UtcNow.Add(step.DelayDuration!.Value)
+                    DeadlineUtc = Now.Add(step.DelayDuration!.Value)
                 });
                 continuation.Status = ContinuationStatus.Waiting;
                 break;
@@ -1378,6 +1384,7 @@ internal sealed class StructuredWorkflowRunner(
         var invocationId = pending?.Id ?? NewInvocationId(instance, continuation, scopes.Id(step));
         var attempt = new ActivityAttemptState
         {
+            StartedAtUtc = Now,
             Kind = pending?.Resolution is { } resolution
                 ? $"Operator{resolution.Kind}"
                 : isRecovery ? "Recover" : "Execute"
@@ -1405,6 +1412,7 @@ internal sealed class StructuredWorkflowRunner(
                 prepared.SetRecoveryState(recoveryState);
                 pending = new ActivityInvocationState
                 {
+                    StartedAtUtc = Now,
                     Id = invocationId,
                     StepId = scopes.Id(step),
                     Inputs = ActivityInputSnapshot.Capture(prepared.Activity, step),
@@ -1451,6 +1459,7 @@ internal sealed class StructuredWorkflowRunner(
         pending.Attempts.Add(attempt);
         var startTrace = new ExecutionTraceEntry
         {
+            Timestamp = Now,
             EntryType = TraceEntryType.ActivityStarted,
             ActivityName = step.ActivityType?.Name ?? "Activity",
             StepNumber = continuation.Stack[^1].NextStepIndex,
@@ -1594,11 +1603,12 @@ internal sealed class StructuredWorkflowRunner(
                 pending.ChildWorkflowId = savedChild.InstanceId;
         }
 
-        pending ??= new ActivityInvocationState { StepId = scopes.Id(step) };
+        pending ??= new ActivityInvocationState { StepId = scopes.Id(step), StartedAtUtc = Now };
         if (_childStartIsCheckpointed)
             pending.ChildWorkflowId ??= pending.Id;
         var attempt = new ActivityAttemptState
         {
+            StartedAtUtc = Now,
             Kind = pending.Resolution == null ? "InvokeWorkflow" :
                 $"Operator{pending.Resolution.Kind}"
         };
@@ -1606,6 +1616,7 @@ internal sealed class StructuredWorkflowRunner(
         continuation.PendingActivity = pending;
         var startTrace = new ExecutionTraceEntry
         {
+            Timestamp = Now,
             EntryType = TraceEntryType.ActivityStarted,
             ActivityName = step.Name,
             StepNumber = continuation.Stack[^1].NextStepIndex,
@@ -1742,7 +1753,7 @@ internal sealed class StructuredWorkflowRunner(
         !TryScopeTransitions.IsInsideFinally(continuation) &&
         !SagaScopeTransitions.IsInsideCompensation(continuation);
 
-    private static void ProjectChildLifecycleWait(ExecutionCheckpoint checkpoint,
+    private void ProjectChildLifecycleWait(ExecutionCheckpoint checkpoint,
         ContinuationState continuation, string childInstanceId, bool needsResolution)
     {
         var pending = continuation.PendingActivity
@@ -1751,6 +1762,7 @@ internal sealed class StructuredWorkflowRunner(
             wait.ContinuationId == continuation.Id);
         checkpoint.Waits.Add(new WaitState
         {
+            RegisteredAtUtc = Now,
             ContinuationId = continuation.Id,
             StepId = pending.StepId,
             Key = "child-workflow",
@@ -1762,7 +1774,7 @@ internal sealed class StructuredWorkflowRunner(
             ? $"Child workflow '{childInstanceId}' needs activity resolution" : null;
     }
 
-    private static void ProjectChildWaits(ExecutionCheckpoint checkpoint,
+    private void ProjectChildWaits(ExecutionCheckpoint checkpoint,
         ContinuationState continuation, string childInstanceId,
         ExecutionCheckpoint childCheckpoint)
     {
@@ -1775,6 +1787,7 @@ internal sealed class StructuredWorkflowRunner(
         foreach (var childWait in childCheckpoint.Waits)
             checkpoint.Waits.Add(new WaitState
             {
+                RegisteredAtUtc = Now,
                 ContinuationId = continuation.Id,
                 StepId = pending.StepId,
                 Key = childWait.Key,
@@ -1901,17 +1914,17 @@ internal sealed class StructuredWorkflowRunner(
         }
     }
 
-    private static void MarkActivityUnresolved(RunningActivity activity, string? reason)
+    private void MarkActivityUnresolved(RunningActivity activity, string? reason)
     {
         var pending = activity.Continuation.PendingActivity
             ?? throw new InvalidOperationException("Unresolved activity has no saved Start");
         pending.ResolutionReason = reason;
-        pending.Attempts[^1].EndedAtUtc = DateTime.UtcNow;
+        pending.Attempts[^1].EndedAtUtc = Now;
         pending.Attempts[^1].Observation = "Unresolved";
         activity.Continuation.Status = ContinuationStatus.WaitingResolution;
     }
 
-    private static void MarkActivityEnd(RunningActivity running, WorkflowInstance instance,
+    private void MarkActivityEnd(RunningActivity running, WorkflowInstance instance,
         string observation,
         Exception? error = null)
     {
@@ -1919,12 +1932,13 @@ internal sealed class StructuredWorkflowRunner(
         if (pending == null)
             return;
         var attempt = pending.Attempts[^1];
-        attempt.EndedAtUtc = DateTime.UtcNow;
+        attempt.EndedAtUtc = Now;
         attempt.Observation = observation;
         running.Continuation.PendingActivity = null;
         if (instance.TracingEnabled)
             instance.ExecutionHistory.Add(new ExecutionTraceEntry
         {
+            Timestamp = Now,
             EntryType = error == null ? TraceEntryType.ActivityCompleted : TraceEntryType.ActivityFailed,
             ActivityName = running.Step.ActivityType?.Name ?? running.Step.Name,
             StepNumber = running.StepNumber,
@@ -2094,11 +2108,11 @@ internal sealed class StructuredWorkflowRunner(
         }
     }
 
-    private static bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+    private bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, Exception error, bool allowStepRetry = true)
     {
         if (allowStepRetry && !continuation.CancellationUnwind &&
-            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error))
+            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, Now))
             return true;
         if (continuation.CancellationUnwind)
         {
@@ -2249,7 +2263,7 @@ internal sealed class StructuredWorkflowRunner(
                 ? instance.WorkflowDataJson
                 : JsonSerializer.Serialize(workflowData, workflowData.GetType());
             var stateJson = JsonSerializer.Serialize(checkpoint);
-            var snapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes);
+            var snapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
             instance.WorkflowDataJson = dataJson;
             instance.ExecutionStateJson = stateJson;
             instance.ExecutionSnapshot = snapshot;
@@ -2258,7 +2272,7 @@ internal sealed class StructuredWorkflowRunner(
                 ? new[] { checkpoint.CancellationRequested ? null : checkpoint.ExecutionDeadlineUtc }
                     .Concat(checkpoint.Waits.Select(wait => wait.DeadlineUtc))
                     .Concat(checkpoint.Waits.Any(wait => wait.ChildWorkflowId != null)
-                        ? [DateTime.UtcNow.AddSeconds(5)] : [])
+                        ? [Now.AddSeconds(5)] : [])
                     .Where(due => due != null).Min()
                 : null;
         }

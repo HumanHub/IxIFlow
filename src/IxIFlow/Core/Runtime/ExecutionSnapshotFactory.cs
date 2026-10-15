@@ -5,10 +5,11 @@ internal static class ExecutionSnapshotFactory
     public static WorkflowExecutionSnapshot Create(
         WorkflowInstance instance,
         ExecutionCheckpoint checkpoint,
-        WorkflowScopeCatalog scopes)
+        WorkflowScopeCatalog scopes, DateTime capturedAtUtc)
     {
         var snapshot = new WorkflowExecutionSnapshot
         {
+            CapturedAtUtc = capturedAtUtc,
             InstanceId = instance.InstanceId,
             WorkflowName = instance.WorkflowName,
             WorkflowVersion = instance.WorkflowVersion,
