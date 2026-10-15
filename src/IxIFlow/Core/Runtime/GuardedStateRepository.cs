@@ -34,8 +34,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
         ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
             "The workflow state store has no inbox");
 
-    public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent, TimeSpan retention) =>
-        Guard(() => Inbox.AppendEventAsync(workflowEvent, retention),
+    public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+        Guard(() => Inbox.AppendEventAsync(workflowEvent),
             $"Storing event '{workflowEvent.EventId}' for workflow instance '{workflowEvent.InstanceId}'");
 
     public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
@@ -46,8 +46,12 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
         Guard(() => Inbox.GetEventAsync(instanceId, eventId),
             $"Reading event '{eventId}' of workflow instance '{instanceId}'");
 
-    public Task<int> SettleExpiredEventsAsync(int limit) =>
-        Guard(() => Inbox.SettleExpiredEventsAsync(limit), "Settling expired workflow events");
+    public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+        Guard(() => Inbox.GetWaitAsync(instanceId, waitId),
+            $"Reading wait '{waitId}' of workflow instance '{instanceId}'");
+
+    public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+        Guard(() => Inbox.GetOpenWaitsAsync(query), "Listing open workflow waits");
 
     public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit) =>
         Guard(() => _store.CommitWorkflowInstanceAsync(commit),
