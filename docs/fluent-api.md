@@ -121,7 +121,7 @@ var resumed = await engine.ResumeWorkflowAsync(
 
 ## Invoke another workflow
 
-`Invoke<TWorkflow, TChildData>` resolves a workflow class. `Invoke<TChildData>(name, version, ...)` resolves a registered definition. Both forms map child inputs and outputs like activity properties.
+`Invoke<TWorkflow, TChildData>` resolves a workflow class. `Invoke<TChildData>(name, version, ...)` resolves a registered definition. Both forms map child inputs and outputs like activity properties. The mapping setup is optional, as it is for `Step`: `.Invoke<AuditData>("Audit", 1)` starts the child with default data.
 
 ```csharp
 .Invoke<ValidationWorkflow, ValidationData>(child => child
