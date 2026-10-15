@@ -262,6 +262,17 @@ public sealed class CancellationWatchTests
     /// <summary>A store that leaves the batch read to the interface's fallback.</summary>
     private sealed class SingleReadStore : IWorkflowStateRepository
     {
+        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+            throw new NotSupportedException();
+        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
+            throw new NotSupportedException();
+        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+            throw new NotSupportedException();
+        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+            throw new NotSupportedException();
+
         public Dictionary<string, CancellationReason> Requests { get; } = new(StringComparer.Ordinal);
         public HashSet<string> Failing { get; } = new(StringComparer.Ordinal);
 

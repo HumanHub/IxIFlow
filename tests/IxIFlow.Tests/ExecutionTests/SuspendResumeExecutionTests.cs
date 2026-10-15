@@ -2,6 +2,7 @@ using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.ExecutionTests.Models;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -156,6 +157,7 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should still be suspended (condition not met)
         Assert.False(invalidResumeResult.IsSuccess);
+        EventAssert.Rejected(invalidResumeResult, EventRejection.NotMatched);
         
         var stillSuspendedInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(stillSuspendedInstance);
@@ -387,7 +389,7 @@ public class SuspendResumeExecutionTests
     }
 
     [Fact]
-    public async Task EventCorrelator_Should_Reject_NonMatchingResumeCondition_BeforeResume()
+    public async Task NonMatchingResumeConditionRejectsTheEventBeforeItResumes()
     {
         var workflowData = new SuspendResumeTestData
         {
@@ -409,19 +411,18 @@ public class SuspendResumeExecutionTests
         var startResult = await _workflowEngine.RunAsync(workflow, workflowData);
         Assert.False(startResult.IsSuccess);
 
-        var instance = await _stateRepository.GetWorkflowInstanceAsync(startResult.InstanceId);
-        Assert.NotNull(instance);
-
-        var correlator = _serviceProvider.GetRequiredService<IEventCorrelator>();
-        var matches = await correlator.EvaluateResumeConditionAsync(new ApprovalEvent
+        var rejected = await _workflowEngine.ResumeAsync(startResult.InstanceId, new ApprovalEvent
         {
             OrderId = "ORDER-007B",
             Approved = true,
             Declined = false,
             ApproverName = "John Employee"
-        }, instance!);
+        });
 
-        Assert.False(matches);
+        EventAssert.Rejected(rejected, EventRejection.NotMatched);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, rejected.Status);
+        var instance = await _stateRepository.GetWorkflowInstanceAsync(startResult.InstanceId);
+        Assert.Equal(WorkflowStatus.Suspended, instance!.Status);
     }
 
     [Fact]
@@ -658,6 +659,7 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should still be suspended
         Assert.False(invalidResumeResult.IsSuccess);
+        EventAssert.Rejected(invalidResumeResult, EventRejection.NotMatched);
         
         var stillSuspendedInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(stillSuspendedInstance);

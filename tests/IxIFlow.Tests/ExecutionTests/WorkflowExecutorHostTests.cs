@@ -195,8 +195,14 @@ public sealed class WorkflowExecutorHostTests
             throw new NotSupportedException("No child is cancelled in this test");
 
         public Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key, object @event,
-            string deliveryId, CancellationToken cancellationToken) =>
+            string eventId, CancellationToken cancellationToken) =>
             throw new NotSupportedException("No child is resumed in this test");
+
+        // No event is sent in these tests: the inbox is always empty.
+        public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) =>
+            Task.FromResult(new InboxPage([], afterSequence, new Dictionary<string, long>()));
+
+        public Task<StoredWait?> ReadWaitAsync(string waitId) => Task.FromResult<StoredWait?>(null);
     }
 
     public sealed class ExecutorProbe

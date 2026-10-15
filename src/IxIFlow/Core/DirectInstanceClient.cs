@@ -48,14 +48,33 @@ internal sealed class DirectInstanceClient
     }
 
     public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
-        string instanceId, string? key, TEventData @event, string deliveryId,
+        string instanceId, string? key, TEventData @event, string eventId,
         CancellationToken cancellationToken = default)
         where TEventData : class
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(deliveryId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
         return ForInstanceAsync(instanceId,
-            _runner.ResumeAsync(instanceId, key, @event, cancellationToken, deliveryId));
+            _runner.ResumeAsync(instanceId, key, @event, cancellationToken, eventId));
     }
+
+    /// <summary>Stores an event without running the instance.</summary>
+    public Task<EventAppendResult> DeliverAsync<TEventData>(string instanceId, string? key, TEventData @event,
+        string eventId) where TEventData : class =>
+        _runner.DeliverAsync(instanceId, key, @event, eventId);
+
+    /// <summary>The result for an event the inbox answered without keeping it, or null when it was stored.</summary>
+    public Task<WorkflowExecutionResult?> AnswerAsync(string instanceId, string eventId, EventAppendResult appended) =>
+        _runner.AnswerAsync(instanceId, eventId, appended);
+
+    /// <summary>Runs the instance so its owner decides a stored event.</summary>
+    public Task<WorkflowExecutionResult> TakeEventAsync(string instanceId, string eventId,
+        CancellationToken cancellationToken = default) =>
+        ForInstanceAsync(instanceId, _runner.TakeEventAsync(instanceId, eventId, cancellationToken));
+
+    public Task<EventReceipt?> ReadEventAsync(string instanceId, string eventId) =>
+        _runner.ReadEventAsync(instanceId, eventId);
+
+    public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) => _runner.GetOpenWaitsAsync(query);
 
     public Task<WorkflowExecutionResult> RecoverAsync(
         string instanceId,

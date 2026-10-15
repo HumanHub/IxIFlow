@@ -61,8 +61,18 @@ internal interface IExecutionHost
     Task<WorkflowExecutionResult> CancelChildAsync(string childInstanceId, CancellationReason reason,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Sends a child an event its parent took for one of the child's waits, under the same event ID,
+    /// and runs the child until it decides it. The result carries the child's receipt.
+    /// </summary>
     Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key, object @event,
-        string deliveryId, CancellationToken cancellationToken);
+        string eventId, CancellationToken cancellationToken);
+
+    /// <summary>Pending events of this instance after <paramref name="afterSequence"/>, and its open waits.</summary>
+    Task<InboxPage> ReadInboxAsync(long afterSequence, int limit);
+
+    /// <summary>One of this instance's waits, open or closed, or null.</summary>
+    Task<StoredWait?> ReadWaitAsync(string waitId);
 }
 
 /// <summary>
@@ -85,10 +95,10 @@ internal enum CheckpointReplyKind
     /// <summary>The outcome is not known; sending the same commit again settles it.</summary>
     Unknown,
 
-    /// <summary>An inbox event the commit settles changed; nothing was written and the run still owns it.</summary>
+    /// <summary>An inbox event the commit settles is no longer pending; nothing was written.</summary>
     EventsChanged
 }
 
 /// <summary>The host's answer to a checkpoint commit. Error explains a reply that was not acknowledged.</summary>
 internal sealed record CheckpointReply(CheckpointReplyKind Kind, long Revision = 0, Exception? Error = null,
-    CancellationReason? PendingCancellation = null, bool Parked = false);
+    CancellationReason? PendingCancellation = null, bool Parked = false, bool UnreadEvents = false);

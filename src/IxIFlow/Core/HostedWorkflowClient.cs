@@ -59,34 +59,87 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
     }
 
     public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(string instanceId, TEventData @event,
-        CancellationToken cancellationToken = default) where TEventData : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        return UntilIdleAsync(host.RunAsync(instanceId,
-            (client, _, token) => client.ResumeAsync(instanceId, @event, token), cancellationToken),
-            cancellationToken);
-    }
+        CancellationToken cancellationToken = default) where TEventData : class =>
+        SendAsync(instanceId, null, @event, Guid.NewGuid().ToString("N"), cancellationToken);
 
     public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(string instanceId, string key,
         TEventData @event, CancellationToken cancellationToken = default) where TEventData : class
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        return UntilIdleAsync(host.RunAsync(instanceId,
-            (client, _, token) => client.ResumeAsync(instanceId, key, @event, token), cancellationToken),
-            cancellationToken);
+        return SendAsync(instanceId, key, @event, Guid.NewGuid().ToString("N"), cancellationToken);
     }
 
     public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(string instanceId, string? key,
-        TEventData @event, string deliveryId, CancellationToken cancellationToken = default)
+        TEventData @event, string eventId, CancellationToken cancellationToken = default)
         where TEventData : class
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(deliveryId);
-        return UntilIdleAsync(host.RunAsync(instanceId,
-            (client, _, token) => client.ResumeAsync(instanceId, key, @event, deliveryId, token),
-            cancellationToken), cancellationToken);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
+        return SendAsync(instanceId, key, @event, eventId, cancellationToken);
     }
+
+    // The event is stored without a slot, so a busy owner on this host takes it at its next pass (D-32);
+    // then the instance runs in a slot. When another host runs the instance, its owner decides the
+    // event, and the caller waits for that decision.
+    private async Task<WorkflowExecutionResult> SendAsync<TEventData>(string instanceId, string? key,
+        TEventData @event, string eventId, CancellationToken cancellationToken) where TEventData : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentNullException.ThrowIfNull(@event);
+        var appended = await host.ReadAsync(client => client.DeliverAsync(instanceId, key, @event, eventId));
+        if (await host.ReadAsync(client => client.AnswerAsync(instanceId, eventId, appended)) is { } answered)
+            return answered;
+        var result = await UntilIdleAsync(host.RunAsync(instanceId,
+            (client, _, token) => client.TakeEventAsync(instanceId, eventId, token),
+            cancellationToken), cancellationToken);
+        while (result.Event is { Outcome: EventOutcome.Pending } &&
+               result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
+        {
+            using var watch = host.WatchSettled(instanceId, out var settled);
+            var receipt = await host.ReadAsync(client => client.ReadEventAsync(instanceId, eventId));
+            if (receipt?.Outcome != EventOutcome.Pending)
+            {
+                result = await AwaitAsync(instanceId, WorkflowAwaitCondition.Idle, cancellationToken);
+                result.Event = receipt;
+                break;
+            }
+            using var poll = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            await Task.WhenAny(settled, Task.Delay(AwaitPollInterval, time, poll.Token));
+            poll.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            result.Status = await host.ReadAsync(client => client.ReadStatusAsync(instanceId)) ?? result.Status;
+        }
+        return result;
+    }
+
+    public async Task<IReadOnlyList<EventDelivery>> PublishAsync<TEventData>(string key, TEventData @event,
+        string eventId, CancellationToken cancellationToken = default) where TEventData : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        ArgumentNullException.ThrowIfNull(@event);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
+        var deliveries = new List<EventDelivery>();
+        var reached = new HashSet<string>(StringComparer.Ordinal);
+        string? after = null;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(
+                new WaitQuery(Key: key, Kind: WaitKind.Event, AfterWaitId: after, Limit: PublishPageSize)));
+            foreach (var instanceId in waits.Select(wait => wait.InstanceId).Where(reached.Add))
+            {
+                var appended = await host.ReadAsync(client => client.DeliverAsync(instanceId, key, @event, eventId));
+                deliveries.Add(new EventDelivery(instanceId, appended.Status, appended.Rejection));
+                // The owner, or a host that claims the instance, decides it at its next pass.
+                if (appended.Status == EventAppendStatus.Stored)
+                    host.WakeNow(instanceId);
+            }
+            if (waits.Count < PublishPageSize)
+                return deliveries;
+            after = waits[^1].WaitId;
+        }
+    }
+
+    private const int PublishPageSize = 100;
 
     // A run parked on a retry gave its slot back; a caller that asked to run until idle waits for
     // the instance without a slot while the host resumes it on time (C-03).
@@ -97,8 +150,8 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
         if (result.Status != WorkflowExecutionStatus.Scheduled)
             return result;
         var idle = await AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Idle, cancellationToken);
-        // The event was taken before the park; the later result must still say so.
-        idle.EventAccepted = result.EventAccepted;
+        // The event was decided before the park; the later result must still say so.
+        idle.Event = result.Event;
         return idle;
     }
 

@@ -47,14 +47,8 @@ public static class ServiceCollectionExtensions
         // Workflow tracing and monitoring
         services.AddScoped<IWorkflowTracer, WorkflowTracer>();
         
-        // Event management
-        services.AddScoped<IEventCorrelator, EventCorrelator>();
-        
         // Expression evaluation
         services.AddScoped<IExpressionEvaluator, ExpressionEvaluator>();
-        
-        // Suspension management
-        services.AddScoped<ISuspensionManager, SuspensionManager>();
         return services;
     }
 

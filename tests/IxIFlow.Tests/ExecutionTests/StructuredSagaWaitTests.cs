@@ -1647,6 +1647,17 @@ public class StructuredSagaWaitTests
 
     public sealed class HandlerStartCrashStore : IWorkflowStateRepository
     {
+        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+            _inner.AppendEventAsync(workflowEvent);
+        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
+            _inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
+        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+            _inner.GetEventAsync(instanceId, eventId);
+        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+            _inner.GetWaitAsync(instanceId, waitId);
+        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+            _inner.GetOpenWaitsAsync(query);
+
         private readonly InMemoryWorkflowStateRepository _inner = new();
         public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
             _inner.RequestCancellationAsync(instanceId, reason);

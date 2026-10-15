@@ -8,6 +8,17 @@ namespace IxIFlow.Tests.Infrastructure;
 /// </summary>
 public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox
 {
+    public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+        _inner.AppendEventAsync(workflowEvent);
+    public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
+        _inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
+    public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+        _inner.GetEventAsync(instanceId, eventId);
+    public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+        _inner.GetWaitAsync(instanceId, waitId);
+    public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+        _inner.GetOpenWaitsAsync(query);
+
     private readonly InMemoryWorkflowStateRepository _inner = new();
     private int _failedReads;
     private int _failedCommits;

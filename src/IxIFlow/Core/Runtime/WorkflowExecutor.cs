@@ -12,12 +12,14 @@ internal sealed class WorkflowExecutor
     private readonly TimeProvider _time;
     private readonly ContinuationTransitions _transitions;
     private readonly ActivityAttempts _attempts;
+    private readonly EventIntake _intake;
 
     public WorkflowExecutor(IServiceProvider services, IActivityExecutor activityExecutor, TimeProvider time)
     {
         _time = time;
         _transitions = new ContinuationTransitions(services, time);
         _attempts = new ActivityAttempts(services, activityExecutor, _transitions, time);
+        _intake = new EventIntake(services, time);
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
@@ -64,6 +66,11 @@ internal sealed class WorkflowExecutor
                 cancellationToken.ThrowIfCancellationRequested();
                 host.ThrowIfOwnershipLost();
                 var progressed = _transitions.ProcessExecutionDeadline(instance, checkpoint);
+                // Events are taken before wait deadlines, so one received in time beats its deadline
+                // (D-33). A cancellation request the run has not applied yet goes first: its unwind
+                // closes the waits, and the events are then refused as cancelled.
+                if (checkpoint.CancellationRequested || host.ObservedCancellation == null)
+                    progressed |= await _intake.TakeAsync(scopes, checkpoint, workflowData, host);
                 var children = await ProcessDueChildWaitsAsync(checkpoint, host);
                 progressed |= children == ChildCheck.Progressed;
                 progressed |= _transitions.ProcessDueWaits(checkpoint, scopes);
@@ -221,6 +228,10 @@ internal sealed class WorkflowExecutor
                 {
                     if (await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
                             scopes, host, host.ObservedCancellation))
+                        continue;
+                    // Events that arrived since the last read are taken before the run goes idle.
+                    if (host.PersistsState && checkpoint.Inbox.MayHaveUnread && limitStop == null &&
+                        !host.Drain.IsCancellationRequested)
                         continue;
                     break;
                 }
@@ -437,7 +448,7 @@ internal sealed class WorkflowExecutor
                 checkpoint.UnhandledError ??= SerializedException.From(ex);
             instance.Status = cancelled ? WorkflowStatus.Cancelled : WorkflowStatus.Failed;
             instance.SuspensionInfo = null;
-            checkpoint.Waits.Clear();
+            checkpoint.RemoveWaits(_ => true, WaitCloseReason.InstanceFinished);
             checkpoint.Joins.Clear();
             foreach (var continuation in checkpoint.Continuations.Where(item =>
                          item.Status != ContinuationStatus.Completed))
@@ -545,8 +556,8 @@ internal sealed class WorkflowExecutor
                     : $"Child workflow '{childId}' needs activity resolution";
                 continue;
             }
-            checkpoint.Waits.RemoveAll(wait => wait.ChildWorkflowId == childId &&
-                wait.ContinuationId == childWaits.Key.ContinuationId);
+            checkpoint.RemoveWaits(wait => wait.ChildWorkflowId == childId &&
+                wait.ContinuationId == childWaits.Key.ContinuationId, WaitCloseReason.InstanceFinished);
             var continuation = checkpoint.Continuations.Single(item =>
                 item.Id == childWaits.Key.ContinuationId);
             continuation.Status = ContinuationStatus.Active;
@@ -570,8 +581,8 @@ internal sealed class WorkflowExecutor
             if (child.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
                 WorkflowStatus.Cancelled or WorkflowStatus.TimedOut or WorkflowStatus.Terminated)
             {
-                checkpoint.Waits.RemoveAll(wait => wait.ChildWorkflowId == child.InstanceId &&
-                    wait.ContinuationId == continuation.Id);
+                checkpoint.RemoveWaits(wait => wait.ChildWorkflowId == child.InstanceId &&
+                    wait.ContinuationId == continuation.Id, WaitCloseReason.InstanceFinished);
                 continuation.Status = ContinuationStatus.Active;
                 changed = true;
             }

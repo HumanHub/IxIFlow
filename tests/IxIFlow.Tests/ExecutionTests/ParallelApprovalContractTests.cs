@@ -133,51 +133,52 @@ public class ParallelApprovalContractTests
     }
 
     [Fact]
-    public async Task EventManager_RoutesParallelApprovalsWithoutSuspensionInfo()
+    [Trait("Spec", "D-13")]
+    public async Task PublishedReplyReachesParallelApprovalsWithoutSuspensionInfo()
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
-        var manager = services.GetRequiredService<ISuspensionManager>();
+        var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var started = await engine.RunAsync(
             CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false),
             new ApprovalData { RequestId = "request-1" });
-        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstanceAsync(started.InstanceId);
+        var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Null(saved!.SuspensionInfo);
 
-        var routed = await manager.ProcessEventAsync(Reply("finance", approved: true));
+        var deliveries = await engine.PublishAsync("finance", Reply("finance", approved: true), "reply-1");
 
-        Assert.Contains(started.InstanceId, routed);
-        saved = await services.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstanceAsync(started.InstanceId);
+        Assert.Contains(new EventDelivery(started.InstanceId, EventAppendStatus.Stored), deliveries);
+        Assert.Equal(EventOutcome.Consumed,
+            (await EventAssert.DecidedAsync(repository, started.InstanceId, "reply-1")).Outcome);
+        // The run that took the reply goes on to the next step before the instance is idle again.
+        await engine.AwaitAsync(started.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
+        saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
         Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceCompleted);
     }
 
     [Fact]
-    public async Task EventManager_DoesNotReportRejectedApprovalAsResumed()
+    [Trait("Spec", "D-13")]
+    public async Task PublishedReplyForAnotherRequestIsRejectedByTheWaitCondition()
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
-        var manager = services.GetRequiredService<ISuspensionManager>();
+        var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var started = await engine.RunAsync(
             CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false),
             new ApprovalData { RequestId = "request-1" });
 
-        var correlator = services.GetRequiredService<IEventCorrelator>();
-        Assert.False(await correlator.CheckResumeConditionAsync(started.InstanceId,
-            new ApprovalReply { RequestId = "other-request", ApproverId = "finance" }));
-        Assert.True(await correlator.CheckResumeConditionAsync(started.InstanceId,
-            Reply("finance", approved: true)));
-
-        var routed = await manager.ProcessEventAsync(new ApprovalReply
+        var deliveries = await engine.PublishAsync("finance", new ApprovalReply
         {
             RequestId = "other-request", ApproverId = "finance", Approved = true
-        });
+        }, "reply-other");
 
-        Assert.Empty(routed);
-        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstanceAsync(started.InstanceId);
+        // The instance's wait is open for the key, so it receives the reply; its condition refuses it.
+        Assert.Contains(new EventDelivery(started.InstanceId, EventAppendStatus.Stored), deliveries);
+        var decided = await EventAssert.DecidedAsync(repository, started.InstanceId, "reply-other");
+        Assert.Equal((EventOutcome.Rejected, EventRejection.NotMatched), (decided.Outcome, decided.Rejection));
+        await engine.AwaitAsync(started.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
+        var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
         Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceCompleted);
     }
@@ -218,6 +219,7 @@ public class ParallelApprovalContractTests
             new ApprovalReply { RequestId = "different-request", ApproverId = "finance", Approved = true });
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, unmatched.Status);
+        EventAssert.Rejected(unmatched, EventRejection.NotMatched);
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(2, saved!.ExecutionSnapshot!.Pointers.Count(pointer => pointer.Status == "Waiting"));
 
@@ -286,7 +288,7 @@ public class ParallelApprovalContractTests
             Assert.False(second.IsCompleted);
             probe.Release.TrySetResult();
             var results = await Task.WhenAll(first, second);
-            Assert.All(results, result => Assert.True(result.EventAccepted, result.ErrorMessage));
+            Assert.All(results, EventAssert.Consumed);
             Assert.Equal(WorkflowExecutionStatus.Success, results[1].Status);
             Assert.Equal(1, GetData(results[1]).LegalCompleted);
             Assert.Equal(1, GetData(results[1]).Finished);
@@ -298,7 +300,8 @@ public class ParallelApprovalContractTests
     }
 
     [Fact]
-    public async Task ResumeReportsRunningInstanceAsRetryable()
+    [Trait("Spec", "D-02")]
+    public async Task AnEventToARunningInstanceIsTakenAtItsNextPass()
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
@@ -308,23 +311,27 @@ public class ParallelApprovalContractTests
             .WaitFor<ApprovalReply>("finance")
             .Build();
         var started = await engine.RunAsync(definition, new ApprovalData());
+        // Another host owns the instance and is running it.
         var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         saved.Status = WorkflowStatus.Running;
         var claimed = await repository.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(saved, 0, saved.Revision, Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, claimed.Status);
+        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(started.InstanceId, "other-host",
+            TimeSpan.FromMinutes(1)));
 
-        var busy = await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true));
-        Assert.Equal(WorkflowExecutionStatus.Running, busy.Status);
-        Assert.False(busy.EventAccepted);
+        // The event is stored at once, and the caller waits for the owner to decide it.
+        var sent = engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true), "reply-1");
+        while (await repository.GetEventAsync(started.InstanceId, "reply-1") == null)
+            await Task.Delay(10);
+        Assert.Equal(EventOutcome.Pending, (await repository.GetEventAsync(started.InstanceId, "reply-1"))!.Outcome);
+        Assert.False(sent.IsCompleted);
 
-        saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
-        saved.Status = WorkflowStatus.Suspended;
-        var released = await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(saved, 0, saved.Revision, Guid.NewGuid().ToString("N")));
-        Assert.Equal(WorkflowCommitStatus.Applied, released.Status);
-        var resumed = await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true));
-        Assert.True(resumed.EventAccepted);
+        // The owner goes, and the next one takes the event at its first pass.
+        Assert.True(await repository.ReleaseExecutionLeaseAsync(started.InstanceId, "other-host"));
+        await engine.RecoverAsync(started.InstanceId);
+        var resumed = await sent.WaitAsync(TimeSpan.FromSeconds(10));
+        EventAssert.Consumed(resumed);
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
     }
 
@@ -579,7 +586,7 @@ public class ParallelApprovalContractTests
 
         var late = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
-        Assert.NotEqual(WorkflowExecutionStatus.Success, late.Status);
+        EventAssert.Closed(late);
     }
 
     [Fact]
@@ -623,7 +630,7 @@ public class ParallelApprovalContractTests
 
         var late = await engine.ResumeAsync(started.InstanceId, "finance-review",
             Reply("finance-review", approved: true));
-        Assert.NotEqual(WorkflowExecutionStatus.Success, late.Status);
+        EventAssert.Closed(late);
     }
 
     [Theory]
@@ -668,7 +675,7 @@ public class ParallelApprovalContractTests
         {
             var late = await engine.ResumeAsync(started.InstanceId, "legal",
                 Reply("legal", approved: true));
-            Assert.NotEqual(WorkflowExecutionStatus.Success, late.Status);
+            EventAssert.Closed(late);
         }
     }
 
@@ -698,7 +705,7 @@ public class ParallelApprovalContractTests
 
         var late = await engine.ResumeAsync(started.InstanceId, "risk",
             Reply("risk", approved: true));
-        Assert.NotEqual(WorkflowExecutionStatus.Success, late.Status);
+        EventAssert.Closed(late);
     }
 
     [Fact]
@@ -1232,7 +1239,7 @@ public class ParallelApprovalContractTests
         Assert.Contains("Approval branch failed", failed.ErrorMessage);
         Assert.Equal(0, GetData(failed).Finished);
         var late = await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", true));
-        Assert.False(late.EventAccepted);
+        EventAssert.Closed(late);
     }
 
     private static WorkflowDefinition CreateApprovalWorkflow(ParallelJoinMode joinMode, bool includeRisk)
@@ -1622,6 +1629,17 @@ public class ParallelApprovalContractTests
 
     private sealed class RecordingRepository : IWorkflowStateRepository
     {
+        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+            _inner.AppendEventAsync(workflowEvent);
+        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
+            _inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
+        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+            _inner.GetEventAsync(instanceId, eventId);
+        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+            _inner.GetWaitAsync(instanceId, waitId);
+        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+            _inner.GetOpenWaitsAsync(query);
+
         private readonly InMemoryWorkflowStateRepository _inner = new();
         public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
             _inner.RequestCancellationAsync(instanceId, reason);

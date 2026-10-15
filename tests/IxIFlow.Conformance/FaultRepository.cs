@@ -8,6 +8,17 @@ namespace IxIFlow.Tests.Conformance;
 /// </summary>
 internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflowStateRepository
 {
+    public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+        inner.AppendEventAsync(workflowEvent);
+    public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
+        inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
+    public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+        inner.GetEventAsync(instanceId, eventId);
+    public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+        inner.GetWaitAsync(instanceId, waitId);
+    public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+        inner.GetOpenWaitsAsync(query);
+
     private int _acknowledgementsLost;
 
     /// <summary>Commits matching this fail without being applied.</summary>

@@ -34,8 +34,12 @@ internal static class ExecutionCheckpointWriter
             throw new CheckpointLimitExceededException(size, host.Limits.MaxCheckpointBytes);
         }
 
+        // The commit carries the run's inbox decisions and the waits it opened and closed (D-33).
+        var (opened, closed) = checkpoint.Inbox.WaitChanges(checkpoint.Waits);
         var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,
-            clearsCrashCount: clearsCrashCount, parks: parkUntil != null);
+            clearsCrashCount: clearsCrashCount, parks: parkUntil != null,
+            settlements: checkpoint.Inbox.Settlements, inboxReadThrough: checkpoint.Inbox.ReadThrough,
+            openedWaits: opened, closedWaits: closed);
         for (var attempt = 1; ; attempt++)
         {
             var reply = await host.CommitAsync(commit);
@@ -43,10 +47,15 @@ internal static class ExecutionCheckpointWriter
             {
                 case CheckpointReplyKind.Acknowledged:
                     instance.Revision = reply.Revision;
+                    checkpoint.Inbox.Acknowledged(checkpoint.Waits, reply.UnreadEvents);
+                    // An idle instance with arrivals it has not read is due now; the store keeps it so.
+                    if (reply.UnreadEvents && instance.Status == WorkflowStatus.Suspended)
+                        instance.RunnableAtUtc = now;
                     if (reply.PendingCancellation != null)
                         host.ObserveCancellation(reply.PendingCancellation);
                     return reply.Parked;
-                case CheckpointReplyKind.Conflict:
+                // Only the owner settles its pending events, so a settled one means another owner ran.
+                case CheckpointReplyKind.Conflict or CheckpointReplyKind.EventsChanged:
                     throw new ExecutionOwnershipLostException(reply.Error!);
                 case CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown when attempt < MaxAttempts:
                     // The commit is immutable, so sending it again cannot apply a different payload.

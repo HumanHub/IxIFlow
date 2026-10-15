@@ -50,7 +50,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 step.StepType != WorkflowStepType.Delay && step.TimeoutSteps.Count == 0)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "A due wait has no active timeout branch");
-            checkpoint.Waits.Remove(wait);
+            checkpoint.RemoveWaits(item => item == wait, WaitCloseReason.TimedOut);
             continuation.Status = ContinuationStatus.Active;
             if (step.StepType == WorkflowStepType.Delay)
             {
@@ -282,8 +282,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     {
         var pending = continuation.PendingActivity
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A child has no parent invocation");
-        checkpoint.Waits.RemoveAll(wait => wait.ChildWorkflowId == childInstanceId &&
-            wait.ContinuationId == continuation.Id);
+        checkpoint.RemoveWaits(wait => wait.ChildWorkflowId == childInstanceId &&
+            wait.ContinuationId == continuation.Id, WaitCloseReason.Replaced);
         checkpoint.Waits.Add(new WaitState
         {
             RegisteredAtUtc = Now,
@@ -307,8 +307,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 "A child wait has no parent invocation");
         pending.ChildWorkflowId = childInstanceId;
-        checkpoint.Waits.RemoveAll(wait => wait.ChildWorkflowId == childInstanceId &&
-            wait.ContinuationId == continuation.Id);
+        checkpoint.RemoveWaits(wait => wait.ChildWorkflowId == childInstanceId &&
+            wait.ContinuationId == continuation.Id, WaitCloseReason.Replaced);
         foreach (var childWait in childCheckpoint.Waits)
             checkpoint.Waits.Add(new WaitState
             {
@@ -410,7 +410,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             SagaScopeTransitions.PreserveCompensation(continuation);
             return;
         }
-        checkpoint.Waits.RemoveAll(wait => wait.ContinuationId == continuation.Id);
+        checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id, WaitCloseReason.Cancelled);
         continuation.AcceptedWait = null;
         foreach (var join in checkpoint.Joins.Where(item => item.ParentContinuationId == continuation.Id).ToList())
         {
