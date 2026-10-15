@@ -77,13 +77,41 @@ public sealed class CancellationWatchTests
             Assert.True(time.GetUtcNow() - time.Start < TimeSpan.FromMinutes(1), "The hung read never ended");
         }
         Assert.IsType<TimeoutException>(subscription.LossError);
-        // Later passes wait for the same read instead of queuing more behind it.
+        Assert.Equal(1, store.Reads);
+        // Out longer than any lease can wait, the stalled read is given up and a fresh one is tried;
+        // each is waited for in turn rather than queued behind the other.
         for (var step = 0; step < 15; step++)
         {
             await Task.Delay(20);
             time.Advance(TimeSpan.FromSeconds(1));
         }
-        Assert.Equal(1, store.Reads);
+        Assert.InRange(store.Reads, 2, 3);
+    }
+
+    [Fact]
+    [Trait("Spec", "B-10")]
+    public async Task ALeaseWatchedDuringAHungReadIsJudgedWhenTheReadFails()
+    {
+        var time = new FakeTimeProvider();
+        var store = new ScriptedStore { Hang = true };
+        var watch = new CancellationWatch(store, time);
+        var first = new Subscription();
+        using var firstWatch = first.Watch(watch, "first");
+        await store.WaitForReadsAsync(1);
+        await Task.Delay(20);
+        time.Advance(TimeSpan.FromSeconds(1));
+        var second = new Subscription();
+        using var secondWatch = second.Watch(watch, "second");
+
+        while (!first.IsLost)
+        {
+            await Task.Delay(20);
+            time.Advance(TimeSpan.FromSeconds(1));
+            Assert.True(time.GetUtcNow() - time.Start < TimeSpan.FromMinutes(1), "The hung read never ended");
+        }
+
+        // The second lease was not in the stalled read, but its own tolerance has passed too.
+        Assert.True(second.IsLost);
     }
 
     [Fact]

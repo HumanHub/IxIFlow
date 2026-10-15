@@ -98,6 +98,55 @@ public sealed class ResourceLimitTests
     }
 
     [Fact]
+    public async Task ACancellationWhileStoppingAtTheLimitCancelsTheInstance()
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        using var services = Services(store, options => options.MaxActiveBranches = 5);
+        var definition = Workflow.Create<LimitData>("CancelledAtTheLimit")
+            .Step<QuickActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch.Step<GatedActivity>())
+                .Do(branch => branch.Step<QuickActivity>().Parallel(inner => inner
+                    .Do(nested => nested.Step<QuickActivity>())
+                    .Do(nested => nested.Step<QuickActivity>())
+                    .Do(nested => nested.Step<QuickActivity>()))))
+            .Build();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var run = Client(services).RunAsync(definition, new LimitData(), new WorkflowOptions { InstanceId = instanceId });
+        await Probe(services).Started.Task.WaitAsync(Patience);
+        await Task.Delay(200);
+
+        await Client(services).CancelAsync(instanceId, new CancellationReason { ReasonCode = "operator" });
+        Probe(services).Gate.SetResult();
+        var result = await run.WaitAsync(Patience);
+
+        // The fork that hit the limit is never run, so the stop no longer applies.
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        var saved = (await store.GetWorkflowInstanceAsync(instanceId))!;
+        Assert.Equal(WorkflowStatus.Cancelled, saved.Status);
+        Assert.Null(ExecutionCheckpoint.StopOf(saved));
+    }
+
+    [Fact]
+    public async Task AFreedActivityPermitGoesToTheBranchThatWaitedLongest()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(),
+            options => options.MaxActivitiesPerRun = 1);
+        var definition = Workflow.Create<LimitData>("FairActivities")
+            .Step<QuickActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch.Step<FirstLaneActivity>().Step<FirstLaneActivity>()
+                    .Step<FirstLaneActivity>().Step<FirstLaneActivity>())
+                .Do(branch => branch.Step<SecondLaneActivity>()))
+            .Build();
+
+        var result = await Client(services).RunAsync(definition, new LimitData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["first", "second", "first", "first", "first"], Probe(services).Lanes);
+    }
+
+    [Fact]
     public async Task ARunKeepsAtMostTheConfiguredActivitiesInFlight()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(),
@@ -154,7 +203,12 @@ public sealed class ResourceLimitTests
         var connectionString = builder.ConnectionString;
         var store = new SqlWorkflowStateRepository(connectionString);
         var instanceId = Guid.NewGuid().ToString("N");
-        Assert.Null(await store.GetWorkflowInstanceAsync(instanceId));
+        Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+            new WorkflowInstance
+            {
+                InstanceId = instanceId, WorkflowName = "PoolReservation", Status = WorkflowStatus.Running,
+                WorkflowDataJson = "{}"
+            }, 0, 0))).Status);
 
         await using (var hog = new SqlConnection(connectionString))
         {
@@ -164,7 +218,10 @@ public sealed class ResourceLimitTests
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience));
             Assert.True(await store.RenewExecutionLeaseAsync(instanceId, "owner", Patience));
             Assert.Empty(await store.GetCancellationRequestsAsync([instanceId]));
-            Assert.Null(await store.GetCancellationRequestAsync(instanceId));
+            Assert.True(await store.RequestCancellationAsync(instanceId,
+                new CancellationReason { ReasonCode = "operator" }));
+            Assert.Equal("operator", (await store.GetCancellationRequestAsync(instanceId))?.ReasonCode);
+            Assert.Single(await store.GetCancellationRequestsAsync([instanceId]));
             Assert.True(await store.ReleaseExecutionLeaseAsync(instanceId, "owner"));
         }
         await store.DeleteWorkflowInstanceAsync(instanceId);
@@ -203,6 +260,8 @@ public sealed class ResourceLimitTests
         services.AddSingleton<LimitProbe>();
         services.AddTransient<QuickActivity>();
         services.AddTransient<GatedActivity>();
+        services.AddTransient<FirstLaneActivity>();
+        services.AddTransient<SecondLaneActivity>();
         return services.BuildServiceProvider();
     }
 
@@ -227,6 +286,23 @@ public sealed class ResourceLimitTests
         public int MostInFlight => Volatile.Read(ref _mostInFlight);
 
         public void RanQuick() => Interlocked.Increment(ref _quick);
+
+        private readonly List<string> _lanes = [];
+
+        public IReadOnlyList<string> Lanes
+        {
+            get
+            {
+                lock (_lanes)
+                    return _lanes.ToArray();
+            }
+        }
+
+        public void Ran(string lane)
+        {
+            lock (_lanes)
+                _lanes.Add(lane);
+        }
 
         public async Task RunGatedAsync()
         {
@@ -264,6 +340,24 @@ public sealed class ResourceLimitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.RanQuick();
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class FirstLaneActivity(LimitProbe probe) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.Ran("first");
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class SecondLaneActivity(LimitProbe probe) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.Ran("second");
             return Task.CompletedTask;
         }
     }

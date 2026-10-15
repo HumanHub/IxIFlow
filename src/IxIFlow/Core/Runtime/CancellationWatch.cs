@@ -80,6 +80,7 @@ internal sealed class CancellationWatch
                 if (_watched.Count == 0)
                 {
                     _loop = null;
+                    _read = null;
                     return;
                 }
                 instanceIds = _watched.Keys.ToArray();
@@ -110,13 +111,15 @@ internal sealed class CancellationWatch
         }
         catch (Exception error)
         {
-            if (error is not TimeoutException)
+            // A stalled read is waited for again until it has been out longer than any lease can
+            // wait; then a fresh read may succeed where it did not.
+            if (error is not TimeoutException || Now - readAt >= LongestTolerance())
                 _read = null;
             _logger.LogWarning(error, "Could not read cancellation requests for {Count} workflow instances",
                 instanceIds.Length);
             // Each lease has its own outage clock, counted from its last confirmed read. Every lease
-            // watched now is judged, including ones the stalled read did not cover.
-            foreach (var subscriber in Subscribers(watchedIds).Where(item =>
+            // watched now is judged, including ones added while the read was out.
+            foreach (var subscriber in Subscribers(WatchedIds()).Where(item =>
                          Now - item.ConfirmedAtUtc >= item.Tolerance))
                 subscriber.Lost(error);
             return;
@@ -132,6 +135,19 @@ internal sealed class CancellationWatch
             else if (readAt > subscriber.ConfirmedAtUtc)
                 subscriber.ConfirmedAtUtc = readAt;
         }
+    }
+
+    private string[] WatchedIds()
+    {
+        lock (_lock)
+            return _watched.Keys.ToArray();
+    }
+
+    private TimeSpan LongestTolerance()
+    {
+        lock (_lock)
+            return _watched.Values.SelectMany(items => items).Select(item => item.Tolerance)
+                .DefaultIfEmpty(TimeSpan.Zero).Max();
     }
 
     private Subscriber[] Subscribers(IEnumerable<string> instanceIds)

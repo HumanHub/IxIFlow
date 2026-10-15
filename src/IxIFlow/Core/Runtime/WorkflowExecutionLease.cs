@@ -16,8 +16,8 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     private readonly IDisposable _cancellationWatch;
 
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
-        string token, ExecutionLeaseGrant grant, ExecutionLeaseSettings settings, TimeProvider time,
-        CancellationWatch watch)
+        string token, ExecutionLeaseGrant grant, DateTime requestedAtUtc, ExecutionLeaseSettings settings,
+        TimeProvider time, CancellationWatch watch)
     {
         Epoch = grant.Epoch;
         CrashCount = grant.CrashCount;
@@ -25,7 +25,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         _time = time;
         _instanceId = instanceId;
         _token = token;
-        _renewal = RenewUntilStoppedAsync(settings);
+        _renewal = RenewUntilStoppedAsync(settings, requestedAtUtc.Add(settings.Duration));
         _cancellationWatch = watch.Watch(instanceId, _cancellation,
             error => _loss.TrySetResult(error), settings.Duration, settings.RenewalInterval);
     }
@@ -51,11 +51,14 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                 "The renewal interval must be positive and shorter than the lease duration");
 
         var token = Guid.NewGuid().ToString("N");
+        time ??= TimeProvider.System;
+        // The store may have granted the lease at any point after it was asked.
+        var requestedAtUtc = time.GetUtcNow().UtcDateTime;
         if (await repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, token,
                 settings.Duration) is not { } grant)
             return null;
-        return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, settings,
-            time ?? TimeProvider.System, watch);
+        return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, requestedAtUtc, settings,
+            time, watch);
     }
 
     /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>
@@ -72,16 +75,21 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     // Loss is decided by the clock, not by when a store call returns: a renewal that has not
     // succeeded by the time the lease may have expired ends ownership (B-09). The expiry counts
     // from when the renewal was sent, since the store may have applied it at any point after.
-    private async Task RenewUntilStoppedAsync(ExecutionLeaseSettings settings)
+    private async Task RenewUntilStoppedAsync(ExecutionLeaseSettings settings, DateTime expiresAtUtc)
     {
-        var expiresAtUtc = Now.Add(settings.Duration);
-        var delay = settings.RenewalInterval;
+        var delay = NextRenewal(settings, expiresAtUtc);
         try
         {
             while (true)
             {
                 await Task.Delay(delay, _time, _stop.Token);
                 var sentAtUtc = Now;
+                if (sentAtUtc >= expiresAtUtc)
+                {
+                    _loss.TrySetResult(new TimeoutException(
+                        $"Execution lease for workflow instance '{_instanceId}' expired before it could be renewed"));
+                    return;
+                }
                 var renewal = _repository.RenewExecutionLeaseAsync(_instanceId, _token, settings.Duration);
                 var remaining = expiresAtUtc - Now;
                 try
@@ -95,7 +103,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                         return;
                     }
                     expiresAtUtc = sentAtUtc.Add(settings.Duration);
-                    delay = settings.RenewalInterval;
+                    delay = NextRenewal(settings, expiresAtUtc);
                 }
                 catch (TimeoutException)
                 {
@@ -123,6 +131,13 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         {
             _loss.TrySetResult(error);
         }
+    }
+
+    // Normally one interval; sooner when a slow renewal left less time than that before expiry.
+    private TimeSpan NextRenewal(ExecutionLeaseSettings settings, DateTime expiresAtUtc)
+    {
+        var half = (expiresAtUtc - Now) / 2;
+        return half < settings.RenewalInterval ? (half > TimeSpan.Zero ? half : TimeSpan.Zero) : settings.RenewalInterval;
     }
 
     public async ValueTask DisposeAsync()

@@ -331,8 +331,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (step.ParallelBranches.Count == 0)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Parallel step '{step.Id}' has no branches");
-        // Settling losers are left out, so the count depends only on the definition and the loop
-        // position, and a stop at the limit is the same on every run.
+        // Branches that finished or are cancelling do not count, so whether a nested fork fits can
+        // depend on how far its siblings have got.
         var live = checkpoint.Continuations.Count(item => item.Status is not (ContinuationStatus.Completed or
             ContinuationStatus.Cancelled or ContinuationStatus.Cancelling));
         if (live + step.ParallelBranches.Count > maxActiveBranches)
