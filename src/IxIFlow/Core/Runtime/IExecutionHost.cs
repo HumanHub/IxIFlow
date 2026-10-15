@@ -83,7 +83,10 @@ internal enum CheckpointReplyKind
     Retry,
 
     /// <summary>The outcome is not known; sending the same commit again settles it.</summary>
-    Unknown
+    Unknown,
+
+    /// <summary>An inbox event the commit settles changed; nothing was written and the run still owns it.</summary>
+    EventsChanged
 }
 
 /// <summary>The host's answer to a checkpoint commit. Error explains a reply that was not acknowledged.</summary>

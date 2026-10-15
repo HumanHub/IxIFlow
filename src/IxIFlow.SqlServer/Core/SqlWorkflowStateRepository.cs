@@ -284,8 +284,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     public async Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent, TimeSpan retention)
     {
         ArgumentNullException.ThrowIfNull(workflowEvent);
-        ArgumentException.ThrowIfNullOrWhiteSpace(workflowEvent.InstanceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(workflowEvent.EventId);
+        workflowEvent.Validate();
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retention, TimeSpan.Zero);
         var hash = workflowEvent.ContentHash();
         await EnsureSchemaAsync();
@@ -342,22 +341,27 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         return new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable);
     }
 
-    public async Task<IReadOnlyList<StoredWorkflowEvent>> GetPendingEventsAsync(string instanceId,
-        long afterSequence, int limit)
+    public async Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentOutOfRangeException.ThrowIfNegative(limit);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<EventRow>("""
+        // The inbox sequence is read first and bounds the page, so the page covers everything up to it.
+        using var results = await connection.QueryMultipleAsync("""
+            DECLARE @Through BIGINT = COALESCE(
+                (SELECT InboxSequence FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId), 0);
+            SELECT @Through;
             SELECT TOP (@Limit) InstanceId, EventId, Sequence, EventType, EventKey, TargetActivationId,
                 PayloadJson, ReceivedAtUtc, ExpiresAtUtc, Outcome, ActivationId, Reason
             FROM dbo.IxIFlowWorkflowEvents
             WHERE InstanceId = @InstanceId AND Outcome = 0 AND Sequence > @AfterSequence
-              AND ExpiresAtUtc > SYSUTCDATETIME()
-            ORDER BY Sequence
+              AND Sequence <= @Through AND ExpiresAtUtc > SYSUTCDATETIME()
+            ORDER BY Sequence;
             """, new { InstanceId = instanceId, AfterSequence = afterSequence, Limit = limit });
-        return rows.Select(row => row.Read()).ToArray();
+        var through = await results.ReadSingleAsync<long>();
+        var events = (await results.ReadAsync<EventRow>()).Select(row => row.Read()).ToArray();
+        return InboxPage.Of(events, limit, afterSequence, through);
     }
 
     public async Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId)
@@ -529,10 +533,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
             await transaction.CommitAsync();
             // A terminal or parking commit released the lease; only a running owner must still hold it.
+            // The same commit gets the same answer, including arrivals it has not read.
             return snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks
                 ? new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision)
                 : new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
-                    ReadReason(current?.CancellationJson), commit.Parks && !owns);
+                    ReadReason(current?.CancellationJson), commit.Parks && !owns,
+                    commit.InboxReadThrough is { } replayRead && current?.InboxSequence > replayRead);
         }
         if (!owns)
         {
@@ -547,23 +553,35 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
         }
 
-        // An event this commit settles must still be pending; otherwise another commit took it (D-04).
+        // An event this commit settles must still be pending, and one it consumes unexpired (D-04).
+        // One statement settles them all, so their row locks are taken in one order.
         if (commit.Settlements.Count > 0)
         {
-            var settled = await connection.ExecuteAsync("""
-                UPDATE dbo.IxIFlowWorkflowEvents
-                SET Outcome = @Outcome, ActivationId = @ActivationId, Reason = @Reason,
-                    SettledAtUtc = SYSUTCDATETIME()
-                WHERE InstanceId = @InstanceId AND EventId = @EventId AND Outcome = 0
-                """, commit.Settlements.Select(settlement => new
+            var parameters = new DynamicParameters(new { commit.InstanceId });
+            var rows = new List<string>();
+            for (var index = 0; index < commit.Settlements.Count; index++)
             {
-                commit.InstanceId, settlement.EventId, Outcome = (byte)settlement.Outcome,
-                settlement.ActivationId, settlement.Reason
-            }), transaction);
+                var settlement = commit.Settlements[index];
+                rows.Add($"(@E{index}, @O{index}, @A{index}, @R{index})");
+                parameters.Add($"E{index}", settlement.EventId);
+                parameters.Add($"O{index}", (byte)settlement.Outcome);
+                parameters.Add($"A{index}", settlement.ActivationId);
+                parameters.Add($"R{index}", settlement.Reason);
+            }
+            var settled = await connection.ExecuteAsync($"""
+                UPDATE stored
+                SET Outcome = settled.Outcome, ActivationId = settled.ActivationId, Reason = settled.Reason,
+                    SettledAtUtc = SYSUTCDATETIME()
+                FROM dbo.IxIFlowWorkflowEvents AS stored
+                JOIN (VALUES {string.Join(", ", rows)}) AS settled (EventId, Outcome, ActivationId, Reason)
+                    ON stored.EventId = settled.EventId
+                WHERE stored.InstanceId = @InstanceId AND stored.Outcome = 0
+                  AND (settled.Outcome <> 1 OR stored.ExpiresAtUtc > SYSUTCDATETIME())
+                """, parameters, transaction);
             if (settled != commit.Settlements.Count)
             {
                 await transaction.RollbackAsync();
-                return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
+                return new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, currentRevision);
             }
         }
         var unacknowledged = current is { CancellationJson: not null, CancellationAcknowledged: false };
@@ -608,7 +626,16 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         }, transaction);
         // The lease row is written only when something changes, so most commits touch only their
         // instance row; a write to a missing lease row would take range locks other claims need.
-        var releases = snapshot.Status != WorkflowStatus.Running || parked;
+        // An idle owner that has not read every arrival keeps the lease and reads them.
+        var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
+        var releases = (snapshot.Status != WorkflowStatus.Running || parked) && !keepsLease;
+        // A finished instance takes no more events; those still pending are closed.
+        if (snapshot.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
+            WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
+            await connection.ExecuteAsync("""
+                UPDATE dbo.IxIFlowWorkflowEvents SET Outcome = 4, SettledAtUtc = SYSUTCDATETIME()
+                WHERE InstanceId = @InstanceId AND Outcome = 0
+                """, new { snapshot.InstanceId }, transaction);
         var clears = commit.ClearsCrashCount && lease?.CrashCount > 0;
         if (lease != null && (releases || clears))
             await connection.ExecuteAsync("""

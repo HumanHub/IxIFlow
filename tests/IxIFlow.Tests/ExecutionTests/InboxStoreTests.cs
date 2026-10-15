@@ -48,8 +48,12 @@ public sealed class InboxStoreTests
             // Arrival order, paged by sequence.
             await inbox.AppendEventAsync(Event(instance, "e2", "{}"), Retention);
             await inbox.AppendEventAsync(Event(instance, "e3", "{}"), Retention);
-            Assert.Equal(["e1", "e2"], (await inbox.GetPendingEventsAsync(instance, 0, 2)).Select(item => item.EventId));
-            Assert.Equal(["e2", "e3"], (await inbox.GetPendingEventsAsync(instance, 1, 10)).Select(item => item.EventId));
+            var full = await inbox.GetPendingEventsAsync(instance, 0, 2);
+            Assert.Equal(["e1", "e2"], full.Events.Select(item => item.EventId));
+            Assert.Equal(2, full.ReadThrough);
+            var rest = await inbox.GetPendingEventsAsync(instance, 1, 10);
+            Assert.Equal(["e2", "e3"], rest.Events.Select(item => item.EventId));
+            Assert.Equal(3, rest.ReadThrough);
 
             // A stopped instance keeps the event for after its release, without becoming runnable.
             var held = await inbox.AppendEventAsync(Event(stopped, "s1", "{}"), Retention);
@@ -100,23 +104,28 @@ public sealed class InboxStoreTests
             Assert.Equal(EventOutcome.Consumed, taken.Outcome);
             Assert.Equal("activation-1", taken.ActivationId);
             Assert.Equal(EventOutcome.Rejected, (await inbox.GetEventAsync(instanceId, "refused"))!.Outcome);
-            Assert.Empty(await inbox.GetPendingEventsAsync(instanceId, 0, 10));
+            // Nothing is pending, but the page still reads through every arrival.
+            var empty = await inbox.GetPendingEventsAsync(instanceId, 0, 10);
+            Assert.Empty(empty.Events);
+            Assert.Equal(2, empty.ReadThrough);
             Assert.DoesNotContain(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == instanceId);
 
             // Sending the same commit again is acknowledged; settling the event again is not.
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
             saved.Revision = applied.Revision;
-            Assert.Equal(WorkflowCommitStatus.Conflict, (await store.CommitWorkflowInstanceAsync(
+            Assert.Equal(WorkflowCommitStatus.EventsChanged, (await store.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(saved, 0, saved.Revision,
                     settlements: [new EventSettlement("taken", EventOutcome.Consumed, "activation-2")]))).Status);
 
             // An idle commit that has not read the latest arrival stays runnable now.
             await inbox.AppendEventAsync(Event(instanceId, "late", "{}"), Retention);
-            var behind = await store.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(saved, 0, saved.Revision, inboxReadThrough: 2));
+            var behindCommit = CheckpointCommit.Create(saved, 0, saved.Revision, inboxReadThrough: 2);
+            var behind = await store.CommitWorkflowInstanceAsync(behindCommit);
             Assert.Equal(WorkflowCommitStatus.Applied, behind.Status);
             Assert.True(behind.UnreadEvents);
             Assert.Contains(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == instanceId);
+            // The same commit sent again gets the same answer.
+            Assert.True((await store.CommitWorkflowInstanceAsync(behindCommit)).UnreadEvents);
         }
         finally
         {
@@ -159,6 +168,15 @@ public sealed class InboxStoreTests
             Assert.False(park.Parked);
             Assert.True(park.UnreadEvents);
             Assert.Null(await store.TryAcquireExecutionLeaseAsync(instanceId, "other", TimeSpan.FromSeconds(5)));
+
+            // So does an idle commit that has not read the arrival.
+            instance.Revision = park.Revision;
+            instance.Status = WorkflowStatus.Suspended;
+            instance.RunnableAtUtc = null;
+            var idle = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, grant.Epoch,
+                instance.Revision, inboxReadThrough: 0));
+            Assert.True(idle.UnreadEvents);
+            Assert.Null(await store.TryAcquireExecutionLeaseAsync(instanceId, "other", TimeSpan.FromSeconds(5)));
         }
         finally
         {
@@ -186,7 +204,13 @@ public sealed class InboxStoreTests
             // An event no wait takes expires; it is settled, not forgotten, so a redelivery is known.
             await inbox.AppendEventAsync(Event(expiring, "short", "{}"), TimeSpan.FromMilliseconds(500));
             await Task.Delay(1500);
-            Assert.Empty(await inbox.GetPendingEventsAsync(expiring, 0, 10));
+            Assert.Empty((await inbox.GetPendingEventsAsync(expiring, 0, 10)).Events);
+
+            // Consuming it now is refused without touching the instance.
+            var current = (await store.GetWorkflowInstanceAsync(expiring))!;
+            Assert.Equal(WorkflowCommitStatus.EventsChanged, (await store.CommitWorkflowInstanceAsync(
+                CheckpointCommit.Create(current, 0, current.Revision,
+                    settlements: [new EventSettlement("short", EventOutcome.Consumed, "late-activation")]))).Status);
             Assert.True(await inbox.SettleExpiredEventsAsync(1000) >= 1);
             Assert.Equal(EventOutcome.Expired, (await inbox.GetEventAsync(expiring, "short"))!.Outcome);
             Assert.Equal(EventAppendStatus.Duplicate,
@@ -202,12 +226,37 @@ public sealed class InboxStoreTests
                 (await inbox.AppendEventAsync(Event(finished, "after", "{}"), Retention)).Status);
             Assert.Equal(EventAppendStatus.Duplicate,
                 (await inbox.AppendEventAsync(Event(finished, "before", "{}"), Retention)).Status);
+            // The event no wait took before the end is closed.
+            Assert.Equal(EventOutcome.Closed, (await inbox.GetEventAsync(finished, "before"))!.Outcome);
         }
         finally
         {
             await store.DeleteWorkflowInstanceAsync(expiring);
             await store.DeleteWorkflowInstanceAsync(finished);
         }
+    }
+
+    [Fact]
+    [Trait("Spec", "D-04")]
+    public void ACommitSettlesEachEventOnceAndOnlyAsConsumedOrRejected()
+    {
+        var instance = new WorkflowInstance { InstanceId = "settling", WorkflowName = "Inbox" };
+
+        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, 0, 0, settlements:
+        [
+            new EventSettlement("e1", EventOutcome.Consumed, "a"),
+            new EventSettlement("e1", EventOutcome.Rejected, Reason: "again")
+        ]));
+        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, 0, 0,
+            settlements: [new EventSettlement("e1", EventOutcome.Expired)]));
+        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, 0, 0,
+            settlements: [new EventSettlement("e1", EventOutcome.Consumed)]));
+
+        // The commit keeps its own copy, so changing the list afterwards changes nothing.
+        var settlements = new List<EventSettlement> { new("e1", EventOutcome.Consumed, "a") };
+        var commit = CheckpointCommit.Create(instance, 0, 0, settlements: settlements);
+        settlements.Clear();
+        Assert.Single(commit.Settlements);
     }
 
     private static WorkflowEvent Event(string instanceId, string eventId, string payload) =>

@@ -772,6 +772,10 @@ internal sealed class InstanceHost(
                 await MakeParentRunnableAsync(instance);
                 return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision,
                     PendingCancellation: result.PendingCancellation, Parked: result.Parked);
+            case WorkflowCommitStatus.EventsChanged:
+                return new CheckpointReply(CheckpointReplyKind.EventsChanged, result.Revision,
+                    new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                        $"An inbox event workflow instance '{commit.InstanceId}' settles is no longer pending"));
             case WorkflowCommitStatus.Conflict:
                 return new CheckpointReply(CheckpointReplyKind.Conflict, result.Revision,
                     new WorkflowEngineException(WorkflowErrorKind.InvalidState,
