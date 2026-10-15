@@ -227,10 +227,6 @@ public class WorkflowInstance
     /// <summary>The revision assigned by an atomic repository commit.</summary>
     public long Revision { get; set; }
 
-    /// <summary>Runtime-only token used to fence checkpoint writes by a former owner.</summary>
-    [System.Text.Json.Serialization.JsonIgnore]
-    public string? ExecutionLeaseToken { get; set; }
-
     internal WorkflowInstance CopyForResume() => (WorkflowInstance)MemberwiseClone();
 
     /// <summary>

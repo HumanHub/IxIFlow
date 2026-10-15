@@ -16,8 +16,9 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     private readonly Task _cancellationWatch;
 
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
-        string token, ExecutionLeaseSettings settings, TimeProvider time)
+        string token, long epoch, ExecutionLeaseSettings settings, TimeProvider time)
     {
+        Epoch = epoch;
         _repository = repository;
         _time = time;
         _instanceId = instanceId;
@@ -29,6 +30,9 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
+
+    /// <summary>The execution epoch the store granted with this lease; commits are fenced by it.</summary>
+    public long Epoch { get; }
 
     public Task Loss => _loss.Task;
     public Task<CancellationReason> Cancellation => _cancellation.Task;
@@ -43,11 +47,10 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                 "The renewal interval must be positive and shorter than the lease duration");
 
         var token = Guid.NewGuid().ToString("N");
-        if (!await repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, token,
-                settings.Duration))
+        if (await repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, token,
+                settings.Duration) is not { } epoch)
             return null;
-        instance.ExecutionLeaseToken = token;
-        return new WorkflowExecutionLease(repository, instance.InstanceId, token, settings,
+        return new WorkflowExecutionLease(repository, instance.InstanceId, token, epoch, settings,
             time ?? TimeProvider.System);
     }
 

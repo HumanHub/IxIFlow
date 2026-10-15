@@ -11,7 +11,7 @@ public class WorkflowCommitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         var instance = CreateInstance();
-        var result = await repository.CommitWorkflowInstanceAsync(instance, 0, "first");
+        var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
         Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1), result);
         Assert.Equal(0, instance.Revision);
         instance.WorkflowDataJson = "changed";
@@ -35,11 +35,11 @@ public class WorkflowCommitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         var first = CreateInstance();
-        await repository.CommitWorkflowInstanceAsync(first, 0, "first");
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, 0, 0, "first"));
         var second = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
         second.WorkflowDataJson = "next";
-        await repository.CommitWorkflowInstanceAsync(second, 1, "second");
-        var repeated = await repository.CommitWorkflowInstanceAsync(first, 0, "first");
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(second, 0, 1, "second"));
+        var repeated = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, 0, 0, "first"));
         Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 1), repeated);
         Assert.Equal("next", (await repository.GetWorkflowInstanceAsync(first.InstanceId))!.WorkflowDataJson);
     }
@@ -49,10 +49,10 @@ public class WorkflowCommitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         var instance = CreateInstance();
-        await repository.CommitWorkflowInstanceAsync(instance, 0, "first");
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
         instance.WorkflowDataJson = "different";
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            repository.CommitWorkflowInstanceAsync(instance, 0, "first"));
+            repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first")));
     }
 
     [Fact]
@@ -60,7 +60,7 @@ public class WorkflowCommitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         var instance = CreateInstance();
-        await repository.CommitWorkflowInstanceAsync(instance, 0, "first");
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
         await Assert.ThrowsAsync<InvalidOperationException>(() => repository.SaveWorkflowInstanceAsync(instance));
         Assert.Equal(1, (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.Revision);
     }
@@ -71,7 +71,7 @@ public class WorkflowCommitTests
         var repository = new InMemoryWorkflowStateRepository();
         var instance = CreateInstance();
         var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(index => Task.Run(() =>
-            repository.CommitWorkflowInstanceAsync(instance, 0, index.ToString()))));
+            repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, index.ToString())))));
         Assert.Single(results, result => result.Status == WorkflowCommitStatus.Applied);
         Assert.Equal(7, results.Count(result => result.Status == WorkflowCommitStatus.Conflict));
     }
@@ -95,7 +95,7 @@ public class WorkflowCommitTests
             Task FailBeforeCommit() => throw new IOException("Connection failed before dispatch");
             await Assert.ThrowsAsync<IOException>(FailBeforeCommit);
             Assert.Null(await repository.GetWorkflowInstanceAsync(instance.InstanceId));
-            var result = await repository.CommitWorkflowInstanceAsync(instance, 0, "first");
+            var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
             Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
         }
         finally
@@ -111,11 +111,11 @@ public class WorkflowCommitTests
         {
             async Task LoseAcknowledgment()
             {
-                await repository.CommitWorkflowInstanceAsync(instance, 0, "first");
+                await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
                 throw new IOException("The commit succeeded but its acknowledgment was lost");
             }
             await Assert.ThrowsAsync<IOException>(LoseAcknowledgment);
-            var result = await repository.CommitWorkflowInstanceAsync(instance, 0, "first");
+            var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
             Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 1), result);
             Assert.Equal(1, (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.Revision);
         }
@@ -130,9 +130,9 @@ public class WorkflowCommitTests
         var instance = CreateInstance();
         try
         {
-            await repository.CommitWorkflowInstanceAsync(instance, 0, "winner");
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "winner"));
             instance.WorkflowDataJson = "stale";
-            var result = await repository.CommitWorkflowInstanceAsync(instance, 0, "loser");
+            var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "loser"));
             Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1), result);
             Assert.Equal("{}", (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.WorkflowDataJson);
         }

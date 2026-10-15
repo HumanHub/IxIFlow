@@ -25,8 +25,14 @@ internal interface IExecutionHost
     /// <summary>Throws <see cref="ExecutionOwnershipLostException"/> once ownership is lost.</summary>
     void ThrowIfOwnershipLost();
 
-    /// <summary>Commits a prepared checkpoint of the instance.</summary>
-    Task CommitAsync(WorkflowInstance instance);
+    /// <summary>The execution epoch of this run's ownership; every commit carries it.</summary>
+    long Epoch { get; }
+
+    /// <summary>The largest checkpoint the host accepts, in bytes of workflow data and execution state.</summary>
+    long MaxCheckpointBytes { get; }
+
+    /// <summary>Sends one checkpoint commit. The same commit may be sent again after Retry or Unknown.</summary>
+    Task<CheckpointReply> CommitAsync(CheckpointCommit commit);
 
     Task<CancellationReason?> ReadCancellationRequestAsync();
 
@@ -51,3 +57,21 @@ internal interface IExecutionHost
 /// </summary>
 internal sealed class ExecutionOwnershipLostException(Exception cause) : Exception(
     "Workflow execution ownership was lost", cause);
+
+internal enum CheckpointReplyKind
+{
+    /// <summary>The checkpoint is saved; Revision is its stored revision.</summary>
+    Acknowledged,
+
+    /// <summary>The run no longer owns the instance: a revision conflict or a stale epoch.</summary>
+    Conflict,
+
+    /// <summary>Nothing was written; the same commit can be sent again.</summary>
+    Retry,
+
+    /// <summary>The outcome is not known; sending the same commit again settles it.</summary>
+    Unknown
+}
+
+/// <summary>The host's answer to a checkpoint commit. Error explains a reply that was not acknowledged.</summary>
+internal sealed record CheckpointReply(CheckpointReplyKind Kind, long Revision = 0, Exception? Error = null);

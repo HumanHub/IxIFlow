@@ -363,16 +363,16 @@ public sealed class WorkflowDeadlineTests
 
         public bool Delayed => Volatile.Read(ref _delayed) != 0;
 
-        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
-            WorkflowInstance instance, long expectedRevision, string commitId)
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
+            var instance = commit.ReadInstance();
             if (instance.Status == WorkflowStatus.Running &&
                 ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) &&
                 ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations[0].Status ==
                     ContinuationStatus.Completed &&
                 Interlocked.Exchange(ref _delayed, 1) == 0)
                 await Task.Delay(delay);
-            return await _inner.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
+            return await _inner.CommitWorkflowInstanceAsync(commit);
         }
 
         public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
@@ -381,7 +381,7 @@ public sealed class WorkflowDeadlineTests
             _inner.GetCancellationRequestAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
             _inner.GetWorkflowsRequiringRecoveryAsync();
-        public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+        public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);

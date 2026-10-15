@@ -1,8 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Security.Cryptography;
-using System.Text;
 using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
@@ -29,15 +27,22 @@ public interface IWorkflowStateRepository
     Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync();
 
     /// <summary>
-    /// Atomically saves a snapshot at expectedRevision + 1. Revision zero also represents
-    /// an absent instance. Repeating a commit ID with the same payload returns its original
-    /// receipt, even after subsequent commits. Does not mutate the supplied instance.
+    /// Atomically saves the commit's payload at its expected revision + 1. Revision zero also
+    /// represents an absent instance. Repeating a commit ID with the same payload returns its
+    /// original receipt, even after subsequent commits. A commit from an epoch older than the
+    /// instance's latest lease, or from a lease that is no longer active while the instance runs,
+    /// returns <see cref="WorkflowCommitStatus.StaleEpoch"/>. A store that knows nothing was
+    /// written may return <see cref="WorkflowCommitStatus.Retry"/>; any exception means the
+    /// outcome is unknown and the same commit may be sent again.
     /// </summary>
-    Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
-        WorkflowInstance instance, long expectedRevision, string commitId);
+    Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit);
 
-    /// <summary>Acquires an absent or expired execution lease for one instance.</summary>
-    Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+    /// <summary>
+    /// Acquires an absent or expired execution lease for one instance and returns its execution
+    /// epoch, which is greater than every epoch granted for the instance before. Returns null
+    /// while another owner holds the lease.
+    /// </summary>
+    Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration);
 
     /// <summary>Extends a lease held by the same execution token.</summary>
@@ -116,7 +121,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] PayloadHash, long Revision)> _commits = new();
-    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _leases = new();
+    // A lease record outlives its lease, so a later owner always gets a higher epoch.
+    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch)> _leases = new();
     private readonly Dictionary<string, CancellationReason> _cancellations = new();
     private readonly HashSet<string> _acknowledgedCancellations = new();
     private readonly HashSet<string> _publishedCompletions = new();
@@ -247,17 +253,19 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         }
     }
 
-    public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+    public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration)
     {
         ValidateLeaseArguments(instanceId, token, duration);
         lock (_claimLock)
         {
             var now = Now;
-            if (_leases.TryGetValue(instanceId, out var lease) && lease.ExpiresAtUtc > now)
-                return Task.FromResult(false);
-            _leases[instanceId] = (token, now.Add(duration));
-            return Task.FromResult(true);
+            var exists = _leases.TryGetValue(instanceId, out var lease);
+            if (exists && lease.ExpiresAtUtc > now)
+                return Task.FromResult<long?>(null);
+            var epoch = (exists ? lease.Epoch : 0) + 1;
+            _leases[instanceId] = (token, now.Add(duration), epoch);
+            return Task.FromResult<long?>(epoch);
         }
     }
 
@@ -271,7 +279,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             if (!_leases.TryGetValue(instanceId, out var lease) ||
                 lease.Token != token || lease.ExpiresAtUtc <= now)
                 return Task.FromResult(false);
-            _leases[instanceId] = (token, now.Add(duration));
+            _leases[instanceId] = lease with { ExpiresAtUtc = now.Add(duration) };
             return Task.FromResult(true);
         }
     }
@@ -294,58 +302,62 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         lock (_claimLock)
         {
-            if (!_leases.TryGetValue(instanceId, out var lease) || lease.Token != token)
+            if (!_leases.TryGetValue(instanceId, out var lease) || lease.Token != token ||
+                lease.ExpiresAtUtc <= Now)
                 return Task.FromResult(false);
-            _leases.Remove(instanceId);
+            _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue };
             return Task.FromResult(true);
         }
     }
 
-    public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
-        WorkflowInstance instance, long expectedRevision, string commitId)
+    public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
-        ArgumentNullException.ThrowIfNull(instance);
-        ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(commitId);
-        ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
-        if (commitId.Length > 100)
-            throw new ArgumentException("Commit IDs must be at most 100 characters", nameof(commitId));
-        var snapshot = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!;
-        snapshot.Revision = checked(expectedRevision + 1);
-        var payloadHash = SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(snapshot)));
+        ArgumentNullException.ThrowIfNull(commit);
+        var snapshot = commit.ReadInstance();
+        snapshot.Revision = checked(commit.ExpectedRevision + 1);
         lock (_claimLock)
         {
-            var key = (instance.InstanceId, commitId);
-            var revision = _instances.TryGetValue(instance.InstanceId, out var stored) ? stored.Revision : 0;
-            var hasLease = _leases.TryGetValue(instance.InstanceId, out var lease);
+            var key = (commit.InstanceId, commit.CommitId);
+            var revision = _instances.TryGetValue(commit.InstanceId, out var stored) ? stored.Revision : 0;
+            var owns = OwnsInstance(commit);
             if (_commits.TryGetValue(key, out var receipt))
             {
-                if (receipt.ExpectedRevision != expectedRevision || !receipt.PayloadHash.SequenceEqual(payloadHash))
+                if (receipt.ExpectedRevision != commit.ExpectedRevision ||
+                    !receipt.PayloadHash.SequenceEqual(commit.PayloadHash))
                     throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
-                if (snapshot.Status == WorkflowStatus.Running && instance.ExecutionLeaseToken != null &&
-                    (!hasLease || lease.Token != instance.ExecutionLeaseToken ||
-                     lease.ExpiresAtUtc <= Now))
-                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+                // A terminal commit released the lease; only a running owner must still hold it.
+                if (snapshot.Status == WorkflowStatus.Running && !owns)
+                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision));
             }
 
-            if (revision != expectedRevision ||
-                (hasLease && (lease.Token != instance.ExecutionLeaseToken ||
-                              lease.ExpiresAtUtc <= Now)) ||
-                (!hasLease && instance.ExecutionLeaseToken != null) ||
+            if (!owns)
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+            if (revision != commit.ExpectedRevision ||
                 ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or
                     WorkflowStatus.TimedOut) &&
-                 _cancellations.ContainsKey(instance.InstanceId) &&
+                 _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
-            _instances[instance.InstanceId] = snapshot;
-            _commits.Add(key, (expectedRevision, payloadHash, snapshot.Revision));
-            if (snapshot.CancellationReason != null && _cancellations.ContainsKey(instance.InstanceId))
-                _acknowledgedCancellations.Add(instance.InstanceId);
-            if (snapshot.Status != WorkflowStatus.Running)
-                _leases.Remove(instance.InstanceId);
+            _instances[commit.InstanceId] = snapshot;
+            _commits.Add(key, (commit.ExpectedRevision, commit.PayloadHash, snapshot.Revision));
+            if (snapshot.CancellationReason != null && _cancellations.ContainsKey(commit.InstanceId))
+                _acknowledgedCancellations.Add(commit.InstanceId);
+            if (snapshot.Status != WorkflowStatus.Running && _leases.TryGetValue(commit.InstanceId, out var lease))
+                _leases[commit.InstanceId] = lease with { ExpiresAtUtc = DateTime.MinValue };
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision));
         }
+    }
+
+    // A leased commit needs the instance's current, active lease. An unleased commit (epoch zero)
+    // is accepted only while nobody holds the lease; the revision check still orders it.
+    private bool OwnsInstance(CheckpointCommit commit)
+    {
+        var hasLease = _leases.TryGetValue(commit.InstanceId, out var lease);
+        var active = hasLease && lease.ExpiresAtUtc > Now;
+        return commit.Epoch == 0
+            ? !active
+            : active && lease.Epoch == commit.Epoch;
     }
 
     public Task SaveWorkflowInstanceAsync(WorkflowInstance instance)

@@ -25,12 +25,11 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
         Guard(_store.GetWorkflowsRequiringRecoveryAsync, "Listing workflow instances that need recovery");
 
-    public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
-        WorkflowInstance instance, long expectedRevision, string commitId) =>
-        Guard(() => _store.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId),
-            $"Saving workflow instance '{instance.InstanceId}'");
+    public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit) =>
+        Guard(() => _store.CommitWorkflowInstanceAsync(commit),
+            $"Saving workflow instance '{commit.InstanceId}'");
 
-    public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+    public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         Guard(() => _store.TryAcquireExecutionLeaseAsync(instanceId, token, duration),
             $"Acquiring the execution lease of workflow instance '{instanceId}'");
 
