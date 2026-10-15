@@ -359,9 +359,4 @@ public class IxIFlowOptions
     /// Whether to persist workflow state by default
     /// </summary>
     public bool PersistStateByDefault { get; set; } = true;
-
-    /// <summary>
-    /// Maximum number of concurrent workflow executions
-    /// </summary>
-    public int MaxConcurrentExecutions { get; set; } = 100;
 }

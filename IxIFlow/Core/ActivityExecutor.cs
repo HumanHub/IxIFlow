@@ -161,12 +161,6 @@ public interface IActivityExecutor
         IReadOnlyCollection<string>? codeInputs = null);
 
     /// <summary>
-    /// Executes an activity with typed workflow and previous step data
-    /// </summary>
-    Task<TypedActivityExecutionResult<object>> ExecuteTypedActivityAsync<TWorkflowData, TPreviousStepData>(
-        TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData> request);
-
-    /// <summary>
     /// Creates a typed activity execution context
     /// </summary>
     TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> CreateTypedActivityContext<TWorkflowData, TPreviousStepData>(
@@ -199,16 +193,13 @@ public class ActivityExecutor : IActivityExecutor
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ActivityExecutor> _logger;
-    private readonly IWorkflowTracer _tracer;
 
     public ActivityExecutor(
         IServiceProvider serviceProvider,
-        ILogger<ActivityExecutor> logger,
-        IWorkflowTracer tracer)
+        ILogger<ActivityExecutor> logger)
     {
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _tracer = tracer ?? throw new ArgumentNullException(nameof(tracer));
     }
 
     public async Task<PreparedActivity> PrepareTypedActivityAsync<TWorkflowData, TPreviousStepData>(
@@ -251,109 +242,6 @@ public class ActivityExecutor : IActivityExecutor
                 request.WorkflowData, request.PreviousStepData, request.CatchFault,
                 new TypedActivityExecutionResult<object>()),
             state => context.RecoveryState = state);
-    }
-
-    public async Task<TypedActivityExecutionResult<object>> ExecuteTypedActivityAsync<TWorkflowData, TPreviousStepData>(
-        TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData> request)
-    {
-        if (request == null) throw new ArgumentNullException(nameof(request));
-        if (request.ActivityType == null) throw new InvalidOperationException("Activity type is null");
-
-        var startTime = DateTime.UtcNow;
-        var result = new TypedActivityExecutionResult<object>();
-
-        try
-        {
-            _logger.LogDebug("Executing activity {ActivityType} with typed context", request.ActivityType.Name);
-
-            // Create typed activity context
-            var activityContext = CreateTypedActivityContext(
-                request.ExecutionContext,
-                request.PreviousStepData,
-                request.Step,
-                request.StepMetadata,
-                request.CancellationToken);
-
-            // Create activity instance
-            var activity = CreateActivityInstance(request.ActivityType);
-
-            // Apply input mappings using typed context (catch-aware)
-            await ApplyTypedInputMappingsAsync(
-                activity,
-                request.InputMappings,
-                request.WorkflowData,
-                request.PreviousStepData,
-                request.CatchFault,
-                result,
-                request.IsCompensationActivity,
-                request.CompensationPreviousStepData,
-                request.CompensationPreviousChainData);
-
-            // Add activity started trace
-            await _tracer.TraceAsync(request.ExecutionContext.WorkflowInstance.InstanceId, new ExecutionTraceEntry
-            {
-                StepNumber = request.ExecutionContext.WorkflowInstance.CurrentStepNumber,
-                EntryType = TraceEntryType.ActivityStarted,
-                ActivityName = request.ActivityType.Name,
-                InputDataJson = JsonSerializer.Serialize(activity)
-            }, request.CancellationToken);
-
-            // Execute the activity
-            await activity.ExecuteAsync(activityContext, request.CancellationToken);
-
-            // Apply output mappings using typed context (catch-aware)
-            await ApplyTypedOutputMappingsAsync(
-                activity,
-                request.OutputMappings,
-                request.WorkflowData,
-                request.PreviousStepData,
-                request.CatchFault,
-                result);
-
-            // Add activity completed trace
-            var duration = DateTime.UtcNow - startTime;
-            await _tracer.TraceAsync(request.ExecutionContext.WorkflowInstance.InstanceId, new ExecutionTraceEntry
-            {
-                StepNumber = request.ExecutionContext.WorkflowInstance.CurrentStepNumber,
-                EntryType = TraceEntryType.ActivityCompleted,
-                ActivityName = request.ActivityType.Name,
-                Duration = duration,
-                OutputDataJson = JsonSerializer.Serialize(activity)
-            }, request.CancellationToken);
-
-            result.IsSuccess = true;
-            result.OutputData = activity; // Return the activity instance as the output data
-            result.ExecutionTime = duration;
-
-            _logger.LogDebug("Activity execution completed successfully: {ActivityType}", request.ActivityType.Name);
-        }
-        catch (Exception ex)
-        {
-            result.IsSuccess = false;
-            result.Exception = ex;
-            result.ErrorMessage = ex.Message;
-            result.ErrorStackTrace = ex.StackTrace;
-            result.ExecutionTime = DateTime.UtcNow - startTime;
-
-            _logger.LogError(ex, "Activity execution failed: {ActivityType}", request.ActivityType.Name);
-
-            // Add activity failed trace
-            await _tracer.TraceAsync(request.ExecutionContext.WorkflowInstance.InstanceId, new ExecutionTraceEntry
-            {
-                StepNumber = request.ExecutionContext.WorkflowInstance.CurrentStepNumber,
-                EntryType = TraceEntryType.ActivityFailed,
-                ActivityName = request.ActivityType.Name,
-                Duration = result.ExecutionTime,
-                ErrorMessage = ex.Message,
-                StackTrace = ex.StackTrace
-            }, request.CancellationToken);
-
-            // We always return results instead of throwing exceptions
-            // The WorkflowEngine will handle exception propagation through ExecutionState
-            _logger.LogDebug("Activity failed, returning error result for propagation handling: {ActivityType}", request.ActivityType.Name);
-        }
-
-        return result;
     }
 
     public TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> CreateTypedActivityContext<TWorkflowData, TPreviousStepData>(
