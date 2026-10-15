@@ -207,7 +207,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     private readonly Dictionary<(string InstanceId, string EventId), (StoredWorkflowEvent Event, byte[] Hash)> _events = new();
     private readonly Dictionary<string, long> _inboxSequence = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _inboxReadThrough = new(StringComparer.Ordinal);
-    private readonly Dictionary<(string InstanceId, string WaitId), StoredWait> _waits = new();
+    // Each instance's waits by wait ID, so appends and reads touch only that instance's waits.
+    private readonly Dictionary<string, Dictionary<string, StoredWait>> _waits = new(StringComparer.Ordinal);
     private readonly HashSet<string> _acknowledgedCancellations = new();
     private readonly HashSet<string> _publishedCompletions = new();
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _completionClaims = new();
@@ -472,7 +473,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             // A wait opens at the inbox's current sequence; opening it again keeps its first record.
             var now = Now;
             foreach (var opened in commit.OpenedWaits)
-                _waits.TryAdd((commit.InstanceId, opened.WaitId), new StoredWait(commit.InstanceId, opened.WaitId,
+                WaitsOf(commit.InstanceId).TryAdd(opened.WaitId, new StoredWait(commit.InstanceId, opened.WaitId,
                     opened.Kind, opened.Key, opened.EventType, opened.DeadlineUtc,
                     _inboxSequence.GetValueOrDefault(commit.InstanceId), now));
             foreach (var closed in commit.ClosedWaits)
@@ -486,9 +487,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                              .Select(item => item.Key).ToArray())
                     _events[open] = (_events[open].Event with { Outcome = EventOutcome.Closed }, _events[open].Hash);
                 var reason = WorkflowStoreRules.FinalWaitCloseReason(snapshot.Status);
-                foreach (var open in _waits.Where(item => item.Key.InstanceId == commit.InstanceId &&
-                                                          item.Value.IsOpen)
-                             .Select(item => item.Key.WaitId).ToArray())
+                foreach (var open in OpenWaits(commit.InstanceId).Select(wait => wait.WaitId).ToArray())
                     CloseWait(commit.InstanceId, open, reason, now);
             }
             // An idle owner that has not read every arrival keeps the lease and reads them.
@@ -534,7 +533,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             var now = Now;
             var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent,
                 workflowEvent.TargetWaitId == null ? null
-                    : _waits.GetValueOrDefault((workflowEvent.InstanceId, workflowEvent.TargetWaitId)),
+                    : WaitsOf(workflowEvent.InstanceId).GetValueOrDefault(workflowEvent.TargetWaitId),
                 OpenWaits(workflowEvent.InstanceId));
             // A refused event is recorded so a resend is recognized, but takes no place in the inbox.
             if (rejection != null)
@@ -562,13 +561,22 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
 
     // Caller holds _claimLock.
     private IEnumerable<StoredWait> OpenWaits(string instanceId) =>
-        _waits.Values.Where(wait => wait.InstanceId == instanceId && wait.IsOpen);
+        _waits.TryGetValue(instanceId, out var waits) ? waits.Values.Where(wait => wait.IsOpen) : [];
+
+    // Caller holds _claimLock.
+    private Dictionary<string, StoredWait> WaitsOf(string instanceId)
+    {
+        if (!_waits.TryGetValue(instanceId, out var waits))
+            _waits[instanceId] = waits = new Dictionary<string, StoredWait>(StringComparer.Ordinal);
+        return waits;
+    }
 
     // Caller holds _claimLock.
     private void CloseWait(string instanceId, string waitId, WaitCloseReason reason, DateTime now)
     {
-        if (_waits.TryGetValue((instanceId, waitId), out var wait) && wait.IsOpen)
-            _waits[(instanceId, waitId)] = wait with { CloseReason = reason, ClosedAtUtc = now };
+        var waits = WaitsOf(instanceId);
+        if (waits.TryGetValue(waitId, out var wait) && wait.IsOpen)
+            waits[waitId] = wait with { CloseReason = reason, ClosedAtUtc = now };
     }
 
     public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit)
@@ -601,7 +609,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId)
     {
         lock (_claimLock)
-            return Task.FromResult(_waits.GetValueOrDefault((instanceId, waitId)));
+            return Task.FromResult(_waits.TryGetValue(instanceId, out var waits)
+                ? waits.GetValueOrDefault(waitId) : null);
     }
 
     public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
@@ -609,7 +618,9 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         ArgumentNullException.ThrowIfNull(query);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(query.Limit);
         lock (_claimLock)
-            return Task.FromResult<IReadOnlyList<StoredWait>>(_waits.Values
+            return Task.FromResult<IReadOnlyList<StoredWait>>((query.InstanceId == null
+                    ? _waits.Values.SelectMany(waits => waits.Values)
+                    : OpenWaits(query.InstanceId))
                 .Where(wait => wait.IsOpen &&
                                (query.InstanceId == null || wait.InstanceId == query.InstanceId) &&
                                (query.Key == null || wait.Key == query.Key) &&
@@ -692,8 +703,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 _events.Remove(key);
             _inboxSequence.Remove(instanceId);
             _inboxReadThrough.Remove(instanceId);
-            foreach (var key in _waits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
-                _waits.Remove(key);
+            _waits.Remove(instanceId);
             foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
                 _commits.Remove(key);
         }

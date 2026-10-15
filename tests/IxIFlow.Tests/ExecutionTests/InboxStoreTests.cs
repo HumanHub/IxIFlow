@@ -372,6 +372,46 @@ public sealed class InboxStoreTests
 
     [Fact]
     [Trait("Spec", "D-04")]
+    public Task MemoryStoreSettlesALargeBacklogInOneCommit() => VerifyLargeCommit(new InMemoryWorkflowStateRepository());
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "D-04")]
+    public Task SqlStoreSettlesALargeBacklogInOneCommit() =>
+        VerifyLargeCommit(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+
+    // More events and waits than one SQL statement can carry parameters for.
+    private static async Task VerifyLargeCommit(IWorkflowStateRepository store)
+    {
+        const int count = 450;
+        var inbox = (IWorkflowInbox)store;
+        var instanceId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
+        try
+        {
+            for (var index = 0; index < count; index++)
+                await inbox.AppendEventAsync(Event(instanceId, $"e{index}", "{}"));
+            var saved = (await store.GetWorkflowInstanceAsync(instanceId))!;
+            var commit = CheckpointCommit.Create(saved, 0, saved.Revision,
+                settlements: Enumerable.Range(0, count).Select(index => new EventSettlement($"e{index}",
+                    EventOutcome.Rejected, Rejection: EventRejection.NotMatched)).ToArray(),
+                inboxReadThrough: count,
+                openedWaits: Enumerable.Range(0, count).Select(index => new OpenedWait($"{instanceId}-w{index}",
+                    WaitKind.Event, "bulk", "Approval", null)).ToArray());
+
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
+            Assert.Empty((await inbox.GetPendingEventsAsync(instanceId, 0, 10)).Events);
+            Assert.Equal(EventRejection.NotMatched, (await inbox.GetEventAsync(instanceId, $"e{count - 1}"))!.Rejection);
+            Assert.Equal(count, (await inbox.GetOpenWaitsAsync(
+                new WaitQuery(InstanceId: instanceId, Key: "bulk", Limit: 1000))).Count);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+    [Fact]
+    [Trait("Spec", "D-04")]
     public void ACommitSettlesEachEventOnceAndOnlyAsConsumedOrRejected()
     {
         var instance = new WorkflowInstance { InstanceId = "settling", WorkflowName = "Inbox" };
