@@ -34,8 +34,8 @@ internal interface IExecutionHost
     /// <summary>The execution epoch of this run's ownership; every commit carries it.</summary>
     long Epoch { get; }
 
-    /// <summary>The largest checkpoint the host accepts, in bytes of workflow data and execution state.</summary>
-    long MaxCheckpointBytes { get; }
+    /// <summary>The limits the host applies to this run.</summary>
+    ExecutionLimits Limits { get; }
 
     /// <summary>Sends one checkpoint commit. The same commit may be sent again after Retry or Unknown.</summary>
     Task<CheckpointReply> CommitAsync(CheckpointCommit commit);

@@ -20,6 +20,10 @@ internal sealed class CancellationWatch
     private readonly object _lock = new();
     private readonly Dictionary<string, List<Subscriber>> _watched = new(StringComparer.Ordinal);
     private Task? _loop;
+    // A read past its deadline keeps running in the store; the next pass waits for it again instead
+    // of queuing another call behind it.
+    private (Task<IReadOnlyDictionary<string, CancellationReason>> Task, string[] InstanceIds, DateTime SentAtUtc)?
+        _read;
 
     public CancellationWatch(IWorkflowStateRepository store, TimeProvider? time = null,
         ILogger<CancellationWatch>? logger = null)
@@ -94,20 +98,25 @@ internal sealed class CancellationWatch
         }
     }
 
-    private async Task ReadAsync(string[] instanceIds)
+    private async Task ReadAsync(string[] watchedIds)
     {
-        var readAt = Now;
+        _read ??= (_store.GetCancellationRequestsAsync(watchedIds), watchedIds, Now);
+        var (read, instanceIds, readAt) = _read.Value;
         IReadOnlyDictionary<string, CancellationReason> requests;
         try
         {
-            requests = await _store.GetCancellationRequestsAsync(instanceIds).WaitAsync(ReadTimeout, _time);
+            requests = await read.WaitAsync(ReadTimeout, _time);
+            _read = null;
         }
         catch (Exception error)
         {
+            if (error is not TimeoutException)
+                _read = null;
             _logger.LogWarning(error, "Could not read cancellation requests for {Count} workflow instances",
                 instanceIds.Length);
-            // Each lease has its own outage clock, counted from its last confirmed read.
-            foreach (var subscriber in Subscribers(instanceIds).Where(item =>
+            // Each lease has its own outage clock, counted from its last confirmed read. Every lease
+            // watched now is judged, including ones the stalled read did not cover.
+            foreach (var subscriber in Subscribers(watchedIds).Where(item =>
                          Now - item.ConfirmedAtUtc >= item.Tolerance))
                 subscriber.Lost(error);
             return;
@@ -120,7 +129,7 @@ internal sealed class CancellationWatch
                 subscriber.Cancellation.TrySetResult(reason);
                 Remove(subscriber);
             }
-            else
+            else if (readAt > subscriber.ConfirmedAtUtc)
                 subscriber.ConfirmedAtUtc = readAt;
         }
     }

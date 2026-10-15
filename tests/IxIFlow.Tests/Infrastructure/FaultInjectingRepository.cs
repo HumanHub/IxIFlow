@@ -49,7 +49,7 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
         _inner.GetWorkflowsRequiringRecoveryAsync();
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
-    public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+    public virtual Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
     public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         _inner.ReleaseExecutionLeaseAsync(instanceId, token);

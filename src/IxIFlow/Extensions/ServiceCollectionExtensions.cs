@@ -75,8 +75,17 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
         if (options.MaxCrashes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The crash limit must be positive");
-        services.Replace(ServiceDescriptor.Singleton(
-            new ExecutionLimits(options.MaxCheckpointBytes, options.MaxCrashes)));
+        if (options.MaxActiveBranches <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The branch limit must be positive");
+        if (options.MaxActivitiesPerRun <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The activity limit must be positive");
+        services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits
+        {
+            MaxCheckpointBytes = options.MaxCheckpointBytes,
+            MaxCrashes = options.MaxCrashes,
+            MaxActiveBranches = options.MaxActiveBranches,
+            MaxActivitiesPerRun = options.MaxActivitiesPerRun
+        }));
         if (options.Slots <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The slot count must be positive");
         if (options.DrainTimeout < TimeSpan.Zero)
@@ -368,6 +377,22 @@ public class IxIFlowOptions
     /// instance until an operator releases it. Progress resets the count.
     /// </summary>
     public int MaxCrashes { get; set; } = ExecutionLimits.DefaultMaxCrashes;
+
+    /// <summary>
+    /// How many continuations of one instance may be live at once: the root, every parallel branch,
+    /// and every parent waiting at its join. A parallel step that would exceed it stops the instance
+    /// at NeedsResolution before forking, after its running activities finish; raise the limit and
+    /// release the instance to continue.
+    /// </summary>
+    public int MaxActiveBranches { get; set; } = ExecutionLimits.DefaultMaxActiveBranches;
+
+    /// <summary>
+    /// How many activities one run of an instance has in flight at once. Further activities wait
+    /// for one to finish; other branches keep advancing. It bounds each run, not the host: the host's
+    /// concurrency is set by <see cref="Slots"/>. Branches that wait on each other's activities need
+    /// enough room to run together.
+    /// </summary>
+    public int MaxActivitiesPerRun { get; set; } = ExecutionLimits.DefaultMaxActivitiesPerRun;
 
     /// <summary>
     /// How many instances this host runs at once. A run holds its slot until the instance is idle,

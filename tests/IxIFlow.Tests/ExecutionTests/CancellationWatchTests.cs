@@ -77,6 +77,13 @@ public sealed class CancellationWatchTests
             Assert.True(time.GetUtcNow() - time.Start < TimeSpan.FromMinutes(1), "The hung read never ended");
         }
         Assert.IsType<TimeoutException>(subscription.LossError);
+        // Later passes wait for the same read instead of queuing more behind it.
+        for (var step = 0; step < 15; step++)
+        {
+            await Task.Delay(20);
+            time.Advance(TimeSpan.FromSeconds(1));
+        }
+        Assert.Equal(1, store.Reads);
     }
 
     [Fact]
