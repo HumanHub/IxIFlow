@@ -9,8 +9,8 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// Reference scenarios have a commit budget and a checkpoint size budget, so a change that adds
-/// commits or grows checkpoints fails here first (spec J-04). Commits happen only at effect
+/// Reference scenarios have an exact commit count and a checkpoint size ceiling, so a change that
+/// adds or loses commits, or grows checkpoints, fails here first (spec J-04). Commits happen only at effect
 /// boundaries: the start, each activity start and end, a saved wait, a completed join and the end
 /// (spec A-04).
 /// </summary>
@@ -81,6 +81,42 @@ public sealed class CommitBudgetTests
     }
 
     [Fact]
+    public async Task LoopOfActivities()
+    {
+        var definition = Workflow.Create<BudgetData>("BudgetLoop")
+            .Step<WorkActivity>()
+            .WhileDo(ctx => ctx.WorkflowData.Count < 3, body => body
+                .Step<CountActivity>(setup => setup
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Count)
+                    .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Count)))
+            .Build();
+
+        var (commits, bytes) = await MeasureAsync(definition);
+
+        AssertBudget(commits, bytes, maxCommits: 10, maxBytes: 2100);
+    }
+
+    [Fact]
+    public async Task ChildInvocation()
+    {
+        var store = new MeasuringStore();
+        using var services = Services(store);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+            Workflow.Create<BudgetData>("BudgetChild").Step<WorkActivity>().Build());
+        var definition = Workflow.Create<BudgetData>("BudgetParent")
+            .Step<WorkActivity>()
+            .Invoke<BudgetData>("BudgetChild", 1)
+            .Step<WorkActivity>()
+            .Build();
+
+        var result = await Engine(services).ExecuteWorkflowAsync(definition, new BudgetData());
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+
+        // Parent and child commits together.
+        AssertBudget(store.Commits, store.MaxBytes, maxCommits: 12, maxBytes: 1500);
+    }
+
+    [Fact]
     public async Task WaitAndResume()
     {
         var store = new MeasuringStore();
@@ -99,11 +135,14 @@ public sealed class CommitBudgetTests
         AssertBudget(store.Commits, store.MaxBytes, maxCommits: 8, maxBytes: 1400);
     }
 
-    // Byte budgets are the measured size plus about 10%: timestamps vary by a few bytes.
+    // Commit counts are exact, so a lost commit fails as well as an added one. Byte ceilings are the
+    // measured size plus about 10%: timestamps vary by a few bytes. Measured on
+    // 2026-10-15: sequence 1301, control flow 1712, parallel 4302, caught failure 2811, loop 1902,
+    // child invocation 1337, wait and resume 1299.
     private static void AssertBudget(int commits, long bytes, int maxCommits, long maxBytes)
     {
-        Assert.True(commits <= maxCommits, $"{commits} commits; the budget is {maxCommits}");
-        Assert.True(bytes <= maxBytes, $"{bytes} checkpoint bytes; the budget is {maxBytes}");
+        Assert.True(commits == maxCommits, $"{commits} commits; the scenario commits exactly {maxCommits}");
+        Assert.True(bytes <= maxBytes, $"{bytes} checkpoint bytes; the ceiling is {maxBytes}");
     }
 
     private static async Task<(int Commits, long Bytes)> MeasureAsync(WorkflowDefinition definition)
@@ -122,6 +161,7 @@ public sealed class CommitBudgetTests
         services.AddSingleton(store);
         services.AddIxIFlow();
         services.AddTransient<WorkActivity>();
+        services.AddTransient<CountActivity>();
         services.AddTransient<FailActivity>();
         return services.BuildServiceProvider();
     }
@@ -166,6 +206,17 @@ public sealed class CommitBudgetTests
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+    }
+
+    public sealed class CountActivity : IAsyncActivity
+    {
+        public int Count { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Count++;
+            return Task.CompletedTask;
+        }
     }
 
     public sealed class FailActivity : IAsyncActivity

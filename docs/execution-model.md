@@ -37,6 +37,10 @@ The SQL host overload registers a SQL workflow state repository, host registry, 
 
 The scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. The SQL host scans for interrupted running instances. An uncertain external activity outcome stops for an explicit resolution decision; inspect pending attempts and resolve them through `IWorkflowEngine` before continuing.
 
+A checkpoint is saved at effect boundaries: when the instance starts, before and after each activity or child workflow, when a wait is saved or a scheduled retry is set, when a branch is cancelled, and when the run stops. Control flow between them, such as `If`, loops and scope changes, is not saved; after an interruption it is evaluated again from the last checkpoint. Conditions, mappings, wait predicates and parallel completion conditions may therefore run more than once. Keep them pure: read the workflow data and the previous step, perform no I/O, and read time only through the injected `TimeProvider`.
+
+A checkpoint larger than `IxIFlowOptions.MaxCheckpointBytes` (4 MiB of workflow data and execution state by default) is never saved. The instance stops at `NeedsResolution` with its last checkpoint and the limit as its error; raise the limit and call `RecoverWorkflowAsync`, or cancel it. A start, event or resolution that would exceed the limit is refused with a `WorkflowEngineException` of kind `ResourceExhausted`.
+
 ## Interrupted activities
 
 The runner saves an attempt before it invokes an activity and saves the observed result afterward. A process can stop after an external effect but before the result is saved. On recovery, the engine must decide whether to run that activity again.
