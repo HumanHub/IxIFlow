@@ -35,7 +35,7 @@ public class StructuredSagaWaitTests
         Assert.False(saved.IsRestorable);
 
         Assert.True(SagaScopeTransitions.HandleStepFailure(scopes, continuation,
-            saved.ForPropagation()));
+            saved.ForPropagation(), DateTime.UtcNow));
         Assert.Equal(1, continuation.Stack[^1].NextStepIndex);
     }
 

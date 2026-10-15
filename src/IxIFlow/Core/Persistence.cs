@@ -100,6 +100,19 @@ public interface IWorkflowCompletionOutbox
 /// </summary>
 public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox
 {
+    private readonly TimeProvider _time;
+
+    public InMemoryWorkflowStateRepository() : this(TimeProvider.System)
+    {
+    }
+
+    public InMemoryWorkflowStateRepository(TimeProvider time)
+    {
+        _time = time ?? throw new ArgumentNullException(nameof(time));
+    }
+
+    private DateTime Now => _time.GetUtcNow().UtcDateTime;
+
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] PayloadHash, long Revision)> _commits = new();
@@ -141,7 +154,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             throw new ArgumentOutOfRangeException(nameof(duration));
         lock (_claimLock)
         {
-            var now = DateTime.UtcNow;
+            var now = Now;
             var instances = _instances.Values
                 .Where(instance => (instanceId == null || instance.InstanceId == instanceId) &&
                     IsTerminal(instance.Status) && !_publishedCompletions.Contains(instance.InstanceId) &&
@@ -162,7 +175,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             if (!_instances.TryGetValue(instanceId, out var instance) ||
                 instance.Revision != revision || !IsTerminal(instance.Status) ||
                 !_completionClaims.TryGetValue(instanceId, out var claim) ||
-                claim.Token != token || claim.ExpiresAtUtc <= DateTime.UtcNow)
+                claim.Token != token || claim.ExpiresAtUtc <= Now)
                 return Task.FromResult(false);
             _completionClaims.Remove(instanceId);
             return Task.FromResult(_publishedCompletions.Add(instanceId));
@@ -218,7 +231,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     {
         lock (_claimLock)
         {
-            var now = DateTime.UtcNow;
+            var now = Now;
             var instances = _instances.Values
                 .Where(instance =>
                     (instance.Status == WorkflowStatus.Running &&
@@ -240,7 +253,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         ValidateLeaseArguments(instanceId, token, duration);
         lock (_claimLock)
         {
-            var now = DateTime.UtcNow;
+            var now = Now;
             if (_leases.TryGetValue(instanceId, out var lease) && lease.ExpiresAtUtc > now)
                 return Task.FromResult(false);
             _leases[instanceId] = (token, now.Add(duration));
@@ -254,7 +267,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         ValidateLeaseArguments(instanceId, token, duration);
         lock (_claimLock)
         {
-            var now = DateTime.UtcNow;
+            var now = Now;
             if (!_leases.TryGetValue(instanceId, out var lease) ||
                 lease.Token != token || lease.ExpiresAtUtc <= now)
                 return Task.FromResult(false);
@@ -270,7 +283,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         {
             if (_instances.TryGetValue(instanceId, out var instance) &&
                 instance.Status == WorkflowStatus.Suspended)
-                instance.NextDueAtUtc = DateTime.UtcNow;
+                instance.NextDueAtUtc = Now;
         }
         return Task.CompletedTask;
     }
@@ -311,14 +324,14 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                     throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
                 if (snapshot.Status == WorkflowStatus.Running && instance.ExecutionLeaseToken != null &&
                     (!hasLease || lease.Token != instance.ExecutionLeaseToken ||
-                     lease.ExpiresAtUtc <= DateTime.UtcNow))
+                     lease.ExpiresAtUtc <= Now))
                     return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision));
             }
 
             if (revision != expectedRevision ||
                 (hasLease && (lease.Token != instance.ExecutionLeaseToken ||
-                              lease.ExpiresAtUtc <= DateTime.UtcNow)) ||
+                              lease.ExpiresAtUtc <= Now)) ||
                 (!hasLease && instance.ExecutionLeaseToken != null) ||
                 ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or
                     WorkflowStatus.TimedOut) &&
@@ -555,30 +568,4 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
 
         return Task.CompletedTask;
     }
-}
-
-/// <summary>
-///     Workflow registration information
-/// </summary>
-public class WorkflowRegistration
-{
-    /// <summary>
-    ///     Workflow definition
-    /// </summary>
-    public WorkflowDefinition Definition { get; set; } = null!;
-
-    /// <summary>
-    ///     When the workflow was registered
-    /// </summary>
-    public DateTime RegisteredAt { get; set; } = DateTime.UtcNow;
-
-    /// <summary>
-    ///     Who registered the workflow
-    /// </summary>
-    public string RegisteredBy { get; set; } = "";
-
-    /// <summary>
-    ///     Registration metadata
-    /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
 }

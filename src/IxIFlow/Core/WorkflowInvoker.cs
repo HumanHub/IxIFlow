@@ -15,6 +15,7 @@ namespace IxIFlow.Core;
 public class WorkflowInvoker : ICheckpointedWorkflowInvoker
 {
     private readonly IWorkflowTracer _tracer;
+    private readonly TimeProvider _time;
     private readonly ILogger<WorkflowInvoker> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly IWorkflowVersionRegistry _versionRegistry;
@@ -25,8 +26,10 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
         ILogger<WorkflowInvoker> logger,
         IServiceProvider serviceProvider,
         IWorkflowVersionRegistry versionRegistry,
-        IWorkflowStateRepository repository)
+        IWorkflowStateRepository repository,
+        TimeProvider? timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         _tracer = tracer ?? throw new ArgumentNullException(nameof(tracer));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
@@ -159,13 +162,14 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             // Add child workflow started trace
             await TraceInvocationAsync(context.WorkflowInstance, new ExecutionTraceEntry
             {
+                Timestamp = _time.GetUtcNow().UtcDateTime,
                 StepNumber = context.WorkflowInstance.CurrentStepNumber,
                 EntryType = TraceEntryType.ActivityStarted,
                 ActivityName = $"Workflow: {childWorkflowDefinition.Name}",
                 InputDataJson = JsonSerializer.Serialize(childWorkflowData)
             }, cancellationToken);
 
-            var startTime = DateTime.UtcNow;
+            var startTime = _time.GetUtcNow().UtcDateTime;
 
             // Execute child workflow using generic method
             var executeMethod = GetType().GetMethod(nameof(ExecuteChildWorkflowAsync),
@@ -178,7 +182,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                 [childWorkflowDefinition, childWorkflowData, invocationId,
                     context.WorkflowInstance.InstanceId, cancellationToken])!;
 
-            var duration = DateTime.UtcNow - startTime;
+            var duration = _time.GetUtcNow().UtcDateTime - startTime;
 
             if (childResult.Status is WorkflowExecutionStatus.Suspended or
                 WorkflowExecutionStatus.Running or WorkflowExecutionStatus.NeedsResolution)
@@ -193,6 +197,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             {
                 await TraceInvocationAsync(context.WorkflowInstance, new ExecutionTraceEntry
                 {
+                    Timestamp = _time.GetUtcNow().UtcDateTime,
                     StepNumber = context.WorkflowInstance.CurrentStepNumber,
                     EntryType = TraceEntryType.ActivityFailed,
                     ActivityName = $"Workflow: {childWorkflowDefinition.Name}",
@@ -223,6 +228,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             // Add child workflow completed trace
             await TraceInvocationAsync(context.WorkflowInstance, new ExecutionTraceEntry
             {
+                Timestamp = _time.GetUtcNow().UtcDateTime,
                 StepNumber = context.WorkflowInstance.CurrentStepNumber,
                 EntryType = TraceEntryType.ActivityCompleted,
                 ActivityName = $"Workflow: {childWorkflowDefinition.Name}",
@@ -251,6 +257,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
 
             await TraceInvocationAsync(context.WorkflowInstance, new ExecutionTraceEntry
             {
+                Timestamp = _time.GetUtcNow().UtcDateTime,
                 StepNumber = context.WorkflowInstance.CurrentStepNumber,
                 EntryType = TraceEntryType.ActivityFailed,
                 ActivityName = $"Workflow: {step.WorkflowName ?? step.WorkflowType?.Name ?? "Unknown"}",
