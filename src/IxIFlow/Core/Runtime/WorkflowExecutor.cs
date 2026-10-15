@@ -60,8 +60,10 @@ internal sealed class WorkflowExecutor
                 deadlineAdvanced |= _transitions.ProcessDueWaits(checkpoint, scopes);
                 if (deadlineAdvanced)
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+                // Once per pass, that is after each activity ends or the run wakes, the store is read;
+                // between those, steps rely on the host's cancellation watch.
                 await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
-                    scopes, host, host.ObservedCancellation);
+                    scopes, host, host.ObservedCancellation, readStore: true);
                 await SignalCancellationsAsync(inFlight, uncommitted, host, instance, checkpoint, workflowData,
                     scopes);
 
@@ -180,8 +182,10 @@ internal sealed class WorkflowExecutor
                     .Min(wait => wait.DeadlineUtc);
                 if (inFlight.Count == 0 && (nextRetry == null || host.Drain.IsCancellationRequested))
                 {
+                    // Before the run goes idle it reads the store once, so a request that arrived
+                    // since the watch's last read still wins.
                     if (await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
-                            scopes, host, host.ObservedCancellation))
+                            scopes, host, host.ObservedCancellation, readStore: true))
                         continue;
                     break;
                 }
@@ -434,12 +438,14 @@ internal sealed class WorkflowExecutor
 
     private async Task<bool> ApplyCancellationRequestAsync(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes,
-        IExecutionHost host, CancellationReason? observedReason = null)
+        IExecutionHost host, CancellationReason? observedReason = null, bool readStore = false)
     {
         if (!host.PersistsState || checkpoint.CancellationRequested)
             return false;
         var requested = observedReason;
-        if (requested == null)
+        // A leased run hears of requests through the host's one cancellation watch (B-10); it reads
+        // the store itself only before going idle, or when it has no watch.
+        if (requested == null && (readStore || host.CancellationSignal == null))
         {
             try
             {

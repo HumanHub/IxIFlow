@@ -131,6 +131,28 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         return json == null ? null : JsonSerializer.Deserialize<CancellationReason>(json);
     }
 
+    public async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        IReadOnlyCollection<string> instanceIds)
+    {
+        ArgumentNullException.ThrowIfNull(instanceIds);
+        var requests = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
+        if (instanceIds.Count == 0)
+            return requests;
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        // SQL Server allows about 2,100 parameters per statement.
+        foreach (var batch in instanceIds.Distinct(StringComparer.Ordinal).Chunk(1000))
+        {
+            var rows = await connection.QueryAsync<(string InstanceId, string CancellationJson)>("""
+                SELECT InstanceId, CancellationJson FROM dbo.IxIFlowWorkflowInstances
+                WHERE InstanceId IN @InstanceIds AND CancellationJson IS NOT NULL
+                """, new { InstanceIds = batch });
+            foreach (var row in rows)
+                requests[row.InstanceId] = JsonSerializer.Deserialize<CancellationReason>(row.CancellationJson)!;
+        }
+        return requests;
+    }
+
     public async Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync()
     {
         await EnsureSchemaAsync();

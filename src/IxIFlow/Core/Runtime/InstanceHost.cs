@@ -20,7 +20,8 @@ internal sealed class InstanceHost(
     ExecutionLeaseSettings? leaseSettings = null,
     TimeProvider? timeProvider = null,
     ExecutionLimits? limits = null,
-    RunControl? control = null)
+    RunControl? control = null,
+    CancellationWatch? watch = null)
 {
     private readonly IWorkflowStateRepository _store = GuardedStateRepository.Wrap(repository);
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
@@ -29,6 +30,7 @@ internal sealed class InstanceHost(
     private readonly ExecutionLeaseSettings _leaseSettings = leaseSettings ?? ExecutionLeaseSettings.Default;
     private readonly ExecutionLimits _limits = limits ?? ExecutionLimits.Default;
     private readonly RunControl _control = control ?? new RunControl();
+    private readonly CancellationWatch _watch = watch ?? new CancellationWatch(repository, timeProvider);
     private readonly WorkflowExecutor _executor = new(services, activityExecutor,
         timeProvider ?? TimeProvider.System);
     private readonly ContinuationTransitions _transitions = new(services, timeProvider ?? TimeProvider.System);
@@ -133,7 +135,7 @@ internal sealed class InstanceHost(
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
 
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-            _store, instance, _leaseSettings, _time);
+            _store, instance, _leaseSettings, _watch, _time);
         if (owner == null)
             return WorkflowExecutor.Busy(instanceId);
         var current = await _store.GetWorkflowInstanceAsync(instanceId);
@@ -333,7 +335,7 @@ internal sealed class InstanceHost(
         {
             using var lease = await gate.EnterAsync(instance.InstanceId, cancellationToken);
             await using var owner = options.PersistState
-                ? await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _time)
+                ? await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, _time)
                     ?? (options.InstanceId == null
                         ? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
                             "The new workflow instance could not acquire execution ownership")
@@ -433,7 +435,7 @@ internal sealed class InstanceHost(
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
                 return Rejected(instanceId, "The registered workflow definition differs from the saved version");
             await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-                _store, instance, _leaseSettings, _time);
+                _store, instance, _leaseSettings, _watch, _time);
             if (owner == null)
                 return WorkflowExecutor.Busy(instanceId);
             var current = await _store.GetWorkflowInstanceAsync(instanceId);
@@ -560,7 +562,7 @@ internal sealed class InstanceHost(
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-            _store, instance, _leaseSettings, _time);
+            _store, instance, _leaseSettings, _watch, _time);
         if (owner == null)
             return WorkflowExecutor.Busy(instanceId);
         var current = await _store.GetWorkflowInstanceAsync(instanceId);
