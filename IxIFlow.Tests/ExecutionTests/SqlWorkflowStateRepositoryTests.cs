@@ -9,7 +9,7 @@ public class SqlWorkflowStateRepositoryTests
     [Trait("Category", "SqlIntegration")]
     public async Task SuspendedDeadlineAppearsInRecoveryScanWhenDue()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var repository = new SqlWorkflowStateRepository(connectionString);
         try
@@ -44,7 +44,7 @@ public class SqlWorkflowStateRepositoryTests
     [Trait("Category", "SqlIntegration")]
     public async Task SuspendedInstance_AppliesOneDeliveryOnceAcrossRepositories()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
@@ -62,7 +62,7 @@ public class SqlWorkflowStateRepositoryTests
     [Trait("Category", "SqlIntegration")]
     public async Task SuspendedInstance_SurvivesRepositoryRecreation()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         try

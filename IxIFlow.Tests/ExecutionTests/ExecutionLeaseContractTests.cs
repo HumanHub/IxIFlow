@@ -468,7 +468,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlCancellationRequestReachesRunningOwnerOnAnotherHost()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var registry = new WorkflowVersionRegistry();
@@ -511,7 +511,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlSuspendedWaitCanBeCancelledByAnotherHost()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var registry = new WorkflowVersionRegistry();
@@ -548,7 +548,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlScannerCompletesCancellationAfterRequestingHostStops()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var firstRegistry = new WorkflowVersionRegistry();
@@ -928,7 +928,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlSuspendedInstanceCanResumeOnAnotherHost()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var firstRegistry = new WorkflowVersionRegistry();
@@ -962,7 +962,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlLiveOwnerCannotBeRecoveredByAnotherHost()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var firstRegistry = new WorkflowVersionRegistry();
@@ -1015,7 +1015,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlRecoveryScannerReclaimsAnExpiredWorker()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var firstRegistry = new WorkflowVersionRegistry();
@@ -1089,7 +1089,7 @@ public sealed class ExecutionLeaseContractTests
     }
 
     private static SqlWorkflowStateRepository SqlRepository() => new(
-        Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!);
+        SqlServerTestServer.ConnectionString);
 
     private static async Task VerifyExclusiveLease(IWorkflowStateRepository repository)
     {
