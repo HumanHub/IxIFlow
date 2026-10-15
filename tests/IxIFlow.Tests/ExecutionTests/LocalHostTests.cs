@@ -117,6 +117,29 @@ public sealed class LocalHostTests
     }
 
     [Fact]
+    [Trait("Spec", "B-02")]
+    public async Task WorkLeftBehindByAFinishedRunQueuesLikeAnyOtherCall()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
+        var probe = services.GetRequiredService<BackgroundProbe>();
+        var definition = Workflow.Create<HostData>("LeavesWorkBehind")
+            .Step<BackgroundCallingActivity>()
+            .Build();
+
+        var result = await Client(services).RunAsync(definition, new HostData()).WaitAsync(Patience);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        probe.Later.SetResult();
+        var background = await probe.Result.Task.WaitAsync(Patience);
+
+        // The run's context went with the background task, but the run is over: the call takes its
+        // own slot and scope instead of the disposed ones.
+        Assert.True(probe.InsideDuringRun);
+        Assert.False(probe.InsideAfterRun);
+        Assert.Equal(WorkflowExecutionStatus.Success, background.Status);
+        Assert.Equal(2, Probe(services).Count("quick"));
+    }
+
+    [Fact]
     [Trait("Spec", "B-12")]
     public async Task DisposingTheHostCancelsQueuedCallers()
     {
@@ -340,6 +363,8 @@ public sealed class LocalHostTests
         services.AddTransient<BlockingActivity>();
         services.AddTransient<QuickActivity>();
         services.AddTransient<ClientCallingActivity>();
+        services.AddTransient<BackgroundCallingActivity>();
+        services.AddSingleton<BackgroundProbe>();
         return services.BuildServiceProvider();
     }
 
@@ -422,6 +447,40 @@ public sealed class LocalHostTests
                 cancellationToken: cancellationToken);
             if (result.Status != WorkflowExecutionStatus.Success)
                 throw new InvalidOperationException(result.ErrorMessage);
+        }
+    }
+
+    public sealed class BackgroundProbe
+    {
+        public TaskCompletionSource Later { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<WorkflowExecutionResult> Result { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool InsideDuringRun { get; set; }
+        public bool InsideAfterRun { get; set; }
+    }
+
+    /// <summary>Leaves a task behind that calls the client after the run has finished.</summary>
+    internal sealed class BackgroundCallingActivity(LocalWorkflowHost host, IWorkflowClient client,
+        BackgroundProbe probe) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.InsideDuringRun = host.IsInsideRun;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await probe.Later.Task;
+                    probe.InsideAfterRun = host.IsInsideRun;
+                    probe.Result.SetResult(await client.RunAsync(QuickWorkflow("CalledAfterTheRun"),
+                        new HostData()));
+                }
+                catch (Exception error)
+                {
+                    probe.Result.SetException(error);
+                }
+            });
+            return Task.CompletedTask;
         }
     }
 
