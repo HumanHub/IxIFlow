@@ -62,6 +62,11 @@ internal sealed class DirectInstanceClient
         CancellationToken cancellationToken = default) =>
         ForInstanceAsync(instanceId, _runner.RecoverAsync(instanceId, cancellationToken));
 
+    public Task<WorkflowExecutionResult> ReleaseAsync(
+        string instanceId,
+        CancellationToken cancellationToken = default) =>
+        ForInstanceAsync(instanceId, _runner.ReleaseAsync(instanceId, cancellationToken));
+
     public Task<WorkflowExecutionResult> CancelAsync(
         string instanceId, CancellationReason reason,
         CancellationToken cancellationToken = default) =>

@@ -134,7 +134,9 @@ internal sealed class ActivityAttempts(
         }
         if (instance.TracingEnabled)
             instance.ExecutionHistory.Add(startTrace);
-        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+        // Claiming the attempt is not progress: an activity that kills its owner keeps counting.
+        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
+            clearsCrashCount: false);
 
         var skipCancelledRecovery = isRecovery && continuation.CancellationUnwind &&
             !TryScopeTransitions.IsInsideFinally(continuation) &&
@@ -296,7 +298,9 @@ internal sealed class ActivityAttempts(
         }
         if (instance.TracingEnabled)
             instance.ExecutionHistory.Add(startTrace);
-        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+        // Claiming the child invocation is not progress, like an activity start.
+        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
+            clearsCrashCount: false);
 
         if (ContinuationTransitions.ShouldCancelInvokedChild(continuation) &&
             pending.Resolution == null &&

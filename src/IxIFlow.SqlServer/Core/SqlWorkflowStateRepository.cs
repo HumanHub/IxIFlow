@@ -174,27 +174,46 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         return rows.Select(Deserialize).ToArray();
     }
 
-    public async Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+    public async Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration)
     {
         var milliseconds = LeaseMilliseconds(instanceId, token, duration);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        // The lease row outlives its lease, so a later owner always gets a higher epoch.
-        return await connection.QuerySingleOrDefaultAsync<long?>("""
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+        // The instance row is locked before the lease row, in the same order as a commit.
+        var running = await connection.ExecuteScalarAsync<int>("""
+            SELECT COUNT(*) FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+            WHERE InstanceId = @InstanceId AND Status = 'Running'
+            """, new { InstanceId = instanceId }, transaction) > 0;
+        // The lease row outlives its lease, so a later owner always gets a higher epoch. A lease that
+        // expired without release while the instance was running lost work in flight: one more crash.
+        var grant = await connection.QuerySingleOrDefaultAsync<LeaseGrantRow>("""
             MERGE dbo.IxIFlowWorkflowLeases WITH (UPDLOCK, HOLDLOCK) AS target
             USING (SELECT @InstanceId AS InstanceId) AS source
             ON target.InstanceId = source.InstanceId
             WHEN MATCHED AND target.ExpiresAtUtc <= SYSUTCDATETIME() THEN
                 UPDATE SET Token = @Token,
                     ExpiresAtUtc = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()),
-                    Epoch = target.Epoch + 1
+                    Epoch = target.Epoch + 1,
+                    CrashCount = target.CrashCount + CASE
+                        WHEN @Running = 1 AND target.ExpiresAtUtc > CAST('0001-01-01' AS DATETIME2) THEN 1
+                        ELSE 0 END
             WHEN NOT MATCHED THEN
-                INSERT (InstanceId, Token, ExpiresAtUtc, Epoch)
+                INSERT (InstanceId, Token, ExpiresAtUtc, Epoch, CrashCount)
                 VALUES (@InstanceId, @Token,
-                    DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()), 1)
-            OUTPUT inserted.Epoch;
-            """, new { InstanceId = instanceId, Token = token, Milliseconds = milliseconds });
+                    DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()), 1, 0)
+            OUTPUT inserted.Epoch, inserted.CrashCount;
+            """, new { InstanceId = instanceId, Token = token, Milliseconds = milliseconds, Running = running },
+            transaction);
+        await transaction.CommitAsync();
+        return grant == null ? null : new ExecutionLeaseGrant(grant.Epoch, grant.CrashCount);
+    }
+
+    private sealed class LeaseGrantRow
+    {
+        public long Epoch { get; set; }
+        public int CrashCount { get; set; }
     }
 
     public async Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
@@ -323,7 +342,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         if (receipt != null)
         {
             if (receipt.ExpectedRevision != commit.ExpectedRevision ||
-                !receipt.PayloadHash.SequenceEqual(commit.PayloadHash))
+                !receipt.PayloadHash.SequenceEqual(commit.ContentHash))
                 throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
             await transaction.CommitAsync();
             // A terminal commit released the lease; only a running owner must still hold it.
@@ -371,13 +390,20 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             SuspensionId = snapshot.SuspensionInfo?.SuspensionId,
             snapshot.NextDueAtUtc,
             StateJson = json, snapshot.Revision,
-            commit.ExpectedRevision, commit.CommitId, commit.PayloadHash,
+            commit.ExpectedRevision, commit.CommitId, PayloadHash = commit.ContentHash,
             AcknowledgesCancellation = snapshot.CancellationReason != null
         }, transaction);
-        if (snapshot.Status != WorkflowStatus.Running)
+        if (snapshot.Status != WorkflowStatus.Running || commit.ClearsCrashCount)
             await connection.ExecuteAsync("""
-                UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = CAST('0001-01-01' AS DATETIME2) WHERE InstanceId = @InstanceId
-                """, new { snapshot.InstanceId }, transaction);
+                UPDATE dbo.IxIFlowWorkflowLeases
+                SET ExpiresAtUtc = CASE WHEN @Released = 1 THEN CAST('0001-01-01' AS DATETIME2)
+                        ELSE ExpiresAtUtc END,
+                    CrashCount = CASE WHEN @ClearsCrashCount = 1 THEN 0 ELSE CrashCount END
+                WHERE InstanceId = @InstanceId
+                """, new
+            {
+                snapshot.InstanceId, Released = snapshot.Status != WorkflowStatus.Running, commit.ClearsCrashCount
+            }, transaction);
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
             ReadReason(current?.CancellationJson));
@@ -439,9 +465,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        // The lease row stays so a recreated instance never reuses an epoch.
+        // The lease row stays so a recreated instance never reuses an epoch; its crashes go.
         await connection.ExecuteAsync(
-            "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = CAST('0001-01-01' AS DATETIME2) WHERE InstanceId = @InstanceId",
+            "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = CAST('0001-01-01' AS DATETIME2), CrashCount = 0 WHERE InstanceId = @InstanceId",
             new { InstanceId = instanceId });
         await connection.ExecuteAsync(
             "DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId",
@@ -580,6 +606,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowLeases', N'Epoch') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowLeases
                         ADD Epoch BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowLeases_Epoch DEFAULT 1;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowLeases', N'CrashCount') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowLeases
+                        ADD CrashCount INT NOT NULL CONSTRAINT DF_IxIFlowWorkflowLeases_CrashCount DEFAULT 0;
                 """, transaction: transaction);
             await connection.ExecuteAsync("""
                 UPDATE dbo.IxIFlowWorkflowInstances

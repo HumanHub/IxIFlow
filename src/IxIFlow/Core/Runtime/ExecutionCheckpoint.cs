@@ -19,8 +19,11 @@ internal sealed class ExecutionCheckpoint
     public SerializedException? UnhandledError { get; set; }
     public bool CancellationRequested { get; set; }
 
-    /// <summary>Set when a commit exceeded a resource limit and the instance waits for an operator (D-28).</summary>
-    public ResourceStopState? ResourceStop { get; set; }
+    /// <summary>
+    /// Set while the instance is stopped at NeedsResolution for an operator: after a commit exceeded a
+    /// resource limit (D-28) or after too many crashes (B-08). Only a release or a cancellation moves it.
+    /// </summary>
+    public OperatorStopState? OperatorStop { get; set; }
 
     [JsonIgnore]
     public Exception? RuntimeUnhandledError { get; set; }
@@ -44,10 +47,29 @@ internal sealed class ExecutionCheckpoint
     }
 }
 
-internal sealed class ResourceStopState
+internal sealed class OperatorStopState
 {
+    public OperatorStopKind Kind { get; set; }
     public string Reason { get; set; } = "";
     public DateTime StoppedAtUtc { get; set; }
+
+    /// <summary>For a quarantine, how many owners in a row lost the instance.</summary>
+    public int CrashCount { get; set; }
+
+    /// <summary>What the operator sees, with the actions that move the instance.</summary>
+    public string Describe() => Kind switch
+    {
+        OperatorStopKind.Quarantine =>
+            $"The workflow instance is quarantined: {Reason}. Release it to run it again, or cancel it",
+        _ => $"The workflow instance is stopped at a resource limit ({Reason}); " +
+            "raise the limit and release it, or cancel it"
+    };
+}
+
+internal enum OperatorStopKind
+{
+    ResourceLimit,
+    Quarantine
 }
 
 internal enum ContinuationStatus

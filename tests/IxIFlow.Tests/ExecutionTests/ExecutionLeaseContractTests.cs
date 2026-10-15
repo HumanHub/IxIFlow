@@ -329,14 +329,14 @@ public sealed class ExecutionLeaseContractTests
             Assert.NotNull(epoch);
             var active = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(active, epoch.Value, 0,
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(active, epoch.Epoch, 0,
                     Guid.NewGuid().ToString("N")))).Status);
             Assert.True(await repository.RequestCancellationAsync(instanceId,
                 new CancellationReason { ReasonCode = "operator" }));
             var terminal = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             terminal.Status = terminalStatus;
 
-            var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(terminal, epoch.Value,
+            var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(terminal, epoch.Epoch,
                 terminal.Revision,
                 Guid.NewGuid().ToString("N")));
 
@@ -1164,7 +1164,7 @@ public sealed class ExecutionLeaseContractTests
                 WorkflowDataJson = "{}"
             };
             var initial = await repository.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(oldOwner, firstEpoch.Value, 0, "initial"));
+                CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 0, "initial"));
             Assert.Equal(WorkflowCommitStatus.Applied, initial.Status);
             await Task.Delay(300);
             var secondEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
@@ -1172,12 +1172,12 @@ public sealed class ExecutionLeaseContractTests
             Assert.NotNull(secondEpoch);
             oldOwner.WorkflowDataJson = "\"stale\"";
             var stale = await repository.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(oldOwner, firstEpoch.Value, 1, "stale"));
+                CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 1, "stale"));
             Assert.Equal(WorkflowCommitStatus.StaleEpoch, stale.Status);
             var newOwner = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             newOwner.WorkflowDataJson = "\"current\"";
             var current = await repository.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(newOwner, secondEpoch.Value, 1, "current"));
+                CheckpointCommit.Create(newOwner, secondEpoch.Epoch, 1, "current"));
             Assert.Equal(WorkflowCommitStatus.Applied, current.Status);
             Assert.Equal("\"current\"",
                 (await repository.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson);
@@ -1223,7 +1223,7 @@ public sealed class ExecutionLeaseContractTests
                 Status = WorkflowStatus.Running,
                 WorkflowDataJson = "{}"
             };
-            var start = CheckpointCommit.Create(formerOwner, formerEpoch.Value, 0, "start");
+            var start = CheckpointCommit.Create(formerOwner, formerEpoch.Epoch, 0, "start");
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(start)).Status);
             await Task.Delay(300);
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
@@ -1428,7 +1428,7 @@ public sealed class ExecutionLeaseContractTests
             return snapshot;
         }
 
-        public Task<long?> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration) =>
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration) =>
             inner.TryAcquireExecutionLeaseAsync(id, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
         {

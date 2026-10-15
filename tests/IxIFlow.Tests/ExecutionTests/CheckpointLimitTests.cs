@@ -58,14 +58,18 @@ public sealed class CheckpointLimitTests
         Assert.Equal(WorkflowStatus.NeedsResolution, stopped.Status);
         Assert.Null(stopped.NextDueAtUtc);
         Assert.DoesNotContain(new string('x', GrownLength), stopped.WorkflowDataJson);
-        Assert.NotNull(ExecutionCheckpoint.Read(stopped.ExecutionStateJson).ResourceStop);
+        Assert.NotNull(ExecutionCheckpoint.Read(stopped.ExecutionStateJson).OperatorStop);
         Assert.DoesNotContain(await repository.GetWorkflowsRequiringRecoveryAsync(),
             instance => instance.InstanceId == instanceId);
 
-        // An operator raises the limit: a host with the higher limit and the same workflow recovers it.
+        // An operator raises the limit: a host with the higher limit and the same workflow releases it.
+        // Recovery alone leaves it stopped.
         using var raised = Services(repository, ExecutionLimits.DefaultMaxCheckpointBytes);
         await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(GrowingWorkflow());
-        var recovered = await Engine(raised).RecoverAsync(instanceId);
+        var stillStopped = await Engine(raised).RecoverAsync(instanceId);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stillStopped.Status);
+        Assert.Contains("release it", stillStopped.ErrorMessage);
+        var recovered = await Engine(raised).ReleaseAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
         Assert.Equal(GrownLength, ((LimitData)recovered.WorkflowData!).Text.Length);

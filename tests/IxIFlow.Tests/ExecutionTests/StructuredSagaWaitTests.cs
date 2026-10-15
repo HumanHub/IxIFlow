@@ -1654,7 +1654,7 @@ public class StructuredSagaWaitTests
             _inner.GetCancellationRequestAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
             _inner.GetWorkflowsRequiringRecoveryAsync();
-        public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);

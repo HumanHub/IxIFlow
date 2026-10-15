@@ -91,6 +91,14 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
             (client, _, token) => client.RecoverAsync(instanceId, token), cancellationToken);
     }
 
+    public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        return host.RunAsync(instanceId,
+            (client, _, token) => client.ReleaseAsync(instanceId, token), cancellationToken);
+    }
+
     // The request is saved without a slot, so cancellation works while every slot is busy.
     // Only an idle instance takes a slot, to unwind its cancellation handlers.
     public async Task<WorkflowExecutionResult> CancelAsync(string instanceId, CancellationReason reason,

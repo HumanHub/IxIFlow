@@ -10,9 +10,15 @@ internal static class ExecutionCheckpointWriter
 {
     private const int MaxAttempts = 3;
 
+    /// <summary>
+    /// Commits the run's state. <paramref name="workflowData"/> may be null only with
+    /// <paramref name="preserveSavedWorkflowData"/>. <paramref name="clearsCrashCount"/> is false for a
+    /// commit that records no progress: claiming an activity or child before it starts, or only
+    /// rescheduling a check (B-08).
+    /// </summary>
     public static async Task CommitAsync(IExecutionHost host, WorkflowInstance instance,
-        ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes, DateTime now,
-        bool preserveSavedWorkflowData = false, bool enforceLimit = true)
+        ExecutionCheckpoint checkpoint, object? workflowData, WorkflowScopeCatalog scopes, DateTime now,
+        bool preserveSavedWorkflowData = false, bool enforceLimit = true, bool clearsCrashCount = true)
     {
         if (!host.PersistsState)
             return;
@@ -26,7 +32,8 @@ internal static class ExecutionCheckpointWriter
             throw new CheckpointLimitExceededException(size, host.MaxCheckpointBytes);
         }
 
-        var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision);
+        var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,
+            clearsCrashCount: clearsCrashCount);
         for (var attempt = 1; ; attempt++)
         {
             var reply = await host.CommitAsync(commit);
@@ -49,24 +56,22 @@ internal static class ExecutionCheckpointWriter
     }
 
     public static void Prepare(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
-        object workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false)
+        object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false)
     {
         try
         {
-            // A running instance is past any resource stop.
-            if (instance.Status == WorkflowStatus.Running)
-                checkpoint.ResourceStop = null;
             ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson
-                : JsonSerializer.Serialize(workflowData, workflowData.GetType());
+                : JsonSerializer.Serialize(workflowData ?? throw new ArgumentNullException(nameof(workflowData)),
+                    workflowData.GetType());
             var stateJson = JsonSerializer.Serialize(checkpoint);
             var snapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, now);
             instance.WorkflowDataJson = dataJson;
             instance.ExecutionStateJson = stateJson;
             instance.ExecutionSnapshot = snapshot;
-            // An instance stopped at a limit stays put until an operator acts on it.
-            instance.NextDueAtUtc = checkpoint.ResourceStop == null &&
+            // A stopped instance stays put until an operator acts on it.
+            instance.NextDueAtUtc = checkpoint.OperatorStop == null &&
                     instance.Status is WorkflowStatus.Running or WorkflowStatus.Suspended or
                         WorkflowStatus.NeedsResolution
                 ? new[] { checkpoint.CancellationRequested ? null : checkpoint.ExecutionDeadlineUtc }

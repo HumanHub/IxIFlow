@@ -16,9 +16,11 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     private readonly IDisposable _cancellationWatch;
 
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
-        string token, long epoch, ExecutionLeaseSettings settings, TimeProvider time, CancellationWatch watch)
+        string token, ExecutionLeaseGrant grant, ExecutionLeaseSettings settings, TimeProvider time,
+        CancellationWatch watch)
     {
-        Epoch = epoch;
+        Epoch = grant.Epoch;
+        CrashCount = grant.CrashCount;
         _repository = repository;
         _time = time;
         _instanceId = instanceId;
@@ -32,6 +34,9 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
     /// <summary>The execution epoch the store granted with this lease; commits are fenced by it.</summary>
     public long Epoch { get; }
+
+    /// <summary>How many owners in a row lost the instance while it was running, before this one (B-08).</summary>
+    public int CrashCount { get; }
 
     public Task Loss => _loss.Task;
     public Task<CancellationReason> Cancellation => _cancellation.Task;
@@ -47,9 +52,9 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
         var token = Guid.NewGuid().ToString("N");
         if (await repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, token,
-                settings.Duration) is not { } epoch)
+                settings.Duration) is not { } grant)
             return null;
-        return new WorkflowExecutionLease(repository, instance.InstanceId, token, epoch, settings,
+        return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, settings,
             time ?? TimeProvider.System, watch);
     }
 

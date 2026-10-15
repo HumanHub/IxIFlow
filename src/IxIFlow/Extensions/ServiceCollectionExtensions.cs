@@ -73,7 +73,10 @@ public static class ServiceCollectionExtensions
         services.AddIxIFlow();
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
-        services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits(options.MaxCheckpointBytes)));
+        if (options.MaxCrashes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The crash limit must be positive");
+        services.Replace(ServiceDescriptor.Singleton(
+            new ExecutionLimits(options.MaxCheckpointBytes, options.MaxCrashes)));
         if (options.Slots <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The slot count must be positive");
         if (options.DrainTimeout < TimeSpan.Zero)
@@ -355,9 +358,16 @@ public class IxIFlowOptions
     /// <summary>
     /// The largest checkpoint, in bytes of workflow data and execution state, that an instance may
     /// save. A run that would exceed it stops at NeedsResolution with its last checkpoint; raise the
-    /// limit and recover the instance to continue.
+    /// limit and release the instance to continue.
     /// </summary>
     public long MaxCheckpointBytes { get; set; } = ExecutionLimits.DefaultMaxCheckpointBytes;
+
+    /// <summary>
+    /// How many owners in a row may lose an instance while it runs, by crashing or losing their
+    /// lease, before the instance is quarantined at NeedsResolution. No host runs a quarantined
+    /// instance until an operator releases it. Progress resets the count.
+    /// </summary>
+    public int MaxCrashes { get; set; } = ExecutionLimits.DefaultMaxCrashes;
 
     /// <summary>
     /// How many instances this host runs at once. A run holds its slot until the instance is idle,

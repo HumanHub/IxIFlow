@@ -68,11 +68,13 @@ public interface IWorkflowStateRepository
     Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit);
 
     /// <summary>
-    /// Acquires an absent or expired execution lease for one instance and returns its execution
-    /// epoch, which is greater than every epoch granted for the instance before. Returns null
-    /// while another owner holds the lease.
+    /// Acquires an absent or expired execution lease for one instance. The grant's epoch is greater
+    /// than every epoch granted for the instance before. When the previous lease expired without
+    /// being released while the instance was <see cref="WorkflowStatus.Running"/>, its owner lost the
+    /// instance with work in flight, and the grant's crash count is one higher, in the same atomic
+    /// step. Returns null while another owner holds the lease.
     /// </summary>
-    Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+    Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration);
 
     /// <summary>Extends a lease held by the same execution token.</summary>
@@ -150,9 +152,11 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
 
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
-    private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] PayloadHash, long Revision)> _commits = new();
-    // A lease record outlives its lease, so a later owner always gets a higher epoch.
-    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch)> _leases = new();
+    private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] ContentHash, long Revision)> _commits = new();
+    // A lease record outlives its lease, so a later owner always gets a higher epoch. It also keeps
+    // the instance's crash count. A released lease expires at DateTime.MinValue.
+    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch, int CrashCount)> _leases =
+        new();
     private readonly Dictionary<string, CancellationReason> _cancellations = new();
     private readonly HashSet<string> _acknowledgedCancellations = new();
     private readonly HashSet<string> _publishedCompletions = new();
@@ -299,7 +303,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         }
     }
 
-    public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+    public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration)
     {
         ValidateLeaseArguments(instanceId, token, duration);
@@ -308,10 +312,13 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             var now = Now;
             var exists = _leases.TryGetValue(instanceId, out var lease);
             if (exists && lease.ExpiresAtUtc > now)
-                return Task.FromResult<long?>(null);
-            var epoch = (exists ? lease.Epoch : 0) + 1;
-            _leases[instanceId] = (token, now.Add(duration), epoch);
-            return Task.FromResult<long?>(epoch);
+                return Task.FromResult<ExecutionLeaseGrant?>(null);
+            var crashed = exists && lease.ExpiresAtUtc != DateTime.MinValue &&
+                _instances.TryGetValue(instanceId, out var instance) && instance.Status == WorkflowStatus.Running;
+            var grant = new ExecutionLeaseGrant((exists ? lease.Epoch : 0) + 1,
+                (exists ? lease.CrashCount : 0) + (crashed ? 1 : 0));
+            _leases[instanceId] = (token, now.Add(duration), grant.Epoch, grant.CrashCount);
+            return Task.FromResult<ExecutionLeaseGrant?>(grant);
         }
     }
 
@@ -369,7 +376,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             if (_commits.TryGetValue(key, out var receipt))
             {
                 if (receipt.ExpectedRevision != commit.ExpectedRevision ||
-                    !receipt.PayloadHash.SequenceEqual(commit.PayloadHash))
+                    !receipt.ContentHash.SequenceEqual(commit.ContentHash))
                     throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
                 // A terminal commit released the lease; only a running owner must still hold it.
                 if (snapshot.Status == WorkflowStatus.Running && !owns)
@@ -387,11 +394,15 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
             _instances[commit.InstanceId] = snapshot;
-            _commits.Add(key, (commit.ExpectedRevision, commit.PayloadHash, snapshot.Revision));
+            _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (snapshot.CancellationReason != null && _cancellations.ContainsKey(commit.InstanceId))
                 _acknowledgedCancellations.Add(commit.InstanceId);
-            if (snapshot.Status != WorkflowStatus.Running && _leases.TryGetValue(commit.InstanceId, out var lease))
-                _leases[commit.InstanceId] = lease with { ExpiresAtUtc = DateTime.MinValue };
+            if (_leases.TryGetValue(commit.InstanceId, out var lease))
+                _leases[commit.InstanceId] = lease with
+                {
+                    ExpiresAtUtc = snapshot.Status == WorkflowStatus.Running ? lease.ExpiresAtUtc : DateTime.MinValue,
+                    CrashCount = commit.ClearsCrashCount ? 0 : lease.CrashCount
+                };
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
                 PendingCancellation(commit.InstanceId)));
         }
@@ -455,9 +466,9 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         lock (_claimLock)
         {
             _instances.TryRemove(instanceId, out _);
-            // The lease record stays so a recreated instance never reuses an epoch.
+            // The lease record stays so a recreated instance never reuses an epoch; its crashes go.
             if (_leases.TryGetValue(instanceId, out var lease))
-                _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue };
+                _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue, CrashCount = 0 };
             _cancellations.Remove(instanceId);
             _acknowledgedCancellations.Remove(instanceId);
             _publishedCompletions.Remove(instanceId);

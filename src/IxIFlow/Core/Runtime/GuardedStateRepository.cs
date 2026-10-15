@@ -34,7 +34,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.CommitWorkflowInstanceAsync(commit),
             $"Saving workflow instance '{commit.InstanceId}'");
 
-    public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+    public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+        TimeSpan duration) =>
         Guard(() => _store.TryAcquireExecutionLeaseAsync(instanceId, token, duration),
             $"Acquiring the execution lease of workflow instance '{instanceId}'");
 
