@@ -47,10 +47,16 @@ public sealed class FailureClassificationTests
         Assert.True(repository.FailedReads > 0);
         Assert.NotEqual(WorkflowStatus.Failed, (await repository.GetWorkflowInstanceAsync(parentId))!.Status);
 
+        // The host's own timers fired with the clock as well; scan until the parent has finished.
         repository.FailRead = _ => false;
-        await RecoverOnceAsync(services, repository, time);
-        await RecoverOnceAsync(services, repository, time);
-        var saved = await repository.GetWorkflowInstanceAsync(parentId);
+        WorkflowInstance? saved = null;
+        for (var pass = 0; pass < 40 && saved?.Status != WorkflowStatus.Completed; pass++)
+        {
+            await RecoverOnceAsync(services, repository, time);
+            saved = await repository.GetWorkflowInstanceAsync(parentId);
+            if (saved?.Status != WorkflowStatus.Completed)
+                await Task.Delay(50);
+        }
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
         Assert.Contains("\"ChildTimedOut\":true", saved.WorkflowDataJson);
     }
