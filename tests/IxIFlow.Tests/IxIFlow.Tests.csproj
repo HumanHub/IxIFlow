@@ -11,18 +11,17 @@
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
     <PackageReference Include="Moq" Version="4.20.70" />
-    <PackageReference Include="Testcontainers.MsSql" Version="4.16.0" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
-    <ProjectReference Include="..\IxIFlow.Authoring\IxIFlow.Authoring.csproj" />
-    <ProjectReference Include="..\IxIFlow.ActivitySdk\IxIFlow.ActivitySdk.csproj" />
-    <ProjectReference Include="..\IxIFlow.Distributed\IxIFlow.Distributed.csproj" />
-    <ProjectReference Include="..\IxIFlow.Distributed.SqlServer\IxIFlow.Distributed.SqlServer.csproj" />
-    <ProjectReference Include="..\Activities\IxIFlow.DemoActivities\IxIFlow.DemoActivities.csproj" />
+    <ProjectReference Include="..\..\src\IxIFlow\IxIFlow.csproj" />
+    <ProjectReference Include="..\..\src\IxIFlow.Authoring\IxIFlow.Authoring.csproj" />
+    <ProjectReference Include="..\IxIFlow.TestSupport\IxIFlow.TestSupport.csproj" />
+    <ProjectReference Include="..\..\src\IxIFlow.Distributed\IxIFlow.Distributed.csproj" />
+    <ProjectReference Include="..\..\src\IxIFlow.SqlServer\IxIFlow.SqlServer.csproj" />
+    <ProjectReference Include="..\..\samples\IxIFlow.DemoActivities\IxIFlow.DemoActivities.csproj" />
   </ItemGroup>
 
   <ItemGroup>

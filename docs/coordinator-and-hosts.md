@@ -3,7 +3,7 @@ title: Coordinator and hosts
 description: IxIFlow workflow hosts, host selection, SQL state, and the message bus.
 ---
 
-`IxIFlow.Distributed` and `IxIFlow.Distributed.SqlServer` let several processes share workflow instance state and receive queued workflow commands. A whole workflow execution runs in one host process; saga activities and compensations run in that same process. Local `AddIxIFlow()` execution needs neither package.
+`IxIFlow.Distributed` and `IxIFlow.SqlServer` let several processes share workflow instance state and receive queued workflow commands. A whole workflow execution runs in one host process; saga activities and compensations run in that same process. Local `AddIxIFlow()` execution needs neither package.
 
 ## Components
 

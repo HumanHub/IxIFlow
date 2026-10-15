@@ -3,7 +3,7 @@ title: Custom activity SDK
 description: Define activity metadata and register installed activity assemblies.
 ---
 
-An IxIFlow activity implements `IAsyncActivity`. The fluent C# builder can use any such class through `Step<TActivity>`; metadata attributes are optional for that path. `IxIFlow.ActivitySdk` uses attributes to derive an activity catalog from an installed assembly for document authoring.
+An IxIFlow activity implements `IAsyncActivity`. The fluent C# builder can use any such class through `Step<TActivity>`; metadata attributes are optional for that path. The attributes are defined in `IxIFlow.Abstractions`, so an activity package depends only on that small contract. `ActivityPackageRegistry` in `IxIFlow.Authoring` reads them to derive an activity catalog from an installed assembly for document authoring.
 
 ## Define an activity
 

@@ -28,10 +28,10 @@ Local execution uses the `IxIFlow` package. The solution also contains:
 
 | Package | Purpose |
 | --- | --- |
+| `IxIFlow.Abstractions` | Activity contract and metadata attributes, for activity packages |
 | `IxIFlow.Distributed` | Host, coordinator, and queue service contracts |
-| `IxIFlow.Distributed.SqlServer` | SQL Server state repository, host registry, and message bus |
-| `IxIFlow.Authoring` | YAML workflow documents compiled to definitions (preview) |
-| `IxIFlow.ActivitySdk` | Contracts for packaged activities |
+| `IxIFlow.SqlServer` | SQL Server state repository, host registry, and message bus |
+| `IxIFlow.Authoring` | YAML workflow documents compiled to definitions (preview), and the activity package catalog |
 
 ## Quick Start
 
@@ -245,7 +245,7 @@ services.AddIxIFlow(options =>
 
 ### SQL Server hosting
 
-`IxIFlow.Distributed.SqlServer` stores instance state in SQL Server with revisioned checkpoints and renewable execution leases, and adds a SQL host registry and message bus.
+`IxIFlow.SqlServer` stores instance state in SQL Server with revisioned checkpoints and renewable execution leases, and adds a SQL host registry and message bus.
 
 ```csharp
 services.AddIxIFlow();
