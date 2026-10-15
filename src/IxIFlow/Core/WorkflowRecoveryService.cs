@@ -38,13 +38,32 @@ internal sealed class WorkflowRecoveryService(
                 _deferred.Remove(expired);
             skipped = new HashSet<string>(_recovering.Concat(_deferred.Keys), StringComparer.Ordinal);
         }
-        var instances = (await repository.GetRunnableInstancesAsync(limit + skipped.Count))
-            .Where(instance => !skipped.Contains(instance.InstanceId))
-            .Take(limit)
-            .ToArray();
+        var candidates = await repository.GetRunnableInstancesAsync(limit + skipped.Count);
+        // Reserve against the live sets, so a pass running alongside cannot take the same instance.
+        var instances = new List<RunnableInstance>();
         lock (_lock)
-            foreach (var instance in instances)
-                _recovering.Add(instance.InstanceId);
+            foreach (var candidate in candidates)
+            {
+                if (instances.Count == limit)
+                    break;
+                if (!_deferred.ContainsKey(candidate.InstanceId) && _recovering.Add(candidate.InstanceId))
+                    instances.Add(candidate);
+            }
+        try
+        {
+            await RecoverAsync(instances, cancellationToken);
+        }
+        finally
+        {
+            // Reservations of instances this pass never reached, for example after cancellation.
+            lock (_lock)
+                foreach (var instance in instances)
+                    _recovering.Remove(instance.InstanceId);
+        }
+    }
+
+    private async Task RecoverAsync(IReadOnlyList<RunnableInstance> instances, CancellationToken cancellationToken)
+    {
         await Parallel.ForEachAsync(instances, new ParallelOptions
         {
             MaxDegreeOfParallelism = 8,
@@ -80,6 +99,9 @@ internal sealed class WorkflowRecoveryService(
             catch (Exception error)
             {
                 logger.LogError(error, "Could not recover workflow {InstanceId}", instance.InstanceId);
+                // A row whose recovery throws, such as unreadable data, must not hold the poll.
+                lock (_lock)
+                    _deferred[instance.InstanceId] = _time.GetUtcNow().UtcDateTime + DeferRejected;
             }
             finally
             {

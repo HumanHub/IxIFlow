@@ -603,6 +603,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             if (lockResult < 0)
                 throw new InvalidOperationException($"Could not lock the workflow schema ({lockResult})");
             await connection.ExecuteAsync("""
+                DECLARE @RunnableAdded BIT = 0;
                 IF OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NULL
                 BEGIN
                     CREATE TABLE dbo.IxIFlowWorkflowInstances (
@@ -633,16 +634,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'RunnableAtUtc') IS NULL
                 BEGIN
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD RunnableAtUtc DATETIME2 NULL;
-                    -- Rows saved before the runnable time existed: running ones are runnable now,
-                    -- idle ones at their earlier due time.
-                    IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'NextDueAtUtc') IS NOT NULL
-                        EXEC(N'UPDATE dbo.IxIFlowWorkflowInstances
-                            SET RunnableAtUtc = CASE WHEN Status = ''Running'' THEN SYSUTCDATETIME()
-                                ELSE NextDueAtUtc END
-                            WHERE Status IN (''Running'', ''Suspended'', ''NeedsResolution'')');
-                    ELSE
-                        EXEC(N'UPDATE dbo.IxIFlowWorkflowInstances SET RunnableAtUtc = SYSUTCDATETIME()
-                            WHERE Status = ''Running''');
+                    SET @RunnableAdded = 1;
                 END
                 IF NOT EXISTS (SELECT 1 FROM sys.indexes
                     WHERE name = N'IX_IxIFlowWorkflowInstances_Runnable'
@@ -705,6 +697,23 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowLeases', N'CrashCount') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowLeases
                         ADD CrashCount INT NOT NULL CONSTRAINT DF_IxIFlowWorkflowLeases_CrashCount DEFAULT 0;
+                -- Rows saved before the runnable time existed, once every column above is in place:
+                -- running ones and ones with a cancellation to unwind are runnable now, idle ones at
+                -- their earlier due time.
+                IF @RunnableAdded = 1
+                BEGIN
+                    IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'NextDueAtUtc') IS NOT NULL
+                        EXEC(N'UPDATE dbo.IxIFlowWorkflowInstances
+                            SET RunnableAtUtc = CASE WHEN Status = ''Running''
+                                    OR (CancellationJson IS NOT NULL AND CancellationAcknowledged = 0)
+                                THEN SYSUTCDATETIME() ELSE NextDueAtUtc END
+                            WHERE Status IN (''Running'', ''Suspended'', ''NeedsResolution'')');
+                    ELSE
+                        EXEC(N'UPDATE dbo.IxIFlowWorkflowInstances SET RunnableAtUtc = SYSUTCDATETIME()
+                            WHERE Status = ''Running''
+                                OR (Status IN (''Suspended'', ''NeedsResolution'')
+                                    AND CancellationJson IS NOT NULL AND CancellationAcknowledged = 0)');
+                END
                 """, transaction: transaction);
             await connection.ExecuteAsync("""
                 UPDATE dbo.IxIFlowWorkflowInstances

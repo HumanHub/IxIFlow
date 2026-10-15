@@ -65,9 +65,8 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     public int FreeSlots => _slots.CurrentCount;
 
     /// <summary>
-    /// Resumes an instance at <paramref name="dueUtc"/>, or earlier if an earlier time is already
-    /// known for it. Keeping the earliest never loses a wake-up, such as a cancellation's, to a
-    /// stale later time; a wake-up that finds nothing due is a cheap rejected recovery.
+    /// Resumes an instance at <paramref name="dueUtc"/>, the runnable time a run just saved for it.
+    /// The latest saved time replaces the one before, which a later step may have made obsolete.
     /// </summary>
     public void Schedule(string instanceId, DateTime dueUtc)
     {
@@ -75,16 +74,32 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
         {
             if (!_accepting)
                 return;
-            if (_dueOf.TryGetValue(instanceId, out var previous))
-            {
-                if (previous <= dueUtc)
-                    return;
-                _due.Remove((previous, instanceId));
-            }
-            _dueOf[instanceId] = dueUtc;
-            _due.Add((dueUtc, instanceId));
-            ArmLocked();
+            SetDueLocked(instanceId, dueUtc);
         }
+    }
+
+    /// <summary>
+    /// Resumes an instance now, for example after a cancellation request, without touching the
+    /// time saved for it.
+    /// </summary>
+    public void WakeNow(string instanceId)
+    {
+        lock (_lock)
+        {
+            if (!_accepting)
+                return;
+        }
+        _ = ResumeAsync(instanceId);
+    }
+
+    // Caller holds _lock.
+    private void SetDueLocked(string instanceId, DateTime dueUtc)
+    {
+        if (_dueOf.Remove(instanceId, out var previous))
+            _due.Remove((previous, instanceId));
+        _dueOf[instanceId] = dueUtc;
+        _due.Add((dueUtc, instanceId));
+        ArmLocked();
     }
 
     /// <summary>Forgets an instance that has finished; nothing will be due for it.</summary>
@@ -171,18 +186,9 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
                 var attempt = _resumeRetries.GetValueOrDefault(instanceId);
                 _resumeRetries[instanceId] = attempt + 1;
                 var backoff = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(attempt, 5))));
-                if (_accepting)
-                {
-                    var due = _time.GetUtcNow().UtcDateTime + backoff;
-                    if (!_dueOf.TryGetValue(instanceId, out var previous) || previous > due)
-                    {
-                        if (_dueOf.Remove(instanceId, out previous))
-                            _due.Remove((previous, instanceId));
-                        _dueOf[instanceId] = due;
-                        _due.Add((due, instanceId));
-                        ArmLocked();
-                    }
-                }
+                // A time saved since this resume was dispatched is newer; it stands.
+                if (_accepting && !_dueOf.ContainsKey(instanceId))
+                    SetDueLocked(instanceId, _time.GetUtcNow().UtcDateTime + backoff);
             }
             else
                 _resumeRetries.Remove(instanceId);
