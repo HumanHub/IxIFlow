@@ -251,7 +251,7 @@ public sealed class CancellationWatchTests
 
         public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
             throw new NotSupportedException();
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
             throw new NotSupportedException();
         public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit) =>
             throw new NotSupportedException();

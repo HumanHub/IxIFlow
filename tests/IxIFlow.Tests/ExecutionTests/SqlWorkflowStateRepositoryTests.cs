@@ -20,20 +20,20 @@ public class SqlWorkflowStateRepositoryTests
             {
                 InstanceId = instanceId,
                 Status = WorkflowStatus.Suspended,
-                NextDueAtUtc = DateTime.UtcNow.AddMinutes(1)
+                RunnableAtUtc = DateTime.UtcNow.AddMinutes(1)
             };
             await repository.SaveWorkflowInstanceAsync(instance);
-            Assert.DoesNotContain(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
                 candidate => candidate.InstanceId == instanceId);
 
-            instance.NextDueAtUtc = DateTime.UtcNow.AddMinutes(-1);
+            instance.RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1);
             await repository.SaveWorkflowInstanceAsync(instance);
-            Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 candidate => candidate.InstanceId == instanceId);
 
             instance.Status = WorkflowStatus.NeedsResolution;
             await repository.SaveWorkflowInstanceAsync(instance);
-            Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 candidate => candidate.InstanceId == instanceId);
         }
         finally

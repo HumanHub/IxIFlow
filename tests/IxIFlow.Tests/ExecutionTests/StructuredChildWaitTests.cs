@@ -134,7 +134,7 @@ public sealed class StructuredChildWaitTests
         Assert.Null(childLink.ChildWaitId);
         Assert.Equal(ContinuationStatus.WaitingResolution,
             Assert.Single(savedCheckpoint.Continuations).Status);
-        Assert.NotNull(savedParent.NextDueAtUtc);
+        Assert.NotNull(savedParent.RunnableAtUtc);
         var staleApproval = await engine.ResumeAsync(started.InstanceId,
             "approval", new Approval());
         Assert.False(staleApproval.EventAccepted);
@@ -582,13 +582,13 @@ public sealed class StructuredChildWaitTests
         var waiting = await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, waiting.Status);
-        Assert.NotNull((await repository.GetWorkflowInstanceAsync(started.InstanceId))!.NextDueAtUtc);
+        Assert.NotNull((await repository.GetWorkflowInstanceAsync(started.InstanceId))!.RunnableAtUtc);
 
         Assert.True(await repository.ReleaseExecutionLeaseAsync(childId, foreignToken));
         var cancelledChild = await engine.RecoverAsync(childId);
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelledChild.Status);
         var dueParent = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
-        dueParent.NextDueAtUtc = DateTime.UtcNow.AddSeconds(-1);
+        dueParent.RunnableAtUtc = DateTime.UtcNow.AddSeconds(-1);
         Assert.Equal(WorkflowCommitStatus.Applied,
             (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(dueParent, 0, dueParent.Revision,
                 Guid.NewGuid().ToString("N")))).Status);
@@ -670,8 +670,8 @@ public sealed class StructuredChildWaitTests
         Assert.False(Assert.IsType<ParentData>(unresolved.WorkflowData).FinallyRan);
         var waitingParent = (await services.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(instance.InstanceId))!;
-        Assert.NotNull(waitingParent.NextDueAtUtc);
-        Assert.True(waitingParent.NextDueAtUtc < waitingParent.StartedAt!.Value.AddMinutes(1));
+        Assert.NotNull(waitingParent.RunnableAtUtc);
+        Assert.True(waitingParent.RunnableAtUtc < waitingParent.StartedAt!.Value.AddMinutes(1));
         Assert.True(probe.CancellationSeen.Task.IsCompleted);
         Assert.Equal(WorkflowStatus.NeedsResolution,
             (await services.GetRequiredService<IWorkflowStateRepository>()
@@ -790,7 +790,7 @@ public sealed class StructuredChildWaitTests
         var engine = recoveredProvider.GetRequiredService<IWorkflowClient>();
         var waiting = await engine.RecoverAsync(savedParent.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.Suspended, waiting.Status);
-        Assert.NotNull((await recoveredStore.GetWorkflowInstanceAsync(savedParent.InstanceId))?.NextDueAtUtc);
+        Assert.NotNull((await recoveredStore.GetWorkflowInstanceAsync(savedParent.InstanceId))?.RunnableAtUtc);
 
         var unresolvedChild = await engine.RecoverAsync(savedChild.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, unresolvedChild.Status);
@@ -808,7 +808,7 @@ public sealed class StructuredChildWaitTests
             ActivityResolution.Completed(new Dictionary<string, object?>()));
         Assert.Equal(WorkflowExecutionStatus.Success, completedChild.Status);
         var dueParent = (await recoveredStore.GetWorkflowInstanceAsync(savedParent.InstanceId))!;
-        dueParent.NextDueAtUtc = DateTime.UtcNow.AddSeconds(-1);
+        dueParent.RunnableAtUtc = DateTime.UtcNow.AddSeconds(-1);
         Assert.Equal(WorkflowCommitStatus.Applied,
             (await recoveredStore.CommitWorkflowInstanceAsync(CheckpointCommit.Create(dueParent, 0, dueParent.Revision,
                 Guid.NewGuid().ToString("N")))).Status);

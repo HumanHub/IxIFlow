@@ -27,8 +27,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetCancellationRequestsAsync(instanceIds),
             $"Reading the cancellation requests of {instanceIds.Count} workflow instances");
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
-        Guard(_store.GetWorkflowsRequiringRecoveryAsync, "Listing workflow instances that need recovery");
+    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
+        Guard(() => _store.GetRunnableInstancesAsync(limit), "Listing runnable workflow instances");
 
     public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit) =>
         Guard(() => _store.CommitWorkflowInstanceAsync(commit),

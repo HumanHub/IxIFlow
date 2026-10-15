@@ -274,8 +274,12 @@ public class WorkflowInstance
     /// </summary>
     public DateTime? CompletedAt { get; set; }
 
-    /// <summary>Earliest persisted deadline that can wake an idle instance.</summary>
-    public DateTime? NextDueAtUtc { get; set; }
+    /// <summary>
+    /// The earliest time a host should claim and run the instance (C-01): the commit time while it
+    /// runs, its earliest deadline or check while it waits, now when a cancellation request or a
+    /// finished child needs it. Null when only an outside event or an operator can move it.
+    /// </summary>
+    public DateTime? RunnableAtUtc { get; set; }
 
     /// <summary>
     ///     Current step number being executed

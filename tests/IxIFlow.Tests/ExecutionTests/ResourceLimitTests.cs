@@ -44,7 +44,7 @@ public sealed class ResourceLimitTests
             var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
             Assert.Equal(OperatorStopKind.ResourceLimit, checkpoint.OperatorStop!.Kind);
             Assert.Single(checkpoint.Continuations);
-            Assert.Null(saved.NextDueAtUtc);
+            Assert.Null(saved.RunnableAtUtc);
             Assert.Equal(1, Probe(limited).Quick);
         }
 

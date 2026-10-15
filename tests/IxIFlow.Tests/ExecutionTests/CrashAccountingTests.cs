@@ -131,11 +131,11 @@ public sealed class CrashAccountingTests
         Assert.Contains("quarantined", quarantined.ErrorMessage);
         var saved = (await store.GetWorkflowInstanceAsync(instanceId))!;
         Assert.Equal(WorkflowStatus.NeedsResolution, saved.Status);
-        Assert.Null(saved.NextDueAtUtc);
+        Assert.Null(saved.RunnableAtUtc);
         var stop = ExecutionCheckpoint.Read(saved.ExecutionStateJson).OperatorStop!;
         Assert.Equal(OperatorStopKind.Quarantine, stop.Kind);
         Assert.Equal(3, stop.CrashCount);
-        Assert.DoesNotContain(await store.GetWorkflowsRequiringRecoveryAsync(),
+        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(100),
             instance => instance.InstanceId == instanceId);
         Assert.Equal(0, Probe(services).Runs);
 
