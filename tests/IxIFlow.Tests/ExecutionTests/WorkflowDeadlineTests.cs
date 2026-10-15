@@ -366,8 +366,7 @@ public sealed class WorkflowDeadlineTests
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
             var instance = commit.ReadInstance();
-            if (instance.Status == WorkflowStatus.Running &&
-                ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) &&
+            if (ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) &&
                 ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations[0].Status ==
                     ContinuationStatus.Completed &&
                 Interlocked.Exchange(ref _delayed, 1) == 0)

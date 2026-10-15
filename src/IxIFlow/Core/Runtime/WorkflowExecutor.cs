@@ -31,6 +31,9 @@ internal sealed class WorkflowExecutor
         CancellationToken cancellationToken)
     {
         var inFlight = new Dictionary<string, RunningActivity>();
+        // A saved wait, a completed join or a branch stopped for resolution must be committed
+        // before the run blocks or ends; the next commit of any kind covers it (A-04).
+        var uncommitted = new UncommittedBoundary();
         var cancellationWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellationRegistration = cancellationToken.Register(
             () => cancellationWake.TrySetResult());
@@ -64,20 +67,20 @@ internal sealed class WorkflowExecutor
                     item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id));
                 if (unwinding != null)
                 {
+                    var unwindBoundary = EffectBoundary.Of(checkpoint);
                     if (unwinding.PendingActivity != null)
                     {
                         // A committed Start must be resolved before cancellation can discard
                         // the branch or run its compensation and Finally steps.
                         unwinding.Status = ContinuationStatus.Active;
-                        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
-                        continue;
                     }
-                    TryScopeTransitions.ContinueCancellation(scopes, unwinding);
-                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+                    else
+                        TryScopeTransitions.ContinueCancellation(scopes, unwinding);
+                    uncommitted.NoteIf(unwindBoundary.CrossedBy(checkpoint), instance);
                     continue;
                 }
 
-                ContinuationTransitions.FinishCompletingJoins(checkpoint);
+                uncommitted.NoteIf(ContinuationTransitions.FinishCompletingJoins(checkpoint), instance);
 
                 // Advance every runnable branch to its next asynchronous boundary.
                 // This lets a sibling start even when another activity is awaiting it.
@@ -136,6 +139,7 @@ internal sealed class WorkflowExecutor
                     }
                     else
                     {
+                        var boundary = EffectBoundary.Of(checkpoint);
                         try
                         {
                             _transitions.Advance(scopes, checkpoint, runnable, workflowData);
@@ -147,7 +151,7 @@ internal sealed class WorkflowExecutor
                             if (!_transitions.CaptureFailure(scopes, checkpoint, runnable, error))
                                 throw;
                         }
-                        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+                        uncommitted.NoteIf(boundary.CrossedBy(checkpoint), instance);
                         foreach (var activity in inFlight.Values.Where(item =>
                                      item.Continuation.Status == ContinuationStatus.Cancelling))
                             activity.Cancellation.Cancel();
@@ -208,6 +212,8 @@ internal sealed class WorkflowExecutor
                     !checkpoint.CancellationRequested &&
                     checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                     runningTasks.Add(cancellationSignal);
+                if (uncommitted.IsPending(instance))
+                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
                 var finished = await Task.WhenAny(runningTasks);
                 if (finished != retryTimer)
                     retryTimerCancellation.Cancel();
@@ -582,6 +588,33 @@ internal sealed class WorkflowExecutor
             }
             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
         }
+    }
+
+    /// <summary>
+    /// What a control-flow step can change that the outside world must see: a saved wait, which
+    /// accepts events, or a branch stopped for resolution. Other control flow is not committed and
+    /// is re-derived from the last checkpoint after a crash (A-04).
+    /// </summary>
+    private readonly record struct EffectBoundary(int Waits, int Resolutions)
+    {
+        public static EffectBoundary Of(ExecutionCheckpoint checkpoint) => new(checkpoint.Waits.Count,
+            checkpoint.Continuations.Count(item => item.Status == ContinuationStatus.WaitingResolution));
+
+        public bool CrossedBy(ExecutionCheckpoint checkpoint) => Of(checkpoint) != this;
+    }
+
+    /// <summary>Remembers a boundary crossed since the last commit, identified by the revision it followed.</summary>
+    private sealed class UncommittedBoundary
+    {
+        private long? _afterRevision;
+
+        public void NoteIf(bool crossed, WorkflowInstance instance)
+        {
+            if (crossed && _afterRevision != instance.Revision)
+                _afterRevision = instance.Revision;
+        }
+
+        public bool IsPending(WorkflowInstance instance) => _afterRevision == instance.Revision;
     }
 
     private static async Task AbandonInFlightAsync(Dictionary<string, RunningActivity> inFlight)

@@ -411,8 +411,10 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             : ContinuationStatus.Cancelling;
     }
 
-    public static void FinishCompletingJoins(ExecutionCheckpoint checkpoint)
+    /// <summary>Completes joins whose branches have all finished; returns true when one completed.</summary>
+    public static bool FinishCompletingJoins(ExecutionCheckpoint checkpoint)
     {
+        var completed = false;
         foreach (var join in checkpoint.Joins.Where(item => item.IsCompleting).ToList())
         {
             var children = checkpoint.Continuations.Where(item => join.ChildContinuationIds.Contains(item.Id));
@@ -420,6 +422,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 continue;
             var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
             checkpoint.Joins.Remove(join);
+            completed = true;
             if (checkpoint.UnhandledError != null)
             {
                 var finishingCleanup = TryScopeTransitions.IsInsideFinally(parent) ||
@@ -442,6 +445,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 parent.Status = ContinuationStatus.Active;
             }
         }
+        return completed;
     }
 
     public bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
