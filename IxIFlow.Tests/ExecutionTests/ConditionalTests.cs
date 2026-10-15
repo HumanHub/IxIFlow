@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -8,24 +9,17 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class ConditionalTests
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly WorkflowEngine _workflowEngine;
+    private readonly IWorkflowEngine _workflowEngine;
 
     public ConditionalTests()
     {
         // Setup DI container
         var services = new ServiceCollection();
         services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
-        services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
-        services.AddSingleton<IActivityExecutor, ActivityExecutor>();
-        services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
-        services.AddSingleton<IEventCorrelator, EventCorrelator>();
-        services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
-        services.AddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
-        services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
-        services.AddSingleton<WorkflowEngine>();
+        services.AddIxIFlow();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<WorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
     }
 
     [Fact]

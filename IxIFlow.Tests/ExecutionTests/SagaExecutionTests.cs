@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Extensions;
 using IxIFlow.Tests.ExecutionTests.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit.Abstractions;
@@ -13,7 +14,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class SagaExecutionTests
 {
     private readonly ServiceProvider _serviceProvider;
-    private readonly WorkflowEngine _workflowEngine;
+    private readonly IWorkflowEngine _workflowEngine;
     private readonly ITestOutputHelper _output;
 
     public SagaExecutionTests(ITestOutputHelper output)
@@ -22,24 +23,16 @@ public class SagaExecutionTests
         
         var services = new ServiceCollection();
 
-        // Register interfaces for WorkflowEngine dependencies
-        services.AddSingleton<IActivityExecutor, ActivityExecutor>();
-        services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
-        services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
-        services.AddSingleton<IEventCorrelator, EventCorrelator>();
-        services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
-
         // Register mock implementations for persistence dependencies
         services.AddSingleton<IWorkflowStateRepository, MockWorkflowStateRepository>();
-        services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
 
-        // Register the main engine
-        services.AddSingleton<WorkflowEngine>();
+        // Register IxIFlow
+        services.AddIxIFlow();
 
         services.AddLogging();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<WorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
     }
 
     [Fact]
