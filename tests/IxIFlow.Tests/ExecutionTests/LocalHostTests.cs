@@ -140,6 +140,26 @@ public sealed class LocalHostTests
     }
 
     [Fact]
+    [Trait("Spec", "B-02")]
+    public async Task AnInlineCallStillRunningWhenItsRunEndsKeepsItsScope()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
+        var probe = services.GetRequiredService<BackgroundProbe>();
+        var definition = Workflow.Create<HostData>("HandsOffInlineWork")
+            .Step<HandOffActivity>()
+            .Build();
+
+        var result = await Client(services).RunAsync(definition, new HostData()).WaitAsync(Patience);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        probe.Later.SetResult();
+
+        // The inline run started before its caller's run ended; it finishes on a live scope.
+        var inner = await probe.Result.Task.WaitAsync(Patience);
+        Assert.Equal(WorkflowExecutionStatus.Success, inner.Status);
+        Assert.Equal(1, Probe(services).Count("quick"));
+    }
+
+    [Fact]
     [Trait("Spec", "B-12")]
     public async Task DisposingTheHostCancelsQueuedCallers()
     {
@@ -364,6 +384,8 @@ public sealed class LocalHostTests
         services.AddTransient<QuickActivity>();
         services.AddTransient<ClientCallingActivity>();
         services.AddTransient<BackgroundCallingActivity>();
+        services.AddTransient<HandOffActivity>();
+        services.AddTransient<HeldInlineActivity>();
         services.AddSingleton<BackgroundProbe>();
         return services.BuildServiceProvider();
     }
@@ -452,6 +474,7 @@ public sealed class LocalHostTests
 
     public sealed class BackgroundProbe
     {
+        public TaskCompletionSource InnerStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Later { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<WorkflowExecutionResult> Result { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -481,6 +504,38 @@ public sealed class LocalHostTests
                 }
             });
             return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Starts an inline run that is still going when this activity's run ends.</summary>
+    public sealed class HandOffActivity(IWorkflowClient client, BackgroundProbe probe) : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    probe.Result.SetResult(await client.RunAsync(Workflow.Create<HostData>("HeldInline")
+                        .Step<HeldInlineActivity>()
+                        .Step<QuickActivity>()
+                        .Build(), new HostData()));
+                }
+                catch (Exception error)
+                {
+                    probe.Result.SetException(error);
+                }
+            });
+            await probe.InnerStarted.Task;
+        }
+    }
+
+    public sealed class HeldInlineActivity(BackgroundProbe probe) : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.InnerStarted.SetResult();
+            await probe.Later.Task;
         }
     }
 
