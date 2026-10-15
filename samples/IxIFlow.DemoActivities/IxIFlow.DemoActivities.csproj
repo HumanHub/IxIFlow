@@ -8,6 +8,7 @@
     <Description>Sample activity package for IxIFlow.</Description>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\IxIFlow.ActivitySdk\IxIFlow.ActivitySdk.csproj" />
+    <ProjectReference Include="..\..\src\IxIFlow.Abstractions\IxIFlow.Abstractions.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
   </ItemGroup>
 </Project>

@@ -70,13 +70,18 @@ We follow standard C# conventions with a few specifics:
 
 ```
 IxIFlow/
-├── IxIFlow/                    # Main library
-│   ├── Builders/              # Workflow builder implementations
-│   ├── Core/                  # Core engine and interfaces
-│   └── Extensions/            # DI extensions
-└── IxIFlow.Tests/             # Test projects
-    ├── ExecutionTests/        # Runtime execution tests
-    └── SyntaxTests/          # API syntax and compilation tests
+├── src/
+│   ├── IxIFlow.Abstractions/   # Activity contract and attributes
+│   ├── IxIFlow/                # Fluent API, engine, DI extensions
+│   ├── IxIFlow.Authoring/      # YAML documents and activity catalog
+│   ├── IxIFlow.Distributed/    # Hosts, coordinator, queue service
+│   └── IxIFlow.SqlServer/      # SQL Server store, registry, message bus
+├── tests/
+│   ├── IxIFlow.Tests/          # Unit, execution and syntax tests
+│   ├── IxIFlow.Conformance/    # Scenarios run in every store profile
+│   └── IxIFlow.TestSupport/    # Shared test infrastructure (SQL Server via Testcontainers)
+└── samples/
+    └── IxIFlow.DemoActivities/ # Sample activity package
 ```
 
 ## Contributing Code

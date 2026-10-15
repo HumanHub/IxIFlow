@@ -7,7 +7,7 @@ namespace IxIFlow.Tests.Infrastructure;
 /// One SQL Server for the whole test run. Uses IXIFLOW_TEST_SQL_CONNECTION_STRING when it is set;
 /// otherwise starts a container through Testcontainers on first use.
 /// </summary>
-internal static class SqlServerTestServer
+public static class SqlServerTestServer
 {
     private const string ExternalServerVariable = "IXIFLOW_TEST_SQL_CONNECTION_STRING";
     private const string SharedDatabase = "IxIFlowTests";
