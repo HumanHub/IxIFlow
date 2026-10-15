@@ -31,7 +31,6 @@ public class SagaExecutionTests
 
         // Register mock implementations for persistence dependencies
         services.AddSingleton<IWorkflowStateRepository, MockWorkflowStateRepository>();
-        services.AddSingleton<IEventStore, MockEventStore>();
         services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
 
         // Register the main engine
@@ -1120,53 +1119,6 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
         {
             var instances = await GetWorkflowInstancesByNameAsync(workflowName);
             return instances.Where(instance => !version.HasValue || instance.WorkflowVersion == version.Value).ToList();
-        }
-    }
-
-    /// <summary>
-    ///     Mock implementation of IEventStore for testing
-    /// </summary>
-    private class MockEventStore : IEventStore
-    {
-        public Task AppendEventAsync(string streamId, WorkflowEvent workflowEvent)
-        {
-            return Task.CompletedTask;
-        }
-
-        public Task<IEnumerable<WorkflowEvent>> GetEventsAsync(string streamId)
-        {
-            return Task.FromResult<IEnumerable<WorkflowEvent>>(new List<WorkflowEvent>());
-        }
-
-        public Task<IEnumerable<WorkflowEvent>> GetEventsFromSequenceAsync(string streamId, long fromSequenceNumber)
-        {
-            return Task.FromResult<IEnumerable<WorkflowEvent>>(new List<WorkflowEvent>());
-        }
-
-        public Task<long> GetLatestSequenceNumberAsync(string streamId)
-        {
-            return Task.FromResult(0L);
-        }
-
-        public Task SaveEventAsync<TEvent>(string eventId, TEvent eventData, string? correlationId = null)
-            where TEvent : class
-        {
-            return Task.CompletedTask;
-        }
-
-        public Task<TEvent?> GetEventAsync<TEvent>(string eventId) where TEvent : class
-        {
-            return Task.FromResult<TEvent?>(null);
-        }
-
-        public Task<List<TEvent>> GetEventsAsync<TEvent>(string? correlationId = null) where TEvent : class
-        {
-            return Task.FromResult(new List<TEvent>());
-        }
-
-        public Task DeleteEventAsync(string eventId)
-        {
-            return Task.CompletedTask;
         }
     }
 

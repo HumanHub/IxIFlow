@@ -1457,8 +1457,6 @@ public sealed class ExecutionLeaseContractTests
         }
         public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
             inner.SaveWorkflowInstanceAsync(instance);
-        public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance) =>
-            inner.TryClaimSuspendedWorkflowAsync(instance);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string name) =>
             inner.GetWorkflowInstancesByNameAsync(name);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
@@ -1466,7 +1464,5 @@ public sealed class ExecutionLeaseContractTests
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string id) =>
             inner.GetWorkflowInstancesByCorrelationIdAsync(id);
         public Task DeleteWorkflowInstanceAsync(string id) => inner.DeleteWorkflowInstanceAsync(id);
-        public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync() =>
-            inner.GetSuspendedWorkflowsReadyForResumptionAsync();
     }
 }

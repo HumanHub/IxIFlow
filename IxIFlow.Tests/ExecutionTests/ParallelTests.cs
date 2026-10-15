@@ -71,7 +71,6 @@ namespace IxIFlow.Tests.ExecutionTests
             services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
             services.AddSingleton<IEventCorrelator, EventCorrelator>();
             services.AddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
-            services.AddSingleton<IEventStore, InMemoryEventStore>();
             services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
             services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
             services.AddSingleton<WorkflowEngine>();

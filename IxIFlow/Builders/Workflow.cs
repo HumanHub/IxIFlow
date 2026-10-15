@@ -142,11 +142,9 @@ public static class WorkflowBuilderExtensions
 
         // Add event management services
         services.AddSingleton<IEventCorrelator, EventCorrelator>();
-        services.AddSingleton<IEventRepository, InMemoryEventRepository>();
 
         // Add in-memory implementations
         services.AddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
-        services.AddSingleton<IEventStore, InMemoryEventStore>();
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
 
         return services.BuildServiceProvider();
