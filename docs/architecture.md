@@ -35,11 +35,12 @@ The SQL overload also registers `SqlWorkflowStateRepository`, so workflow instan
 
 | Project | Responsibility |
 | --- | --- |
+| `IxIFlow.Abstractions` | Activity contract (`IAsyncActivity`, `IActivityContext`, `IRecoverableActivity`) and metadata attributes. Activity packages depend only on this. |
 | `IxIFlow` | Fluent C# API, execution engine, saga and suspension runtime, and in-memory state/event defaults. `AddIxIFlow()` is sufficient for local execution. |
-| `IxIFlow.Authoring` | Workflow document model, validation, and compiler. |
+| `IxIFlow.Authoring` | Workflow document model, validation, compiler, and the activity package catalog. |
 | `IxIFlow.Distributed` | Coordinator, workflow host, host client, transport and registry interfaces, and background services. |
-| `IxIFlow.Distributed.SqlServer` | SQL Server workflow state repository, message bus, and host registry for the optional host path. |
+| `IxIFlow.SqlServer` | SQL Server workflow state repository, message bus, and host registry for the optional host path. |
 
-The projects form one-way dependencies: authoring and distributed hosting depend on the core; the SQL Server host integration depends on distributed hosting. The core does not reference hosting or SQL Server libraries.
+The projects form one-way dependencies: the core depends on the abstractions; authoring and distributed hosting depend on the core; the SQL Server host integration depends on distributed hosting. The core does not reference hosting or SQL Server libraries.
 
 Instance persistence and command transport are separate concerns. The SQL Server integration supplies workflow state, an atomic suspended-instance claim, host registration, and claimed message delivery. The definition registry and event store remain in memory. Custom `IWorkflowStateRepository` and `IEventStore` implementations can be registered through the core DI hooks. Checkpoints and renewable execution leases allow recovery of interrupted instances; activities with uncertain external effects require an explicit resolution decision.

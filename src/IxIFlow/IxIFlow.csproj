@@ -19,11 +19,11 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-	  <None Include="..\LICENSE">
+	  <None Include="..\..\LICENSE">
 	    <Pack>True</Pack>
 	    <PackagePath>\</PackagePath>
 	  </None>
-	  <None Include="..\README.md">
+	  <None Include="..\..\README.md">
 	    <Pack>True</Pack>
 	    <PackagePath>\</PackagePath>
 	  </None>
@@ -35,5 +35,9 @@
 		<PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.12" />
 		<PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
 	</ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IxIFlow.Abstractions\IxIFlow.Abstractions.csproj" />
+  </ItemGroup>
 
 </Project>
