@@ -35,14 +35,20 @@ public interface IWorkflowClient
         WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Delivers an event to the instance's only matching wait and runs it until it is idle.</summary>
+    /// <summary>
+    /// Sends an event to the instance's one open wait of its type, then waits until the event is
+    /// decided and the instance is idle. The event is stored before it is acknowledged and may satisfy
+    /// only a wait that was open when it arrived; <see cref="WorkflowExecutionResult.Event"/> says
+    /// whether a wait took it or why not (D-33). It stays pending while the instance is stopped for an
+    /// operator.
+    /// </summary>
     Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
         string instanceId,
         TEventData @event,
         CancellationToken cancellationToken = default)
         where TEventData : class;
 
-    /// <summary>Delivers an event to the wait with this correlation key and runs the instance until it is idle.</summary>
+    /// <summary>Sends an event to the open wait with this key, as <see cref="ResumeAsync{T}(string,T,CancellationToken)"/>.</summary>
     Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
         string instanceId,
         string key,
@@ -50,12 +56,29 @@ public interface IWorkflowClient
         CancellationToken cancellationToken = default)
         where TEventData : class;
 
-    /// <summary>Delivers an event at most once for a durable message delivery ID.</summary>
+    /// <summary>
+    /// Sends an event under an ID of the caller's choosing, so sending it again, for example when a
+    /// message is redelivered, is recognized and answered with the first outcome. The same ID with a
+    /// different event is refused.
+    /// </summary>
     Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
         string instanceId,
         string? key,
         TEventData @event,
-        string deliveryId,
+        string eventId,
+        CancellationToken cancellationToken = default)
+        where TEventData : class;
+
+    /// <summary>
+    /// Sends one event to every instance with an open wait for <paramref name="key"/> (D-13), under one
+    /// event ID, and wakes them. Each instance decides its copy at its next pass, including one that is
+    /// busy; the result lists what each inbox answered. Sending again with the same ID reaches no
+    /// instance twice.
+    /// </summary>
+    Task<IReadOnlyList<EventDelivery>> PublishAsync<TEventData>(
+        string key,
+        TEventData @event,
+        string eventId,
         CancellationToken cancellationToken = default)
         where TEventData : class;
 
@@ -105,3 +128,6 @@ public enum WorkflowAwaitCondition
     /// <summary>Completed, failed, cancelled or timed out.</summary>
     Finished
 }
+
+/// <summary>What one instance's inbox answered to a published event.</summary>
+public sealed record EventDelivery(string InstanceId, EventAppendStatus Status, EventRejection? Rejection = null);

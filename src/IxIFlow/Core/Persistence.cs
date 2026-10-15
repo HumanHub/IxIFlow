@@ -54,7 +54,7 @@ public static class WorkflowStoreRules
     }
 }
 
-public interface IWorkflowStateRepository
+public interface IWorkflowStateRepository : IWorkflowInbox
 {
     /// <summary>
     /// Records a cancellation request outside the revisioned checkpoint so a remote

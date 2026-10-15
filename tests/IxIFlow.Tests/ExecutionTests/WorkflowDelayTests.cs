@@ -109,7 +109,7 @@ public sealed class WorkflowDelayTests
             .RegisterWorkflowAsync(definition);
         var rejected = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "delay", new object());
-        Assert.False(rejected.EventAccepted);
+        EventAssert.Rejected(rejected, EventRejection.NoOpenWait);
         await Task.Delay(650);
         using var scanner = new WorkflowRecoveryService(
             secondProvider.GetRequiredService<IServiceScopeFactory>(), repository,

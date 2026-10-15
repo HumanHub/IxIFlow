@@ -206,14 +206,21 @@ public sealed record StoredWait(
     public bool IsOpen => CloseReason == null;
 
     /// <summary>The rejection an event for this closed wait receives.</summary>
-    public EventRejection Rejection => CloseReason switch
+    public EventRejection Rejection => CloseReason?.Rejection()
+        ?? throw new InvalidOperationException("An open wait has no rejection");
+}
+
+public static class WaitCloseReasonExtensions
+{
+    /// <summary>The rejection an event for a wait closed for this reason receives.</summary>
+    public static EventRejection Rejection(this WaitCloseReason reason) => reason switch
     {
         WaitCloseReason.Answered => EventRejection.WaitAnswered,
         WaitCloseReason.TimedOut => EventRejection.WaitTimedOut,
         WaitCloseReason.Cancelled => EventRejection.WaitCancelled,
         WaitCloseReason.Replaced => EventRejection.WaitReplaced,
         WaitCloseReason.InstanceFinished => EventRejection.InstanceFinished,
-        _ => throw new InvalidOperationException("An open wait has no rejection")
+        _ => throw new ArgumentOutOfRangeException(nameof(reason))
     };
 }
 

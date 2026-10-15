@@ -250,8 +250,11 @@ public sealed class WorkflowRecoveryServiceTests
             WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
-            string instanceId, string? key, TEventData @event, string deliveryId,
+            string instanceId, string? key, TEventData @event, string eventId,
             CancellationToken cancellationToken = default) where TEventData : class =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<EventDelivery>> PublishAsync<TEventData>(string key, TEventData @event,
+            string eventId, CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
         public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
             throw new NotSupportedException();
@@ -324,8 +327,11 @@ public sealed class WorkflowRecoveryServiceTests
         }
 
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
-            string instanceId, string? key, TEventData @event, string deliveryId,
+            string instanceId, string? key, TEventData @event, string eventId,
             CancellationToken cancellationToken = default) where TEventData : class =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<EventDelivery>> PublishAsync<TEventData>(string key, TEventData @event,
+            string eventId, CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
         public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
             throw new NotSupportedException();

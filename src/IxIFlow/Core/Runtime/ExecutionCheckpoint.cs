@@ -15,7 +15,6 @@ internal sealed class ExecutionCheckpoint
     public List<WaitState> Waits { get; set; } = [];
     public DateTime? ExecutionDeadlineUtc { get; set; }
     public bool TimedOut { get; set; }
-    public Dictionary<string, string> AcceptedDeliveries { get; set; } = [];
     public SerializedException? UnhandledError { get; set; }
     public bool CancellationRequested { get; set; }
 
@@ -28,13 +27,32 @@ internal sealed class ExecutionCheckpoint
     [JsonIgnore]
     public Exception? RuntimeUnhandledError { get; set; }
 
+    /// <summary>
+    /// What the run has done with the inbox and the waits table since its last commit. It is not
+    /// saved: the store holds what was committed, and a run that loses it re-reads the inbox.
+    /// </summary>
+    [JsonIgnore]
+    public InboxProgress Inbox { get; private set; } = new();
+
     public static ExecutionCheckpoint Read(string json)
     {
         var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(json);
         if (checkpoint?.Runtime != "structured-v2" || checkpoint.SchemaVersion != 2)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 "Unsupported execution checkpoint version");
+        // Every wait in a saved checkpoint was committed with it.
+        checkpoint.Inbox = InboxProgress.Committed(checkpoint.Waits);
         return checkpoint;
+    }
+
+    /// <summary>Removes the waits that match and records why each one closed, for the next commit (D-33).</summary>
+    public void RemoveWaits(Func<WaitState, bool> match, WaitCloseReason reason)
+    {
+        foreach (var wait in Waits.Where(match).ToArray())
+        {
+            Waits.Remove(wait);
+            Inbox.Closed(wait.Id, reason);
+        }
     }
 
     /// <summary>The operator stop of a saved instance, read without its workflow data.</summary>
@@ -326,18 +344,33 @@ internal sealed class WaitState
     public DateTime? DeadlineUtc { get; set; }
     public string? ChildWorkflowId { get; set; }
     public string? ChildWaitId { get; set; }
+
+    /// <summary>
+    /// How the waits table knows this wait, or null for a wait no event can answer: a delay, or a
+    /// child shown only as running (D-33).
+    /// </summary>
+    [JsonIgnore]
+    public WaitKind? TableKind => string.IsNullOrEmpty(EventType) ? null
+        : ChildWorkflowId != null ? WaitKind.Child
+        : WaitKind.Event;
 }
 
 internal sealed class AcceptedWaitState
 {
     public string StepId { get; set; } = "";
     public SerializedValue Event { get; set; } = new();
-    public string? Key { get; set; }
-    public string? DeliveryId { get; set; }
-    public string? DeliveryHash { get; set; }
 
-    [JsonIgnore]
-    public bool? EventAccepted { get; set; }
+    /// <summary>The inbox event this is.</summary>
+    public string EventId { get; set; } = "";
+
+    /// <summary>The wait that took it.</summary>
+    public string WaitId { get; set; } = "";
+
+    /// <summary>For a child's wait, the key the event is forwarded with.</summary>
+    public string? Key { get; set; }
+
+    /// <summary>For a child's wait, true once the child has decided the event and the parent settled its copy.</summary>
+    public bool Forwarded { get; set; }
 }
 
 internal sealed class SerializedValue

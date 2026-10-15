@@ -6,6 +6,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -64,7 +65,7 @@ public sealed class WorkflowDeadlineTests
         var result = await engine.ResumeAsync(instanceId, "approval",
             new Approval());
 
-        Assert.False(result.EventAccepted);
+        EventAssert.Rejected(result, EventRejection.WaitTimedOut);
         Assert.Equal("timeout", Assert.IsType<ApprovalData>(result.WorkflowData).Outcome);
     }
 
@@ -90,7 +91,7 @@ public sealed class WorkflowDeadlineTests
 
         var result = await engine.ResumeAsync(started.InstanceId, "second", new Approval());
 
-        Assert.True(result.EventAccepted);
+        EventAssert.Consumed(result);
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var data = Assert.IsType<ApprovalData>(result.WorkflowData);
         Assert.Equal("timeout", data.Outcome);
@@ -390,6 +391,17 @@ public sealed class WorkflowDeadlineTests
     // Holds the commit that records a completed root until the execution deadline has passed.
     private sealed class DelayRootCompletionRepository(TimeSpan delay) : IWorkflowStateRepository
     {
+        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+            _inner.AppendEventAsync(workflowEvent);
+        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
+            _inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
+        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+            _inner.GetEventAsync(instanceId, eventId);
+        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+            _inner.GetWaitAsync(instanceId, waitId);
+        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+            _inner.GetOpenWaitsAsync(query);
+
         private readonly InMemoryWorkflowStateRepository _inner = new();
         private int _delayed;
 

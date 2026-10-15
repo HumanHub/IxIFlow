@@ -338,9 +338,6 @@ public class WorkflowQueueService : BackgroundService
     internal async Task ProcessResumeCommandAsync(ResumeWorkflowCommand command,
         CancellationToken cancellationToken = default)
     {
-        if (IsExpired(command.QueuedAt))
-            throw new InvalidOperationException(
-                $"Resume command for '{command.InstanceId}' expired without an accepting wait");
         using var scope = _serviceProvider.CreateScope();
         var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
         var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
@@ -357,27 +354,29 @@ public class WorkflowQueueService : BackgroundService
             var eventData = System.Text.Json.JsonSerializer.Deserialize(command.EventDataJson, eventDataType)
                 ?? throw new InvalidOperationException("Resume event data cannot be null");
 
-            // Resume workflow
+            // The command ID is the event ID, so a redelivered command is the same event (D-33). A
+            // resume that arrives before its execute command waits for it.
+            if (!IsExpired(command.QueuedAt) &&
+                await repository.GetWorkflowInstanceAsync(command.InstanceId) == null)
+                throw new WorkflowInstanceBusyException(
+                    $"Resume for '{command.InstanceId}' arrived before its execute command",
+                    TimeSpan.FromSeconds(10));
             var result = await workflowEngine.ResumeAsync(
                 command.InstanceId, command.Key, eventData, command.CommandId, cancellationToken);
-            if (!result.EventAccepted)
+            // A stored event is the instance's to decide; only a refused one fails the command.
+            if (result.Event is { Outcome: EventOutcome.Rejected or EventOutcome.Closed } refused)
             {
-                var saved = await repository.GetWorkflowInstanceAsync(command.InstanceId);
-                if (saved == null || saved.Status is WorkflowStatus.Running or
-                    WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution)
-                    throw new WorkflowInstanceBusyException(
-                        $"Workflow instance '{command.InstanceId}' has not accepted this event yet",
-                        TimeSpan.FromSeconds(10));
-                await PublishCompletionAsync(command.InstanceId);
+                if (IsTerminal(result.Status))
+                    await PublishCompletionAsync(command.InstanceId);
                 throw new InvalidOperationException(
-                    $"Workflow instance '{command.InstanceId}' ended without accepting this event");
+                    $"Workflow instance '{command.InstanceId}' refused this event: {refused.Rejection}");
             }
 
             // Publish completion event if workflow finished
             if (IsTerminal(result.Status))
                 await PublishCompletionAsync(command.InstanceId);
 
-            _logger.LogInformation("Successfully resumed workflow {InstanceId} with status {Status}", 
+            _logger.LogInformation("Successfully resumed workflow {InstanceId} with status {Status}",
                 command.InstanceId, result.Status);
         }
         catch (WorkflowInstanceBusyException)

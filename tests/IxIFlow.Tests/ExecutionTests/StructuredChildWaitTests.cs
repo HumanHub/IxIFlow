@@ -137,7 +137,7 @@ public sealed class StructuredChildWaitTests
         Assert.NotNull(savedParent.RunnableAtUtc);
         var staleApproval = await engine.ResumeAsync(started.InstanceId,
             "approval", new Approval());
-        Assert.False(staleApproval.EventAccepted);
+        EventAssert.Rejected(staleApproval, EventRejection.NoOpenWait);
         await engine.RecoverAsync(started.InstanceId);
         var unchangedLink = Assert.Single(ExecutionCheckpoint.Read(
             (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.ExecutionStateJson).Waits);
@@ -255,7 +255,7 @@ public sealed class StructuredChildWaitTests
             "second", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
-        Assert.True(completed.EventAccepted);
+        EventAssert.Consumed(completed);
         Assert.True(Assert.IsType<ParentData>(completed.WorkflowData).ChildApproved);
     }
 
@@ -284,8 +284,8 @@ public sealed class StructuredChildWaitTests
         try
         {
             using var attempt = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-            Assert.False((await engine.ResumeAsync(started.InstanceId,
-                "approval", new Approval(), attempt.Token)).EventAccepted);
+            EventAssert.Rejected(await engine.ResumeAsync(started.InstanceId,
+                "approval", new Approval(), attempt.Token), EventRejection.NoOpenWait);
             var waiting = await engine.RecoverAsync(started.InstanceId);
             Assert.Equal(WorkflowExecutionStatus.Suspended, waiting.Status);
             var savedParent = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
@@ -293,8 +293,8 @@ public sealed class StructuredChildWaitTests
             Assert.Equal(childId, childLink.ChildWorkflowId);
             Assert.Null(childLink.ChildWaitId);
             Assert.True(string.IsNullOrEmpty(childLink.EventType));
-            Assert.False((await engine.ResumeAsync(started.InstanceId,
-                "approval", new Approval())).EventAccepted);
+            EventAssert.Rejected(await engine.ResumeAsync(started.InstanceId,
+                "approval", new Approval()), EventRejection.NoOpenWait);
         }
         finally
         {
@@ -422,10 +422,10 @@ public sealed class StructuredChildWaitTests
             new Approval(), "delivery-1");
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
-        Assert.True(completed.EventAccepted);
+        EventAssert.Consumed(completed);
         Assert.True(Assert.IsType<ParentData>(completed.WorkflowData).ChildApproved);
         Assert.Equal(WorkflowExecutionStatus.Success, duplicate.Status);
-        Assert.True(duplicate.EventAccepted);
+        EventAssert.Consumed(duplicate);
     }
 
     [Theory]
@@ -519,7 +519,7 @@ public sealed class StructuredChildWaitTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var completed = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
-        Assert.True(completed.EventAccepted);
+        EventAssert.Consumed(completed);
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         var data = Assert.IsType<ParentData>(completed.WorkflowData);
         Assert.True(data.ChildApproved);

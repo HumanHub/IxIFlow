@@ -99,7 +99,7 @@ public sealed class CheckpointLimitTests
     }
 
     [Fact]
-    public async Task EventsAndResolutionsAreRefusedWhileStopped()
+    public async Task EventsWaitForTheReleaseAndResolutionsAreRefusedWhileStopped()
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository, 8_000);
@@ -114,14 +114,24 @@ public sealed class CheckpointLimitTests
         var stopped = await Engine(services).RunAsync(definition, new LimitData());
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stopped.Status);
 
-        var resumed = await Engine(services).ResumeAsync(stopped.InstanceId, "approval", new Approval());
-        Assert.False(resumed.EventAccepted);
+        // The event is stored for after the release (D-33); the instance stays stopped.
+        var resumed = await Engine(services).ResumeAsync(stopped.InstanceId, "approval", new Approval(),
+            "approval-1");
+        Assert.Equal(EventOutcome.Pending, resumed.Event!.Outcome);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, resumed.Status);
         Assert.Contains("stopped at a resource limit", resumed.ErrorMessage);
         var resolved = await Engine(services).ResolveAsync(stopped.InstanceId, "any",
             ActivityResolution.Failed("operator"));
         Assert.Contains("stopped at a resource limit", resolved.ErrorMessage);
         Assert.Equal(WorkflowStatus.NeedsResolution,
             (await repository.GetWorkflowInstanceAsync(stopped.InstanceId))!.Status);
+        Assert.Equal(EventOutcome.Pending,
+            (await repository.GetEventAsync(stopped.InstanceId, "approval-1"))!.Outcome);
+
+        // The release takes it.
+        await Engine(services).ReleaseAsync(stopped.InstanceId);
+        Assert.Equal(EventOutcome.Consumed,
+            (await repository.GetEventAsync(stopped.InstanceId, "approval-1"))!.Outcome);
     }
 
     [Fact]

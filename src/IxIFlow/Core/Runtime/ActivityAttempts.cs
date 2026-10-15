@@ -352,14 +352,21 @@ internal sealed class ActivityAttempts(
         else
         {
             var accepted = continuation.AcceptedWait;
-            if (accepted?.StepId == scopes.Id(step) && pending.ChildWorkflowId != null)
+            if (accepted?.StepId == scopes.Id(step) && pending.ChildWorkflowId != null && !accepted.Forwarded)
             {
+                // The child decides the event under the same ID, so a forward repeated after a crash is
+                // a duplicate there; the parent settles its copy with the child's answer.
                 var childResult = await ResumeChildWaitAsync(host, pending.ChildWorkflowId,
                     accepted, cancellation.Token);
-                accepted.EventAccepted = childResult.EventAccepted;
-                if (childResult.EventAccepted && accepted.DeliveryHash != null)
-                    checkpoint.AcceptedDeliveries.TryAdd(accepted.DeliveryId!,
-                        accepted.DeliveryHash);
+                accepted.Forwarded = true;
+                checkpoint.Inbox.Settle(childResult.Event?.Outcome switch
+                {
+                    EventOutcome.Rejected => new EventSettlement(accepted.EventId, EventOutcome.Rejected,
+                        Rejection: childResult.Event.Rejection ?? EventRejection.NotMatched),
+                    EventOutcome.Closed => new EventSettlement(accepted.EventId, EventOutcome.Rejected,
+                        Rejection: EventRejection.InstanceFinished),
+                    _ => new EventSettlement(accepted.EventId, EventOutcome.Consumed, accepted.WaitId)
+                });
             }
             task = ObserveInvocationAsync(host.InvokeChildAsync(step, definition, instance,
                 sourceData, continuation.GetPrevious(services), pending.Id, cancellation.Token));
@@ -373,7 +380,7 @@ internal sealed class ActivityAttempts(
     {
         var @event = accepted.Event.Read(services)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A child resume event cannot be null");
-        return host.ResumeChildAsync(childInstanceId, accepted.Key, @event, accepted.DeliveryId!,
+        return host.ResumeChildAsync(childInstanceId, accepted.Key, @event, accepted.EventId,
             cancellationToken);
     }
 

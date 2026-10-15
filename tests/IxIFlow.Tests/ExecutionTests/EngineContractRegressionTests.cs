@@ -462,13 +462,12 @@ public class EngineContractRegressionTests
         try
         {
             await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            var secondResumeTask = secondScope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+            // The first event answered the wait, so the second finds no open wait when it arrives
+            // and is refused at once, while the first run is still going (D-33).
+            var secondResume = await secondScope.ServiceProvider.GetRequiredService<IWorkflowClient>()
                 .ResumeAsync(suspended.InstanceId, new RegressionApprovalEvent { Approved = true });
-            Assert.False(secondResumeTask.IsCompleted);
+            EventAssert.Rejected(secondResume, EventRejection.NoOpenWait);
             gate.Release.TrySetResult();
-            var secondResume = await secondResumeTask;
-            Assert.Equal(WorkflowExecutionStatus.Faulted, secondResume.Status);
-            Assert.Contains("not waiting", secondResume.ErrorMessage);
             Assert.Equal(1, gate.ExecutionCount);
         }
         finally

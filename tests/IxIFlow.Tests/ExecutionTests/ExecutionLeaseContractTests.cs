@@ -161,7 +161,7 @@ public sealed class ExecutionLeaseContractTests
         Assert.Equal(1, probe.Recorded);
         var resumed = await firstHost.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(started.InstanceId, "approval", new LeaseEvent());
-        Assert.False(resumed.EventAccepted);
+        EventAssert.Closed(resumed);
     }
 
     [Fact]
@@ -803,7 +803,7 @@ public sealed class ExecutionLeaseContractTests
     }
 
     [Fact]
-    public async Task StaleResumeCannotApplyAnEventAfterAnotherHostFinishes()
+    public async Task TheEventThatArrivedFirstIsTakenWhicheverHostRunsIt()
     {
         var repository = new InMemoryWorkflowStateRepository();
         var staleReader = new PausedReadRepository(repository);
@@ -823,13 +823,17 @@ public sealed class ExecutionLeaseContractTests
         var staleResume = secondHost.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
         await staleReader.ReadCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var winner = await firstHost.GetRequiredService<IWorkflowClient>()
+        // The stale host stored its event first, so the run on the first host takes that one and
+        // refuses its own, which arrived after the wait was answered (D-33).
+        var later = await firstHost.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
-        Assert.Equal(WorkflowExecutionStatus.Success, winner.Status);
+        Assert.Equal(WorkflowExecutionStatus.Success, later.Status);
+        EventAssert.Rejected(later, EventRejection.NoOpenWait);
         staleReader.Continue.TrySetResult();
 
-        var loser = await staleResume.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(WorkflowExecutionStatus.Faulted, loser.Status);
+        var earlier = await staleResume.WaitAsync(TimeSpan.FromSeconds(5));
+        EventAssert.Consumed(earlier);
+        Assert.Equal(WorkflowExecutionStatus.Success, earlier.Status);
         Assert.Equal(WorkflowStatus.Completed,
             (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
         Assert.Equal(2, probe.Recorded);
@@ -857,13 +861,14 @@ public sealed class ExecutionLeaseContractTests
         var secondResume = secondHost.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(started.InstanceId, "second", new LeaseEvent());
         await staleReader.ReadCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // The first host's run takes both events: the second was stored before it ran.
         var first = await firstHost.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(started.InstanceId, "first", new LeaseEvent());
-        Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
+        EventAssert.Consumed(first);
         staleReader.Continue.TrySetResult();
 
         var second = await secondResume.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.True(second.EventAccepted, second.ErrorMessage);
+        EventAssert.Consumed(second);
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
     }
 
@@ -913,8 +918,10 @@ public sealed class ExecutionLeaseContractTests
             EventDataType = typeof(LeaseEvent).AssemblyQualifiedName!,
             EventDataJson = "{}"
         };
-        await Assert.ThrowsAsync<WorkflowInstanceBusyException>(() =>
+        // No wait with that key is open, so the event is refused at once instead of deferred (D-33).
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.ProcessResumeCommandAsync(command));
+        Assert.Contains(nameof(EventRejection.NoOpenWait), refused.Message);
 
         Assert.Equal(WorkflowStatus.Suspended,
             (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
@@ -1350,6 +1357,17 @@ public sealed class ExecutionLeaseContractTests
 
     private sealed class PausedReadRepository(InMemoryWorkflowStateRepository inner) : IWorkflowStateRepository
     {
+        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+            inner.AppendEventAsync(workflowEvent);
+        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
+            inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
+        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+            inner.GetEventAsync(instanceId, eventId);
+        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+            inner.GetWaitAsync(instanceId, waitId);
+        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+            inner.GetOpenWaitsAsync(query);
+
         public int FailNextCancellationReads;
         public int FailNextRenewals;
         public int LoseNextRenewal;
