@@ -313,13 +313,15 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             WHEN MATCHED AND target.Revision = 0 THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
-                SuspensionId = @SuspensionId, RunnableAtUtc = @RunnableAtUtc,
+                SuspensionId = @SuspensionId,
+                RunnableAtUtc = CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END,
                 StateJson = @StateJson
             WHEN NOT MATCHED THEN INSERT
                 (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt,
                  SuspensionId, RunnableAtUtc, StateJson)
                 VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
-                        @SuspensionExpiresAt, @SuspensionId, @RunnableAtUtc, @StateJson);
+                        @SuspensionExpiresAt, @SuspensionId,
+                        CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END, @StateJson);
             IF @@ROWCOUNT = 0
                 THROW 51000, 'Revisioned instances require an atomic commit', 1;
             """, new
@@ -330,7 +332,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             instance.CorrelationId,
             SuspensionExpiresAt = instance.SuspensionInfo?.ExpiresAt,
             SuspensionId = instance.SuspensionInfo?.SuspensionId,
-            RunnableAtUtc = WorkflowStoreRules.RunnableAt(instance, false, DateTime.UtcNow),
+            instance.RunnableAtUtc,
+            RunnableNow = WorkflowStoreRules.IsRunnableNow(instance, false),
             StateJson = JsonSerializer.Serialize(instance)
         });
     }
@@ -389,11 +392,11 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 !receipt.PayloadHash.SequenceEqual(commit.ContentHash))
                 throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
             await transaction.CommitAsync();
-            // A terminal commit released the lease; only a running owner must still hold it.
-            return snapshot.Status == WorkflowStatus.Running && !owns
+            // A terminal or parking commit released the lease; only a running owner must still hold it.
+            return snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks
                 ? new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision)
                 : new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
-                    ReadReason(current?.CancellationJson));
+                    ReadReason(current?.CancellationJson), commit.Parks && !owns);
         }
         if (!owns)
         {
@@ -408,6 +411,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
         }
 
+        var unacknowledged = current is { CancellationJson: not null, CancellationAcknowledged: false };
+        var parked = commit.Parks && !unacknowledged;
         await connection.ExecuteAsync("""
             MERGE dbo.IxIFlowWorkflowInstances AS target
             USING (SELECT @InstanceId AS InstanceId) AS source
@@ -415,7 +420,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             WHEN MATCHED THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
-                SuspensionId = @SuspensionId, RunnableAtUtc = @RunnableAtUtc,
+                SuspensionId = @SuspensionId,
+                RunnableAtUtc = CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END,
                 StateJson = @StateJson, Revision = @Revision,
                 CancellationAcknowledged = CASE WHEN @AcknowledgesCancellation = 1 AND
                     target.CancellationJson IS NOT NULL THEN 1 ELSE target.CancellationAcknowledged END
@@ -423,7 +429,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt,
                  SuspensionId, RunnableAtUtc, StateJson, Revision)
                 VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
-                        @SuspensionExpiresAt, @SuspensionId, @RunnableAtUtc, @StateJson, @Revision);
+                        @SuspensionExpiresAt, @SuspensionId,
+                        CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END,
+                        @StateJson, @Revision);
             INSERT INTO dbo.IxIFlowWorkflowCommits (InstanceId, CommitId, ExpectedRevision, Revision, PayloadHash)
             VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
             """, new
@@ -432,15 +440,15 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             Status = snapshot.Status.ToString(),
             SuspensionExpiresAt = snapshot.SuspensionInfo?.ExpiresAt,
             SuspensionId = snapshot.SuspensionInfo?.SuspensionId,
-            RunnableAtUtc = WorkflowStoreRules.RunnableAt(snapshot,
-                current is { CancellationJson: not null, CancellationAcknowledged: false }, DateTime.UtcNow),
+            snapshot.RunnableAtUtc,
+            RunnableNow = (commit.Parks && !parked) || WorkflowStoreRules.IsRunnableNow(snapshot, unacknowledged),
             StateJson = json, snapshot.Revision,
             commit.ExpectedRevision, commit.CommitId, PayloadHash = commit.ContentHash,
             AcknowledgesCancellation = snapshot.CancellationReason != null
         }, transaction);
         // The lease row is written only when something changes, so most commits touch only their
         // instance row; a write to a missing lease row would take range locks other claims need.
-        var releases = snapshot.Status != WorkflowStatus.Running;
+        var releases = snapshot.Status != WorkflowStatus.Running || parked;
         var clears = commit.ClearsCrashCount && lease?.CrashCount > 0;
         if (lease != null && (releases || clears))
             await connection.ExecuteAsync("""
@@ -455,7 +463,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             }, transaction);
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
-            ReadReason(current?.CancellationJson));
+            ReadReason(current?.CancellationJson), parked);
     }
 
     private sealed class CommitReceipt

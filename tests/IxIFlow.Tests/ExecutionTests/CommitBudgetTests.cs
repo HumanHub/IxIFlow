@@ -117,6 +117,26 @@ public sealed class CommitBudgetTests
     }
 
     [Fact]
+    [Trait("Spec", "C-03")]
+    public async Task RetryParkedOnALongBackoff()
+    {
+        var store = new MeasuringStore();
+        using var services = Services(store);
+        var definition = Workflow.Create<BudgetData>("BudgetParkedRetry")
+            .Step<WorkActivity>()
+            .Saga(saga => saga.Step<FailOnceActivity>(step => step
+                .OnError<InvalidOperationException>(handler => handler.ThenRetry(new RetryPolicy(
+                    TimeSpan.FromMilliseconds(1200), TimeSpan.FromMilliseconds(1200), 1, 1)))))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new BudgetData());
+
+        // The park is one commit of its own; resuming adds none before the retried activity starts.
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        AssertBudget(store.Commits, store.MaxBytes, maxCommits: 9, maxBytes: 2300);
+    }
+
+    [Fact]
     public async Task WaitAndResume()
     {
         var store = new MeasuringStore();
@@ -138,7 +158,7 @@ public sealed class CommitBudgetTests
     // Commit counts are exact, so a lost commit fails as well as an added one. Byte ceilings are the
     // measured size plus about 10%: timestamps vary by a few bytes. Measured on
     // 2026-10-15: sequence 1301, control flow 1712, parallel 4302, caught failure 2811, loop 1902,
-    // child invocation 1337, wait and resume 1299.
+    // child invocation 1337, wait and resume 1299, parked retry 2072.
     private static void AssertBudget(int commits, long bytes, int maxCommits, long maxBytes)
     {
         Assert.True(commits == maxCommits, $"{commits} commits; the scenario commits exactly {maxCommits}");
@@ -163,6 +183,8 @@ public sealed class CommitBudgetTests
         services.AddTransient<WorkActivity>();
         services.AddTransient<CountActivity>();
         services.AddTransient<FailActivity>();
+        services.AddTransient<FailOnceActivity>();
+        services.AddSingleton<FailOnceProbe>();
         return services.BuildServiceProvider();
     }
 
@@ -217,6 +239,20 @@ public sealed class CommitBudgetTests
             Count++;
             return Task.CompletedTask;
         }
+    }
+
+    public sealed class FailOnceProbe
+    {
+        private int _runs;
+
+        public bool FirstRun() => Interlocked.Increment(ref _runs) == 1;
+    }
+
+    /// <summary>Fails its first run, then succeeds.</summary>
+    public sealed class FailOnceActivity(FailOnceProbe probe) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            probe.FirstRun() ? throw new InvalidOperationException("Planned failure") : Task.CompletedTask;
     }
 
     public sealed class FailActivity : IAsyncActivity

@@ -30,7 +30,8 @@ public enum WorkflowCommitStatus
 public sealed record WorkflowCommitResult(
     WorkflowCommitStatus Status,
     long Revision,
-    CancellationReason? PendingCancellation = null);
+    CancellationReason? PendingCancellation = null,
+    bool Parked = false);
 
 /// <summary>
 /// An execution lease granted by the store. <see cref="Epoch"/> fences the owner's commits.
@@ -46,7 +47,7 @@ public sealed record ExecutionLeaseGrant(long Epoch, int CrashCount);
 public sealed class CheckpointCommit
 {
     private CheckpointCommit(string instanceId, string payload, long epoch, string commitId,
-        long expectedRevision, bool clearsCrashCount)
+        long expectedRevision, bool clearsCrashCount, bool parks)
     {
         InstanceId = instanceId;
         Payload = payload;
@@ -54,7 +55,9 @@ public sealed class CheckpointCommit
         CommitId = commitId;
         ExpectedRevision = expectedRevision;
         ClearsCrashCount = clearsCrashCount;
-        _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes($"{(clearsCrashCount ? 1 : 0)}\n{payload}"));
+        Parks = parks;
+        _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}\n{payload}"));
     }
 
     private readonly byte[] _contentHash;
@@ -79,13 +82,21 @@ public sealed class CheckpointCommit
     public bool ClearsCrashCount { get; }
 
     /// <summary>
-    /// SHA-256 of <see cref="Payload"/> and <see cref="ClearsCrashCount"/>; a reused commit ID must
+    /// True when the run stops until the instance's runnable time, for example a retry backoff,
+    /// while the instance stays Running: the store releases the lease in the same step (C-03). If a
+    /// cancellation request is waiting to be taken up, the store keeps the lease and makes the
+    /// instance runnable now instead, and the receipt says it did not park.
+    /// </summary>
+    public bool Parks { get; }
+
+    /// <summary>
+    /// SHA-256 of <see cref="Payload"/>, <see cref="ClearsCrashCount"/> and <see cref="Parks"/>; a reused commit ID must
     /// carry the same hash. Returns a copy.
     /// </summary>
     public byte[] ContentHash => (byte[])_contentHash.Clone();
 
     public static CheckpointCommit Create(WorkflowInstance instance, long epoch, long expectedRevision,
-        string? commitId = null, bool clearsCrashCount = true)
+        string? commitId = null, bool clearsCrashCount = true, bool parks = false)
     {
         ArgumentNullException.ThrowIfNull(instance);
         ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
@@ -96,7 +107,7 @@ public sealed class CheckpointCommit
         if (commitId.Length > 100)
             throw new ArgumentException("Commit IDs must be at most 100 characters", nameof(commitId));
         return new CheckpointCommit(instance.InstanceId, JsonSerializer.Serialize(instance), epoch, commitId,
-            expectedRevision, clearsCrashCount);
+            expectedRevision, clearsCrashCount, parks);
     }
 
     /// <summary>A fresh copy of the committed instance.</summary>

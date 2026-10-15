@@ -235,6 +235,16 @@ internal sealed class WorkflowExecutor
                         inFlight.Count > 0 ? nextWaitDeadline : null,
                         checkpoint.CancellationRequested ? null : checkpoint.ExecutionDeadlineUtc }
                     .Where(due => due != null).Min();
+                // With nothing in flight, a long wait for a retry gives the slot and lease back; the
+                // host resumes the run on time (C-03). A request that arrived meanwhile keeps it here.
+                if (inFlight.Count == 0 && nextWake is { } parkUntil && host.CanPark &&
+                    parkUntil - Now > host.Limits.ParkRetriesLongerThan)
+                {
+                    if (await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData,
+                            scopes, Now, parkUntil: parkUntil))
+                        return Parked(instance, workflowData, parkUntil);
+                    continue;
+                }
                 if (nextWake is { } retryAt)
                 {
                     var delay = retryAt - Now;
@@ -769,6 +779,16 @@ internal sealed class WorkflowExecutor
             ExecutionTime = Now - instance.StartedAt!.Value
         };
     }
+
+    private WorkflowExecutionResult Parked(WorkflowInstance instance, object workflowData, DateTime until) => new()
+    {
+        InstanceId = instance.InstanceId,
+        Status = WorkflowExecutionStatus.Scheduled,
+        WorkflowData = workflowData,
+        TraceEntries = instance.ExecutionHistory.ToList(),
+        ErrorMessage = $"The workflow instance waits for a retry at {until:O}; it continues then",
+        ExecutionTime = Now - instance.StartedAt!.Value
+    };
 
     private static WorkflowStep? NextStep(WorkflowScopeCatalog scopes, ContinuationState continuation) =>
         scopes.Steps(continuation.Stack[^1].ScopeId).ElementAtOrDefault(continuation.Stack[^1].NextStepIndex);

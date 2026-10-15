@@ -1,6 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IxIFlow.Core.Runtime;
 
@@ -31,12 +33,104 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     private readonly CancellationTokenSource _draining = new();
     private readonly CancellationTokenSource _stopped = new();
     private bool _accepting = true;
+    // Instances this host saved with a later runnable time, earliest first, and one timer for the
+    // earliest (C-12). Work saved by other hosts, and anything lost here, is found by the poll.
+    private readonly TimeProvider _time;
+    private readonly ILogger _logger;
+    private readonly SortedSet<(DateTime Due, string InstanceId)> _due = [];
+    private readonly Dictionary<string, DateTime> _dueOf = new(StringComparer.Ordinal);
+    private ITimer? _timer;
+    private DateTime? _armedFor;
 
-    public LocalWorkflowHost(IServiceScopeFactory scopes, HostSettings settings)
+    public LocalWorkflowHost(IServiceScopeFactory scopes, HostSettings settings, TimeProvider? time = null,
+        ILogger<LocalWorkflowHost>? logger = null)
     {
         _scopes = scopes;
         _settings = settings;
         _slots = new SemaphoreSlim(settings.Slots, settings.Slots);
+        _time = time ?? TimeProvider.System;
+        _logger = logger ?? NullLogger<LocalWorkflowHost>.Instance;
+    }
+
+    /// <summary>Slots not running anything now; the poll claims at most this many instances.</summary>
+    public int FreeSlots => _slots.CurrentCount;
+
+    /// <summary>
+    /// Resumes an instance at <paramref name="dueUtc"/>. The latest time given for an instance
+    /// replaces the one before.
+    /// </summary>
+    public void Schedule(string instanceId, DateTime dueUtc)
+    {
+        lock (_lock)
+        {
+            if (!_accepting)
+                return;
+            if (_dueOf.Remove(instanceId, out var previous))
+                _due.Remove((previous, instanceId));
+            _dueOf[instanceId] = dueUtc;
+            _due.Add((dueUtc, instanceId));
+            ArmLocked();
+        }
+    }
+
+    // Caller holds _lock.
+    private void ArmLocked()
+    {
+        if (_due.Count == 0)
+        {
+            _timer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            _armedFor = null;
+            return;
+        }
+        var next = _due.Min.Due;
+        if (_armedFor == next)
+            return;
+        _armedFor = next;
+        var delay = next - _time.GetUtcNow().UtcDateTime;
+        // A timer cannot wait arbitrarily long; a far time is re-armed when the timer fires.
+        delay = delay < TimeSpan.Zero ? TimeSpan.Zero
+            : delay > TimeSpan.FromHours(1) ? TimeSpan.FromHours(1) : delay;
+        _timer ??= _time.CreateTimer(_ => ResumeDue(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        _timer.Change(delay, Timeout.InfiniteTimeSpan);
+    }
+
+    private void ResumeDue()
+    {
+        var due = new List<string>();
+        lock (_lock)
+        {
+            _armedFor = null;
+            var now = _time.GetUtcNow().UtcDateTime;
+            while (_due.Count > 0 && _due.Min.Due <= now)
+            {
+                var entry = _due.Min;
+                _due.Remove(entry);
+                _dueOf.Remove(entry.InstanceId);
+                due.Add(entry.InstanceId);
+            }
+            if (_accepting)
+                ArmLocked();
+        }
+        foreach (var instanceId in due)
+            _ = ResumeAsync(instanceId);
+    }
+
+    // Goes through the same queue and slots as every other call.
+    private async Task ResumeAsync(string instanceId)
+    {
+        try
+        {
+            await RunAsync(instanceId, (client, _, token) => client.RecoverAsync(instanceId, token),
+                CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+            // The host is stopping; the instance stays runnable in the store.
+        }
+        catch (Exception error)
+        {
+            _logger.LogError(error, "Could not resume workflow {InstanceId} at its runnable time", instanceId);
+        }
     }
 
     /// <summary>True inside a slot, where client calls run inline.</summary>
@@ -163,6 +257,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
                 var control = scope.ServiceProvider.GetRequiredService<RunControl>();
                 control.Drain = _draining.Token;
                 control.OnInstanceKnown(instanceId => Register(item, instanceId));
+                control.OnScheduled(Schedule);
                 var client = scope.ServiceProvider.GetRequiredService<DirectInstanceClient>();
                 context = new RunContext(client, control);
                 CurrentRun.Value = context;
@@ -286,6 +381,11 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
                 while (queue.Count > 0)
                     cancelled.Add(queue.Dequeue());
             running = _admitted.Select(item => item.Done.Task).ToArray();
+            // Due instances stay runnable in the store for the next host.
+            _due.Clear();
+            _dueOf.Clear();
+            _timer?.Dispose();
+            _timer = null;
         }
         foreach (var item in cancelled)
             item.Cancel();
@@ -459,6 +559,12 @@ internal sealed class RunControl
 {
     private Action<string>? _accepted;
     private Action<string>? _instanceKnown;
+    private Action<string, DateTime>? _scheduled;
+
+    /// <summary>Called whenever a run in this scope saves an instance that is runnable at a later time.</summary>
+    public void OnScheduled(Action<string, DateTime> scheduled) => _scheduled = scheduled;
+
+    public void Schedule(string instanceId, DateTime dueUtc) => _scheduled?.Invoke(instanceId, dueUtc);
 
     /// <summary>Cancelled when the host drains; runs stop starting new steps.</summary>
     public CancellationToken Drain { get; set; }
@@ -477,11 +583,13 @@ internal sealed class RunControl
 }
 
 /// <summary>How many instances the host runs at once and how long it drains on stop.</summary>
-internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout)
+internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan PollInterval)
 {
     public const int DefaultSlots = 64;
 
     public static TimeSpan DefaultDrainTimeout { get; } = TimeSpan.FromSeconds(20);
 
-    public static HostSettings Default { get; } = new(DefaultSlots, DefaultDrainTimeout);
+    public static TimeSpan DefaultPollInterval { get; } = TimeSpan.FromSeconds(1);
+
+    public static HostSettings Default { get; } = new(DefaultSlots, DefaultDrainTimeout, DefaultPollInterval);
 }

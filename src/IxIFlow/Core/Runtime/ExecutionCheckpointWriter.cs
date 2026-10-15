@@ -14,16 +14,18 @@ internal static class ExecutionCheckpointWriter
     /// Commits the run's state. <paramref name="workflowData"/> may be null only with
     /// <paramref name="preserveSavedWorkflowData"/>. <paramref name="clearsCrashCount"/> is false for a
     /// commit that records no progress: claiming an activity or child before it starts, or only
-    /// rescheduling a check (B-08).
+    /// rescheduling a check (B-08). With <paramref name="parkUntil"/> the run stops until then and the
+    /// store releases its lease (C-03); returns true when it did.
     /// </summary>
-    public static async Task CommitAsync(IExecutionHost host, WorkflowInstance instance,
+    public static async Task<bool> CommitAsync(IExecutionHost host, WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object? workflowData, WorkflowScopeCatalog scopes, DateTime now,
-        bool preserveSavedWorkflowData = false, bool enforceLimit = true, bool clearsCrashCount = true)
+        bool preserveSavedWorkflowData = false, bool enforceLimit = true, bool clearsCrashCount = true,
+        DateTime? parkUntil = null)
     {
         if (!host.PersistsState)
-            return;
+            return false;
         var lastCommitted = SavedForm.Of(instance);
-        Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData);
+        Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData, parkUntil);
         var size = CheckpointBytes(instance);
         if (enforceLimit && size > host.Limits.MaxCheckpointBytes)
         {
@@ -33,7 +35,7 @@ internal static class ExecutionCheckpointWriter
         }
 
         var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,
-            clearsCrashCount: clearsCrashCount);
+            clearsCrashCount: clearsCrashCount, parks: parkUntil != null);
         for (var attempt = 1; ; attempt++)
         {
             var reply = await host.CommitAsync(commit);
@@ -43,7 +45,7 @@ internal static class ExecutionCheckpointWriter
                     instance.Revision = reply.Revision;
                     if (reply.PendingCancellation != null)
                         host.ObserveCancellation(reply.PendingCancellation);
-                    return;
+                    return reply.Parked;
                 case CheckpointReplyKind.Conflict:
                     throw new ExecutionOwnershipLostException(reply.Error!);
                 case CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown when attempt < MaxAttempts:
@@ -56,7 +58,8 @@ internal static class ExecutionCheckpointWriter
     }
 
     public static void Prepare(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
-        object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false)
+        object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false,
+        DateTime? parkUntil = null)
     {
         try
         {
@@ -73,7 +76,7 @@ internal static class ExecutionCheckpointWriter
             // A stopped instance stays put until an operator acts on it. A running one is runnable
             // from now, so it can be claimed as soon as its owner's lease ends.
             instance.RunnableAtUtc = checkpoint.OperatorStop != null ? null
-                : instance.Status == WorkflowStatus.Running ? now
+                : instance.Status == WorkflowStatus.Running ? parkUntil ?? now
                 : instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution
                 ? new[] { checkpoint.CancellationRequested ? null : checkpoint.ExecutionDeadlineUtc }
                     .Concat(checkpoint.Waits.Select(wait => wait.DeadlineUtc))

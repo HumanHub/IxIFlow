@@ -18,8 +18,9 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
     {
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(workflowData);
-        return host.RunAsync(options?.InstanceId,
-            (client, _, token) => client.RunAsync(definition, workflowData, options, token), cancellationToken);
+        return UntilIdleAsync(host.RunAsync(options?.InstanceId,
+            (client, _, token) => client.RunAsync(definition, workflowData, options, token), cancellationToken),
+            cancellationToken);
     }
 
     public async Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition,
@@ -61,8 +62,9 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
         CancellationToken cancellationToken = default) where TEventData : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        return host.RunAsync(instanceId,
-            (client, _, token) => client.ResumeAsync(instanceId, @event, token), cancellationToken);
+        return UntilIdleAsync(host.RunAsync(instanceId,
+            (client, _, token) => client.ResumeAsync(instanceId, @event, token), cancellationToken),
+            cancellationToken);
     }
 
     public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(string instanceId, string key,
@@ -70,8 +72,9 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        return host.RunAsync(instanceId,
-            (client, _, token) => client.ResumeAsync(instanceId, key, @event, token), cancellationToken);
+        return UntilIdleAsync(host.RunAsync(instanceId,
+            (client, _, token) => client.ResumeAsync(instanceId, key, @event, token), cancellationToken),
+            cancellationToken);
     }
 
     public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(string instanceId, string? key,
@@ -80,11 +83,26 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(deliveryId);
-        return host.RunAsync(instanceId,
+        return UntilIdleAsync(host.RunAsync(instanceId,
             (client, _, token) => client.ResumeAsync(instanceId, key, @event, deliveryId, token),
-            cancellationToken);
+            cancellationToken), cancellationToken);
     }
 
+    // A run parked on a retry gave its slot back; a caller that asked to run until idle waits for
+    // the instance without a slot while the host resumes it on time (C-03).
+    private async Task<WorkflowExecutionResult> UntilIdleAsync(Task<WorkflowExecutionResult> run,
+        CancellationToken cancellationToken)
+    {
+        var result = await run;
+        return result.Status == WorkflowExecutionStatus.Scheduled
+            ? await AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Idle, cancellationToken)
+            : result;
+    }
+
+    /// <summary>
+    /// Continues an interrupted or due instance. A run that parks on a retry returns Scheduled; the
+    /// host resumes it on time.
+    /// </summary>
     public Task<WorkflowExecutionResult> RecoverAsync(string instanceId,
         CancellationToken cancellationToken = default)
     {
@@ -97,8 +115,9 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        return host.RunAsync(instanceId,
-            (client, _, token) => client.ReleaseAsync(instanceId, token), cancellationToken);
+        return UntilIdleAsync(host.RunAsync(instanceId,
+            (client, _, token) => client.ReleaseAsync(instanceId, token), cancellationToken),
+            cancellationToken);
     }
 
     // The request is saved without a slot, so cancellation works while every slot is busy.
@@ -108,17 +127,24 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
-        return await host.ReadAsync(client => client.RequestCancellationAsync(instanceId, reason, cancellationToken))
-            ?? await RecoverAsync(instanceId, cancellationToken);
+        var requested = await host.ReadAsync(client =>
+            client.RequestCancellationAsync(instanceId, reason, cancellationToken));
+        if (requested == null)
+            return await UntilIdleAsync(RecoverAsync(instanceId, cancellationToken), cancellationToken);
+        // A running instance may be parked with nobody to notice the request; resume it now. If an
+        // owner holds it, the recovery answers busy and the owner unwinds.
+        if (requested.Status == WorkflowExecutionStatus.Running)
+            host.Schedule(instanceId, DateTime.MinValue);
+        return requested;
     }
 
     public Task<WorkflowExecutionResult> ResolveAsync(string instanceId, string invocationId,
         ActivityResolution resolution, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        return host.RunAsync(instanceId,
+        return UntilIdleAsync(host.RunAsync(instanceId,
             (client, _, token) => client.ResolveAsync(instanceId, invocationId, resolution, token),
-            cancellationToken);
+            cancellationToken), cancellationToken);
     }
 
     public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
