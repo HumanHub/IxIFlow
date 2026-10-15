@@ -40,7 +40,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = [.._steps]
+            Steps = RequestPairing.Paired(_steps)
         };
     }
 
@@ -67,6 +67,22 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
 
         // Return continuation builder with TActivity as previous step type
         return new WorkflowBuilder<TWorkflowData, TActivity>(_steps, workflowName, workflowVersion);
+    }
+
+    public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(string name,
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null,
+        Func<WorkflowContext<TWorkflowData>, string>? subject = null)
+        where TActivity : class, IAsyncActivity
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var replyType = RequestPairing.ReplyTypeOf(typeof(TActivity));
+        var next = Step(configure);
+        var step = _steps[^1];
+        step.RequestName = name;
+        step.ReplyType = replyType;
+        if (subject != null)
+            step.RequestSubject = context => subject((WorkflowContext<TWorkflowData>)context);
+        return next;
     }
 }
 
@@ -124,6 +140,22 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         // Return continuation builder with TActivity as new previous step type
         return new WorkflowBuilder<TWorkflowData, TActivity>(_steps, name, workflowVersion);
+    }
+
+    public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(string requestName,
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
+        where TActivity : class, IAsyncActivity
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestName);
+        var replyType = RequestPairing.ReplyTypeOf(typeof(TActivity));
+        var next = Step(configure);
+        var step = _steps[^1];
+        step.RequestName = requestName;
+        step.ReplyType = replyType;
+        if (subject != null)
+            step.RequestSubject = context => subject((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
+        return next;
     }
 
     /// <summary>
@@ -490,7 +522,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = [.._steps]
+            Steps = RequestPairing.Paired(_steps)
         };
     }
 

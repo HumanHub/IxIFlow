@@ -22,6 +22,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         var inbox = checkpoint.Inbox;
         if (!host.PersistsState || !inbox.MayHaveUnread)
             return false;
+        checkpoint.CloseEndedRequests();
         var decided = false;
         while (true)
         {
@@ -53,27 +54,34 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             return;
         }
         var eventType = payload.GetType();
-        // The waits this event is addressed to and that were open for it.
+        // The waits this event is addressed to and that were open for it. A request's answer is
+        // addressed by its token only, and is taken even before its WaitFor is reached.
         var addressed = checkpoint.Waits.Where(wait => wait.TableKind != null &&
             (stored.TargetWaitId != null
                 ? wait.Id == stored.TargetWaitId
-                : (stored.Key == null || wait.Key == stored.Key) &&
+                : wait.TableKind != WaitKind.Reply && (stored.Key == null || wait.Key == stored.Key) &&
                   (wait.TableKind == WaitKind.Child ||
                    openedAt.TryGetValue(wait.Id, out var opened) && opened < stored.Sequence)) &&
             checkpoint.Continuations.Any(item => item.Id == wait.ContinuationId &&
-                                                 item.Status == ContinuationStatus.Waiting)).ToList();
+                (item.Status == ContinuationStatus.Waiting || wait.IsReply &&
+                 item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled)))).ToList();
         // A wait whose deadline has passed takes only an event received before it.
         var onTime = addressed.Where(wait => wait.DeadlineUtc is not { } deadline || deadline > now ||
                                               stored.ReceivedAtUtc <= deadline).ToList();
         var typed = onTime.Where(wait =>
             WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(eventType) == true).ToList();
-        var matching = typed.Where(wait => Accepts(scopes, checkpoint, wait, payload, workflowData)).ToList();
+        // An answer can confirm only what its request was about.
+        var aboutIt = typed.Where(wait => wait.Subject == null ||
+                                          string.Equals(wait.Subject, stored.Subject, StringComparison.Ordinal))
+            .ToList();
+        var matching = aboutIt.Where(wait => Accepts(scopes, checkpoint, wait, payload, workflowData)).ToList();
         if (matching.Count == 1)
         {
-            Consume(checkpoint, stored, matching[0], payload);
+            Consume(scopes, checkpoint, stored, matching[0], payload);
             return;
         }
         var rejection = matching.Count > 1 ? EventRejection.Ambiguous
+            : typed.Count > 0 && aboutIt.Count == 0 ? EventRejection.SubjectMismatch
             : typed.Count > 0 || onTime.Count > 0 ? EventRejection.NotMatched
             : addressed.Count > 0 ? EventRejection.WaitTimedOut
             : stored.TargetWaitId != null ? await ClosedTargetAsync(checkpoint, host, stored.TargetWaitId)
@@ -114,10 +122,27 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         }
     }
 
-    private static void Consume(ExecutionCheckpoint checkpoint, StoredWorkflowEvent stored, WaitState wait,
-        object payload)
+    private static void Consume(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        StoredWorkflowEvent stored, WaitState wait, object payload)
     {
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
+        if (wait.IsReply && !IsAt(scopes, continuation, wait))
+        {
+            // The request's WaitFor is not reached yet: the answer is kept for it.
+            checkpoint.RemoveWaits(item => item.Id == wait.Id, WaitCloseReason.Answered);
+            checkpoint.BoundReplies.Add(new BoundReplyState
+            {
+                WaitId = wait.Id,
+                EventId = stored.EventId,
+                StepId = wait.StepId,
+                ScopeActivationId = wait.ScopeActivationId ?? "",
+                InvocationId = wait.InvocationId,
+                Subject = wait.Subject,
+                Event = SerializedValue.From(payload)!
+            });
+            checkpoint.Inbox.Settle(new EventSettlement(stored.EventId, EventOutcome.Consumed, wait.Id));
+            return;
+        }
         continuation.AcceptedWait = new AcceptedWaitState
         {
             StepId = wait.StepId,
@@ -136,6 +161,16 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         // The child's other waits are shown again once it has taken the event.
         checkpoint.RemoveWaits(item => item.ChildWorkflowId == wait.ChildWorkflowId &&
                                        item.ContinuationId == continuation.Id, WaitCloseReason.Replaced);
+    }
+
+    // A continuation waits at a request's WaitFor when its current step is that WaitFor.
+    private static bool IsAt(WorkflowScopeCatalog scopes, ContinuationState continuation, WaitState wait)
+    {
+        if (continuation.Status != ContinuationStatus.Waiting)
+            return false;
+        var position = continuation.Stack[^1];
+        var steps = scopes.Steps(position.ScopeId);
+        return position.NextStepIndex < steps.Count && scopes.Id(steps[position.NextStepIndex]) == wait.StepId;
     }
 
     private static void Reject(ExecutionCheckpoint checkpoint, StoredWorkflowEvent stored, EventRejection rejection) =>

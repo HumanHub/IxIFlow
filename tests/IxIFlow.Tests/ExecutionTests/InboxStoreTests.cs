@@ -217,6 +217,12 @@ public sealed class InboxStoreTests
             Assert.Equal(EventOutcome.Closed, (await inbox.GetEventAsync(finished, "before"))!.Outcome);
             Assert.Equal(WaitCloseReason.InstanceFinished,
                 (await inbox.GetWaitAsync(finished, ApprovalWait(finished)))!.CloseReason);
+            // An event sent to one of its waits is told why that wait closed.
+            Assert.Equal(new EventAppendResult(EventAppendStatus.Rejected, Rejection: EventRejection.InstanceFinished),
+                await inbox.AppendEventAsync(Event(finished, "to-wait", "{}") with
+                {
+                    Key = null, TargetWaitId = ApprovalWait(finished)
+                }));
         }
         finally
         {

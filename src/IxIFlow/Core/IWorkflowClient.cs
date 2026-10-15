@@ -92,9 +92,9 @@ public interface IWorkflowClient
         where TReply : class;
 
     /// <summary>
-    /// Lists open waits across instances (D-14), with the token that answers each. A token is the right
-    /// to answer, so this listing is for trusted callers such as a task inbox. A child's waits are
-    /// listed on the child.
+    /// Lists open waits that have no request, across instances (D-14), with the token that answers each.
+    /// A token is the right to answer, so this listing is for trusted callers such as a task inbox. A
+    /// child's waits are listed on the child; a request's answer goes to the token the request sent.
     /// </summary>
     Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query);
 

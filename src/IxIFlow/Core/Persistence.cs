@@ -527,14 +527,16 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                     : new EventAppendResult(EventAppendStatus.Conflict));
             if (!_instances.TryGetValue(workflowEvent.InstanceId, out var instance))
                 return Task.FromResult(new EventAppendResult(EventAppendStatus.NotFound));
-            if (instance.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
-                WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
+            var finished = instance.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
+                WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut;
+            // A finished instance takes no events; one sent to a wait is told why that wait closed.
+            if (finished && workflowEvent.TargetWaitId == null)
                 return Task.FromResult(new EventAppendResult(EventAppendStatus.Closed));
             var now = Now;
             var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent,
                 workflowEvent.TargetWaitId == null ? null
                     : WaitsOf(workflowEvent.InstanceId).GetValueOrDefault(workflowEvent.TargetWaitId),
-                OpenWaits(workflowEvent.InstanceId));
+                OpenWaits(workflowEvent.InstanceId)) ?? (finished ? EventRejection.InstanceFinished : null);
             // A refused event is recorded so a resend is recognized, but takes no place in the inbox.
             if (rejection != null)
             {
@@ -557,7 +559,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
 
     private static StoredWorkflowEvent Stored(WorkflowEvent workflowEvent, long sequence, DateTime now) =>
         new(workflowEvent.InstanceId, workflowEvent.EventId, sequence, workflowEvent.EventType, workflowEvent.Key,
-            workflowEvent.TargetWaitId, workflowEvent.PayloadJson, now, EventOutcome.Pending);
+            workflowEvent.TargetWaitId, workflowEvent.PayloadJson, now, EventOutcome.Pending,
+            Subject: workflowEvent.Subject);
 
     // Caller holds _claimLock.
     private IEnumerable<StoredWait> OpenWaits(string instanceId) =>

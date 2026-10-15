@@ -882,6 +882,22 @@ public class WorkflowStep
     /// </summary>
     public Type? ResumeEventType { get; set; }
 
+    /// <summary>For a request step, the name its <c>WaitFor</c> uses (D-33).</summary>
+    public string? RequestName { get; set; }
+
+    /// <summary>For a request step, the answer type its activity declares with <c>IRequestActivity&lt;TReply&gt;</c>.</summary>
+    public Type? ReplyType { get; set; }
+
+    /// <summary>
+    /// For a request step, what the request is about, computed from the workflow context when its
+    /// inputs are captured. A reply must carry the same subject.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, string>? RequestSubject { get; set; }
+
+    /// <summary>For a <c>WaitFor</c> that takes a request's answer, the request's name.</summary>
+    public string? ReplyToRequest { get; set; }
+
     /// <summary>
     ///     Step execution order
     /// </summary>
@@ -936,6 +952,10 @@ public class WorkflowStep
             ExceptionType = ExceptionType,
             FaultType = FaultType,
             ResumeEventType = ResumeEventType,
+            RequestName = RequestName,
+            ReplyType = ReplyType,
+            RequestSubject = RequestSubject,
+            ReplyToRequest = ReplyToRequest,
             Order = Order,
             StepMetadata = new Dictionary<string, object>(StepMetadata)
         };

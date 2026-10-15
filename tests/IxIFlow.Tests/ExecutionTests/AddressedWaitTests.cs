@@ -93,8 +93,9 @@ public sealed class AddressedWaitTests
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(2, Data(completed).Count);
 
-        // After the instance finishes, its tokens are closed.
-        EventAssert.Closed(await engine.ReplyAsync(second.Token, new Approval { Approved = true }));
+        // After the instance finishes, a token is still told why its wait closed.
+        EventAssert.Rejected(await engine.ReplyAsync(second.Token, new Approval { Approved = true }),
+            EventRejection.WaitAnswered);
     }
 
     [Fact]
@@ -108,10 +109,10 @@ public sealed class AddressedWaitTests
         var wait = Assert.Single(await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
         await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
 
-        // A screen still showing the wait gets the reason it closed.
+        // A screen still showing the wait gets the reason it closed, after the instance finished too.
         var late = await engine.ReplyAsync(wait.Token, new Approval { Approved = true });
 
-        EventAssert.Closed(late);
+        EventAssert.Rejected(late, EventRejection.WaitTimedOut);
         Assert.Equal("timeout", Data(late).Outcome);
         Assert.Empty(await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
     }

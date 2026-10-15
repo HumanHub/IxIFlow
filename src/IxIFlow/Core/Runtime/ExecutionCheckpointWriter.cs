@@ -25,6 +25,7 @@ internal static class ExecutionCheckpointWriter
         if (!host.PersistsState)
             return false;
         var lastCommitted = SavedForm.Of(instance);
+        checkpoint.CloseEndedRequests();
         Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData, parkUntil);
         var size = CheckpointBytes(instance);
         if (enforceLimit && size > host.Limits.MaxCheckpointBytes)

@@ -98,10 +98,10 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
     {
         ArgumentNullException.ThrowIfNull(reply);
         ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
-        if (!ReplyToken.TryRead(token, out var instanceId, out var waitId, out _))
+        if (!ReplyToken.TryRead(token, out var instanceId, out var waitId, out var subject))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "The text is not a reply token");
         return DecideAsync(instanceId, eventId,
-            client => client.DeliverReplyAsync(instanceId, waitId, reply, eventId), cancellationToken);
+            client => client.DeliverReplyAsync(instanceId, waitId, reply, eventId, subject), cancellationToken);
     }
 
     public async Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query)
