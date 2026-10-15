@@ -710,11 +710,16 @@ internal sealed class InstanceHost(
         {
             var result = await _executor.RunAsync(definition, instance, checkpoint, workflowData,
                 new HostedRun(this, instance, owner, persistState, canPark: depth == 1), cancellationToken);
-            // The local host resumes what it saved with a runnable time, on time (C-12).
+            // The local host resumes what it saved with a runnable time, on time (C-12), and forgets
+            // what has finished.
             if (persistState && instance.RunnableAtUtc is { } due &&
                 result.Status is WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended or
                     WorkflowExecutionStatus.NeedsResolution)
                 _control.Schedule(instance.InstanceId, due);
+            else if (persistState && result.Status is WorkflowExecutionStatus.Success or
+                         WorkflowExecutionStatus.Failed or WorkflowExecutionStatus.Cancelled or
+                         WorkflowExecutionStatus.TimedOut)
+                _control.Unschedule(instance.InstanceId);
             return result;
         }
         finally

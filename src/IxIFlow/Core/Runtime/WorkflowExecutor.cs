@@ -237,7 +237,9 @@ internal sealed class WorkflowExecutor
                     .Where(due => due != null).Min();
                 // With nothing in flight, a long wait for a retry gives the slot and lease back; the
                 // host resumes the run on time (C-03). A request that arrived meanwhile keeps it here.
-                if (inFlight.Count == 0 && nextWake is { } parkUntil && host.CanPark &&
+                // A sibling's wait deadline may come before the retry; the park ends at whichever is first.
+                if (inFlight.Count == 0 && host.CanPark &&
+                    new[] { nextWake, nextWaitDeadline }.Where(due => due != null).Min() is { } parkUntil &&
                     parkUntil - Now > host.Limits.ParkRetriesLongerThan)
                 {
                     if (await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData,

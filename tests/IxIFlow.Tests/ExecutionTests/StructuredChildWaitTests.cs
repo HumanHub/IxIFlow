@@ -915,10 +915,16 @@ public sealed class StructuredChildWaitTests
             services.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
 
-        await scanner.RecoverOnceAsync(CancellationToken.None);
-        await scanner.RecoverOnceAsync(CancellationToken.None);
+        // The host's timer may still be finishing the child; the scan wakes the parent once it has.
+        WorkflowInstance? saved = null;
+        for (var pass = 0; pass < 40 && saved?.Status != WorkflowStatus.Completed; pass++)
+        {
+            await scanner.RecoverOnceAsync(CancellationToken.None);
+            saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
+            if (saved?.Status != WorkflowStatus.Completed)
+                await Task.Delay(50);
+        }
 
-        var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
         Assert.True(JsonSerializer.Deserialize<ParentData>(saved.WorkflowDataJson)!.ChildTimedOut);
     }

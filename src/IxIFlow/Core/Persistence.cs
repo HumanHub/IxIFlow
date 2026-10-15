@@ -274,8 +274,10 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                     JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!);
                 _acknowledgedCancellations.Remove(instanceId);
             }
-            // The request makes the instance runnable now, in the same step (C-01).
-            instance.RunnableAtUtc = Now;
+            // A request still to be taken up makes the instance runnable now, in the same step (C-01);
+            // repeating one already unwound changes nothing.
+            if (!_acknowledgedCancellations.Contains(instanceId))
+                instance.RunnableAtUtc = Now;
             return Task.FromResult(true);
         }
     }
