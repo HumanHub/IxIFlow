@@ -353,35 +353,6 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         public bool IsActive { get; set; }
     }
 
-    public async Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance)
-    {
-        ArgumentNullException.ThrowIfNull(instance);
-        if (instance.Status != WorkflowStatus.Running ||
-            string.IsNullOrWhiteSpace(instance.SuspensionInfo?.SuspensionId))
-        {
-            throw new ArgumentException("A running instance with a suspension ID is required", nameof(instance));
-        }
-        if (instance.Revision != 0)
-            return false;
-
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        var updated = await connection.ExecuteAsync("""
-            UPDATE dbo.IxIFlowWorkflowInstances
-            SET Status = @RunningStatus, StateJson = @StateJson
-            WHERE InstanceId = @InstanceId AND Status = @SuspendedStatus AND Revision = 0
-                AND SuspensionId = @SuspensionId
-            """, new
-        {
-            instance.InstanceId,
-            SuspensionId = instance.SuspensionInfo.SuspensionId,
-            RunningStatus = WorkflowStatus.Running.ToString(),
-            SuspendedStatus = WorkflowStatus.Suspended.ToString(),
-            StateJson = JsonSerializer.Serialize(instance)
-        });
-        return updated == 1;
-    }
-
     public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
     {
         await EnsureSchemaAsync();
@@ -411,17 +382,6 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await connection.ExecuteAsync(
             "DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId",
             new { InstanceId = instanceId });
-    }
-
-    public async Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync()
-    {
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<string>("""
-            SELECT StateJson FROM dbo.IxIFlowWorkflowInstances
-            WHERE Status = @Status AND (SuspensionExpiresAt IS NULL OR SuspensionExpiresAt <= SYSUTCDATETIME())
-            """, new { Status = WorkflowStatus.Suspended.ToString() });
-        return rows.Select(Deserialize).ToArray();
     }
 
     private async Task<IEnumerable<WorkflowInstance>> QueryAsync(string predicate, string value)

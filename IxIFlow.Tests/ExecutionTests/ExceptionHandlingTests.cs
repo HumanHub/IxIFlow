@@ -22,7 +22,6 @@ public class ExceptionHandlingTests
         services.AddSingleton<IEventCorrelator, EventCorrelator>();
         services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
         services.AddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
-        services.AddSingleton<IEventStore, InMemoryEventStore>();
         services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
         services.AddSingleton<WorkflowEngine>();
 

@@ -53,12 +53,6 @@ public interface IWorkflowStateRepository
     Task SaveWorkflowInstanceAsync(WorkflowInstance instance);
 
     /// <summary>
-    ///     Atomically take ownership of one suspended wait before executing its continuation.
-    ///     The supplied instance must contain the same suspension ID and have Running status.
-    /// </summary>
-    Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance);
-
-    /// <summary>
     ///     Get workflow instance by ID
     /// </summary>
     Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId);
@@ -82,11 +76,6 @@ public interface IWorkflowStateRepository
     ///     Delete workflow instance
     /// </summary>
     Task DeleteWorkflowInstanceAsync(string instanceId);
-
-    /// <summary>
-    ///     Get suspended workflow instances ready for resumption
-    /// </summary>
-    Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync();
 }
 
 /// <summary>Tracks terminal checkpoints whose completion event still needs publication.</summary>
@@ -98,78 +87,6 @@ public interface IWorkflowCompletionOutbox
         string? instanceId, string token, TimeSpan duration);
     Task<bool> MarkCompletionPublishedAsync(string instanceId, long revision, string token);
     Task ReleaseCompletionClaimAsync(string instanceId, string token);
-}
-
-/// <summary>
-///     Event store interface for workflow events
-/// </summary>
-public interface IEventStore
-{
-    /// <summary>
-    ///     Append event to workflow instance
-    /// </summary>
-    Task AppendEventAsync(string workflowInstanceId, WorkflowEvent workflowEvent);
-
-    /// <summary>
-    ///     Get events for workflow instance
-    /// </summary>
-    Task<IEnumerable<WorkflowEvent>> GetEventsAsync(string workflowInstanceId);
-
-    /// <summary>
-    ///     Get events for workflow instance from a specific sequence number
-    /// </summary>
-    Task<IEnumerable<WorkflowEvent>> GetEventsFromSequenceAsync(string workflowInstanceId, long fromSequence);
-
-    /// <summary>
-    ///     Get the latest sequence number for a workflow instance
-    /// </summary>
-    Task<long> GetLatestSequenceNumberAsync(string workflowInstanceId);
-}
-
-/// <summary>
-///     Workflow event for event sourcing
-/// </summary>
-public class WorkflowEvent
-{
-    /// <summary>
-    ///     Unique event identifier
-    /// </summary>
-    public string EventId { get; set; } = Guid.NewGuid().ToString();
-
-    /// <summary>
-    ///     Workflow instance ID
-    /// </summary>
-    public string WorkflowInstanceId { get; set; } = "";
-
-    /// <summary>
-    ///     Event sequence number
-    /// </summary>
-    public long SequenceNumber { get; set; }
-
-    /// <summary>
-    ///     Event type
-    /// </summary>
-    public string EventType { get; set; } = "";
-
-    /// <summary>
-    ///     Event data (JSON serialized)
-    /// </summary>
-    public string EventDataJson { get; set; } = "";
-
-    /// <summary>
-    ///     Event metadata
-    /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
-
-    /// <summary>
-    ///     When the event occurred
-    /// </summary>
-    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
-
-    /// <summary>
-    ///     Version of the event schema
-    /// </summary>
-    public int EventVersion { get; set; } = 1;
 }
 
 /// <summary>
@@ -412,30 +329,6 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         return Task.CompletedTask;
     }
 
-    public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance)
-    {
-        ArgumentNullException.ThrowIfNull(instance);
-        if (instance.Status != WorkflowStatus.Running ||
-            string.IsNullOrWhiteSpace(instance.SuspensionInfo?.SuspensionId))
-        {
-            throw new ArgumentException("A running instance with a suspension ID is required", nameof(instance));
-        }
-
-        lock (_claimLock)
-        {
-            if (!_instances.TryGetValue(instance.InstanceId, out var stored) ||
-                stored.Revision != 0 || instance.Revision != 0 ||
-                stored.Status != WorkflowStatus.Suspended ||
-                stored.SuspensionInfo?.SuspensionId != instance.SuspensionInfo.SuspensionId)
-            {
-                return Task.FromResult(false);
-            }
-
-            _instances[instance.InstanceId] = SnapshotStructured(instance);
-            return Task.FromResult(true);
-        }
-    }
-
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
     {
         _instances.TryGetValue(instanceId, out var instance);
@@ -475,15 +368,6 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         return Task.CompletedTask;
     }
 
-    public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync()
-    {
-        var suspendedInstances = _instances.Values.Where(i =>
-            i.Status == WorkflowStatus.Suspended &&
-            (i.SuspensionInfo?.ExpiresAt == null || i.SuspensionInfo.ExpiresAt <= DateTime.UtcNow))
-            .Select(SnapshotStructured).ToList();
-        return Task.FromResult<IEnumerable<WorkflowInstance>>(suspendedInstances);
-    }
-
     private static WorkflowInstance SnapshotStructured(WorkflowInstance instance) =>
         instance.Revision != 0 || ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
             ? JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!
@@ -495,47 +379,6 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(duration));
-    }
-}
-
-/// <summary>
-///     In-memory implementation of event store
-/// </summary>
-public class InMemoryEventStore : IEventStore
-{
-    private readonly ConcurrentDictionary<string, List<WorkflowEvent>> _events = new();
-    private readonly object _lock = new();
-
-    public Task AppendEventAsync(string workflowInstanceId, WorkflowEvent workflowEvent)
-    {
-        lock (_lock)
-        {
-            var events = _events.GetOrAdd(workflowInstanceId, _ => new List<WorkflowEvent>());
-            workflowEvent.SequenceNumber = events.Count + 1;
-            events.Add(workflowEvent);
-        }
-
-        return Task.CompletedTask;
-    }
-
-    public Task<IEnumerable<WorkflowEvent>> GetEventsAsync(string workflowInstanceId)
-    {
-        _events.TryGetValue(workflowInstanceId, out var events);
-        return Task.FromResult(events?.AsEnumerable() ?? Enumerable.Empty<WorkflowEvent>());
-    }
-
-    public Task<IEnumerable<WorkflowEvent>> GetEventsFromSequenceAsync(string workflowInstanceId, long fromSequence)
-    {
-        _events.TryGetValue(workflowInstanceId, out var events);
-        var filteredEvents = events?.Where(e => e.SequenceNumber >= fromSequence) ?? Enumerable.Empty<WorkflowEvent>();
-        return Task.FromResult(filteredEvents);
-    }
-
-    public Task<long> GetLatestSequenceNumberAsync(string workflowInstanceId)
-    {
-        _events.TryGetValue(workflowInstanceId, out var events);
-        var latestSequence = events?.LastOrDefault()?.SequenceNumber ?? 0;
-        return Task.FromResult(latestSequence);
     }
 }
 
