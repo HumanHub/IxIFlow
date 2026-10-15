@@ -4,6 +4,7 @@ using IxIFlow.Core;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json.Serialization;
+using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -487,7 +488,7 @@ public class ParallelApprovalContractTests
         using var services = CreateServices(repository);
         var engine = services.GetRequiredService<IWorkflowEngine>();
 
-        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
+        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(
             CreateRecoverWorkflow(), new ApprovalData { RequestId = "request-1" }));
 
         var saved = (await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running)).Single();
@@ -555,7 +556,7 @@ public class ParallelApprovalContractTests
         });
         var data = new ApprovalData();
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => engine.ExecuteWorkflowAsync(definition, data));
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidDefinition, () => engine.ExecuteWorkflowAsync(definition, data));
         Assert.Equal(0, data.FinanceStarted);
     }
 
@@ -880,7 +881,7 @@ public class ParallelApprovalContractTests
             .WaitFor<ApprovalReply>("finance")
             .Build();
 
-        await Assert.ThrowsAsync<NotSupportedException>(() =>
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidDefinition, () =>
             engine.ExecuteWorkflowAsync(definition, new ApprovalData()));
     }
 

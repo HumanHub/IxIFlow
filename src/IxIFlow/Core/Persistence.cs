@@ -487,7 +487,8 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
              new WorkflowScopeCatalog(published).Fingerprint !=
              new WorkflowScopeCatalog(definition).Fingerprint))
         {
-            throw new InvalidOperationException($"Workflow {definition.Name} v{definition.Version} is already registered");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                $"Workflow {definition.Name} v{definition.Version} is already registered");
         }
     }
 

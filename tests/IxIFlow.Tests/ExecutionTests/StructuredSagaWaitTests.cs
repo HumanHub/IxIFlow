@@ -5,6 +5,7 @@ using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -346,7 +347,7 @@ public class StructuredSagaWaitTests
                 .WaitFor<Approval>("approval"))
             .Build();
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidDefinition, () =>
             services.GetRequiredService<IWorkflowEngine>()
                 .ExecuteWorkflowAsync(definition, new SagaData()));
 
@@ -556,7 +557,7 @@ public class StructuredSagaWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
 
-        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
         var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
@@ -582,7 +583,7 @@ public class StructuredSagaWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
 
-        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
         var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
@@ -612,7 +613,7 @@ public class StructuredSagaWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
 
-        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
         var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
@@ -656,7 +657,7 @@ public class StructuredSagaWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
 
-        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
         var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
@@ -683,7 +684,7 @@ public class StructuredSagaWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowEngine>();
 
-        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
         var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
@@ -999,7 +1000,7 @@ public class StructuredSagaWaitTests
                 .Do(branch => branch.Saga(saga => saga.Step<FailActivity>())
                     .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1)))
                 .Do(branch => branch.Step<BeginActivity>())))
-            .Catch<InvalidOperationException, MessageFault>(handler => handler.Step<ReadErrorActivity>(setup => setup
+            .Catch<SagaTerminatedException, MessageFault>(handler => handler.Step<ReadErrorActivity>(setup => setup
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
             .Build();
@@ -1008,7 +1009,7 @@ public class StructuredSagaWaitTests
             .ExecuteWorkflowAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Contains("Saga retry exhausted", Data(result).Error);
+        Assert.Contains("retry exhausted", Data(result).Error);
     }
 
     [Fact]
@@ -1327,7 +1328,7 @@ public class StructuredSagaWaitTests
     [Fact]
     public void SagaErrorHandler_RejectsFaultPropertiesThatCannotBeCheckpointed()
     {
-        Assert.Throws<NotSupportedException>(() => Workflow.Create<SagaData>("InvalidSagaFault")
+        EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<SagaData>("InvalidSagaFault")
             .Step<BeginActivity>()
             .Saga(saga => saga.Step<FailActivity>())
             .OnError<InvalidOperationException, InvalidFault>(error => error
@@ -1338,7 +1339,7 @@ public class StructuredSagaWaitTests
     [Fact]
     public void SagaErrorHandler_RequiresAnOutcomeWhenItWaits()
     {
-        Assert.Throws<InvalidOperationException>(() => Workflow.Create<SagaData>("MissingSagaOutcome")
+        EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<SagaData>("MissingSagaOutcome")
             .Step<BeginActivity>()
             .Saga(saga => saga.Step<FailActivity>())
             .OnError<InvalidOperationException, MessageFault>(error => error

@@ -156,24 +156,3 @@ public class SagaErrorConfiguration
     public bool IgnoreCompensationErrors { get; set; }
     public Dictionary<string, object> Metadata { get; set; } = new();
 }
-
-/// <summary>
-///     Exception thrown when a workflow is successfully suspended
-/// </summary>
-public class WorkflowSuspendedException : Exception
-{
-    public SuspensionInfo? SuspensionInfo { get; }
-
-    public WorkflowSuspendedException(string message) : base(message)
-    {
-    }
-
-    public WorkflowSuspendedException(string message, SuspensionInfo? suspensionInfo) : base(message)
-    {
-        SuspensionInfo = suspensionInfo;
-    }
-
-    public WorkflowSuspendedException(string message, Exception innerException) : base(message, innerException)
-    {
-    }
-}

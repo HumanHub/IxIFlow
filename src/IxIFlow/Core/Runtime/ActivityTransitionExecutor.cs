@@ -69,7 +69,8 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
         {
             StepNumber = stepNumber,
             ActivityType = step.ActivityType
-                ?? throw new InvalidOperationException($"Activity step '{step.Id}' has no activity type"),
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Activity step '{step.Id}' has no activity type"),
             WorkflowData = (TData)workflowData,
             PreviousStepData = previous is TPrevious typed ? typed : default,
             CatchFault = step.StepMetadata.ContainsKey("IsCompensationActivity")
