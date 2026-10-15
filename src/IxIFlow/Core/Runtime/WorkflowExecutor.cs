@@ -207,7 +207,8 @@ internal sealed class WorkflowExecutor
                 }
                 if (!checkpoint.CancellationRequested && callerCancellation != null)
                     runningTasks.Add(callerCancellation);
-                if (drainRequested != null)
+                // The drain wakes the run once; after that it waits for its activities.
+                if (drainRequested != null && !host.Drain.IsCancellationRequested)
                     runningTasks.Add(drainRequested);
                 if (host.OwnershipLoss is { } ownershipLoss)
                     runningTasks.Add(ownershipLoss);
@@ -342,7 +343,7 @@ internal sealed class WorkflowExecutor
                 activity.Cancellation.Cancel();
             try
             {
-                await Task.WhenAll(inFlight.Values.Select(item => item.Task));
+                await WaitForActivitiesAsync(inFlight);
                 await SettleCancelledRunAsync(definition, instance, checkpoint, workflowData, host, inFlight,
                     uncommitted);
             }
@@ -591,7 +592,8 @@ internal sealed class WorkflowExecutor
         var scopes = new WorkflowScopeCatalog(definition);
         if (uncommitted.IsPending(instance))
             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
-        foreach (var activity in inFlight.Values.ToArray())
+        // Activities that ignored cancellation are not settled; their starts are resolved on recovery.
+        foreach (var activity in inFlight.Values.Where(item => item.Task.IsCompletedSuccessfully).ToArray())
         {
             if (activity.Task.Result is { Kind: ActivityRunKind.Threw,
                     Error: OperationCanceledException })
@@ -665,13 +667,13 @@ internal sealed class WorkflowExecutor
             activity.Cancellation.Cancel();
     }
 
-    private static async Task AbandonInFlightAsync(Dictionary<string, RunningActivity> inFlight)
+    private async Task AbandonInFlightAsync(Dictionary<string, RunningActivity> inFlight)
     {
         foreach (var activity in inFlight.Values)
             activity.Cancellation.Cancel();
         try
         {
-            await Task.WhenAll(inFlight.Values.Select(item => item.Task));
+            await WaitForActivitiesAsync(inFlight);
         }
         catch
         {
@@ -681,6 +683,21 @@ internal sealed class WorkflowExecutor
         {
             foreach (var activity in inFlight.Values)
                 activity.Cancellation.Dispose();
+        }
+    }
+
+    // How long a stopping run waits for cancelled activities before it lets go of the instance.
+    // An activity that ignores cancellation keeps running detached; the epoch fences its outcome.
+    private static readonly TimeSpan ActivityStopGrace = TimeSpan.FromSeconds(5);
+
+    private async Task WaitForActivitiesAsync(Dictionary<string, RunningActivity> inFlight)
+    {
+        try
+        {
+            await Task.WhenAll(inFlight.Values.Select(item => item.Task)).WaitAsync(ActivityStopGrace, _time);
+        }
+        catch (TimeoutException)
+        {
         }
     }
 

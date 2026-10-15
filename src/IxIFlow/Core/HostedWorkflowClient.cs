@@ -32,6 +32,9 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
         if (!options.PersistState)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 "A workflow started without waiting must persist its state");
+        // Inside a slot the start runs inline, so it cannot return before the run ends.
+        if (host.IsInsideRun)
+            return (await RunAsync(definition, workflowData, options, cancellationToken)).InstanceId;
         var accepted = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         // Once accepted the run belongs to the host; the caller's token only stops the wait.
         var run = host.RunAsync(options.InstanceId, (client, control, token) =>
@@ -42,9 +45,14 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
         _ = run.ContinueWith(finished => _ = finished.Exception, TaskContinuationOptions.OnlyOnFaulted);
         if (await Task.WhenAny(accepted.Task, run).WaitAsync(cancellationToken) == accepted.Task)
             return await accepted.Task;
-        // The run ended before a new start was saved, for example a repeated start of an
-        // existing instance or a refused request.
-        return (await run).InstanceId;
+        // The run ended without saving a new start: a repeated start of an existing instance is
+        // accepted; anything else, such as another host owning the ID, is not.
+        var result = await run;
+        var saved = await host.ReadAsync(client => client.ReadAsync(result.InstanceId));
+        if (saved != null && result.Status != WorkflowExecutionStatus.Running)
+            return result.InstanceId;
+        throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+            $"The start was not saved: {result.ErrorMessage ?? result.Status.ToString()}").At(result.InstanceId);
     }
 
     public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(string instanceId, TEventData @event,
@@ -119,7 +127,9 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
                     $"Workflow instance '{instanceId}' does not exist").At(instanceId);
             if (Satisfies(result.Status, until))
                 return result;
-            await Task.WhenAny(settled, Task.Delay(AwaitPollInterval, time, cancellationToken));
+            using var poll = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            await Task.WhenAny(settled, Task.Delay(AwaitPollInterval, time, poll.Token));
+            poll.Cancel();
             cancellationToken.ThrowIfCancellationRequested();
         }
     }

@@ -24,7 +24,6 @@ public static class ServiceCollectionExtensions
         // Core workflow services
         services.TryAddSingleton(HostSettings.Default);
         services.AddSingleton<LocalWorkflowHost>();
-        services.AddHostedService(provider => provider.GetRequiredService<LocalWorkflowHost>());
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
         services.AddScoped<DirectInstanceClient>();
         services.AddScoped<RunControl>();
@@ -32,6 +31,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowInvoker, WorkflowInvoker>();
         services.AddScoped<InstanceHost>();
         services.AddHostedService<WorkflowRecoveryService>();
+        // Registered after the scanner so it stops first: hosted services stop in reverse order,
+        // and the host drains the work the scanner admitted.
+        services.AddHostedService(provider => provider.GetRequiredService<LocalWorkflowHost>());
         services.AddSingleton(InProcessInstanceGate.Shared);
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(ExecutionLimits.Default);

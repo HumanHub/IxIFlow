@@ -23,6 +23,8 @@ public sealed class WorkflowRecoveryService(
             try
             {
                 using var scope = scopes.CreateScope();
+                // The host stops before the scanner and drains the work it admitted; the scanner's
+                // own token then only interrupts runs still going, which stay recoverable.
                 var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
                     .RecoverAsync(instance.InstanceId, token);
                 if (result.Status == WorkflowExecutionStatus.Faulted)
@@ -32,6 +34,10 @@ public sealed class WorkflowRecoveryService(
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (OperationCanceledException)
+            {
+                // The host is stopping; the instance is recovered after the next start.
             }
             catch (Exception error)
             {
