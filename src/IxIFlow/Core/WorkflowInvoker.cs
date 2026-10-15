@@ -210,7 +210,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
 
                 var failedChild = await _repository.GetWorkflowInstanceAsync(invocationId);
                 var savedError = failedChild != null &&
-                    StructuredWorkflowRunner.HasStructuredCheckpoint(failedChild)
+                    InstanceHost.HasStructuredCheckpoint(failedChild)
                     ? ExecutionCheckpoint.Read(failedChild.ExecutionStateJson).UnhandledError
                     : null;
                 executionState.PendingException = savedError?.ForPropagation() ??
@@ -282,7 +282,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
         CancellationToken cancellationToken)
     {
         // The structured runner writes invocation traces with the checkpoint revision.
-        if (StructuredWorkflowRunner.HasStructuredCheckpoint(instance))
+        if (InstanceHost.HasStructuredCheckpoint(instance))
             return Task.CompletedTask;
         return _tracer.TraceAsync(instance.InstanceId, entry, cancellationToken);
     }

@@ -54,7 +54,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     public void ThrowIfLost()
     {
         if (_loss.Task.IsCompleted)
-            throw new ExecutionLeaseLostException(_loss.Task.Result);
+            throw new ExecutionOwnershipLostException(_loss.Task.Result);
     }
 
     private async Task RenewUntilStoppedAsync(ExecutionLeaseSettings settings)
@@ -147,6 +147,3 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         }
     }
 }
-
-internal sealed class ExecutionLeaseLostException(Exception cause) : Exception(
-    "Workflow execution ownership was lost", cause);

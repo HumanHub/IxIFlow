@@ -7,9 +7,9 @@ namespace IxIFlow.Core;
 /// </summary>
 internal sealed class WorkflowEngine : IWorkflowEngine
 {
-    private readonly StructuredWorkflowRunner _runner;
+    private readonly InstanceHost _runner;
 
-    public WorkflowEngine(StructuredWorkflowRunner runner)
+    public WorkflowEngine(InstanceHost runner)
     {
         _runner = runner ?? throw new ArgumentNullException(nameof(runner));
     }
@@ -92,9 +92,9 @@ internal sealed class WorkflowEngine : IWorkflowEngine
         {
             return await operation;
         }
-        catch (ExecutionLeaseLostException)
+        catch (ExecutionOwnershipLostException)
         {
-            return StructuredWorkflowRunner.Busy(instanceId);
+            return WorkflowExecutor.Busy(instanceId);
         }
         catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error))
         {
