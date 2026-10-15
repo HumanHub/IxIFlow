@@ -147,8 +147,10 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 SELECT InstanceId, CancellationJson FROM dbo.IxIFlowWorkflowInstances
                 WHERE InstanceId IN @InstanceIds AND CancellationJson IS NOT NULL
                 """, new { InstanceIds = batch });
+            // One unreadable request does not hide the others.
             foreach (var row in rows)
-                requests[row.InstanceId] = JsonSerializer.Deserialize<CancellationReason>(row.CancellationJson)!;
+                if (ReadReason(row.CancellationJson) is { } reason)
+                    requests[row.InstanceId] = reason;
         }
         return requests;
     }
@@ -327,7 +329,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             // A terminal commit released the lease; only a running owner must still hold it.
             return snapshot.Status == WorkflowStatus.Running && !owns
                 ? new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision)
-                : new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision);
+                : new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
+                    ReadReason(current?.CancellationJson));
         }
         if (!owns)
         {
@@ -376,7 +379,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = CAST('0001-01-01' AS DATETIME2) WHERE InstanceId = @InstanceId
                 """, new { snapshot.InstanceId }, transaction);
         await transaction.CommitAsync();
-        return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision);
+        return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
+            ReadReason(current?.CancellationJson));
     }
 
     private sealed class CommitReceipt
@@ -384,6 +388,20 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         public long ExpectedRevision { get; set; }
         public long Revision { get; set; }
         public byte[] PayloadHash { get; set; } = [];
+    }
+
+    private static CancellationReason? ReadReason(string? json)
+    {
+        if (json == null)
+            return null;
+        try
+        {
+            return JsonSerializer.Deserialize<CancellationReason>(json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private sealed class CommitState

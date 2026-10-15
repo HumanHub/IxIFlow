@@ -23,14 +23,30 @@ public interface IWorkflowStateRepository
     /// <summary>
     /// Reads the durable cancellation requests of several instances at once; instances without a
     /// request are left out. A host watches all its running instances with one call per interval.
+    /// This fallback reads each instance separately, a few at a time, and leaves out instances whose
+    /// read failed; it fails only when every read fails. Stores should override it with one query.
     /// </summary>
     async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
         IReadOnlyCollection<string> instanceIds)
     {
-        var requests = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
-        foreach (var instanceId in instanceIds)
-            if (await GetCancellationRequestAsync(instanceId) is { } reason)
-                requests[instanceId] = reason;
+        var requests = new System.Collections.Concurrent.ConcurrentDictionary<string, CancellationReason>(
+            StringComparer.Ordinal);
+        var failures = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+        await Parallel.ForEachAsync(instanceIds.Distinct(StringComparer.Ordinal),
+            new ParallelOptions { MaxDegreeOfParallelism = 16 }, async (instanceId, _) =>
+            {
+                try
+                {
+                    if (await GetCancellationRequestAsync(instanceId) is { } reason)
+                        requests[instanceId] = reason;
+                }
+                catch (Exception error)
+                {
+                    failures.Add(error);
+                }
+            });
+        if (instanceIds.Count > 0 && failures.Count == instanceIds.Distinct(StringComparer.Ordinal).Count())
+            throw new AggregateException("No cancellation request could be read", failures);
         return requests;
     }
 
@@ -358,7 +374,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 // A terminal commit released the lease; only a running owner must still hold it.
                 if (snapshot.Status == WorkflowStatus.Running && !owns)
                     return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision));
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
+                    PendingCancellation(commit.InstanceId)));
             }
 
             if (!owns)
@@ -375,9 +392,16 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 _acknowledgedCancellations.Add(commit.InstanceId);
             if (snapshot.Status != WorkflowStatus.Running && _leases.TryGetValue(commit.InstanceId, out var lease))
                 _leases[commit.InstanceId] = lease with { ExpiresAtUtc = DateTime.MinValue };
-            return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision));
+            return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
+                PendingCancellation(commit.InstanceId)));
         }
     }
+
+    // Caller holds _claimLock.
+    private CancellationReason? PendingCancellation(string instanceId) =>
+        _cancellations.TryGetValue(instanceId, out var reason)
+            ? JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))
+            : null;
 
     // A leased commit needs the instance's current, active lease. An unleased commit (epoch zero)
     // is accepted only while nobody holds the lease; the revision check still orders it.

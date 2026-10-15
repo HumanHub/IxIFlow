@@ -34,6 +34,8 @@ internal static class ExecutionCheckpointWriter
             {
                 case CheckpointReplyKind.Acknowledged:
                     instance.Revision = reply.Revision;
+                    if (reply.PendingCancellation != null)
+                        host.ObserveCancellation(reply.PendingCancellation);
                     return;
                 case CheckpointReplyKind.Conflict:
                     throw new ExecutionOwnershipLostException(reply.Error!);

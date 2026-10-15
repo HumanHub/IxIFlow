@@ -152,7 +152,7 @@ public sealed class WorkflowExecutorHostTests
         public bool ChildStartIsCheckpointed => true;
         public Task? OwnershipLoss => null;
         public Task<CancellationReason>? CancellationSignal => null;
-        public CancellationReason? ObservedCancellation => null;
+        public CancellationReason? ObservedCancellation { get; private set; }
 
         public void ThrowIfOwnershipLost()
         {
@@ -165,13 +165,14 @@ public sealed class WorkflowExecutorHostTests
                     Error: new InvalidOperationException("Another owner committed")));
             _commits.Add(commit.ReadInstance().Status);
             probe.Commits = _commits.Count;
-            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, _commits.Count));
+            // Like a store, the commit reply reports a pending cancellation request.
+            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, _commits.Count,
+                PendingCancellation: CancellationWhen()
+                    ? new CancellationReason { ReasonCode = "host-cancelled" }
+                    : null));
         }
 
-        public Task<CancellationReason?> ReadCancellationRequestAsync() =>
-            Task.FromResult(CancellationWhen()
-                ? new CancellationReason { ReasonCode = "host-cancelled" }
-                : null);
+        public void ObserveCancellation(CancellationReason reason) => ObservedCancellation ??= reason;
 
         public Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step,
             WorkflowDefinition definition, WorkflowInstance instance, object workflowData, object? previous,

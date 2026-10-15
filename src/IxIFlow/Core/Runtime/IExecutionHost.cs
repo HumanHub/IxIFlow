@@ -40,7 +40,8 @@ internal interface IExecutionHost
     /// <summary>Sends one checkpoint commit. The same commit may be sent again after Retry or Unknown.</summary>
     Task<CheckpointReply> CommitAsync(CheckpointCommit commit);
 
-    Task<CancellationReason?> ReadCancellationRequestAsync();
+    /// <summary>A pending cancellation request learned from a commit reply.</summary>
+    void ObserveCancellation(CancellationReason reason);
 
     Task<WorkflowInstance?> ReadChildAsync(string childInstanceId);
 
@@ -80,4 +81,5 @@ internal enum CheckpointReplyKind
 }
 
 /// <summary>The host's answer to a checkpoint commit. Error explains a reply that was not acknowledged.</summary>
-internal sealed record CheckpointReply(CheckpointReplyKind Kind, long Revision = 0, Exception? Error = null);
+internal sealed record CheckpointReply(CheckpointReplyKind Kind, long Revision = 0, Exception? Error = null,
+    CancellationReason? PendingCancellation = null);
