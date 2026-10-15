@@ -10,6 +10,12 @@ internal interface IExecutionHost
     /// <summary>False for a run that keeps no saved state; nothing is committed.</summary>
     bool PersistsState { get; }
 
+    /// <summary>
+    /// Cancelled when the host is stopping: start no new steps, let running activities finish and
+    /// be committed, then return. The instance continues on recovery.
+    /// </summary>
+    CancellationToken Drain { get; }
+
     /// <summary>True when a child commits its start before it runs, so an unsaved child was never started.</summary>
     bool ChildStartIsCheckpointed { get; }
 

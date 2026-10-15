@@ -40,6 +40,9 @@ internal sealed class WorkflowExecutor
         var callerCancellation = cancellationToken.CanBeCanceled
             ? cancellationWake.Task
             : null;
+        var drainWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var drainRegistration = host.Drain.Register(() => drainWake.TrySetResult());
+        var drainRequested = host.Drain.CanBeCanceled ? drainWake.Task : null;
         try
         {
             var scopes = new WorkflowScopeCatalog(definition);
@@ -87,7 +90,8 @@ internal sealed class WorkflowExecutor
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     host.ThrowIfOwnershipLost();
-                    if (_transitions.HasDueDeadline(checkpoint))
+                    // A draining host starts no new steps (B-12).
+                    if (_transitions.HasDueDeadline(checkpoint) || host.Drain.IsCancellationRequested)
                         break;
                     await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
                         scopes, host, host.ObservedCancellation);
@@ -174,7 +178,7 @@ internal sealed class WorkflowExecutor
                 var nextWaitDeadline = checkpoint.Waits
                     .Where(wait => wait.DeadlineUtc > Now)
                     .Min(wait => wait.DeadlineUtc);
-                if (inFlight.Count == 0 && nextRetry == null)
+                if (inFlight.Count == 0 && (nextRetry == null || host.Drain.IsCancellationRequested))
                 {
                     if (await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
                             scopes, host, host.ObservedCancellation))
@@ -203,6 +207,8 @@ internal sealed class WorkflowExecutor
                 }
                 if (!checkpoint.CancellationRequested && callerCancellation != null)
                     runningTasks.Add(callerCancellation);
+                if (drainRequested != null)
+                    runningTasks.Add(drainRequested);
                 if (host.OwnershipLoss is { } ownershipLoss)
                     runningTasks.Add(ownershipLoss);
                 if (host.CancellationSignal is { } cancellationSignal &&
@@ -216,7 +222,7 @@ internal sealed class WorkflowExecutor
                     retryTimerCancellation.Cancel();
                 cancellationToken.ThrowIfCancellationRequested();
                 if (finished == retryTimer || finished == callerCancellation ||
-                    finished == host.CancellationSignal)
+                    finished == host.CancellationSignal || finished == drainRequested)
                     continue;
                 host.ThrowIfOwnershipLost();
                 var completedActivity = inFlight.Values.First(item => item.Task == finished);
@@ -241,6 +247,24 @@ internal sealed class WorkflowExecutor
                       ?? (checkpoint.UnhandledError.IsRestorable
                           ? checkpoint.UnhandledError.Restore()
                           : new InvalidOperationException(checkpoint.UnhandledError.Message));
+
+            // A drained run stops before the instance is idle; it keeps its status and continues on
+            // recovery from what was committed.
+            if (host.Drain.IsCancellationRequested &&
+                checkpoint.Continuations.Any(item => item.Status == ContinuationStatus.Active))
+            {
+                if (uncommitted.IsPending(instance))
+                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+                return new WorkflowExecutionResult
+                {
+                    InstanceId = instance.InstanceId,
+                    Status = WorkflowExecutionStatus.Running,
+                    WorkflowData = workflowData,
+                    TraceEntries = instance.ExecutionHistory.ToList(),
+                    ErrorMessage = "The host stopped before the instance became idle; it continues when recovered",
+                    ExecutionTime = Now - instance.StartedAt!.Value
+                };
+            }
 
             if (checkpoint.CancellationRequested &&
                 checkpoint.Continuations[0].Status == ContinuationStatus.Cancelled)

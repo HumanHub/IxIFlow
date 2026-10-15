@@ -243,6 +243,12 @@ public sealed class WorkflowRecoveryServiceTests
 
     private sealed class RecordingEngine : IWorkflowClient
     {
+        public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> AwaitAsync(string instanceId,
+            WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
             string instanceId, string? key, TEventData @event, string deliveryId,
             CancellationToken cancellationToken = default) where TEventData : class =>
@@ -283,6 +289,12 @@ public sealed class WorkflowRecoveryServiceTests
 
     private sealed class BlockingRecoveryEngine : IWorkflowClient
     {
+        public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
+        public Task<WorkflowExecutionResult> AwaitAsync(string instanceId,
+            WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
         private int _calls;
         public TaskCompletionSource FirstStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);

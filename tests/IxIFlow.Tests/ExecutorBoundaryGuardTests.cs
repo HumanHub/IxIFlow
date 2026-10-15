@@ -24,7 +24,8 @@ public sealed class ExecutorBoundaryGuardTests
         typeof(IWorkflowStateRepository), typeof(IWorkflowCompletionOutbox), typeof(GuardedStateRepository),
         typeof(WorkflowExecutionLease), typeof(InProcessInstanceGate), typeof(IWorkflowClient),
         typeof(IWorkflowVersionRegistry), typeof(IWorkflowInvoker), typeof(WorkflowInvoker),
-        typeof(WorkflowInvocationTransitionExecutor), typeof(InstanceHost)
+        typeof(WorkflowInvocationTransitionExecutor), typeof(InstanceHost), typeof(DirectInstanceClient),
+        typeof(LocalWorkflowHost), typeof(HostedWorkflowClient)
     ];
 
     [Fact]
@@ -42,12 +43,12 @@ public sealed class ExecutorBoundaryGuardTests
     [Fact]
     public void ScanFindsHostDependencies()
     {
-        // Guards the scan itself: the host does use the store, the lease and the engine.
+        // Guards the scan itself: the host does use the store, the lease and the child client.
         var referenced = ReferencedTypes(typeof(InstanceHost)).ToHashSet();
 
         Assert.Contains(typeof(IWorkflowStateRepository), referenced);
         Assert.Contains(typeof(WorkflowExecutionLease), referenced);
-        Assert.Contains(typeof(IWorkflowClient), referenced);
+        Assert.Contains(typeof(DirectInstanceClient), referenced);
     }
 
     private static bool IsHostOnly(Type type) =>
