@@ -157,7 +157,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
     }
 
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TInvokedData> Invoke<TWorkflow, TInvokedData>(
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>> configure)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TWorkflow : IWorkflow<TInvokedData>
         where TInvokedData : class
     {
@@ -168,7 +168,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
 
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TInvokedData> Invoke<TInvokedData>(
         string workflowName, int version,
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>> configure)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TInvokedData : class
     {
         new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps)

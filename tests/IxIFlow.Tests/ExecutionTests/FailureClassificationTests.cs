@@ -67,7 +67,7 @@ public sealed class FailureClassificationTests
         var parent = Workflow.Create<ParentData>("ClassifiedParent")
             .Step<NoopActivity>()
             .Try(attempt => attempt
-                .Invoke<ChildData>("ClassifiedChild", 1, _ => { }))
+                .Invoke<ChildData>("ClassifiedChild", 1))
             .Catch<Exception>(handler => handler
                 .Step<MarkActivity>(step => step
                     .Output(activity => activity.Marked).To(ctx => ctx.WorkflowData.Caught)))

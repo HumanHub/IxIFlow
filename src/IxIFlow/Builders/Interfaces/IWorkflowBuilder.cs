@@ -58,7 +58,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the workflow invocation</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TWorkflow, TInvokedData>(
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>> configure)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TWorkflow : IWorkflow<TInvokedData> 
         where TInvokedData : class;
 
@@ -71,7 +71,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the workflow invocation</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version,
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>> configure)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TInvokedData : class;
 
     /// <summary>
