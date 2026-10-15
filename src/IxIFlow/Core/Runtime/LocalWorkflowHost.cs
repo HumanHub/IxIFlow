@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -39,7 +40,37 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     }
 
     /// <summary>True inside a slot, where client calls run inline.</summary>
-    public bool IsInsideRun => CurrentRun.Value is { IsOpen: true };
+    public bool IsInsideRun => CurrentRun.Value?.IsOpen == true;
+
+    /// <summary>
+    /// Runs an operation inline when called from inside a run that is still open, and returns false
+    /// otherwise. The run's scope stays alive until the operation ends, even if the run ends first.
+    /// </summary>
+    public bool TryRunInline<T>(Func<DirectInstanceClient, RunControl, CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken, [NotNullWhen(true)] out Task<T>? run)
+    {
+        if (CurrentRun.Value is { } current && current.TryEnter())
+        {
+            run = RunInlineAsync(current, operation, cancellationToken);
+            return true;
+        }
+        run = null;
+        return false;
+    }
+
+    private static async Task<T> RunInlineAsync<T>(RunContext current,
+        Func<DirectInstanceClient, RunControl, CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await operation(current.Client, current.Control, cancellationToken);
+        }
+        finally
+        {
+            await current.ExitAsync();
+        }
+    }
 
     /// <summary>
     /// Watches for the next work item on <paramref name="instanceId"/> to finish on this host.
@@ -76,8 +107,8 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
         CancellationToken cancellationToken)
     {
         // A run's context stays with activities that outlive it; once it is closed their calls queue.
-        if (CurrentRun.Value is { IsOpen: true } current)
-            return operation(current.Client, current.Control, cancellationToken);
+        if (TryRunInline(operation, cancellationToken, out var inline))
+            return inline;
 
         var item = new WorkItem<T>(instanceId, operation, cancellationToken);
         var start = false;
@@ -104,8 +135,8 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     /// <summary>Runs an operation that needs no slot, such as a read, in its own scope.</summary>
     public async Task<T> ReadAsync<T>(Func<DirectInstanceClient, Task<T>> operation)
     {
-        if (CurrentRun.Value is { IsOpen: true } current)
-            return await operation(current.Client);
+        if (TryRunInline((client, _, _) => operation(client), CancellationToken.None, out var inline))
+            return await inline;
         await using var scope = _scopes.CreateAsyncScope();
         return await operation(scope.ServiceProvider.GetRequiredService<DirectInstanceClient>());
     }
@@ -125,21 +156,27 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
                 await _slots.WaitAsync(waiting.Token);
             slotTaken = true;
             item.MarkStarted();
-            await using var scope = _scopes.CreateAsyncScope();
-            var control = scope.ServiceProvider.GetRequiredService<RunControl>();
-            control.Drain = _draining.Token;
-            control.OnInstanceKnown(instanceId => Register(item, instanceId));
-            var client = scope.ServiceProvider.GetRequiredService<DirectInstanceClient>();
-            var context = new RunContext(client, control);
-            CurrentRun.Value = context;
+            var scope = _scopes.CreateAsyncScope();
+            RunContext? context = null;
             try
             {
+                var control = scope.ServiceProvider.GetRequiredService<RunControl>();
+                control.Drain = _draining.Token;
+                control.OnInstanceKnown(instanceId => Register(item, instanceId));
+                var client = scope.ServiceProvider.GetRequiredService<DirectInstanceClient>();
+                context = new RunContext(client, control);
+                CurrentRun.Value = context;
                 await item.RunAsync(client, control, stop.Token);
             }
             finally
             {
-                context.Close();
                 CurrentRun.Value = null;
+                // Inline calls still running in the scope, from work the run left behind, keep it
+                // until the last of them ends.
+                if (context != null)
+                    await context.CloseAsync(scope.DisposeAsync);
+                else
+                    await scope.DisposeAsync();
             }
         }
         catch (Exception error)
@@ -257,15 +294,65 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <summary>
+    /// The run a call is inside of. Calls enter it while it is open and keep its scope alive; once it
+    /// is closed, new calls queue like any other.
+    /// </summary>
     private sealed class RunContext(DirectInstanceClient client, RunControl control)
     {
-        private int _closed;
+        private readonly object _lock = new();
+        private int _inFlight;
+        private bool _closed;
+        private Func<ValueTask>? _release;
 
         public DirectInstanceClient Client { get; } = client;
         public RunControl Control { get; } = control;
-        public bool IsOpen => Volatile.Read(ref _closed) == 0;
 
-        public void Close() => Interlocked.Exchange(ref _closed, 1);
+        public bool IsOpen
+        {
+            get
+            {
+                lock (_lock)
+                    return !_closed;
+            }
+        }
+
+        public bool TryEnter()
+        {
+            lock (_lock)
+            {
+                if (_closed)
+                    return false;
+                _inFlight++;
+                return true;
+            }
+        }
+
+        public ValueTask ExitAsync()
+        {
+            Func<ValueTask>? release = null;
+            lock (_lock)
+            {
+                if (--_inFlight == 0 && _closed)
+                    (release, _release) = (_release, null);
+            }
+            return release?.Invoke() ?? ValueTask.CompletedTask;
+        }
+
+        // Closes the run; its scope is released now, or by the last inline call still in it.
+        public ValueTask CloseAsync(Func<ValueTask> release)
+        {
+            lock (_lock)
+            {
+                _closed = true;
+                if (_inFlight > 0)
+                {
+                    _release = release;
+                    return ValueTask.CompletedTask;
+                }
+            }
+            return release();
+        }
     }
 
     private sealed class SettledSignal
@@ -345,7 +432,11 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
 
         public override void Fail(Exception error) => _error = error;
 
-        public override void Cancel() => Completion.TrySetCanceled();
+        public override void Cancel()
+        {
+            StopWatchingCaller();
+            Completion.TrySetCanceled();
+        }
 
         // The caller hears the outcome only after the scope is disposed and the slot released.
         public override void Complete()
