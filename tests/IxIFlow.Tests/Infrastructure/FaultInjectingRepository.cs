@@ -40,7 +40,7 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
 
     public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
         _inner.RequestCancellationAsync(instanceId, reason);
-    public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
+    public virtual Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         _inner.GetCancellationRequestAsync(instanceId);
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
         _inner.GetWorkflowsRequiringRecoveryAsync();

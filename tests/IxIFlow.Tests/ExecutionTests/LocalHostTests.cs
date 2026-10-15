@@ -62,6 +62,77 @@ public sealed class LocalHostTests
     }
 
     [Fact]
+    [Trait("Spec", "B-02")]
+    public async Task WorkForAStartedInstanceQueuesBehindItWithoutASlot()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), slots: 2);
+        var gate = Gate(services);
+        var instanceId = await Client(services).StartAsync(BlockingWorkflow("GeneratedId"), new HostData())
+            .WaitAsync(Patience);
+        await gate.WaitForRunningAsync(1);
+
+        var queued = Client(services).RecoverAsync(instanceId);
+        var other = await Client(services).RunAsync(QuickWorkflow("BesideGeneratedId"), new HostData())
+            .WaitAsync(Patience);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, other.Status);
+        Assert.False(queued.IsCompleted);
+        gate.Release();
+        // Behind the finished run there is nothing left to recover.
+        Assert.Equal(WorkflowExecutionStatus.Faulted, (await queued.WaitAsync(Patience)).Status);
+    }
+
+    [Fact]
+    [Trait("Spec", "B-02")]
+    public async Task QueuedCallerCanStopWaiting()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), slots: 2);
+        var gate = Gate(services);
+        var busy = Client(services).RunAsync(BlockingWorkflow("CallerGivesUp"), new HostData(),
+            new WorkflowOptions { InstanceId = "caller-gives-up" });
+        await gate.WaitForRunningAsync(1);
+
+        using var giveUp = new CancellationTokenSource();
+        var queued = Client(services).RecoverAsync("caller-gives-up", giveUp.Token);
+        giveUp.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(Patience));
+        gate.Release();
+        Assert.Equal(WorkflowExecutionStatus.Success, (await busy.WaitAsync(Patience)).Status);
+    }
+
+    [Fact]
+    [Trait("Spec", "B-02")]
+    public async Task AnActivityCallingTheClientRunsInlineInItsSlot()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
+        var definition = Workflow.Create<HostData>("CallsTheClient")
+            .Step<ClientCallingActivity>()
+            .Build();
+
+        var result = await Client(services).RunAsync(definition, new HostData()).WaitAsync(Patience);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(2, Probe(services).Count("quick"));
+    }
+
+    [Fact]
+    [Trait("Spec", "B-12")]
+    public async Task DisposingTheHostCancelsQueuedCallers()
+    {
+        var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
+        var gate = Gate(services);
+        _ = Client(services).RunAsync(BlockingWorkflow("DisposedWhileBusy"), new HostData(),
+            new WorkflowOptions { InstanceId = "disposed-while-busy" });
+        await gate.WaitForRunningAsync(1);
+        var queued = Client(services).RecoverAsync("disposed-while-busy");
+
+        await services.DisposeAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(Patience));
+    }
+
+    [Fact]
     [Trait("Spec", "B-03")]
     public async Task StartReturnsOnceSavedAndAwaitReturnsWhenIdle()
     {
@@ -126,7 +197,7 @@ public sealed class LocalHostTests
     [Trait("Spec", "B-12")]
     public async Task StoppingHostLetsRunningActivitiesFinishThenStops()
     {
-        var repository = new InMemoryWorkflowStateRepository();
+        var repository = new CountingStore();
         var definition = Workflow.Create<HostData>("DrainedInstance")
             .Step<BlockingActivity>()
             .Step<QuickActivity>()
@@ -141,6 +212,11 @@ public sealed class LocalHostTests
 
             var stopping = services.GetRequiredService<LocalWorkflowHost>().StopAsync(CancellationToken.None);
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(Patience));
+            // While draining, the run waits for its activity instead of spinning on the store.
+            var readsBefore = repository.CancellationReads;
+            await Task.Delay(300);
+            Assert.True(repository.CancellationReads - readsBefore < 20,
+                $"{repository.CancellationReads - readsBefore} cancellation reads while draining");
             gate.Release();
             await stopping.WaitAsync(Patience);
 
@@ -199,6 +275,7 @@ public sealed class LocalHostTests
         services.AddSingleton<HostProbe>();
         services.AddTransient<BlockingActivity>();
         services.AddTransient<QuickActivity>();
+        services.AddTransient<ClientCallingActivity>();
         return services.BuildServiceProvider();
     }
 
@@ -272,12 +349,38 @@ public sealed class LocalHostTests
         }
     }
 
+    /// <summary>Runs another workflow through the public client from inside its own slot.</summary>
+    public sealed class ClientCallingActivity(IWorkflowClient client) : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            var result = await client.RunAsync(QuickWorkflow("CalledFromAnActivity"), new HostData(),
+                cancellationToken: cancellationToken);
+            if (result.Status != WorkflowExecutionStatus.Success)
+                throw new InvalidOperationException(result.ErrorMessage);
+        }
+    }
+
     public sealed class QuickActivity(HostProbe probe) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Record("quick");
             return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Counts reads of cancellation requests.</summary>
+    private sealed class CountingStore : FaultInjectingRepository
+    {
+        private int _cancellationReads;
+
+        public int CancellationReads => Volatile.Read(ref _cancellationReads);
+
+        public override Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
+        {
+            Interlocked.Increment(ref _cancellationReads);
+            return base.GetCancellationRequestAsync(instanceId);
         }
     }
 
