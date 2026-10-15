@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\src\IxIFlow\IxIFlow.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.SqlServer\IxIFlow.SqlServer.csproj" />
     <ProjectReference Include="..\IxIFlow.TestSupport\IxIFlow.TestSupport.csproj" />
+    <ProjectReference Include="..\..\samples\IxIFlow.Recipes\IxIFlow.Recipes.csproj" />
   </ItemGroup>
 
   <ItemGroup>
