@@ -119,11 +119,25 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         ownership.MaxPoolSize = ownershipPoolSize;
         ownership.MinPoolSize = Math.Min(ownership.MinPoolSize, ownershipPoolSize);
         _ownershipConnectionString = ownership.ConnectionString;
-        // A burst of claims that wait on commit locks must leave connections for renewals.
-        _claims = new SemaphoreSlim(Math.Max(1, ownershipPoolSize / 2));
+        // Claims and cancellation requests can wait on commit locks; together they use at most half
+        // the reserved pool, so renewals and the cancellation watch always find a connection.
+        _admissions = new SemaphoreSlim(Math.Max(1, ownershipPoolSize / 2));
     }
 
-    private readonly SemaphoreSlim _claims;
+    private readonly SemaphoreSlim _admissions;
+
+    private async Task<T> AdmittedAsync<T>(Func<Task<T>> call)
+    {
+        await _admissions.WaitAsync();
+        try
+        {
+            return await call();
+        }
+        finally
+        {
+            _admissions.Release();
+        }
+    }
 
     private readonly string _ownershipConnectionString;
 
@@ -132,6 +146,11 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         await EnsureSchemaAsync();
+        return await AdmittedAsync(() => RequestCancellationCoreAsync(instanceId, reason));
+    }
+
+    private async Task<bool> RequestCancellationCoreAsync(string instanceId, CancellationReason reason)
+    {
         await using var connection = await OpenOwnershipConnectionAsync();
         var changed = await connection.ExecuteAsync("""
             UPDATE dbo.IxIFlowWorkflowInstances
@@ -149,6 +168,11 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         await EnsureSchemaAsync();
+        return await AdmittedAsync(() => GetCancellationRequestCoreAsync(instanceId));
+    }
+
+    private async Task<CancellationReason?> GetCancellationRequestCoreAsync(string instanceId)
+    {
         await using var connection = await OpenOwnershipConnectionAsync();
         var json = await connection.QuerySingleOrDefaultAsync<string>("""
             SELECT CancellationJson FROM dbo.IxIFlowWorkflowInstances
@@ -203,15 +227,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         var milliseconds = LeaseMilliseconds(instanceId, token, duration);
         await EnsureSchemaAsync();
-        await _claims.WaitAsync();
-        try
-        {
-            return await ClaimAsync(instanceId, token, milliseconds);
-        }
-        finally
-        {
-            _claims.Release();
-        }
+        return await AdmittedAsync(() => ClaimAsync(instanceId, token, milliseconds));
     }
 
     private async Task<ExecutionLeaseGrant?> ClaimAsync(string instanceId, string token, int milliseconds)

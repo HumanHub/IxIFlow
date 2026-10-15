@@ -234,6 +234,27 @@ public sealed class CrashAccountingTests
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, repeated.Status);
     }
 
+    [Fact]
+    public async Task AwaitingAQuarantinedInstanceDoesNotReadItsData()
+    {
+        var store = new FaultInjectingRepository();
+        using var services = Services(store);
+        var instanceId = await InterruptedRunAsync(services, store);
+        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short))!;
+        var corrupted = (await store.GetWorkflowInstanceAsync(instanceId))!;
+        corrupted.WorkflowDataJson = "{ not json";
+        await CommitAsync(store, corrupted, grant, clearsCrashCount: false);
+        await CrashOwnersAsync(store, instanceId, 3, alreadyHeld: true);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
+            (await Client(services).RecoverAsync(instanceId)).Status);
+
+        var awaited = await Client(services).AwaitAsync(instanceId).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, awaited.Status);
+        Assert.Contains("quarantined", awaited.ErrorMessage);
+        Assert.Null(awaited.WorkflowData);
+    }
+
     // Runs a workflow whose commits fail once its activity has run, so it is left running with the
     // activity claimed and its lease released.
     private static async Task<string> InterruptedRunAsync(IServiceProvider services,

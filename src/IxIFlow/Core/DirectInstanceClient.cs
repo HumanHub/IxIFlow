@@ -93,6 +93,8 @@ internal sealed class DirectInstanceClient
     /// <summary>The saved state of an instance as a result, or null when it does not exist.</summary>
     public Task<WorkflowExecutionResult?> ReadAsync(string instanceId) => _runner.ReadAsync(instanceId);
 
+    public Task<WorkflowExecutionStatus?> ReadStatusAsync(string instanceId) => _runner.ReadStatusAsync(instanceId);
+
     public Task<WorkflowExecutionResult> ResolveAsync(
         string instanceId, string invocationId, ActivityResolution resolution,
         CancellationToken cancellationToken = default) =>
