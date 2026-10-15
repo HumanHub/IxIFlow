@@ -28,6 +28,7 @@ public sealed class WorkflowDeadlineTests
     }
 
     [Fact]
+    [Trait("Spec", "C-12")]
     public async Task WaitDeadlineRunsTimeoutPathAndSkipsReceivedPath()
     {
         using var services = Services();
@@ -163,6 +164,7 @@ public sealed class WorkflowDeadlineTests
     }
 
     [Fact]
+    [Trait("Spec", "C-05")]
     public async Task LocalRecoveryServiceWakesAnOverdueWait()
     {
         // The wait was saved by a host that is gone, so only the scan can find it.
