@@ -178,9 +178,9 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                 throw new InvalidOperationException("ExecuteChildWorkflowAsync method not found");
 
             var genericExecuteMethod = executeMethod.MakeGenericMethod(childWorkflowDataType);
-            var childResult = await (Task<WorkflowExecutionResult>)genericExecuteMethod.Invoke(this,
+            var childResult = await WorkflowInfrastructureException.GuardAsync(() => (Task<WorkflowExecutionResult>)genericExecuteMethod.Invoke(this,
                 [childWorkflowDefinition, childWorkflowData, invocationId,
-                    context.WorkflowInstance.InstanceId, cancellationToken])!;
+                    context.WorkflowInstance.InstanceId, cancellationToken])!, $"Running child workflow '{invocationId}'");
 
             var duration = _time.GetUtcNow().UtcDateTime - startTime;
 
@@ -206,7 +206,8 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                     StackTrace = childResult.ErrorStackTrace
                 }, cancellationToken);
 
-                var failedChild = await _repository.GetWorkflowInstanceAsync(invocationId);
+                var failedChild = await WorkflowInfrastructureException.GuardAsync(
+                    () => _repository.GetWorkflowInstanceAsync(invocationId), $"Reading child workflow '{invocationId}'");
                 var savedError = failedChild != null &&
                     StructuredWorkflowRunner.HasStructuredCheckpoint(failedChild)
                     ? ExecutionCheckpoint.Read(failedChild.ExecutionStateJson).UnhandledError
@@ -251,7 +252,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
                 ChildInstanceId = invocationId
             };
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not WorkflowInfrastructureException)
         {
             _logger.LogError(ex, "Workflow invocation step failed: {StepId}", step.Id);
 
