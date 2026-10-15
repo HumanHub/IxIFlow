@@ -7,6 +7,7 @@ namespace IxIFlow.Tests.SyntaxTests;
 /// <summary>
 /// Tests conditional execution with previous step access syntax validation.
 /// </summary>
+[Trait("Feature", "authoring")]
 public class ConditionalWithPreviousStepSyntaxTests
 {
     [Fact]

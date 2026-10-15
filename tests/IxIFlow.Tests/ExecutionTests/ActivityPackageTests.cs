@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "documents")]
 public class ActivityPackageTests
 {
     private const string Manifest = """

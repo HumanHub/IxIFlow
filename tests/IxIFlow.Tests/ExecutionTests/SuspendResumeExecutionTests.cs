@@ -9,6 +9,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>
 ///     Tests for suspend/resume execution functionality
 /// </summary>
+[Trait("Feature", "waits")]
 public class SuspendResumeExecutionTests
 {
     private readonly ServiceProvider _serviceProvider;

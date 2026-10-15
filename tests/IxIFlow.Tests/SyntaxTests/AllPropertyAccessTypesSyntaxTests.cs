@@ -15,6 +15,7 @@ namespace IxIFlow.Tests.SyntaxTests;
 /// 3. From(PreviousStep access) - ctx.PreviousStep.Property <-- THE ISSUE
 /// 4. From(Workflow access) - ctx.WorkflowData.Property
 /// </summary>
+[Trait("Feature", "authoring")]
 public class AllPropertyAccessTypesSyntaxTests
 {
     [Fact]
