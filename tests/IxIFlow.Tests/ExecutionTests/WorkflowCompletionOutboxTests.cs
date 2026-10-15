@@ -105,8 +105,8 @@ public sealed class WorkflowCompletionOutboxTests
                 Status = WorkflowStatus.Completed
             };
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await repository.CommitWorkflowInstanceAsync(instance, 0,
-                    Guid.NewGuid().ToString("N"))).Status);
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
+                    Guid.NewGuid().ToString("N")))).Status);
         }
         var pending = (await repository.GetUnpublishedCompletionsAsync()).ToArray();
         Assert.Equal(2, pending.Length);
@@ -130,8 +130,8 @@ public sealed class WorkflowCompletionOutboxTests
             WorkflowName = "ConcurrentOutbox",
             Status = WorkflowStatus.Completed
         };
-        var committed = await repository.CommitWorkflowInstanceAsync(instance, 0,
-            Guid.NewGuid().ToString("N"));
+        var committed = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
+            Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
         var bus = new BlockingCompletionBus();
         var first = new WorkflowCompletionPublisher(repository, bus, "host-a");
@@ -173,8 +173,8 @@ public sealed class WorkflowCompletionOutboxTests
         try
         {
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await repository.CommitWorkflowInstanceAsync(instance, 0,
-                    Guid.NewGuid().ToString("N"))).Status);
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
+                    Guid.NewGuid().ToString("N")))).Status);
             Assert.Single(await outbox.ClaimUnpublishedCompletionsAsync(
                 instance.InstanceId, "dead-host", TimeSpan.FromMilliseconds(50)));
             Assert.Empty(await outbox.ClaimUnpublishedCompletionsAsync(
@@ -242,8 +242,8 @@ public sealed class WorkflowCompletionOutboxTests
             WorkflowName = "ConcurrentSqlOutbox",
             Status = WorkflowStatus.Completed
         };
-        var committed = await firstRepository.CommitWorkflowInstanceAsync(instance, 0,
-            Guid.NewGuid().ToString("N"));
+        var committed = await firstRepository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
+            Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
         try
         {

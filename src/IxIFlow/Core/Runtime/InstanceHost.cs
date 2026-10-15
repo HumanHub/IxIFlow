@@ -18,13 +18,15 @@ internal sealed class InstanceHost(
     IWorkflowVersionRegistry registry,
     InProcessInstanceGate gate,
     ExecutionLeaseSettings? leaseSettings = null,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null,
+    ExecutionLimits? limits = null)
 {
     private readonly IWorkflowStateRepository _store = GuardedStateRepository.Wrap(repository);
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private readonly WorkflowInvocationTransitionExecutor _invocations = new(workflowInvoker);
     private readonly bool _childStartIsCheckpointed = workflowInvoker is ICheckpointedWorkflowInvoker;
     private readonly ExecutionLeaseSettings _leaseSettings = leaseSettings ?? ExecutionLeaseSettings.Default;
+    private readonly ExecutionLimits _limits = limits ?? ExecutionLimits.Default;
     private readonly WorkflowExecutor _executor = new(services, activityExecutor,
         timeProvider ?? TimeProvider.System);
     private readonly ContinuationTransitions _transitions = new(services, timeProvider ?? TimeProvider.System);
@@ -131,7 +133,7 @@ internal sealed class InstanceHost(
             checkpoint.CancellationRequested = true;
             ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
         }
-        await PersistAsync(instance, checkpoint, workflowData, scopes);
+        await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
         return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
             true, owner, cancellationToken);
     }
@@ -340,7 +342,7 @@ internal sealed class InstanceHost(
             if (options.PersistState)
             {
                 await registry.RegisterWorkflowAsync(definition);
-                await PersistAsync(instance, checkpoint, workflowData, scopes);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
             }
             return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                 options.PersistState, owner, cancellationToken);
@@ -418,10 +420,10 @@ internal sealed class InstanceHost(
                     ? WorkflowExecutor.Busy(instanceId)
                     : Rejected(instanceId, "The wait changed before this event could be accepted");
             }
-            if (await _executor.ReconcileChildWaitsAsync(checkpoint, new HostedRun(this, instance.InstanceId, owner, true)))
+            if (await _executor.ReconcileChildWaitsAsync(checkpoint, new HostedRun(this, instance, owner, true)))
             {
                 instance.Status = WorkflowStatus.Running;
-                await PersistAsync(instance, checkpoint, workflowData, scopes);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
                 var refreshed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                     true, owner, cancellationToken);
                 if (refreshed.Status == WorkflowExecutionStatus.Suspended)
@@ -431,7 +433,7 @@ internal sealed class InstanceHost(
             if (_transitions.HasDueDeadline(checkpoint))
             {
                 instance.Status = WorkflowStatus.Running;
-                await PersistAsync(instance, checkpoint, workflowData, scopes);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
                 var afterDeadline = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                     true, owner, cancellationToken);
                 if (afterDeadline.Status == WorkflowExecutionStatus.Suspended)
@@ -463,7 +465,7 @@ internal sealed class InstanceHost(
                 checkpoint.CancellationRequested = true;
                 ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
                 instance.Status = WorkflowStatus.Running;
-                await PersistAsync(instance, checkpoint, workflowData, scopes);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
                 return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                     true, owner, cancellationToken);
             }
@@ -490,7 +492,7 @@ internal sealed class InstanceHost(
             continuation.Status = ContinuationStatus.Active;
 
             instance.Status = WorkflowStatus.Running;
-            await PersistAsync(instance, checkpoint, workflowData, scopes);
+            await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
 
             var resumed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                 true, owner, cancellationToken);
@@ -546,6 +548,8 @@ internal sealed class InstanceHost(
                      item.Status is (ContinuationStatus.WaitingResolution or
                          ContinuationStatus.Cancelling)))
             continuation.Status = ContinuationStatus.Active;
+        // An instance stopped at a resource limit runs again; it stops again if the limit still applies.
+        checkpoint.ResourceStop = null;
         instance.Status = WorkflowStatus.Running;
         if (cancellationReason != null && !checkpoint.CancellationRequested &&
             checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
@@ -620,38 +624,58 @@ internal sealed class InstanceHost(
         ExecutionCheckpoint checkpoint, object workflowData, bool persistState, WorkflowExecutionLease? owner,
         CancellationToken cancellationToken) =>
         _executor.RunAsync(definition, instance, checkpoint, workflowData,
-            new HostedRun(this, instance.InstanceId, owner, persistState), cancellationToken);
+            new HostedRun(this, instance, owner, persistState), cancellationToken);
 
+    // A request whose checkpoint would exceed a limit is refused; the instance keeps its saved state.
     private async Task PersistAsync(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
-        object workflowData, WorkflowScopeCatalog scopes)
+        object workflowData, WorkflowScopeCatalog scopes, WorkflowExecutionLease? owner)
     {
-        ExecutionCheckpointWriter.Prepare(instance, checkpoint, workflowData, scopes, Now);
-        await CommitAsync(instance);
+        try
+        {
+            await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner, true), instance,
+                checkpoint, workflowData, scopes, Now);
+        }
+        catch (CheckpointLimitExceededException error)
+        {
+            throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, error.Message, error);
+        }
     }
 
-    private async Task CommitAsync(WorkflowInstance instance)
+    private async Task<CheckpointReply> CommitAsync(WorkflowInstance instance, CheckpointCommit commit,
+        long epoch)
     {
-        var expectedRevision = instance.Revision;
-        var commitId = Guid.NewGuid().ToString("N");
-        for (var attempt = 0; ; attempt++)
+        if (commit.Epoch != epoch)
+            return new CheckpointReply(CheckpointReplyKind.Conflict, Error: new WorkflowEngineException(
+                WorkflowErrorKind.InvalidState,
+                $"A commit from execution epoch {commit.Epoch} cannot change workflow instance " +
+                $"'{commit.InstanceId}' owned at epoch {epoch}"));
+        WorkflowCommitResult result;
+        try
         {
-            WorkflowCommitResult result;
-            try
-            {
-                result = await _store.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
-            }
-            catch (WorkflowEngineException) when (attempt < 2)
-            {
-                continue;
-            }
+            result = await _store.CommitWorkflowInstanceAsync(commit);
+        }
+        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure)
+        {
+            return new CheckpointReply(CheckpointReplyKind.Unknown, Error: error);
+        }
 
-            // Another owner committed first, so this run no longer owns the instance.
-            if (result.Status == WorkflowCommitStatus.Conflict)
-                throw new ExecutionOwnershipLostException(new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                    $"Workflow instance '{instance.InstanceId}' changed at revision {result.Revision}"));
-            instance.Revision = result.Revision;
-            await MakeParentRunnableAsync(instance);
-            return;
+        switch (result.Status)
+        {
+            case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
+                await MakeParentRunnableAsync(instance);
+                return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision);
+            case WorkflowCommitStatus.Conflict:
+                return new CheckpointReply(CheckpointReplyKind.Conflict, result.Revision,
+                    new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                        $"Workflow instance '{commit.InstanceId}' changed at revision {result.Revision}"));
+            case WorkflowCommitStatus.StaleEpoch:
+                return new CheckpointReply(CheckpointReplyKind.Conflict, result.Revision,
+                    new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                        $"Workflow instance '{commit.InstanceId}' has a newer owner than execution epoch {commit.Epoch}"));
+            default:
+                return new CheckpointReply(CheckpointReplyKind.Retry, Error: new WorkflowEngineException(
+                    WorkflowErrorKind.Infrastructure,
+                    $"Saving workflow instance '{commit.InstanceId}' was not applied; the store asked for a retry"));
         }
     }
 
@@ -661,10 +685,12 @@ internal sealed class InstanceHost(
             "The workflow engine is not registered");
 
     /// <summary>The host side of one run: the instance's lease, its saved state and its children.</summary>
-    private sealed class HostedRun(InstanceHost host, string instanceId, WorkflowExecutionLease? owner,
+    private sealed class HostedRun(InstanceHost host, WorkflowInstance instance, WorkflowExecutionLease? owner,
         bool persistState) : IExecutionHost
     {
         public bool PersistsState => persistState;
+        public long Epoch => owner?.Epoch ?? 0;
+        public long MaxCheckpointBytes => host._limits.MaxCheckpointBytes;
         public bool ChildStartIsCheckpointed => host._childStartIsCheckpointed;
         public Task? OwnershipLoss => owner?.Loss;
         public Task<CancellationReason>? CancellationSignal => owner?.Cancellation;
@@ -674,11 +700,11 @@ internal sealed class InstanceHost(
 
         public void ThrowIfOwnershipLost() => owner?.ThrowIfLost();
 
-        public Task CommitAsync(WorkflowInstance instance) =>
-            persistState ? host.CommitAsync(instance) : Task.CompletedTask;
+        public Task<CheckpointReply> CommitAsync(CheckpointCommit commit) =>
+            host.CommitAsync(instance, commit, Epoch);
 
         public Task<CancellationReason?> ReadCancellationRequestAsync() =>
-            host._store.GetCancellationRequestAsync(instanceId);
+            host._store.GetCancellationRequestAsync(instance.InstanceId);
 
         public Task<WorkflowInstance?> ReadChildAsync(string childInstanceId) =>
             host._store.GetWorkflowInstanceAsync(childInstanceId);
