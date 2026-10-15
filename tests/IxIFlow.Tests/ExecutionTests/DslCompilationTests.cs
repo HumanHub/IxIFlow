@@ -5,6 +5,7 @@ using IxIFlow.Tests.ExecutionTests.Models;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "documents")]
 public class DslCompilationTests
 {
     [Fact]

@@ -3,6 +3,7 @@ using IxIFlow.Dsl.Documents;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "documents")]
 public class DslDocumentTests
 {
     private static readonly JsonSerializerOptions SerializerOptions = new()

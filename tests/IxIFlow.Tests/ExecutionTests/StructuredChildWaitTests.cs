@@ -8,6 +8,7 @@ using System.Text.Json;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "children")]
 public sealed class StructuredChildWaitTests
 {
     [Fact]

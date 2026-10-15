@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "registration")]
 public sealed class WorkflowRegistrationTests
 {
     [Theory]

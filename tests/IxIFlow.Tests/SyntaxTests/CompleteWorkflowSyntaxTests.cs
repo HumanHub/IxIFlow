@@ -7,6 +7,7 @@ namespace IxIFlow.Tests.SyntaxTests;
 /// <summary>
 /// Tests complete mixed workflow combining all patterns.
 /// </summary>
+[Trait("Feature", "authoring")]
 public class CompleteWorkflowSyntaxTests
 {
     [Fact]

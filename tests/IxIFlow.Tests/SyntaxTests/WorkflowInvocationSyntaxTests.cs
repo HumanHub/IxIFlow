@@ -14,6 +14,7 @@ namespace IxIFlow.Tests.SyntaxTests;
 ///         - Previous step access to invoked workflow results
 ///         - Parallel execution with workflow invocations
 /// </summary>
+[Trait("Feature", "authoring")]
 public class WorkflowInvocationSyntaxTests
 {
     [Fact]

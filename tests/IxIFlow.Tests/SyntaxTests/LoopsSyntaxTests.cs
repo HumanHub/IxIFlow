@@ -11,6 +11,7 @@ namespace IxIFlow.Tests.SyntaxTests;
 ///     - Previous step access within loop body
 ///     - Loop condition accessing previous step data
 /// </summary>
+[Trait("Feature", "authoring")]
 public class LoopsSyntaxTests
 {
     [Fact]

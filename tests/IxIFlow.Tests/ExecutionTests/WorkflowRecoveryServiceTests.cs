@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "recovery")]
 public sealed class WorkflowRecoveryServiceTests
 {
     [Fact]

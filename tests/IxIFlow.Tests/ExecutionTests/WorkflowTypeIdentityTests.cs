@@ -5,6 +5,7 @@ using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "registration")]
 public class WorkflowTypeIdentityTests
 {
     [Fact]

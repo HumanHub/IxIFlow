@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "control-flow")]
 public class ConditionalTests
 {
     private readonly IServiceProvider _serviceProvider;

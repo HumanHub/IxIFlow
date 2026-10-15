@@ -12,6 +12,7 @@ namespace IxIFlow.Tests.SyntaxTests;
 /// - Saga container-level error handling with compensation strategies
 /// - Previous step access within saga activities
 /// </summary>
+[Trait("Feature", "authoring")]
 public class SagaSyntaxTests
 {
     [Fact]
