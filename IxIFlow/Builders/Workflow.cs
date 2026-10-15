@@ -1,6 +1,6 @@
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
-using IxIFlow.Core.Runtime;
+using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -92,7 +92,7 @@ public static class WorkflowBuilderExtensions
     /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
     /// <param name="builder">The workflow builder</param>
     /// <param name="workflowData">The initial workflow data</param>
-    /// <param name="serviceProvider">Optional service provider for dependency injection</param>
+    /// <param name="serviceProvider">Optional service provider with IxIFlow registered through AddIxIFlow</param>
     /// <param name="cancellationToken">Cancellation token for the operation</param>
     /// <returns>The workflow execution result</returns>
     public static async Task<WorkflowExecutionResult> ExecuteAsync<TWorkflowData>(
@@ -103,52 +103,20 @@ public static class WorkflowBuilderExtensions
         where TWorkflowData : class
     {
         var definition = builder.Build();
-
-        // Create a simplified workflow engine with basic dependencies
-        serviceProvider ??= CreateDefaultServiceProvider();
-
-        var activityExecutor = serviceProvider.GetRequiredService<IActivityExecutor>();
-        var stateRepository = serviceProvider.GetRequiredService<IWorkflowStateRepository>();
-        var workflowInvoker = serviceProvider.GetRequiredService<IWorkflowInvoker>();
-        var versionRegistry = serviceProvider.GetRequiredService<IWorkflowVersionRegistry>();
-
-        var engine = new WorkflowEngine(
-            serviceProvider,
-            activityExecutor,
-            workflowInvoker,
-            stateRepository,
-            versionRegistry);
-
+        await using var defaultProvider = serviceProvider == null ? CreateDefaultServiceProvider() : null;
+        using var scope = (serviceProvider ?? defaultProvider!).CreateScope();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
         return await engine.ExecuteWorkflowAsync(definition, workflowData, cancellationToken: cancellationToken);
     }
 
     /// <summary>
-    ///     Creates a default service provider with minimal workflow dependencies
+    ///     Creates a service provider with the standard IxIFlow registration
     /// </summary>
-    private static IServiceProvider CreateDefaultServiceProvider()
+    private static ServiceProvider CreateDefaultServiceProvider()
     {
         var services = new ServiceCollection();
-
-        // Add logging
         services.AddLogging(builder => builder.AddConsole());
-
-        // Add core workflow services
-        services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
-        services.AddSingleton<IActivityExecutor, ActivityExecutor>();
-        services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
-        services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
-        services.AddSingleton<StructuredWorkflowRunner>();
-        services.AddSingleton(InProcessInstanceGate.Shared);
-
-        // Add event management services
-        services.AddSingleton<IEventCorrelator, EventCorrelator>();
-        services.AddSingleton<IEventRepository, InMemoryEventRepository>();
-
-        // Add in-memory implementations
-        services.AddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
-        services.AddSingleton<IEventStore, InMemoryEventStore>();
-        services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
-
+        services.AddIxIFlow();
         return services.BuildServiceProvider();
     }
 }

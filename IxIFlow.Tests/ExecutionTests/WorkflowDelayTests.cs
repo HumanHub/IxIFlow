@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Tests.Infrastructure;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -43,7 +44,7 @@ public sealed class WorkflowDelayTests
     [Trait("Category", "SqlIntegration")]
     public async Task DueDelayRecoversFromSqlOnAnotherHost()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var repository = new SqlWorkflowStateRepository(connectionString);
         var definition = Workflow.Create<DelayData>("SqlDurableDelay")
             .Step<NoopActivity>()

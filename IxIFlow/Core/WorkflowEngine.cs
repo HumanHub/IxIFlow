@@ -5,20 +5,13 @@ namespace IxIFlow.Core;
 /// <summary>
 /// Runs workflow definitions and resumes saved continuations through one execution model.
 /// </summary>
-public sealed class WorkflowEngine : IWorkflowEngine
+internal sealed class WorkflowEngine : IWorkflowEngine
 {
     private readonly StructuredWorkflowRunner _runner;
 
-    public WorkflowEngine(
-        IServiceProvider services,
-        IActivityExecutor activityExecutor,
-        IWorkflowInvoker workflowInvoker,
-        IWorkflowStateRepository repository,
-        IWorkflowVersionRegistry registry)
+    public WorkflowEngine(StructuredWorkflowRunner runner)
     {
-        _runner = services.GetService(typeof(StructuredWorkflowRunner)) as StructuredWorkflowRunner
-            ?? new StructuredWorkflowRunner(services, activityExecutor, workflowInvoker,
-                repository, registry, InProcessInstanceGate.Shared);
+        _runner = runner ?? throw new ArgumentNullException(nameof(runner));
     }
 
     public Task<WorkflowExecutionResult> ExecuteWorkflowAsync<TWorkflowData>(

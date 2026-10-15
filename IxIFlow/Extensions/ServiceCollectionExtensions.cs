@@ -32,25 +32,18 @@ public static class ServiceCollectionExtensions
         // Workflow state and persistence
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
-        services.TryAddSingleton<IEventStore, InMemoryEventStore>();
         
         // Workflow tracing and monitoring
         services.AddScoped<IWorkflowTracer, WorkflowTracer>();
         
         // Event management
         services.AddScoped<IEventCorrelator, EventCorrelator>();
-        services.AddSingleton<InMemoryEventTemplateStore>();
-        services.AddScoped<IEventRepository, InMemoryEventRepository>();
         
         // Expression evaluation
         services.AddScoped<IExpressionEvaluator, ExpressionEvaluator>();
         
         // Suspension management
         services.AddScoped<ISuspensionManager, SuspensionManager>();
-        
-        // Workflow event management
-        services.AddScoped<IWorkflowEventManager, WorkflowEventManager>();
-
         return services;
     }
 
@@ -72,11 +65,6 @@ public static class ServiceCollectionExtensions
         if (options.UseCustomStateRepository != null)
         {
             services.Replace(ServiceDescriptor.Singleton(typeof(IWorkflowStateRepository), options.UseCustomStateRepository));
-        }
-
-        if (options.UseCustomEventStore != null)
-        {
-            services.Replace(ServiceDescriptor.Scoped(typeof(IEventStore), options.UseCustomEventStore));
         }
 
         if (options.UseCustomTracer != null)
@@ -341,27 +329,7 @@ public class IxIFlowOptions
     public Type? UseCustomStateRepository { get; set; }
 
     /// <summary>
-    /// Custom event store implementation
-    /// </summary>
-    public Type? UseCustomEventStore { get; set; }
-
-    /// <summary>
     /// Custom workflow tracer implementation
     /// </summary>
     public Type? UseCustomTracer { get; set; }
-
-    /// <summary>
-    /// Whether to enable detailed logging
-    /// </summary>
-    public bool EnableDetailedLogging { get; set; } = false;
-
-    /// <summary>
-    /// Whether to persist workflow state by default
-    /// </summary>
-    public bool PersistStateByDefault { get; set; } = true;
-
-    /// <summary>
-    /// Maximum number of concurrent workflow executions
-    /// </summary>
-    public int MaxConcurrentExecutions { get; set; } = 100;
 }

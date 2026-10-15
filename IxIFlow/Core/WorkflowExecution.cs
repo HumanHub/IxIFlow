@@ -160,6 +160,11 @@ public class WorkflowOptions
     public string? CorrelationId { get; set; }
 
     /// <summary>
+    ///     The parent instance that invoked this workflow as a child
+    /// </summary>
+    internal string? ParentInstanceId { get; set; }
+
+    /// <summary>
     ///     Custom properties for the workflow execution
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
@@ -209,11 +214,6 @@ public class WorkflowOptions
     // ========== IMMEDIATE EXECUTION CONTROLS ==========
 
     /// <summary>
-    ///     Execute immediately, bypassing the normal queue
-    /// </summary>
-    public bool ExecuteImmediately { get; set; } = false;
-
-    /// <summary>
     ///     Force execution even if host is at capacity (emergency execution)
     /// </summary>
     public bool OverrideCapacityLimit { get; set; } = false;
@@ -257,6 +257,11 @@ public class WorkflowInstance
     ///     Correlation ID for tracking
     /// </summary>
     public string CorrelationId { get; set; } = "";
+
+    /// <summary>
+    ///     The parent instance that invoked this workflow as a child, if any
+    /// </summary>
+    public string? ParentInstanceId { get; set; }
 
     /// <summary>
     ///     When the workflow was created
@@ -728,17 +733,6 @@ public class WorkflowDefinition
     public WorkflowStep? GetStep(string stepId)
     {
         return Steps.FirstOrDefault(s => s.Id == stepId);
-    }
-
-    /// <summary>
-    ///     Gets the next step after the given step
-    /// </summary>
-    public WorkflowStep? GetNextStep(WorkflowStep currentStep)
-    {
-        var currentIndex = Steps.IndexOf(currentStep);
-        return currentIndex >= 0 && currentIndex < Steps.Count - 1
-            ? Steps[currentIndex + 1]
-            : null;
     }
 }
 

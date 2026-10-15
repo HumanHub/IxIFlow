@@ -1569,8 +1569,6 @@ public class StructuredTryWaitTests
 
         public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
             _inner.SaveWorkflowInstanceAsync(instance);
-        public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance) =>
-            _inner.TryClaimSuspendedWorkflowAsync(instance);
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
@@ -1581,8 +1579,6 @@ public class StructuredTryWaitTests
             _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
         public Task DeleteWorkflowInstanceAsync(string instanceId) =>
             _inner.DeleteWorkflowInstanceAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync() =>
-            _inner.GetSuspendedWorkflowsReadyForResumptionAsync();
     }
 
     public sealed class CountFinallyWinnerActivity(FinallyJoinProbe probe) : IAsyncActivity

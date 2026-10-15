@@ -175,7 +175,8 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
 
             var genericExecuteMethod = executeMethod.MakeGenericMethod(childWorkflowDataType);
             var childResult = await (Task<WorkflowExecutionResult>)genericExecuteMethod.Invoke(this,
-                [childWorkflowDefinition, childWorkflowData, invocationId, cancellationToken])!;
+                [childWorkflowDefinition, childWorkflowData, invocationId,
+                    context.WorkflowInstance.InstanceId, cancellationToken])!;
 
             var duration = DateTime.UtcNow - startTime;
 
@@ -284,19 +285,20 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
         WorkflowDefinition childDefinition,
         TChildWorkflowData childData,
         string invocationId,
+        string parentInstanceId,
         CancellationToken cancellationToken)
     where TChildWorkflowData : class
     {
         // Get the workflow engine from DI
-        var workflowEngine = _serviceProvider.GetService<IWorkflowEngine>()
-            ?? _serviceProvider.GetRequiredService<WorkflowEngine>();
+        var workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
 
         // Create child workflow options
         var childOptions = new WorkflowOptions
         {
             PersistState = true,
             InstanceId = invocationId,
-            CorrelationId = Guid.NewGuid().ToString()
+            CorrelationId = Guid.NewGuid().ToString(),
+            ParentInstanceId = parentInstanceId
         };
 
         // Execute child workflow recursively
