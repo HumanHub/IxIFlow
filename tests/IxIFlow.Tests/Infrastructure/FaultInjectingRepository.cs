@@ -16,6 +16,9 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
         _inner.GetEventAsync(instanceId, eventId);
     public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
         _inner.GetWaitAsync(instanceId, waitId);
+    public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(
+        IReadOnlyCollection<string> instanceIds) =>
+        _inner.GetInboxSequencesAsync(instanceIds);
     public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
         _inner.GetOpenWaitsAsync(query);
 

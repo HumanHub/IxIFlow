@@ -606,6 +606,16 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 ? stored.Event : null);
     }
 
+    public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds)
+    {
+        ArgumentNullException.ThrowIfNull(instanceIds);
+        lock (_claimLock)
+            return Task.FromResult<IReadOnlyDictionary<string, long>>(instanceIds
+                .Where(_instances.ContainsKey)
+                .Distinct(StringComparer.Ordinal)
+                .ToDictionary(id => id, id => _inboxSequence.GetValueOrDefault(id), StringComparer.Ordinal));
+    }
+
     public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId)
     {
         lock (_claimLock)

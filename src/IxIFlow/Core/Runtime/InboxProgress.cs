@@ -36,6 +36,12 @@ internal sealed class InboxProgress
 
     public void Settle(EventSettlement settlement) => _settlements.Add(settlement);
 
+    /// <summary>
+    /// Makes the next pass read the inbox although no commit reply reported an arrival: the host saw
+    /// the inbox sequence rise, or a deadline is due and an event received before it must be seen first.
+    /// </summary>
+    public void ExpectArrivals() => MayHaveUnread = true;
+
     public void Read(long through)
     {
         ReadThrough = through;

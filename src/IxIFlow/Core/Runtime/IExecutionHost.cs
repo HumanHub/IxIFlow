@@ -25,6 +25,12 @@ internal interface IExecutionHost
     /// <summary>Completes when the host observes a cancellation request for the instance.</summary>
     Task<CancellationReason>? CancellationSignal { get; }
 
+    /// <summary>The highest inbox sequence the host has seen for the instance while the run owns it.</summary>
+    long ObservedInboxSequence { get; }
+
+    /// <summary>Completes when the host sees the instance's inbox sequence rise (D-32).</summary>
+    Task? InboxChanged { get; }
+
     /// <summary>The cancellation request the host has observed, if any.</summary>
     CancellationReason? ObservedCancellation { get; }
 

@@ -1365,6 +1365,9 @@ public sealed class ExecutionLeaseContractTests
             inner.GetEventAsync(instanceId, eventId);
         public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
             inner.GetWaitAsync(instanceId, waitId);
+        public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(
+            IReadOnlyCollection<string> instanceIds) =>
+            inner.GetInboxSequencesAsync(instanceIds);
         public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
             inner.GetOpenWaitsAsync(query);
 

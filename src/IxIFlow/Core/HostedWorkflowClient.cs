@@ -91,23 +91,28 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
         var result = await UntilIdleAsync(host.RunAsync(instanceId,
             (client, _, token) => client.TakeEventAsync(instanceId, eventId, token),
             cancellationToken), cancellationToken);
-        while (result.Event is { Outcome: EventOutcome.Pending } &&
-               result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
+        // The caller gets the instance as it is once the event is decided and the instance is idle. An
+        // event stays undecided while the instance is stopped for an operator.
+        var receipt = result.Event;
+        var status = result.Status;
+        while (receipt?.Outcome == EventOutcome.Pending
+                   ? status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended
+                   : status == WorkflowExecutionStatus.Running)
         {
             using var watch = host.WatchSettled(instanceId, out var settled);
-            var receipt = await host.ReadAsync(client => client.ReadEventAsync(instanceId, eventId));
-            if (receipt?.Outcome != EventOutcome.Pending)
+            receipt = await host.ReadAsync(client => client.ReadEventAsync(instanceId, eventId));
+            status = await host.ReadAsync(client => client.ReadStatusAsync(instanceId)) ?? status;
+            if (receipt?.Outcome != EventOutcome.Pending && status != WorkflowExecutionStatus.Running)
             {
                 result = await AwaitAsync(instanceId, WorkflowAwaitCondition.Idle, cancellationToken);
-                result.Event = receipt;
                 break;
             }
             using var poll = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             await Task.WhenAny(settled, Task.Delay(AwaitPollInterval, time, poll.Token));
             poll.Cancel();
             cancellationToken.ThrowIfCancellationRequested();
-            result.Status = await host.ReadAsync(client => client.ReadStatusAsync(instanceId)) ?? result.Status;
         }
+        result.Event = receipt;
         return result;
     }
 

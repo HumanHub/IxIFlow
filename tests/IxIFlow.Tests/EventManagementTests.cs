@@ -56,9 +56,10 @@ public class EventManagementTests
                 .OrderBy(item => item.InstanceId),
             deliveries.OrderBy(item => item.InstanceId));
         Assert.Equal(EventOutcome.Consumed, (await EventAssert.DecidedAsync(repository, idle, "e1")).Outcome);
-        Assert.Equal(EventOutcome.Pending, (await repository.GetEventAsync(busy, "e1"))!.Outcome);
-        gate.Release.TrySetResult();
+        // The busy instance's owner is woken by the host and takes its copy while its activity still runs.
         Assert.Equal(EventOutcome.Consumed, (await EventAssert.DecidedAsync(repository, busy, "e1")).Outcome);
+        Assert.False(gate.Release.Task.IsCompleted);
+        gate.Release.TrySetResult();
         Assert.Equal(WorkflowExecutionStatus.Success,
             (await engine.AwaitAsync(busy, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10))).Status);
 
