@@ -137,10 +137,10 @@ Register child definitions and activity code on any host that may execute or res
 
 ```csharp
 var result = await client.RunAsync(definition, orderData);
-if (!result.IsSuccess)
-    Console.WriteLine($"{result.Status}: {result.ErrorMessage}");
-```
-
+if (!result.IsSuccess)
+    Console.WriteLine($"{result.Status}: {result.ErrorMessage}");
+```
+
 `RunAsync` returns when the instance is idle: completed, failed, suspended at a wait, or stopped for resolution. To start an instance without waiting, call `StartAsync`; it returns the instance ID once the start is saved. `AwaitAsync(instanceId)` waits until the instance is idle, and `AwaitAsync(instanceId, WorkflowAwaitCondition.Finished)` until it completes, fails, is cancelled or times out.
 
 ```csharp
