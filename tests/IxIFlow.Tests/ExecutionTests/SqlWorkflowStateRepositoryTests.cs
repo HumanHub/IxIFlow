@@ -4,6 +4,7 @@ using IxIFlow.Tests.Infrastructure;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "durability")]
+[Trait("Spec", "J-06")]
 public class SqlWorkflowStateRepositoryTests
 {
     [SqlServerFact]
