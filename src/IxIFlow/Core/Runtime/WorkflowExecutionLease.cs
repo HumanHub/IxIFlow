@@ -53,6 +53,9 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
             time ?? TimeProvider.System, watch);
     }
 
+    /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>
+    public void ObserveCancellation(CancellationReason reason) => _cancellation.TrySetResult(reason);
+
     public void ThrowIfLost()
     {
         if (_loss.Task.IsCompleted)

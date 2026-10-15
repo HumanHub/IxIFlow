@@ -700,7 +700,8 @@ internal sealed class InstanceHost(
         {
             case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
                 await MakeParentRunnableAsync(instance);
-                return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision);
+                return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision,
+                    PendingCancellation: result.PendingCancellation);
             case WorkflowCommitStatus.Conflict:
                 return new CheckpointReply(CheckpointReplyKind.Conflict, result.Revision,
                     new WorkflowEngineException(WorkflowErrorKind.InvalidState,
@@ -750,8 +751,7 @@ internal sealed class InstanceHost(
         public Task<CheckpointReply> CommitAsync(CheckpointCommit commit) =>
             host.CommitAsync(instance, commit, Epoch);
 
-        public Task<CancellationReason?> ReadCancellationRequestAsync() =>
-            host._store.GetCancellationRequestAsync(instance.InstanceId);
+        public void ObserveCancellation(CancellationReason reason) => owner?.ObserveCancellation(reason);
 
         public Task<WorkflowInstance?> ReadChildAsync(string childInstanceId) =>
             host._store.GetWorkflowInstanceAsync(childInstanceId);

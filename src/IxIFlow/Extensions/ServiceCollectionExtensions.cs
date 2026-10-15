@@ -24,6 +24,7 @@ public static class ServiceCollectionExtensions
         // Core workflow services
         services.TryAddSingleton(HostSettings.Default);
         services.AddSingleton<LocalWorkflowHost>();
+        // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
         services.AddScoped<DirectInstanceClient>();

@@ -24,8 +24,13 @@ public enum WorkflowCommitStatus
 
 /// <summary>
 /// A durable commit receipt. On conflict or a stale epoch, Revision is the current stored revision.
+/// An applied commit also reports the instance's pending cancellation request, if any, so the owner
+/// learns of it with the commit instead of polling (B-10).
 /// </summary>
-public sealed record WorkflowCommitResult(WorkflowCommitStatus Status, long Revision);
+public sealed record WorkflowCommitResult(
+    WorkflowCommitStatus Status,
+    long Revision,
+    CancellationReason? PendingCancellation = null);
 
 /// <summary>
 /// One checkpoint write: the serialized instance, fenced by the owner's execution epoch and the
