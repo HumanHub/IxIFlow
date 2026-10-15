@@ -24,8 +24,8 @@ public sealed class WorkflowDelayTests
             .Step<MarkActivity>()
             .Build();
 
-        var started = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new DelayData());
+        var started = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new DelayData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Equal(0, Assert.IsType<DelayData>(started.WorkflowData).Runs);
 
@@ -57,8 +57,8 @@ public sealed class WorkflowDelayTests
         {
             using (var firstHost = Services(repository))
             {
-                var started = await firstHost.GetRequiredService<IWorkflowEngine>()
-                    .ExecuteWorkflowAsync(definition, new DelayData());
+                var started = await firstHost.GetRequiredService<IWorkflowClient>()
+                    .RunAsync(definition, new DelayData());
                 Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
                 instanceId = started.InstanceId;
             }
@@ -97,8 +97,8 @@ public sealed class WorkflowDelayTests
         string instanceId;
         using (var firstProvider = Services(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new DelayData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new DelayData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             Assert.Equal(0, Assert.IsType<DelayData>(started.WorkflowData).Runs);
             instanceId = started.InstanceId;
@@ -107,8 +107,8 @@ public sealed class WorkflowDelayTests
         using var secondProvider = Services(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(definition);
-        var rejected = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "delay", new object());
+        var rejected = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "delay", new object());
         Assert.False(rejected.EventAccepted);
         await Task.Delay(650);
         using var scanner = new WorkflowRecoveryService(
@@ -132,8 +132,8 @@ public sealed class WorkflowDelayTests
             .Delay(TimeSpan.FromSeconds(1))
             .Step<MarkActivity>()
             .Build();
-        var started = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new DelayData(),
+        var started = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new DelayData(),
                 new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(500) });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         await Task.Delay(650);

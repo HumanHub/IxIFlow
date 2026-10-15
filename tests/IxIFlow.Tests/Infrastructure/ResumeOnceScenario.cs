@@ -27,24 +27,24 @@ internal static class ResumeOnceScenario
             .WaitFor<ResumeOnceApproval>("approval")
             .Build();
         await registry.RegisterWorkflowAsync(definition);
-        var firstEngine = firstHost.GetRequiredService<IWorkflowEngine>();
-        var secondEngine = secondHost.GetRequiredService<IWorkflowEngine>();
+        var firstEngine = firstHost.GetRequiredService<IWorkflowClient>();
+        var secondEngine = secondHost.GetRequiredService<IWorkflowClient>();
 
-        var started = await firstEngine.ExecuteWorkflowAsync(definition, new ResumeOnceData(),
+        var started = await firstEngine.RunAsync(definition, new ResumeOnceData(),
             new WorkflowOptions { InstanceId = instanceId });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         await Task.WhenAll(
-            firstEngine.ResumeWorkflowDeliveryAsync(instanceId, "approval", new ResumeOnceApproval(), "delivery-1"),
-            secondEngine.ResumeWorkflowDeliveryAsync(instanceId, "approval", new ResumeOnceApproval(), "delivery-1"));
+            firstEngine.ResumeAsync(instanceId, "approval", new ResumeOnceApproval(), "delivery-1"),
+            secondEngine.ResumeAsync(instanceId, "approval", new ResumeOnceApproval(), "delivery-1"));
         Assert.Equal(1, counter.Count);
         Assert.Equal(WorkflowStatus.Suspended, (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
 
-        await firstEngine.ResumeWorkflowDeliveryAsync(instanceId, "approval", new ResumeOnceApproval(), "delivery-1");
+        await firstEngine.ResumeAsync(instanceId, "approval", new ResumeOnceApproval(), "delivery-1");
         Assert.Equal(1, counter.Count);
         Assert.Equal(WorkflowStatus.Suspended, (await secondRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
 
-        var completed = await secondEngine.ResumeWorkflowDeliveryAsync(
+        var completed = await secondEngine.ResumeAsync(
             instanceId, "approval", new ResumeOnceApproval(), "delivery-2");
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, counter.Count);

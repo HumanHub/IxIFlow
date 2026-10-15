@@ -50,8 +50,8 @@ public class ActivityPackageTests
         services.AddIxIFlow();
         registry.RegisterActivities(services);
         using var provider = services.BuildServiceProvider();
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new EmailWorkflowData());
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new EmailWorkflowData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.True(Assert.IsType<EmailWorkflowData>(result.WorkflowData).Sent);
@@ -126,8 +126,8 @@ public class ActivityPackageTests
         services.AddIxIFlow();
         registry.RegisterActivities(services);
         using var provider = services.BuildServiceProvider();
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new EmailWorkflowData());
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new EmailWorkflowData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.True(Assert.IsType<EmailWorkflowData>(result.WorkflowData).Sent);

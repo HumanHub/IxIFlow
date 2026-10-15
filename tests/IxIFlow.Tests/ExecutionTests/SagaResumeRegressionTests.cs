@@ -29,8 +29,8 @@ public class SagaResumeRegressionTests
 
         using var provider = CreateProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-        var suspended = await engine.ExecuteWorkflowAsync(definition, new SagaRegressionData());
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+        var suspended = await engine.RunAsync(definition, new SagaRegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
         Assert.True(((SagaRegressionData)suspended.WorkflowData!).BeforeCompleted);
         var stored = await scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>()
@@ -41,7 +41,7 @@ public class SagaResumeRegressionTests
             Assert.Single(stored.ExecutionSnapshot!.Pointers).StepId);
         Assert.Contains(stored.ExecutionSnapshot.Frames, frame => frame.Kind == WorkflowStepType.Saga.ToString());
 
-        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+        var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         var data = Assert.IsType<SagaRegressionData>(resumed.WorkflowData);
@@ -67,12 +67,12 @@ public class SagaResumeRegressionTests
 
         using var provider = CreateProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-        var suspended = await engine.ExecuteWorkflowAsync(definition, new SagaRegressionData());
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+        var suspended = await engine.RunAsync(definition, new SagaRegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
         Assert.True(((SagaRegressionData)suspended.WorkflowData!).BeforeCompleted);
 
-        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+        var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         var data = Assert.IsType<SagaRegressionData>(resumed.WorkflowData);
         Assert.True(data.BeforeCompleted);
@@ -99,19 +99,19 @@ public class SagaResumeRegressionTests
 
         using var provider = CreateProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-        var first = await engine.ExecuteWorkflowAsync(definition, new SagaRegressionData());
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+        var first = await engine.RunAsync(definition, new SagaRegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
 
         using var secondScope = provider.CreateScope();
-        var second = await secondScope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(first.InstanceId, new RegressionApprovalEvent { Approved = true });
+        var second = await secondScope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(first.InstanceId, new RegressionApprovalEvent { Approved = true });
         Assert.Equal(WorkflowExecutionStatus.Suspended, second.Status);
         Assert.True(Assert.IsType<SagaRegressionData>(second.WorkflowData).AfterCompleted);
 
         using var finalScope = provider.CreateScope();
-        var final = await finalScope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(first.InstanceId, new RegressionApprovalEvent { Approved = true });
+        var final = await finalScope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(first.InstanceId, new RegressionApprovalEvent { Approved = true });
         var data = Assert.IsType<SagaRegressionData>(final.WorkflowData);
         Assert.True(data.BeforeCompensated);
     }
@@ -130,11 +130,11 @@ public class SagaResumeRegressionTests
 
         using var provider = CreateProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-        var suspended = await engine.ExecuteWorkflowAsync(definition, new SagaRegressionData());
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+        var suspended = await engine.RunAsync(definition, new SagaRegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
 
-        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+        var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         Assert.Equal(WorkflowExecutionStatus.Faulted, resumed.Status);
         Assert.Contains("retry exhausted", resumed.ErrorMessage, StringComparison.OrdinalIgnoreCase);

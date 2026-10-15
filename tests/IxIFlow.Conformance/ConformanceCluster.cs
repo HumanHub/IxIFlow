@@ -33,7 +33,7 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         new(await StoreProfiles.CreateAsync(profile), configure ?? (_ => { }));
 
     /// <summary>Starts another host on the shared store and returns its engine.</summary>
-    public IWorkflowEngine AddHost()
+    public IWorkflowClient AddHost()
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -44,7 +44,7 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         _configure(services);
         var host = services.BuildServiceProvider();
         _hosts.Add(host);
-        return host.GetRequiredService<IWorkflowEngine>();
+        return host.GetRequiredService<IWorkflowClient>();
     }
 
     /// <summary>Runs one recovery scan on the first host, as its background service would.</summary>

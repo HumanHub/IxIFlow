@@ -23,8 +23,8 @@ public sealed class WorkflowRecoveryService(
             try
             {
                 using var scope = scopes.CreateScope();
-                var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-                    .RecoverWorkflowAsync(instance.InstanceId, token);
+                var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+                    .RecoverAsync(instance.InstanceId, token);
                 if (result.Status == WorkflowExecutionStatus.Faulted)
                     logger.LogWarning("Recovery of workflow {InstanceId} was rejected: {Reason}",
                         instance.InstanceId, result.ErrorMessage);

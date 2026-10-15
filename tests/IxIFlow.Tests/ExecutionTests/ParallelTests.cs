@@ -61,7 +61,7 @@ namespace IxIFlow.Tests.ExecutionTests
     public class ParallelTests
     {
         private readonly IServiceProvider _serviceProvider;
-        private readonly IWorkflowEngine _workflowEngine;
+        private readonly IWorkflowClient _workflowEngine;
 
         public ParallelTests()
         {
@@ -71,7 +71,7 @@ namespace IxIFlow.Tests.ExecutionTests
             services.AddIxIFlow();
 
             _serviceProvider = services.BuildServiceProvider();
-            _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
+            _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
         }
 
         [Fact]
@@ -110,7 +110,7 @@ namespace IxIFlow.Tests.ExecutionTests
             };
 
             // Act
-            var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+            var result = await _workflowEngine.RunAsync(definition, workflowData);
 
             // Assert
             Assert.True(result.IsSuccess);
@@ -149,7 +149,7 @@ namespace IxIFlow.Tests.ExecutionTests
             };
 
             // Act
-            var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+            var result = await _workflowEngine.RunAsync(definition, workflowData);
 
             // Assert
             Assert.False(result.IsSuccess);
@@ -201,7 +201,7 @@ namespace IxIFlow.Tests.ExecutionTests
 
             // Act
             var startTime = DateTime.UtcNow;
-            var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+            var result = await _workflowEngine.RunAsync(definition, workflowData);
             var duration = DateTime.UtcNow - startTime;
 
             // Assert
@@ -238,7 +238,7 @@ namespace IxIFlow.Tests.ExecutionTests
             var workflowData = new SharedDataTestData();
 
             // Act
-            var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+            var result = await _workflowEngine.RunAsync(definition, workflowData);
 
             // Assert
             Assert.True(result.IsSuccess);

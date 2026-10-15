@@ -118,12 +118,12 @@ public sealed class ExecutionLeaseContractTests
             .Step<RecordActivity>()
             .Build();
 
-        var started = await firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var started = await firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var resumed = await secondHost.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(started.InstanceId, "reply", new LeaseEvent());
+        var resumed = await secondHost.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
 
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         Assert.Equal(2, probe.Recorded);
@@ -142,12 +142,12 @@ public sealed class ExecutionLeaseContractTests
             .WaitFor<LeaseEvent>("approval")
             .Step<RecordActivity>()
             .Build();
-        var started = await firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var started = await firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var result = await secondHost.GetRequiredService<IWorkflowEngine>()
-            .CancelWorkflowAsync(started.InstanceId, new CancellationReason
+        var result = await secondHost.GetRequiredService<IWorkflowClient>()
+            .CancelAsync(started.InstanceId, new CancellationReason
             {
                 ReasonCode = "withdrawn", Description = "Request withdrawn"
             });
@@ -157,8 +157,8 @@ public sealed class ExecutionLeaseContractTests
         Assert.Equal(WorkflowStatus.Cancelled, saved.Status);
         Assert.Equal("withdrawn", saved.CancellationReason?.ReasonCode);
         Assert.Equal(1, probe.Recorded);
-        var resumed = await firstHost.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(started.InstanceId, "approval", new LeaseEvent());
+        var resumed = await firstHost.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(started.InstanceId, "approval", new LeaseEvent());
         Assert.False(resumed.EventAccepted);
     }
 
@@ -174,13 +174,13 @@ public sealed class ExecutionLeaseContractTests
             .Step<CancellableBlockingActivity>()
             .Step<RecordActivity>()
             .Build();
-        var executing = firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var executing = firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
-        var requested = await secondHost.GetRequiredService<IWorkflowEngine>()
-            .CancelWorkflowAsync(saved.InstanceId, new CancellationReason
+        var requested = await secondHost.GetRequiredService<IWorkflowClient>()
+            .CancelAsync(saved.InstanceId, new CancellationReason
             {
                 ReasonCode = "operator", Description = "Stopped by operator"
             });
@@ -212,8 +212,8 @@ public sealed class ExecutionLeaseContractTests
         };
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
 
-        var result = await host.GetRequiredService<IWorkflowEngine>()
-            .CancelWorkflowAsync(instanceId, new CancellationReason { ReasonCode = "late" });
+        var result = await host.GetRequiredService<IWorkflowClient>()
+            .CancelAsync(instanceId, new CancellationReason { ReasonCode = "late" });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(WorkflowStatus.Completed,
@@ -234,12 +234,12 @@ public sealed class ExecutionLeaseContractTests
                 then => then.Step<RecordActivity>())
             .Build();
 
-        var engine = host.GetRequiredService<IWorkflowEngine>();
+        var engine = host.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-                engine.ExecuteWorkflowAsync(definition, new LeaseData(),
+                engine.RunAsync(definition, new LeaseData(),
                     new WorkflowOptions { InstanceId = instanceId }, cancellation.Token));
         }
         finally
@@ -251,7 +251,7 @@ public sealed class ExecutionLeaseContractTests
             (await repository.GetWorkflowInstanceAsync(instanceId))!.Status);
         Assert.Equal(1, probe.Recorded);
         Assert.Equal(WorkflowExecutionStatus.Success,
-            (await engine.RecoverWorkflowAsync(instanceId)).Status);
+            (await engine.RecoverAsync(instanceId)).Status);
         Assert.Equal(2, probe.Recorded);
     }
 
@@ -274,12 +274,12 @@ public sealed class ExecutionLeaseContractTests
             .WaitFor<LeaseEvent>("approval")
             .Step<RecordActivity>()
             .Build();
-        var engine = host.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new LeaseData());
+        var engine = host.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new LeaseData());
         Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" }));
 
-        var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new LeaseEvent());
+        var resumed = await engine.ResumeAsync(started.InstanceId, "approval", new LeaseEvent());
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, resumed.Status);
         Assert.Equal(0, probe.Recorded);
@@ -363,10 +363,10 @@ public sealed class ExecutionLeaseContractTests
         var definition = Workflow.Create<LeaseData>("CancelAtTerminalCommit")
             .Step<NoopActivity>()
             .Build();
-        var engine = host.GetRequiredService<IWorkflowEngine>();
+        var engine = host.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
 
-        var completed = await engine.ExecuteWorkflowAsync(definition, new LeaseData(),
+        var completed = await engine.RunAsync(definition, new LeaseData(),
             new WorkflowOptions { InstanceId = instanceId });
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -388,8 +388,8 @@ public sealed class ExecutionLeaseContractTests
             .Step<FailingActivity>()
             .Build();
 
-        var result = await host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var result = await host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(WorkflowStatus.Failed,
@@ -411,8 +411,8 @@ public sealed class ExecutionLeaseContractTests
             .Build();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
-        var result = await host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData(), cancellationToken: timeout.Token);
+        var result = await host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData(), cancellationToken: timeout.Token);
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
     }
@@ -430,10 +430,10 @@ public sealed class ExecutionLeaseContractTests
         var definition = Workflow.Create<LeaseData>("CancellationReadFailure")
             .Step<NoopActivity>()
             .Build();
-        var engine = host.GetRequiredService<IWorkflowEngine>();
+        var engine = host.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
 
-        var completed = await engine.ExecuteWorkflowAsync(definition, new LeaseData(),
+        var completed = await engine.RunAsync(definition, new LeaseData(),
             new WorkflowOptions { InstanceId = instanceId });
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -454,8 +454,8 @@ public sealed class ExecutionLeaseContractTests
             .Step<BlockingActivity>()
             .Step<RecordActivity>()
             .Build();
-        var executing = host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var executing = host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.FailAllCancellationReads = true;
         probe.Release.TrySetResult();
@@ -482,16 +482,16 @@ public sealed class ExecutionLeaseContractTests
             .Step<RecordActivity>()
             .Build();
         var instanceId = Guid.NewGuid().ToString("N");
-        var executing = firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData(),
+        var executing = firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData(),
                 new WorkflowOptions { InstanceId = instanceId });
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(WorkflowStatus.Running,
             (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
         try
         {
-            var requested = await secondHost.GetRequiredService<IWorkflowEngine>()
-                .CancelWorkflowAsync(instanceId, new CancellationReason
+            var requested = await secondHost.GetRequiredService<IWorkflowClient>()
+                .CancelAsync(instanceId, new CancellationReason
                 {
                     ReasonCode = "operator", Description = "Stopped by operator"
                 });
@@ -525,13 +525,13 @@ public sealed class ExecutionLeaseContractTests
             .WaitFor<LeaseEvent>("approval")
             .Step<RecordActivity>()
             .Build();
-        var started = await firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var started = await firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         try
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-            var result = await secondHost.GetRequiredService<IWorkflowEngine>()
-                .CancelWorkflowAsync(started.InstanceId, new CancellationReason
+            var result = await secondHost.GetRequiredService<IWorkflowClient>()
+                .CancelAsync(started.InstanceId, new CancellationReason
                 {
                     ReasonCode = "withdrawn", Description = "Request withdrawn"
                 });
@@ -564,8 +564,8 @@ public sealed class ExecutionLeaseContractTests
         WorkflowExecutionResult started;
         using (var firstHost = CreateHost(firstRepository, firstRegistry, probe))
         {
-            started = await firstHost.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new LeaseData());
+            started = await firstHost.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new LeaseData());
         }
         try
         {
@@ -599,8 +599,8 @@ public sealed class ExecutionLeaseContractTests
             .Try(body => body.WaitFor<LeaseEvent>("approval"))
             .Finally(body => body.WaitFor<LeaseEvent>("cleanup"))
             .Build();
-        var started = await host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var started = await host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         try
         {
             Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
@@ -633,15 +633,15 @@ public sealed class ExecutionLeaseContractTests
             .Step<RecordActivity>()
             .Build();
 
-        var executing = firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var executing = firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
         try
         {
-            var attempted = await secondHost.GetRequiredService<IWorkflowEngine>()
-                .RecoverWorkflowAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
+            var attempted = await secondHost.GetRequiredService<IWorkflowClient>()
+                .RecoverAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(WorkflowExecutionStatus.Running, attempted.Status);
             Assert.Equal(WorkflowStatus.Running,
                 (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
@@ -669,15 +669,15 @@ public sealed class ExecutionLeaseContractTests
             .Step<RecordActivity>()
             .Build();
 
-        var executing = firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var executing = firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         try
         {
             await Task.Delay(600);
-            var attempted = await secondHost.GetRequiredService<IWorkflowEngine>()
-                .RecoverWorkflowAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
+            var attempted = await secondHost.GetRequiredService<IWorkflowClient>()
+                .RecoverAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(WorkflowExecutionStatus.Running, attempted.Status);
         }
         finally
@@ -701,8 +701,8 @@ public sealed class ExecutionLeaseContractTests
         var definition = Workflow.Create<LeaseData>("TransientCancellationRead")
             .Step<BlockingActivity>()
             .Build();
-        var executing = host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var executing = host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.FailNextCancellationReads = 1;
         await repository.CancellationReadFailed.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -725,12 +725,12 @@ public sealed class ExecutionLeaseContractTests
             shortLease: true);
         var definition = Workflow.Create<LeaseData>("ObservedCancellationWithStoreOutage")
             .Step<CancellableBlockingActivity>().Build();
-        var engine = host.GetRequiredService<IWorkflowEngine>();
-        var executing = engine.ExecuteWorkflowAsync(definition, new LeaseData());
+        var engine = host.GetRequiredService<IWorkflowClient>();
+        var executing = engine.RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var instance = Assert.Single(await repository
             .GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
-        await engine.CancelWorkflowAsync(instance.InstanceId,
+        await engine.CancelAsync(instance.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
         await repository.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -758,8 +758,8 @@ public sealed class ExecutionLeaseContractTests
         var definition = Workflow.Create<LeaseData>("TransientRenewal")
             .Step<BlockingActivity>()
             .Build();
-        var executing = host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var executing = host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.FailNextRenewals = 1;
         await repository.RenewalFailed.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -781,8 +781,8 @@ public sealed class ExecutionLeaseContractTests
         var definition = Workflow.Create<LeaseData>("LostLeaseActivity")
             .Step<BlockingActivity>()
             .Build();
-        var executing = host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var executing = host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.LoseNextRenewal = 1;
         await repository.LeaseLost.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -814,15 +814,15 @@ public sealed class ExecutionLeaseContractTests
             .WaitFor<LeaseEvent>("reply")
             .Step<RecordActivity>()
             .Build();
-        var started = await firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var started = await firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var staleResume = secondHost.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(started.InstanceId, "reply", new LeaseEvent());
+        var staleResume = secondHost.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
         await staleReader.ReadCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var winner = await firstHost.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(started.InstanceId, "reply", new LeaseEvent());
+        var winner = await firstHost.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
         Assert.Equal(WorkflowExecutionStatus.Success, winner.Status);
         staleReader.Continue.TrySetResult();
 
@@ -848,15 +848,15 @@ public sealed class ExecutionLeaseContractTests
                 .Do(branch => branch.WaitFor<LeaseEvent>("first"))
                 .Do(branch => branch.WaitFor<LeaseEvent>("second")))
             .Build();
-        var started = await firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var started = await firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var secondResume = secondHost.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(started.InstanceId, "second", new LeaseEvent());
+        var secondResume = secondHost.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(started.InstanceId, "second", new LeaseEvent());
         await staleReader.ReadCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var first = await firstHost.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(started.InstanceId, "first", new LeaseEvent());
+        var first = await firstHost.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(started.InstanceId, "first", new LeaseEvent());
         Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
         staleReader.Continue.TrySetResult();
 
@@ -876,8 +876,8 @@ public sealed class ExecutionLeaseContractTests
             .Step<RecordActivity>()
             .Build();
 
-        var completed = await host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var completed = await host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(WorkflowStatus.Completed,
@@ -895,8 +895,8 @@ public sealed class ExecutionLeaseContractTests
             .WaitFor<LeaseEvent>("approval")
             .Step<RecordActivity>()
             .Build();
-        var started = await host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var started = await host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var bus = new InMemoryMessageBus();
         var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
@@ -944,13 +944,13 @@ public sealed class ExecutionLeaseContractTests
             .Step<RecordActivity>()
             .Build();
         await secondRegistry.RegisterWorkflowAsync(definition);
-        var started = await firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData());
+        var started = await firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
         try
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-            var resumed = await secondHost.GetRequiredService<IWorkflowEngine>()
-                .ResumeWorkflowAsync(started.InstanceId, "reply", new LeaseEvent());
+            var resumed = await secondHost.GetRequiredService<IWorkflowClient>()
+                .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
             Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
             Assert.Equal(2, probe.Recorded);
         }
@@ -978,16 +978,16 @@ public sealed class ExecutionLeaseContractTests
             .Build();
         await secondRegistry.RegisterWorkflowAsync(definition);
         var correlationId = Guid.NewGuid().ToString("N");
-        var executing = firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData(),
+        var executing = firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData(),
                 new WorkflowOptions { CorrelationId = correlationId });
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
         WorkflowExecutionResult attempted;
         try
         {
-            attempted = await secondHost.GetRequiredService<IWorkflowEngine>()
-                .RecoverWorkflowAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
+            attempted = await secondHost.GetRequiredService<IWorkflowClient>()
+                .RecoverAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
         }
         finally
         {
@@ -1031,8 +1031,8 @@ public sealed class ExecutionLeaseContractTests
             .Build();
         await secondRegistry.RegisterWorkflowAsync(definition);
         var correlationId = Guid.NewGuid().ToString("N");
-        var executing = firstHost.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LeaseData(),
+        var executing = firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData(),
                 new WorkflowOptions { CorrelationId = correlationId });
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
@@ -1248,10 +1248,10 @@ public sealed class ExecutionLeaseContractTests
             .Build();
         try
         {
-            var first = await host.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new LeaseData(), new WorkflowOptions { InstanceId = instanceId });
-            var replay = await host.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new LeaseData(), new WorkflowOptions { InstanceId = instanceId });
+            var first = await host.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new LeaseData(), new WorkflowOptions { InstanceId = instanceId });
+            var replay = await host.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new LeaseData(), new WorkflowOptions { InstanceId = instanceId });
 
             Assert.Equal(instanceId, first.InstanceId);
             Assert.Equal(instanceId, replay.InstanceId);

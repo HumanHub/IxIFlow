@@ -31,7 +31,7 @@ public sealed class CheckpointLimitTests
             .WaitFor<Approval>("approval")
             .Build();
 
-        var result = await Engine(services).ExecuteWorkflowAsync(definition, new LimitData());
+        var result = await Engine(services).RunAsync(definition, new LimitData());
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
         var saved = ExecutionCheckpoint.Read((await repository.GetWorkflowInstanceAsync(result.InstanceId))!
@@ -47,7 +47,7 @@ public sealed class CheckpointLimitTests
         string instanceId;
         using (var limited = Services(repository, 8_000))
         {
-            var result = await Engine(limited).ExecuteWorkflowAsync(GrowingWorkflow(), new LimitData());
+            var result = await Engine(limited).RunAsync(GrowingWorkflow(), new LimitData());
 
             Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
             Assert.Contains("over the configured limit of 8000 bytes", result.ErrorMessage);
@@ -65,7 +65,7 @@ public sealed class CheckpointLimitTests
         // An operator raises the limit: a host with the higher limit and the same workflow recovers it.
         using var raised = Services(repository, ExecutionLimits.DefaultMaxCheckpointBytes);
         await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(GrowingWorkflow());
-        var recovered = await Engine(raised).RecoverWorkflowAsync(instanceId);
+        var recovered = await Engine(raised).RecoverAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
         Assert.Equal(GrownLength, ((LimitData)recovered.WorkflowData!).Text.Length);
@@ -78,7 +78,7 @@ public sealed class CheckpointLimitTests
         long stopBytes;
         using (var services = Services(measured, 8_000))
         {
-            var first = await Engine(services).ExecuteWorkflowAsync(GrowingWorkflow(), new LimitData());
+            var first = await Engine(services).RunAsync(GrowingWorkflow(), new LimitData());
             stopBytes = ExecutionCheckpointWriter.CheckpointBytes(
                 (await measured.GetWorkflowInstanceAsync(first.InstanceId))!);
         }
@@ -86,7 +86,7 @@ public sealed class CheckpointLimitTests
         // The last checkpoint fits, but adding the stop marker does not.
         var repository = new InMemoryWorkflowStateRepository();
         using var tight = Services(repository, stopBytes - 1);
-        var result = await Engine(tight).ExecuteWorkflowAsync(GrowingWorkflow(), new LimitData());
+        var result = await Engine(tight).RunAsync(GrowingWorkflow(), new LimitData());
 
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
         var stopped = (await repository.GetWorkflowInstanceAsync(result.InstanceId))!;
@@ -107,13 +107,13 @@ public sealed class CheckpointLimitTests
                     .Output(activity => activity.Text).To(ctx => ctx.WorkflowData.Text))))
             .Build();
 
-        var stopped = await Engine(services).ExecuteWorkflowAsync(definition, new LimitData());
+        var stopped = await Engine(services).RunAsync(definition, new LimitData());
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stopped.Status);
 
-        var resumed = await Engine(services).ResumeWorkflowAsync(stopped.InstanceId, "approval", new Approval());
+        var resumed = await Engine(services).ResumeAsync(stopped.InstanceId, "approval", new Approval());
         Assert.False(resumed.EventAccepted);
         Assert.Contains("stopped at a resource limit", resumed.ErrorMessage);
-        var resolved = await Engine(services).ResolveActivityAsync(stopped.InstanceId, "any",
+        var resolved = await Engine(services).ResolveAsync(stopped.InstanceId, "any",
             ActivityResolution.Failed("operator"));
         Assert.Contains("stopped at a resource limit", resolved.ErrorMessage);
         Assert.Equal(WorkflowStatus.NeedsResolution,
@@ -133,7 +133,7 @@ public sealed class CheckpointLimitTests
                 .Input(child => child.Text).From(_ => new string('x', GrownLength)))
             .Build();
 
-        var result = await Engine(services).ExecuteWorkflowAsync(parent, new LimitData());
+        var result = await Engine(services).RunAsync(parent, new LimitData());
 
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
         var pending = Assert.Single(await Engine(services).GetPendingActivitiesAsync(result.InstanceId));
@@ -147,7 +147,7 @@ public sealed class CheckpointLimitTests
         using var services = Services(repository, 8_000);
 
         await EngineAssert.FailsAsync(WorkflowErrorKind.ResourceExhausted,
-            () => Engine(services).ExecuteWorkflowAsync(GrowingWorkflow("RefusedStart"),
+            () => Engine(services).RunAsync(GrowingWorkflow("RefusedStart"),
                 new LimitData { Text = new string('x', GrownLength) }));
 
         Assert.Empty(await repository.GetWorkflowInstancesByNameAsync("RefusedStart"));
@@ -171,8 +171,8 @@ public sealed class CheckpointLimitTests
         return services.BuildServiceProvider();
     }
 
-    private static IWorkflowEngine Engine(IServiceProvider services) =>
-        services.GetRequiredService<IWorkflowEngine>();
+    private static IWorkflowClient Engine(IServiceProvider services) =>
+        services.GetRequiredService<IWorkflowClient>();
 
     public sealed class LimitData
     {

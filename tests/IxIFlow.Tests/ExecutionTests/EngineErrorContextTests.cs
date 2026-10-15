@@ -23,8 +23,8 @@ public sealed class EngineErrorContextTests
             .Step<NoopActivity>()
             .Build();
 
-        var error = await EngineAssert.StoreFailureAsync(() => services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new ContextData()));
+        var error = await EngineAssert.StoreFailureAsync(() => services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new ContextData()));
 
         var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("ContextStoreFailure"));
         Assert.Equal(saved.InstanceId, error.InstanceId);
@@ -41,7 +41,7 @@ public sealed class EngineErrorContextTests
         var instanceId = Guid.NewGuid().ToString("N");
 
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest,
-            () => services.GetRequiredService<IWorkflowEngine>().CancelWorkflowAsync(instanceId,
+            () => services.GetRequiredService<IWorkflowClient>().CancelAsync(instanceId,
                 new CancellationReason { ReasonCode = "withdrawn" }));
 
         Assert.Equal(instanceId, error.InstanceId);

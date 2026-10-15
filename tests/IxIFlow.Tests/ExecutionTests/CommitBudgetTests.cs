@@ -109,7 +109,7 @@ public sealed class CommitBudgetTests
             .Step<WorkActivity>()
             .Build();
 
-        var result = await Engine(services).ExecuteWorkflowAsync(definition, new BudgetData());
+        var result = await Engine(services).RunAsync(definition, new BudgetData());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
 
         // Parent and child commits together.
@@ -127,9 +127,9 @@ public sealed class CommitBudgetTests
             .Step<WorkActivity>()
             .Build();
 
-        var started = await Engine(services).ExecuteWorkflowAsync(definition, new BudgetData());
+        var started = await Engine(services).RunAsync(definition, new BudgetData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var resumed = await Engine(services).ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var resumed = await Engine(services).ResumeAsync(started.InstanceId, "approval", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
 
         AssertBudget(store.Commits, store.MaxBytes, maxCommits: 8, maxBytes: 1400);
@@ -149,7 +149,7 @@ public sealed class CommitBudgetTests
     {
         var store = new MeasuringStore();
         using var services = Services(store);
-        var result = await Engine(services).ExecuteWorkflowAsync(definition, new BudgetData());
+        var result = await Engine(services).RunAsync(definition, new BudgetData());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         return (store.Commits, store.MaxBytes);
     }
@@ -166,8 +166,8 @@ public sealed class CommitBudgetTests
         return services.BuildServiceProvider();
     }
 
-    private static IWorkflowEngine Engine(IServiceProvider services) =>
-        services.GetRequiredService<IWorkflowEngine>();
+    private static IWorkflowClient Engine(IServiceProvider services) =>
+        services.GetRequiredService<IWorkflowClient>();
 
     /// <summary>Counts applied commits and the largest checkpoint.</summary>
     private sealed class MeasuringStore : FaultInjectingRepository

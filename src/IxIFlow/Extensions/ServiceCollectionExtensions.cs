@@ -22,7 +22,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddIxIFlow(this IServiceCollection services)
     {
         // Core workflow services
-        services.AddScoped<IWorkflowEngine, WorkflowEngine>();
+        services.AddScoped<IWorkflowClient, WorkflowClient>();
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
         services.AddScoped<IWorkflowInvoker, WorkflowInvoker>();
         services.AddScoped<InstanceHost>();

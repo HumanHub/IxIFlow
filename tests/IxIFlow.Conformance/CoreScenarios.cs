@@ -23,7 +23,7 @@ public sealed class CoreScenarios
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Count))
             .Build();
 
-        var result = await engine.ExecuteWorkflowAsync(definition, new CounterData { Count = 41 });
+        var result = await engine.RunAsync(definition, new CounterData { Count = 41 });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(42, ((CounterData)result.WorkflowData!).Count);
@@ -41,10 +41,10 @@ public sealed class CoreScenarios
         var definition = ApprovalWorkflow();
         await cluster.Registry.RegisterWorkflowAsync(definition);
 
-        var started = await first.ExecuteWorkflowAsync(definition, new CounterData());
+        var started = await first.RunAsync(definition, new CounterData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var resumed = await second.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var resumed = await second.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         Assert.Equal(1, ((CounterData)resumed.WorkflowData!).Count);
@@ -66,18 +66,18 @@ public sealed class CoreScenarios
             .WaitFor<Approval>("approval")
             .Build();
         await cluster.Registry.RegisterWorkflowAsync(definition);
-        var started = await first.ExecuteWorkflowAsync(definition, new CounterData());
+        var started = await first.RunAsync(definition, new CounterData());
 
         await Task.WhenAll(
-            first.ResumeWorkflowDeliveryAsync(started.InstanceId, "approval", new Approval(), "delivery-1"),
-            second.ResumeWorkflowDeliveryAsync(started.InstanceId, "approval", new Approval(), "delivery-1"));
+            first.ResumeAsync(started.InstanceId, "approval", new Approval(), "delivery-1"),
+            second.ResumeAsync(started.InstanceId, "approval", new Approval(), "delivery-1"));
         Assert.Equal(1, counter.Count);
 
-        await first.ResumeWorkflowDeliveryAsync(started.InstanceId, "approval", new Approval(), "delivery-1");
+        await first.ResumeAsync(started.InstanceId, "approval", new Approval(), "delivery-1");
         Assert.Equal(1, counter.Count);
         Assert.Equal(WorkflowStatus.Suspended, (await cluster.GetInstanceAsync(started.InstanceId))!.Status);
 
-        var completed = await second.ResumeWorkflowDeliveryAsync(
+        var completed = await second.ResumeAsync(
             started.InstanceId, "approval", new Approval(), "delivery-2");
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, counter.Count);
@@ -92,11 +92,11 @@ public sealed class CoreScenarios
         var second = cluster.AddHost();
         var definition = ApprovalWorkflow();
         await cluster.Registry.RegisterWorkflowAsync(definition);
-        var started = await first.ExecuteWorkflowAsync(definition, new CounterData());
+        var started = await first.RunAsync(definition, new CounterData());
 
-        var cancelled = await second.CancelWorkflowAsync(started.InstanceId,
+        var cancelled = await second.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "conformance" });
-        var resumed = await first.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var resumed = await first.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
         Assert.NotEqual(WorkflowExecutionStatus.Success, resumed.Status);
@@ -127,13 +127,13 @@ public sealed class CoreScenarios
             .Build();
         await cluster.Registry.RegisterWorkflowAsync(child);
         await cluster.Registry.RegisterWorkflowAsync(parent);
-        var started = await engine.ExecuteWorkflowAsync(parent, new CounterData());
+        var started = await engine.RunAsync(parent, new CounterData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var childId = ExecutionCheckpoint.Read((await cluster.GetInstanceAsync(started.InstanceId))!.ExecutionStateJson)
             .Continuations.Single(item => item.PendingActivity?.ChildWorkflowId != null)
             .PendingActivity!.ChildWorkflowId!;
 
-        var childResult = await receivingHost.ResumeWorkflowAsync(childId, "approval", new Approval());
+        var childResult = await receivingHost.ResumeAsync(childId, "approval", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, childResult.Status);
         await cluster.RecoverOnceAsync();
 

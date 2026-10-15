@@ -10,7 +10,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class ConditionalTests
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly IWorkflowEngine _workflowEngine;
+    private readonly IWorkflowClient _workflowEngine;
 
     public ConditionalTests()
     {
@@ -20,7 +20,7 @@ public class ConditionalTests
         services.AddIxIFlow();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
     }
 
     [Fact]
@@ -51,7 +51,7 @@ public class ConditionalTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -92,7 +92,7 @@ public class ConditionalTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -188,7 +188,7 @@ public class ConditionalTests
         };
 
         // Act
-        var vipResult = await _workflowEngine.ExecuteWorkflowAsync(definition, vipData);
+        var vipResult = await _workflowEngine.RunAsync(definition, vipData);
 
         // Assert
         Assert.True(vipResult.IsSuccess);
@@ -215,7 +215,7 @@ public class ConditionalTests
         };
 
         // Act
-        var businessResult = await _workflowEngine.ExecuteWorkflowAsync(definition, businessData);
+        var businessResult = await _workflowEngine.RunAsync(definition, businessData);
 
         // Assert
         Assert.True(businessResult.IsSuccess);
@@ -242,7 +242,7 @@ public class ConditionalTests
         };
 
         // Act
-        var regularResult = await _workflowEngine.ExecuteWorkflowAsync(definition, regularData);
+        var regularResult = await _workflowEngine.RunAsync(definition, regularData);
 
         // Assert
         Assert.True(regularResult.IsSuccess);
