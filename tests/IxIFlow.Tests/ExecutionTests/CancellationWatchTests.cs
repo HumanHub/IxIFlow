@@ -60,6 +60,27 @@ public sealed class CancellationWatchTests
 
     [Fact]
     [Trait("Spec", "B-10")]
+    public async Task ALeaseThatAlreadyHasItsCancellationIsNotLostToAnOutage()
+    {
+        var time = new FakeTimeProvider();
+        var store = new ScriptedStore { Fail = true };
+        var watch = new CancellationWatch(store, time);
+        var cancelled = new Subscription();
+        var running = new Subscription();
+        using var cancelledWatch = cancelled.Watch(watch, "cancelled");
+        using var runningWatch = running.Watch(watch, "running");
+        // The request reached this lease another way, such as a commit reply.
+        cancelled.Cancellation.SetResult(new CancellationReason { ReasonCode = "stop" });
+        await store.WaitForReadsAsync(1);
+
+        await TickAsync(time, store, Tolerance + TimeSpan.FromSeconds(1));
+
+        Assert.True(running.IsLost);
+        Assert.False(cancelled.IsLost);
+    }
+
+    [Fact]
+    [Trait("Spec", "B-10")]
     public async Task AHungReadCountsAsAnOutage()
     {
         var time = new FakeTimeProvider();

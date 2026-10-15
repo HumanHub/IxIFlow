@@ -160,6 +160,28 @@ public sealed class LocalHostTests
     }
 
     [Fact]
+    [Trait("Spec", "B-02")]
+    public async Task AnInlineCallStillRunningWhenItsRunEndsKeepsItsSlot()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
+        var probe = services.GetRequiredService<BackgroundProbe>();
+        var definition = Workflow.Create<HostData>("HandsOffAndHoldsTheSlot")
+            .Step<HandOffActivity>()
+            .Build();
+        var result = await Client(services).RunAsync(definition, new HostData()).WaitAsync(Patience);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+
+        // The only slot is still in use by the inline run, so new work waits for it.
+        var next = Client(services).RunAsync(QuickWorkflow("WaitsForTheSlot"), new HostData());
+        await Task.Delay(300);
+        Assert.False(next.IsCompleted);
+
+        probe.Later.SetResult();
+        Assert.Equal(WorkflowExecutionStatus.Success, (await probe.Result.Task.WaitAsync(Patience)).Status);
+        Assert.Equal(WorkflowExecutionStatus.Success, (await next.WaitAsync(Patience)).Status);
+    }
+
+    [Fact]
     [Trait("Spec", "B-12")]
     public async Task DisposingTheHostCancelsQueuedCallers()
     {

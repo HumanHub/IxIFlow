@@ -87,7 +87,18 @@ internal sealed class InstanceHost(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         var instance = await _store.GetWorkflowInstanceAsync(instanceId);
-        return instance == null ? null : ExistingResult(instance);
+        // A stopped instance is answered without reading its data, which may be what stopped it.
+        return instance == null ? null
+            : ExecutionCheckpoint.StopOf(instance) is { } stop ? Stopped(instance, stop)
+            : ExistingResult(instance);
+    }
+
+    /// <summary>The status of an instance as a result would report it, without reading its data.</summary>
+    public async Task<WorkflowExecutionStatus?> ReadStatusAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+        return instance == null ? null : StatusOf(instance.Status);
     }
 
     public async Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
@@ -657,20 +668,22 @@ internal sealed class InstanceHost(
         ErrorMessage = reason
     };
 
+    private static WorkflowExecutionStatus StatusOf(WorkflowStatus status) => status switch
+    {
+        WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
+        WorkflowStatus.Suspended => WorkflowExecutionStatus.Suspended,
+        WorkflowStatus.NeedsResolution => WorkflowExecutionStatus.NeedsResolution,
+        WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
+        WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
+        WorkflowStatus.TimedOut => WorkflowExecutionStatus.TimedOut,
+        WorkflowStatus.Terminated => WorkflowExecutionStatus.Failed,
+        _ => WorkflowExecutionStatus.Running
+    };
+
     private static WorkflowExecutionResult ExistingResult(WorkflowInstance instance) => new()
     {
         InstanceId = instance.InstanceId,
-        Status = instance.Status switch
-        {
-            WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
-            WorkflowStatus.Suspended => WorkflowExecutionStatus.Suspended,
-            WorkflowStatus.NeedsResolution => WorkflowExecutionStatus.NeedsResolution,
-            WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
-            WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
-            WorkflowStatus.TimedOut => WorkflowExecutionStatus.TimedOut,
-            WorkflowStatus.Terminated => WorkflowExecutionStatus.Failed,
-            _ => WorkflowExecutionStatus.Running
-        },
+        Status = StatusOf(instance.Status),
         WorkflowData = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType) is { } dataType
             ? JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
             : null,

@@ -6,11 +6,11 @@
   "waits": 70,
   "timers": 24,
   "children": 31,
-  "recovery": 39,
+  "recovery": 40,
   "durability": 76,
   "registration": 20,
   "tracing": 2,
   "distribution": 21,
   "documents": 19,
-  "host": 31
+  "host": 33
 }

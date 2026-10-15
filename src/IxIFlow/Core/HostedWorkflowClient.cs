@@ -162,10 +162,13 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
             // Watch before reading, so work that finishes in between is not missed. Only work on
             // this instance wakes the caller; work elsewhere is seen by the poll.
             using var watch = host.WatchSettled(instanceId, out var settled);
-            var result = await host.ReadAsync(client => client.ReadAsync(instanceId))
+            // Waiting reads only the status; the workflow data is read once, when the wait is over.
+            var status = await host.ReadAsync(client => client.ReadStatusAsync(instanceId))
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"Workflow instance '{instanceId}' does not exist").At(instanceId);
-            if (Satisfies(result.Status, until))
+            if (Satisfies(status, until) &&
+                await host.ReadAsync(client => client.ReadAsync(instanceId)) is { } result &&
+                Satisfies(result.Status, until))
                 return result;
             using var poll = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             await Task.WhenAny(settled, Task.Delay(AwaitPollInterval, time, poll.Token));

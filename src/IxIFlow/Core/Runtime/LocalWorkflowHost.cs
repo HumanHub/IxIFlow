@@ -28,6 +28,9 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     // Every admitted item until it finishes, added under the lock that admits it, so a stopping
     // host waits for all of them.
     private readonly HashSet<WorkItem> _admitted = [];
+    // Runs that ended while inline calls were still using their scope; each holds its slot until
+    // the last of those calls ends.
+    private readonly HashSet<Task> _lingering = [];
     // Callers waiting for work on an instance to finish, by instance.
     private readonly Dictionary<string, SettledSignal> _settled = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _draining = new();
@@ -221,13 +224,15 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
         return false;
     }
 
-    private static async Task<T> RunInlineAsync<T>(RunContext current,
+    // An inline call stops with its caller or with the host, whichever comes first.
+    private async Task<T> RunInlineAsync<T>(RunContext current,
         Func<DirectInstanceClient, RunControl, CancellationToken, Task<T>> operation,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await operation(current.Client, current.Control, cancellationToken);
+            using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stopped.Token);
+            return await operation(current.Client, current.Control, stop.Token);
         }
         finally
         {
@@ -336,12 +341,31 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
             finally
             {
                 CurrentRun.Value = null;
-                // Inline calls still running in the scope, from work the run left behind, keep it
-                // until the last of them ends.
-                if (context != null)
-                    await context.CloseAsync(scope.DisposeAsync);
-                else
+                if (context == null)
                     await scope.DisposeAsync();
+                else
+                {
+                    // Inline calls still running in the scope, from work the run left behind, keep the
+                    // scope and the slot until the last of them ends; a stopping host waits for them.
+                    var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    lock (_lock)
+                        _lingering.Add(released.Task);
+                    slotTaken = false;
+                    await context.CloseAsync(async () =>
+                    {
+                        try
+                        {
+                            await scope.DisposeAsync();
+                        }
+                        finally
+                        {
+                            _slots.Release();
+                            lock (_lock)
+                                _lingering.Remove(released.Task);
+                            released.TrySetResult();
+                        }
+                    });
+                }
             }
         }
         catch (Exception error)
@@ -450,7 +474,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
             foreach (var queue in _instances.Values)
                 while (queue.Count > 0)
                     cancelled.Add(queue.Dequeue());
-            running = _admitted.Select(item => item.Done.Task).ToArray();
+            running = _admitted.Select(item => item.Done.Task).Concat(_lingering).ToArray();
             // Due instances stay runnable in the store for the next host.
             _due.Clear();
             _dueOf.Clear();

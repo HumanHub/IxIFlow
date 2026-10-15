@@ -62,7 +62,12 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     }
 
     /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>
-    public void ObserveCancellation(CancellationReason reason) => _cancellation.TrySetResult(reason);
+    public void ObserveCancellation(CancellationReason reason)
+    {
+        _cancellation.TrySetResult(reason);
+        // The request is known; a later outage of the watch's reads must not end this ownership.
+        _cancellationWatch.Dispose();
+    }
 
     public void ThrowIfLost()
     {

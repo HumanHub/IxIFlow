@@ -120,7 +120,7 @@ internal sealed class CancellationWatch
             // Each lease has its own outage clock, counted from its last confirmed read. Every lease
             // watched now is judged, including ones added while the read was out.
             foreach (var subscriber in Subscribers(WatchedIds()).Where(item =>
-                         Now - item.ConfirmedAtUtc >= item.Tolerance))
+                         !item.Cancellation.Task.IsCompleted && Now - item.ConfirmedAtUtc >= item.Tolerance))
                 subscriber.Lost(error);
             return;
         }
