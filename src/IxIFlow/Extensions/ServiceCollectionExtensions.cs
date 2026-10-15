@@ -28,6 +28,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<StructuredWorkflowRunner>();
         services.AddHostedService<WorkflowRecoveryService>();
         services.AddSingleton(InProcessInstanceGate.Shared);
+        services.TryAddSingleton(TimeProvider.System);
         
         // Workflow state and persistence
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();

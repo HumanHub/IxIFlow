@@ -393,7 +393,7 @@ public class WorkflowExecutionSnapshot
     /// <summary>
     ///     When the snapshot was captured
     /// </summary>
-    public DateTime CapturedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime CapturedAtUtc { get; set; }
 }
 
 /// <summary>
@@ -523,7 +523,7 @@ public class ExecutionTraceEntry
     /// <summary>
     ///     When this trace entry was created
     /// </summary>
-    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    public DateTime Timestamp { get; set; }
 
     /// <summary>
     ///     Step number in the workflow

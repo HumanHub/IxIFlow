@@ -8,7 +8,7 @@ internal sealed record CompensationInputs(object? PreviousStep, object? Previous
 internal static class SagaScopeTransitions
 {
     public static void Enter(WorkflowScopeCatalog scopes, WorkflowStep step,
-        ScopePosition owner, ContinuationState continuation, IServiceProvider services)
+        ScopePosition owner, ContinuationState continuation, IServiceProvider services, DateTime now)
     {
         var state = owner.SagaState ??= new SagaScopeState();
         if (state.Phase == SagaPhase.Forward)
@@ -66,7 +66,7 @@ internal static class SagaScopeTransitions
                         ? retryValue as SagaErrorConfiguration
                         : null;
                     continuation.RetryAfterUtc = RetrySchedule.NextAttemptUtc(
-                        retryConfiguration?.RetryPolicy, state.RetryCount);
+                        retryConfiguration?.RetryPolicy, state.RetryCount, now);
                     state.AcceptedWaitCursor = 0;
                     state.CompletedSteps.Clear();
                     state.CompensationErrors.Clear();
@@ -75,7 +75,7 @@ internal static class SagaScopeTransitions
                     state.Phase = SagaPhase.Forward;
                     state.CompensationCursor = -1;
                     state.CompensationFloor = 0;
-                    Enter(scopes, step, owner, continuation, services);
+                    Enter(scopes, step, owner, continuation, services, now);
                     return;
                 }
             }
@@ -184,7 +184,7 @@ internal static class SagaScopeTransitions
     }
 
     public static bool HandleStepFailure(WorkflowScopeCatalog scopes,
-        ContinuationState continuation, Exception error)
+        ContinuationState continuation, Exception error, DateTime now)
     {
         var position = continuation.Stack[^1];
         var step = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
@@ -211,7 +211,7 @@ internal static class SagaScopeTransitions
             return false;
         position.StepRetryCounts[position.NextStepIndex] = attempts + 1;
         continuation.RetryAfterUtc = RetrySchedule.NextAttemptUtc(
-            handler.RetryPolicy, attempts + 1);
+            handler.RetryPolicy, attempts + 1, now);
         return true;
     }
 
