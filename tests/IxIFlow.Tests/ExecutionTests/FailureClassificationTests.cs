@@ -20,7 +20,7 @@ public sealed class FailureClassificationTests
     public async Task StoreFailureWhileCheckingAChildLeavesTheParentRecoverable()
     {
         var time = new FakeTimeProvider();
-        var repository = new FaultInjectingRepository();
+        var repository = new FaultInjectingRepository(time);
         using var services = Services(repository, time);
         var child = Workflow.Create<ChildData>("ClassifiedTimedChild")
             .Step<NoopActivity>()
@@ -65,7 +65,7 @@ public sealed class FailureClassificationTests
     public async Task ChildCommitFailureIsNotHandledAsAChildFailure()
     {
         var time = new FakeTimeProvider();
-        var repository = new FaultInjectingRepository();
+        var repository = new FaultInjectingRepository(time);
         using var services = Services(repository, time);
         var child = Workflow.Create<ChildData>("ClassifiedChild")
             .Step<NoopActivity>()

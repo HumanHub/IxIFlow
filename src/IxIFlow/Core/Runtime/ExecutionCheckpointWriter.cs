@@ -10,23 +10,26 @@ internal static class ExecutionCheckpointWriter
 {
     private const int MaxAttempts = 3;
 
+    /// <summary>How often an idle parent checks on its children when nothing else wakes it.</summary>
+    public static readonly TimeSpan ChildCheckInterval = TimeSpan.FromSeconds(5);
+
     /// <summary>
     /// Commits the run's state. <paramref name="workflowData"/> may be null only with
     /// <paramref name="preserveSavedWorkflowData"/>. <paramref name="clearsCrashCount"/> is false for a
     /// commit that records no progress: claiming an activity or child before it starts, or only
-    /// rescheduling a check (B-08). With <paramref name="parkUntil"/> the run stops until then and the
-    /// store releases its lease (C-03); returns true when it did.
+    /// rescheduling a check (B-08). With <paramref name="parkFor"/> the run stops that long and the
+    /// store releases its lease (C-03); returns true when it did. <paramref name="now"/> is the host's time.
     /// </summary>
     public static async Task<bool> CommitAsync(IExecutionHost host, WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object? workflowData, WorkflowScopeCatalog scopes, DateTime now,
         bool preserveSavedWorkflowData = false, bool enforceLimit = true, bool clearsCrashCount = true,
-        DateTime? parkUntil = null)
+        TimeSpan? parkFor = null)
     {
         if (!host.PersistsState)
             return false;
         var lastCommitted = SavedForm.Of(instance);
         checkpoint.CloseEndedRequests();
-        Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData, parkUntil);
+        Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData);
         var size = CheckpointBytes(instance);
         if (enforceLimit && size > host.Limits.MaxCheckpointBytes)
         {
@@ -35,12 +38,17 @@ internal static class ExecutionCheckpointWriter
             throw new CheckpointLimitExceededException(size, host.Limits.MaxCheckpointBytes);
         }
 
-        // The commit carries the run's inbox decisions and the waits it opened and closed (D-33).
-        var (opened, closed) = checkpoint.Inbox.WaitChanges(checkpoint.Waits);
+        // The commit carries the run's inbox decisions and the waits it opened, armed and closed (D-33).
+        // It says how long, not until when: the store stamps deadlines and the runnable time (D-35).
+        var (opened, armed, closed) = checkpoint.Inbox.WaitChanges(checkpoint);
+        var idle = instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
+        var checksChildren = idle && checkpoint.Waits.Any(wait => wait.ChildWorkflowId != null);
         var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,
-            clearsCrashCount: clearsCrashCount, parks: parkUntil != null,
+            clearsCrashCount: clearsCrashCount, parks: parkFor != null,
             settlements: checkpoint.Inbox.Settlements, inboxReadThrough: checkpoint.Inbox.ReadThrough,
-            openedWaits: opened, closedWaits: closed);
+            openedWaits: opened, closedWaits: closed, armedWaits: armed,
+            wakeAfter: parkFor ?? (checksChildren ? ChildCheckInterval : null),
+            stopped: checkpoint.OperatorStop != null);
         for (var attempt = 1; ; attempt++)
         {
             var reply = await host.CommitAsync(commit);
@@ -48,10 +56,16 @@ internal static class ExecutionCheckpointWriter
             {
                 case CheckpointReplyKind.Acknowledged:
                     instance.Revision = reply.Revision;
-                    checkpoint.Inbox.Acknowledged(checkpoint.Waits, reply.UnreadEvents);
-                    // An idle instance with arrivals it has not read is due now; the store keeps it so.
-                    if (reply.UnreadEvents && instance.Status == WorkflowStatus.Suspended)
-                        instance.RunnableAtUtc = now;
+                    checkpoint.Inbox.Acknowledged(checkpoint, reply.UnreadEvents);
+                    EstimateDeadlines(checkpoint, opened, armed, now);
+                    // The host looks again when the store will next make the instance runnable; an idle
+                    // instance with arrivals it has not read is due now, and the store keeps it so.
+                    checkpoint.LocalWakeUtc =
+                        reply.UnreadEvents && instance.Status == WorkflowStatus.Suspended ? now
+                        : checkpoint.OperatorStop != null ? null
+                        : instance.Status == WorkflowStatus.Running ? now + parkFor ?? now
+                        : idle ? new[] { checkpoint.NextDeadlineLocal(), now + commit.WakeAfter }.Min()
+                        : null;
                     if (reply.PendingCancellation != null)
                         host.ObserveCancellation(reply.PendingCancellation);
                     return reply.Parked;
@@ -67,9 +81,27 @@ internal static class ExecutionCheckpointWriter
         }
     }
 
+    // Until the run reads the deadlines the store stamped, it takes them to be its commit's time on the
+    // store's clock plus each timeout (D-35).
+    private static void EstimateDeadlines(ExecutionCheckpoint checkpoint, IReadOnlyList<OpenedWait> opened,
+        IReadOnlyList<ArmedWait> armed, DateTime now)
+    {
+        var storeNow = checkpoint.Clock.ToStore(now);
+        var timeouts = opened.Where(wait => wait.Timeout != null)
+            .Select(wait => (wait.WaitId, Timeout: wait.Timeout!.Value))
+            .Concat(armed.Select(wait => (wait.WaitId, wait.Timeout)))
+            .ToDictionary(item => item.WaitId, item => item.Timeout, StringComparer.Ordinal);
+        if (timeouts.Count == 0)
+            return;
+        foreach (var wait in checkpoint.Waits)
+            if (timeouts.TryGetValue(wait.Id, out var timeout))
+                wait.DeadlineUtc = storeNow + timeout;
+        if (checkpoint.ExecutionTimerId is { } timer && timeouts.TryGetValue(timer, out var execution))
+            checkpoint.ExecutionDeadlineUtc = storeNow + execution;
+    }
+
     public static void Prepare(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
-        object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false,
-        DateTime? parkUntil = null)
+        object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false)
     {
         try
         {
@@ -83,17 +115,6 @@ internal static class ExecutionCheckpointWriter
             instance.WorkflowDataJson = dataJson;
             instance.ExecutionStateJson = stateJson;
             instance.ExecutionSnapshot = snapshot;
-            // A stopped instance stays put until an operator acts on it. A running one is runnable
-            // from now, so it can be claimed as soon as its owner's lease ends.
-            instance.RunnableAtUtc = checkpoint.OperatorStop != null ? null
-                : instance.Status == WorkflowStatus.Running ? parkUntil ?? now
-                : instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution
-                ? new[] { checkpoint.CancellationRequested ? null : checkpoint.ExecutionDeadlineUtc }
-                    .Concat(checkpoint.Waits.Select(wait => wait.DeadlineUtc))
-                    .Concat(checkpoint.Waits.Any(wait => wait.ChildWorkflowId != null)
-                        ? [now.AddSeconds(5)] : [])
-                    .Where(due => due != null).Min()
-                : null;
         }
         catch (Exception ex)
         {
@@ -110,17 +131,16 @@ internal static class ExecutionCheckpointWriter
         $"The workflow state could not be checkpointed: {inner.Message}", inner);
 
     private sealed record SavedForm(string WorkflowDataJson, string ExecutionStateJson,
-        WorkflowExecutionSnapshot? ExecutionSnapshot, DateTime? RunnableAtUtc)
+        WorkflowExecutionSnapshot? ExecutionSnapshot)
     {
         public static SavedForm Of(WorkflowInstance instance) => new(instance.WorkflowDataJson,
-            instance.ExecutionStateJson, instance.ExecutionSnapshot, instance.RunnableAtUtc);
+            instance.ExecutionStateJson, instance.ExecutionSnapshot);
 
         public void RestoreTo(WorkflowInstance instance)
         {
             instance.WorkflowDataJson = WorkflowDataJson;
             instance.ExecutionStateJson = ExecutionStateJson;
             instance.ExecutionSnapshot = ExecutionSnapshot;
-            instance.RunnableAtUtc = RunnableAtUtc;
         }
     }
 }

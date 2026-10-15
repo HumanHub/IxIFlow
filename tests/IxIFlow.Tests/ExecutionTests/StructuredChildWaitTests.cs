@@ -588,10 +588,9 @@ public sealed class StructuredChildWaitTests
         var cancelledChild = await engine.RecoverAsync(childId);
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelledChild.Status);
         var dueParent = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
-        dueParent.RunnableAtUtc = DateTime.UtcNow.AddSeconds(-1);
         Assert.Equal(WorkflowCommitStatus.Applied,
             (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(dueParent, 0, dueParent.Revision,
-                Guid.NewGuid().ToString("N")))).Status);
+                Guid.NewGuid().ToString("N"), wakeAfter: TimeSpan.Zero))).Status);
         using var scanner = new WorkflowRecoveryService(
             services.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -808,10 +807,9 @@ public sealed class StructuredChildWaitTests
             ActivityResolution.Completed(new Dictionary<string, object?>()));
         Assert.Equal(WorkflowExecutionStatus.Success, completedChild.Status);
         var dueParent = (await recoveredStore.GetWorkflowInstanceAsync(savedParent.InstanceId))!;
-        dueParent.RunnableAtUtc = DateTime.UtcNow.AddSeconds(-1);
         Assert.Equal(WorkflowCommitStatus.Applied,
             (await recoveredStore.CommitWorkflowInstanceAsync(CheckpointCommit.Create(dueParent, 0, dueParent.Revision,
-                Guid.NewGuid().ToString("N")))).Status);
+                Guid.NewGuid().ToString("N"), wakeAfter: TimeSpan.Zero))).Status);
         using var scanner = new WorkflowRecoveryService(
             recoveredProvider.GetRequiredService<IServiceScopeFactory>(), recoveredStore,
             NullLogger<WorkflowRecoveryService>.Instance);

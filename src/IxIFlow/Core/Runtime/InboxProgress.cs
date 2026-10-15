@@ -2,14 +2,17 @@ namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// A run's inbox and waits-table work since its last commit (D-32, D-33): the events it decided, how
-/// far it read, and the waits it opened and closed. The next commit carries all of it, so the store
-/// applies the decisions together with the checkpoint that results from them.
+/// far it read, and the waits it opened, armed and closed. The next commit carries all of it, so the
+/// store applies the decisions together with the checkpoint that results from them.
 /// </summary>
 internal sealed class InboxProgress
 {
     private HashSet<string> _committedWaits = new(StringComparer.Ordinal);
+    // Committed waits whose timeout the store has, so it stamped their deadline (D-35).
+    private HashSet<string> _committedTimeouts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, WaitCloseReason> _closures = new(StringComparer.Ordinal);
     private readonly List<EventSettlement> _settlements = [];
+    private HashSet<string> _due = new(StringComparer.Ordinal);
 
     /// <summary>The highest inbox sequence the run has read, or null before its first read.</summary>
     public long? ReadThrough { get; private set; }
@@ -23,11 +26,10 @@ internal sealed class InboxProgress
     /// <summary>Events decided since the last commit.</summary>
     public IReadOnlyList<EventSettlement> Settlements => _settlements;
 
-    public static InboxProgress Committed(IEnumerable<WaitState> waits)
+    public static InboxProgress Committed(ExecutionCheckpoint checkpoint)
     {
         var progress = new InboxProgress();
-        progress._committedWaits = waits.Where(wait => wait.TableKind != null).Select(wait => wait.Id)
-            .ToHashSet(StringComparer.Ordinal);
+        progress.Acknowledged(checkpoint, false);
         return progress;
     }
 
@@ -38,7 +40,8 @@ internal sealed class InboxProgress
 
     /// <summary>
     /// Makes the next pass read the inbox although no commit reply reported an arrival: the host saw
-    /// the inbox sequence rise, or a deadline is due and an event received before it must be seen first.
+    /// the inbox sequence rise, or a deadline may be due and the store says which, together with the
+    /// events received before it.
     /// </summary>
     public void ExpectArrivals() => MayHaveUnread = true;
 
@@ -48,34 +51,43 @@ internal sealed class InboxProgress
         MayHaveUnread = false;
     }
 
+    /// <summary>Records the waits the store found due at its time when the run last read the inbox (D-35).</summary>
+    public void Due(IEnumerable<string> waitIds) => _due = waitIds.ToHashSet(StringComparer.Ordinal);
+
+    /// <summary>True when the store found the wait due at the run's last read.</summary>
+    public bool IsDue(string waitId) => _due.Contains(waitId);
+
     public void Closed(string waitId, WaitCloseReason reason) => _closures.TryAdd(waitId, reason);
 
     /// <summary>Why a wait this run closed since its last commit closed, if it did.</summary>
     public WaitCloseReason? ClosureOf(string waitId) =>
         _closures.TryGetValue(waitId, out var reason) ? reason : null;
 
-    /// <summary>The waits the next commit opens and closes, against what was last committed.</summary>
-    public (IReadOnlyList<OpenedWait> Opened, IReadOnlyList<ClosedWait> Closed) WaitChanges(
-        IReadOnlyList<WaitState> waits)
+    /// <summary>The waits the next commit opens, arms and closes, against what was last committed.</summary>
+    public (IReadOnlyList<OpenedWait> Opened, IReadOnlyList<ArmedWait> Armed, IReadOnlyList<ClosedWait> Closed)
+        WaitChanges(ExecutionCheckpoint checkpoint)
     {
-        var current = waits.Where(wait => wait.TableKind != null).ToArray();
-        var currentIds = current.Select(wait => wait.Id).ToHashSet(StringComparer.Ordinal);
-        var opened = current.Where(wait => !_committedWaits.Contains(wait.Id))
-            .Select(wait => new OpenedWait(wait.Id, wait.TableKind!.Value, wait.Key, TypeName(wait.EventType),
-                wait.DeadlineUtc))
+        var current = Rows(checkpoint).ToArray();
+        var currentIds = current.Select(wait => wait.WaitId).ToHashSet(StringComparer.Ordinal);
+        var opened = current.Where(wait => !_committedWaits.Contains(wait.WaitId)).ToArray();
+        var armed = current.Where(wait => _committedWaits.Contains(wait.WaitId) && wait.Timeout != null &&
+                                          !_committedTimeouts.Contains(wait.WaitId))
+            .Select(wait => new ArmedWait(wait.WaitId, wait.Timeout!.Value))
             .ToArray();
         // A wait removed without a recorded reason went with its scope.
         var closed = _committedWaits.Where(id => !currentIds.Contains(id))
             .Order(StringComparer.Ordinal)
             .Select(id => new ClosedWait(id, _closures.GetValueOrDefault(id, WaitCloseReason.Cancelled)))
             .ToArray();
-        return (opened, closed);
+        return (opened, armed, closed);
     }
 
     /// <summary>Records a commit the store acknowledged: what it carried is now the store's.</summary>
-    public void Acknowledged(IReadOnlyList<WaitState> waits, bool unreadEvents)
+    public void Acknowledged(ExecutionCheckpoint checkpoint, bool unreadEvents)
     {
-        _committedWaits = waits.Where(wait => wait.TableKind != null).Select(wait => wait.Id)
+        var rows = Rows(checkpoint).ToArray();
+        _committedWaits = rows.Select(wait => wait.WaitId).ToHashSet(StringComparer.Ordinal);
+        _committedTimeouts = rows.Where(wait => wait.Timeout != null).Select(wait => wait.WaitId)
             .ToHashSet(StringComparer.Ordinal);
         _closures.Clear();
         _settlements.Clear();
@@ -83,7 +95,21 @@ internal sealed class InboxProgress
             MayHaveUnread = true;
     }
 
+    // The waits-table rows a checkpoint stands for: its waits, and its execution deadline while that can
+    // still end the run.
+    private static IEnumerable<OpenedWait> Rows(ExecutionCheckpoint checkpoint)
+    {
+        foreach (var wait in checkpoint.Waits)
+            if (wait.TableKind is { } kind)
+                yield return new OpenedWait(wait.Id, kind, wait.Key, TypeName(wait.EventType),
+                    kind == WaitKind.Child ? null : wait.Timeout);
+        if (checkpoint.ExecutionTimerOpen)
+            yield return new OpenedWait(checkpoint.ExecutionTimerId!, WaitKind.Execution, "execution", "",
+                checkpoint.ExecutionTimeout);
+    }
+
     // The waits table lists a wait's event type without an assembly version, as discovery shows it.
     private static string TypeName(string savedType) =>
-        WorkflowTypeIdentity.Resolve(savedType) is { } type ? WorkflowTypeIdentity.StableName(type) : savedType;
+        savedType.Length == 0 ? savedType
+        : WorkflowTypeIdentity.Resolve(savedType) is { } type ? WorkflowTypeIdentity.StableName(type) : savedType;
 }

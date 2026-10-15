@@ -21,13 +21,53 @@ public static class WorkflowStoreRules
     /// owner's lease ends. Stores stamp these with their own clock.
     /// </summary>
     public static bool IsRunnableNow(WorkflowInstance instance, bool unacknowledgedCancellation) =>
-        (unacknowledgedCancellation && instance.CancellationReason == null &&
-         instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) ||
+        UnwindsNow(instance, unacknowledgedCancellation) ||
         (instance.RunnableAtUtc == null && instance.Status == WorkflowStatus.Running);
 
-    /// <summary>When a saved instance becomes runnable, with <paramref name="now"/> as the store's clock.</summary>
+    /// <summary>True when an idle save leaves a cancellation request unacknowledged, so the instance must unwind now.</summary>
+    public static bool UnwindsNow(WorkflowInstance instance, bool unacknowledgedCancellation) =>
+        unacknowledgedCancellation && instance.CancellationReason == null &&
+        instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
+
+    /// <summary>
+    /// When an instance saved without a commit becomes runnable, with <paramref name="now"/> as the
+    /// store's clock. Such a save carries its own time; a commit never does (D-35).
+    /// </summary>
     public static DateTime? RunnableAt(WorkflowInstance instance, bool unacknowledgedCancellation, DateTime now) =>
         IsRunnableNow(instance, unacknowledgedCancellation) ? now : instance.RunnableAtUtc;
+
+    /// <summary>
+    /// When a committed instance becomes runnable, in the store's clock (D-31, D-35): now when
+    /// <paramref name="runnableNow"/>; never while stopped for an operator; at the end of a park, or now,
+    /// while it runs; and while it is idle, at the earliest deadline of its open waits or after the
+    /// commit's <see cref="CheckpointCommit.WakeAfter"/>, whichever comes first.
+    /// </summary>
+    public static DateTime? CommittedRunnableAt(WorkflowStatus status, CheckpointCommit commit, bool runnableNow,
+        DateTime now, DateTime? earliestDeadline)
+    {
+        if (runnableNow)
+            return now;
+        if (commit.Stopped)
+            return null;
+        return status switch
+        {
+            WorkflowStatus.Running => commit.Parks ? now + commit.WakeAfter!.Value : now,
+            WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution =>
+                new[] { earliestDeadline, now + commit.WakeAfter }.Min(),
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// The wait an untargeted event should be judged against among <paramref name="openWaits"/>, at the
+    /// store's time <paramref name="now"/>: any that could still take it comes before one past its deadline.
+    /// </summary>
+    public static IEnumerable<StoredWait> Candidates(WorkflowEvent workflowEvent, IEnumerable<StoredWait> openWaits,
+        DateTime now) =>
+        openWaits.Where(wait => wait.Kind == WaitKind.Child ||
+                                (wait.Kind == WaitKind.Event && (workflowEvent.Key == null ||
+                                 string.Equals(wait.Key, workflowEvent.Key, StringComparison.Ordinal))))
+            .OrderBy(wait => wait.Kind != WaitKind.Child && wait.DeadlineUtc <= now);
 
     /// <summary>Why the waits still open when an instance finishes are closed (D-33).</summary>
     public static WaitCloseReason FinalWaitCloseReason(WorkflowStatus status) =>
@@ -36,21 +76,28 @@ public static class WorkflowStoreRules
             : WaitCloseReason.InstanceFinished;
 
     /// <summary>
-    /// Why an event that arrives is refused before anyone reads it, or null when it is kept for the
-    /// owner (D-33). <paramref name="target"/> is the wait the event names, if it names one; otherwise
-    /// <paramref name="openWaits"/> are the instance's open waits. Any other event needs an open event
-    /// wait with its key (any key when it has none), or a child wait the child may still match.
+    /// Why an event that arrives at the store's time <paramref name="now"/> is refused before anyone reads
+    /// it, or null when it is kept for the owner (D-33, D-35). <paramref name="target"/> is the wait the
+    /// event names, if it names one; otherwise <paramref name="candidates"/> are the open waits it could
+    /// reach, as <see cref="Candidates"/> orders them. Any other event needs an open event wait with its
+    /// key (any key when it has none), or a child wait the child may still match. An event that arrives
+    /// when its deadline, or every candidate's, has passed is refused as timed out.
     /// </summary>
     public static EventRejection? RejectOnArrival(WorkflowEvent workflowEvent, StoredWait? target,
-        IEnumerable<StoredWait> openWaits)
+        IEnumerable<StoredWait> candidates, DateTime now)
     {
         if (workflowEvent.TargetWaitId != null)
-            return target == null ? EventRejection.UnknownWait : target.IsOpen ? null : target.Rejection;
-        return openWaits.Any(wait => wait.Kind == WaitKind.Child ||
-                                     (wait.Kind == WaitKind.Event && (workflowEvent.Key == null ||
-                                      string.Equals(wait.Key, workflowEvent.Key, StringComparison.Ordinal))))
-            ? null
-            : EventRejection.NoOpenWait;
+            return target is null or { Kind: WaitKind.Delay or WaitKind.Execution } ? EventRejection.UnknownWait
+                : !target.IsOpen ? target.Rejection
+                : target.DeadlineUtc <= now ? EventRejection.WaitTimedOut
+                : null;
+        return candidates.FirstOrDefault() switch
+        {
+            null => EventRejection.NoOpenWait,
+            { Kind: WaitKind.Child } => null,
+            { DeadlineUtc: { } deadline } when deadline <= now => EventRejection.WaitTimedOut,
+            _ => null
+        };
     }
 }
 
@@ -452,14 +499,13 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+            // One store time for the whole commit: its deadlines, its runnable time and its records (D-35).
+            var now = Now;
             var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
                 !_acknowledgedCancellations.Contains(commit.InstanceId);
             // A run that has not read every arrival neither parks nor goes idle out of reach.
             var unread = Unread(commit);
             var parked = commit.Parks && !unacknowledged && !unread;
-            snapshot.RunnableAtUtc = (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended)
-                ? Now
-                : WorkflowStoreRules.RunnableAt(snapshot, unacknowledged, Now);
             foreach (var settlement in commit.Settlements)
             {
                 var settled = _events[(commit.InstanceId, settlement.EventId)];
@@ -470,14 +516,22 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             }
             if (commit.InboxReadThrough is { } read)
                 _inboxReadThrough[commit.InstanceId] = read;
-            // A wait opens at the inbox's current sequence; opening it again keeps its first record.
-            var now = Now;
+            // A wait opens at the inbox's current sequence and gets its deadline from this commit's time;
+            // opening or arming it again keeps its first record.
+            var waits = WaitsOf(commit.InstanceId);
             foreach (var opened in commit.OpenedWaits)
-                WaitsOf(commit.InstanceId).TryAdd(opened.WaitId, new StoredWait(commit.InstanceId, opened.WaitId,
-                    opened.Kind, opened.Key, opened.EventType, opened.DeadlineUtc,
+                waits.TryAdd(opened.WaitId, new StoredWait(commit.InstanceId, opened.WaitId,
+                    opened.Kind, opened.Key, opened.EventType, now + opened.Timeout,
                     _inboxSequence.GetValueOrDefault(commit.InstanceId), now));
+            foreach (var armed in commit.ArmedWaits)
+                if (waits.TryGetValue(armed.WaitId, out var wait) && wait is { IsOpen: true, DeadlineUtc: null })
+                    waits[armed.WaitId] = wait with { DeadlineUtc = now + armed.Timeout };
             foreach (var closed in commit.ClosedWaits)
                 CloseWait(commit.InstanceId, closed.WaitId, closed.Reason, now);
+            snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit,
+                (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
+                WorkflowStoreRules.UnwindsNow(snapshot, unacknowledged),
+                now, OpenWaits(commit.InstanceId).Min(open => open.DeadlineUtc));
             // A finished instance takes no more events; those still pending are closed, and so are its waits.
             if (snapshot.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
                 WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
@@ -536,7 +590,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent,
                 workflowEvent.TargetWaitId == null ? null
                     : WaitsOf(workflowEvent.InstanceId).GetValueOrDefault(workflowEvent.TargetWaitId),
-                OpenWaits(workflowEvent.InstanceId)) ?? (finished ? EventRejection.InstanceFinished : null);
+                WorkflowStoreRules.Candidates(workflowEvent, OpenWaits(workflowEvent.InstanceId), now), now)
+                ?? (finished ? EventRejection.InstanceFinished : null);
             // A refused event is recorded so a resend is recognized, but takes no place in the inbox.
             if (rejection != null)
             {
@@ -596,9 +651,12 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 .OrderBy(item => item.Sequence)
                 .Take(limit)
                 .ToArray();
+            var open = OpenWaits(instanceId).ToArray();
             return Task.FromResult(InboxPage.Of(events, limit, afterSequence, through,
-                OpenWaits(instanceId).ToDictionary(wait => wait.WaitId, wait => wait.OpenedSequence,
-                    StringComparer.Ordinal)));
+                open.ToDictionary(wait => wait.WaitId, wait => wait.OpenedSequence, StringComparer.Ordinal),
+                open.Where(wait => wait.DeadlineUtc != null)
+                    .ToDictionary(wait => wait.WaitId, wait => wait.DeadlineUtc!.Value, StringComparer.Ordinal),
+                Now));
         }
     }
 
@@ -638,7 +696,9 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                                (query.InstanceId == null || wait.InstanceId == query.InstanceId) &&
                                (query.Key == null || wait.Key == query.Key) &&
                                (query.EventType == null || wait.EventType == query.EventType) &&
-                               (query.Kind == null || wait.Kind == query.Kind) &&
+                               (query.Kind == null
+                                   ? wait.Kind is not (WaitKind.Delay or WaitKind.Execution)
+                                   : wait.Kind == query.Kind) &&
                                (query.AfterWaitId == null ||
                                 string.CompareOrdinal(wait.WaitId, query.AfterWaitId) > 0))
                 .OrderBy(wait => wait.WaitId, StringComparer.Ordinal)

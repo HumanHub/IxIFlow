@@ -65,8 +65,11 @@ public sealed class WorkflowDeadlineTests
         var result = await engine.ResumeAsync(instanceId, "approval",
             new Approval());
 
+        // The store refuses the approval as it arrives, by its own clock (D-35); the deadline's path
+        // runs when a host next takes the instance up.
         EventAssert.Rejected(result, EventRejection.WaitTimedOut);
-        Assert.Equal("timeout", Assert.IsType<ApprovalData>(result.WorkflowData).Outcome);
+        var recovered = await engine.RecoverAsync(instanceId);
+        Assert.Equal("timeout", Assert.IsType<ApprovalData>(recovered.WorkflowData).Outcome);
     }
 
     [Fact]
