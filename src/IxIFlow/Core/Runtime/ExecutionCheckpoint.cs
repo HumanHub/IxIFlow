@@ -26,7 +26,8 @@ internal sealed class ExecutionCheckpoint
     {
         var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(json);
         if (checkpoint?.Runtime != "structured-v2" || checkpoint.SchemaVersion != 2)
-            throw new InvalidOperationException("Unsupported execution checkpoint version");
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "Unsupported execution checkpoint version");
         return checkpoint;
     }
 
@@ -127,7 +128,7 @@ internal sealed class ActivityInputSnapshot
                      item.Direction == PropertyMappingDirection.Input))
         {
             var property = activity.GetType().GetProperty(mapping.TargetProperty)
-                ?? throw new InvalidOperationException(
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Mapped activity input '{mapping.TargetProperty}' was not found");
             var value = property.GetValue(activity);
             snapshot.Properties[property.Name] = value switch
@@ -150,10 +151,10 @@ internal sealed class ActivityInputSnapshot
             if (saved.RebindFromDefinition)
                 continue;
             var property = activity.GetType().GetProperty(name)
-                ?? throw new InvalidOperationException(
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Saved activity input '{activity.GetType().Name}.{name}' is unavailable");
             if (property.GetSetMethod(nonPublic: true) == null)
-                throw new InvalidOperationException(
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Saved activity input '{activity.GetType().Name}.{name}' cannot be restored");
             property.SetValue(activity, saved.Exception?.Restore() ?? saved.Value?.Read(services));
         }
@@ -320,7 +321,8 @@ internal sealed class SerializedValue
     public object? Read(IServiceProvider services)
     {
         var type = WorkflowTypeIdentity.Resolve(Type)
-            ?? throw new InvalidOperationException($"Saved value type '{Type}' is unavailable");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Saved value type '{Type}' is unavailable");
         if (typeof(IAsyncActivity).IsAssignableFrom(type))
         {
             var activity = ActivatorUtilities.CreateInstance(services, type);
@@ -331,7 +333,7 @@ internal sealed class SerializedValue
                     .FirstOrDefault(candidate =>
                         (candidate.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? candidate.Name) == value.Name);
                 if (property?.GetSetMethod(nonPublic: true) == null)
-                    throw new InvalidOperationException(
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                         $"Saved activity output '{type.Name}.{value.Name}' cannot be restored");
                 var options = new JsonSerializerOptions();
                 var converterAttribute = property.GetCustomAttribute<JsonConverterAttribute>();
@@ -341,7 +343,7 @@ internal sealed class SerializedValue
                         ? Activator.CreateInstance(converterType) as JsonConverter
                         : converterAttribute.CreateConverter(property.PropertyType);
                     if (converter == null)
-                        throw new InvalidOperationException(
+                        throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                             $"Converter for saved activity output '{type.Name}.{property.Name}' is unavailable");
                     options.Converters.Add(converter);
                 }

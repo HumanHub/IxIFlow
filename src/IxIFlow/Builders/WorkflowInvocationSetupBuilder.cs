@@ -105,7 +105,7 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         Func<object, object?> wrappedFunction = context =>
         {
             if (context is WorkflowContext<TWorkflowData> typedContext) return compiledFunction(typedContext);
-            throw new InvalidOperationException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}>, got {context.GetType().Name}");
         };
 
@@ -182,7 +182,7 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         {
             if (context is WorkflowContext<TWorkflowData, TPreviousStepData> typedContext)
                 return compiledFunction(typedContext);
-            throw new InvalidOperationException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}, {typeof(TPreviousStepData).Name}>, got {context.GetType().Name}");
         };
 
@@ -282,7 +282,7 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
                 // Handle null values gracefully
                 compiledAssignment(typedContext2, default!);
             else
-                throw new InvalidOperationException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Expected WorkflowContext<{typeof(TWorkflowData).Name}> and {typeof(TProperty).Name}, got {context.GetType().Name} and {value?.GetType().Name}");
         };
 
@@ -332,16 +332,18 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
     {
         // Use the same logic as ActivitySetupBuilder
         if (destination.Body is not MemberExpression memberExpression)
-            throw new InvalidOperationException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Output destination must be a member access expression: {destination}");
 
         // Ensure it's a property
         if (memberExpression.Member is not PropertyInfo propertyInfo)
-            throw new InvalidOperationException($"Output destination must access a property: {destination}");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Output destination must access a property: {destination}");
 
         // Ensure the property has a setter
         if (propertyInfo.SetMethod == null)
-            throw new InvalidOperationException($"Property {propertyInfo.Name} does not have a setter");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Property {propertyInfo.Name} does not have a setter");
 
         // Create parameters for the setter expression
         var contextParameter = Expression.Parameter(typeof(WorkflowContext<TWorkflowData>), "context");

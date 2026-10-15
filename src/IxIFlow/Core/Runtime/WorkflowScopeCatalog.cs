@@ -30,11 +30,13 @@ internal sealed class WorkflowScopeCatalog
 
     public IReadOnlyList<WorkflowStep> Steps(string scopeId) => _scopes.TryGetValue(scopeId, out var steps)
         ? steps
-        : throw new InvalidOperationException($"Scope '{scopeId}' was not found in the registered workflow definition");
+        : throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+            $"Scope '{scopeId}' was not found in the registered workflow definition");
 
     public WorkflowStep Step(string stepId) => _steps.TryGetValue(stepId, out var step)
         ? step
-        : throw new InvalidOperationException($"Step '{stepId}' was not found in the registered workflow definition");
+        : throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+            $"Step '{stepId}' was not found in the registered workflow definition");
 
     public string Id(WorkflowStep step) => _ids[step];
     public string SequenceScope(WorkflowStep step) => $"{Id(step)}/sequence";
@@ -89,7 +91,7 @@ internal sealed class WorkflowScopeCatalog
                     var expected = activities[index].PreviousChainActivityType;
                     if (expected != null && (index == 0 ||
                             !expected.IsAssignableFrom(activities[index - 1].ActivityType)))
-                        throw new InvalidOperationException(
+                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                             $"Compensation '{activities[index].ActivityType.Name}' requires a preceding " +
                             $"'{expected.Name}' compensation at '{Id(source)}'");
                 }
@@ -209,24 +211,27 @@ internal sealed class WorkflowScopeCatalog
                 _ => false
             };
             if (!supported)
-                throw new NotSupportedException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Structured execution does not support {step.StepType} at '{id}'");
             if (step.StepType == WorkflowStepType.SuspendResume &&
                 ((step.WaitTimeout == null) != (step.TimeoutSteps.Count == 0) ||
                  step.WaitTimeout is { } timeout && timeout <= TimeSpan.Zero))
-                throw new InvalidOperationException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Wait at '{id}' requires a positive timeout and a timeout branch");
             if (step.StepType == WorkflowStepType.WorkflowInvocation &&
                 step.WorkflowType == null &&
                 (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowVersion == null))
-                throw new InvalidOperationException($"Workflow invocation at '{id}' has no child workflow reference");
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Workflow invocation at '{id}' has no child workflow reference");
             if (step.StepMetadata.ContainsKey("OutcomeType") &&
                 (step.OutcomeSelector == null || step.OutcomeBranches.Count == 0))
-                throw new InvalidOperationException($"Outcome step at '{id}' has no branches or selector");
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Outcome step at '{id}' has no branches or selector");
             if (step.StepType == WorkflowStepType.Parallel &&
                 step.ParallelJoinMode == ParallelJoinMode.WaitConditionally &&
                 step.ParallelCompletionCondition == null)
-                throw new InvalidOperationException($"Conditional parallel join at '{id}' has no completion condition");
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Conditional parallel join at '{id}' has no completion condition");
             if (step.StepType == WorkflowStepType.Activity && step.ActivityType != null)
             {
                 foreach (var property in step.ActivityType.GetProperties(
@@ -239,7 +244,7 @@ internal sealed class WorkflowScopeCatalog
                                 System.Text.Json.Serialization.JsonIgnoreCondition.Always))
                         continue;
                     if (property.GetSetMethod(nonPublic: true) == null)
-                        throw new NotSupportedException(
+                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                             $"Activity '{step.ActivityType.Name}' has a getter-only property '{property.Name}' " +
                             "that cannot be restored from a checkpoint");
                 }

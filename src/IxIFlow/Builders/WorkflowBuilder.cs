@@ -507,7 +507,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         ArgumentNullException.ThrowIfNull(configure);
         Core.Runtime.FaultProjection.For(typeof(TException), typeof(TFault));
         var sagaStep = _steps.LastOrDefault(step => step.StepType == WorkflowStepType.Saga)
-            ?? throw new InvalidOperationException("OnError can only be called after a Saga block");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                "OnError can only be called after a Saga block");
         var handlerBlock = new WorkflowStep
         {
             Name = $"OnError<{typeof(TException).Name}>",
@@ -544,7 +545,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             handlerBlock.StepMetadata["SagaErrorConfig"] = policy;
         else if (handlerBlock.SequenceSteps.Any(step =>
                      step.StepMetadata.ContainsKey("WaitKey")))
-            throw new InvalidOperationException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 "A saga error handler with WaitFor must end with ThenContinue, ThenRetry, or ThenTerminate");
         sagaStep.CatchBlocks.Add(handlerBlock);
         return new SagaContainerBuilder<TWorkflowData, TPreviousStepData>(_steps, name, workflowVersion);

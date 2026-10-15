@@ -5,6 +5,7 @@ using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Text.Json;
+using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -27,7 +28,7 @@ public sealed class StructuredChildWaitTests
             .Invoke<ChildData>("PersistedChild", 1, _ => { })
             .Build();
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
             services.GetRequiredService<IWorkflowEngine>()
                 .ExecuteWorkflowAsync(parent, new ParentData(),
                     new WorkflowOptions { PersistState = false }));
@@ -797,7 +798,7 @@ public sealed class StructuredChildWaitTests
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, unresolvedParent.Status);
         var parentPending = Assert.Single(await engine.GetPendingActivitiesAsync(savedParent.InstanceId));
         Assert.False(parentPending.CanResolve);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => engine.ResolveActivityAsync(
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidState, () => engine.ResolveActivityAsync(
             savedParent.InstanceId, parentPending.InvocationId,
             ActivityResolution.CompletedInvocation(new ChildData { Approved = false })));
 

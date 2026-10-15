@@ -256,7 +256,7 @@ public static class ServiceCollectionExtensions
     {
         if (services.Any(descriptor =>
                 descriptor.ServiceType == typeof(RegisteredWorkflowDefinition<TWorkflow>)))
-            throw new InvalidOperationException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 $"Workflow '{typeof(TWorkflow).Name}' is already registered");
     }
 }

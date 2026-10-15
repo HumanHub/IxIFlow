@@ -10,7 +10,8 @@ internal static class RetrySchedule
             return null;
         if (policy.InitialInterval < TimeSpan.Zero || policy.MaximumInterval < TimeSpan.Zero ||
             !double.IsFinite(policy.BackoffCoefficient) || policy.BackoffCoefficient < 1)
-            throw new InvalidOperationException("Retry intervals and backoff must be nonnegative and finite");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                "Retry intervals and backoff must be nonnegative and finite");
 
         var maximum = policy.MaximumInterval == TimeSpan.Zero
             ? policy.InitialInterval

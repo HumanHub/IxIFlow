@@ -162,7 +162,8 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
                     $"  Actual Generic Args: [{string.Join(", ", actualType.GetGenericArguments().Select(t => t.Name))}]");
             }
 
-            throw new InvalidOperationException($"Expected {expectedType.FullName}, got {actualType.FullName}");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"Expected {expectedType.FullName}, got {actualType.FullName}");
         };
     }
 }
@@ -310,7 +311,8 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
                     $"  Actual Generic Args: [{string.Join(", ", actualType.GetGenericArguments().Select(t => t.Name))}]");
             }
 
-            throw new InvalidOperationException($"Expected {expectedType.FullName}, got {actualType.FullName}");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"Expected {expectedType.FullName}, got {actualType.FullName}");
         };
     }
 }
@@ -389,15 +391,18 @@ public class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActiv
     {
         // Compile assignment expression inline (same pattern as SagaBuilder)
         if (expression.Body is not MemberExpression memberExpression)
-            throw new InvalidOperationException($"Output destination must be a member access expression: {expression}");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Output destination must be a member access expression: {expression}");
 
         // Ensure it's a property
         if (memberExpression.Member is not PropertyInfo propertyInfo)
-            throw new InvalidOperationException($"Output destination must access a property: {expression}");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Output destination must access a property: {expression}");
 
         // Ensure the property has a setter
         if (propertyInfo.SetMethod == null)
-            throw new InvalidOperationException($"Property {propertyInfo.Name} does not have a setter");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Property {propertyInfo.Name} does not have a setter");
 
         // Create parameters for the setter expression
         var contextParameter = Expression.Parameter(typeof(TContext), "context");
@@ -424,7 +429,7 @@ public class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActiv
                 // Handle null values gracefully
                 compiled(typedContext2, default!);
             else
-                throw new InvalidOperationException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Expected {typeof(TContext).Name} and {typeof(TValue).Name}, got {context.GetType().Name} and {value?.GetType().Name}");
         };
     }
@@ -548,7 +553,8 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         return context =>
         {
             if (context is TContext typedContext) return compiled(typedContext);
-            throw new InvalidOperationException($"Expected {typeof(TContext).Name}, got {context.GetType().Name}");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"Expected {typeof(TContext).Name}, got {context.GetType().Name}");
         };
     }
 }

@@ -4,6 +4,7 @@ using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
+using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -934,21 +935,21 @@ public class StructuredTryWaitTests
     [Fact]
     public void FaultShapeIsCheckedWhenBuildingWorkflow()
     {
-        var missing = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("MissingFaultField")
+        var missing = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<TryData>("MissingFaultField")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowCustomActivity>())
             .Catch<ApprovalException, MissingPropertyFault>(body => body.Step<StartActivity>())
             .Build());
         Assert.Contains("no matching public property", missing.Message);
 
-        var mismatched = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("WrongFaultFieldType")
+        var mismatched = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<TryData>("WrongFaultFieldType")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowCustomActivity>())
             .Catch<ApprovalException, WrongCodeFault>(body => body.Step<StartActivity>())
             .Build());
         Assert.Contains("has type", mismatched.Message);
 
-        var callback = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("DelegateFault")
+        var callback = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<TryData>("DelegateFault")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowCallbackActivity>())
             .Catch<CallbackException, DelegateFault>(body => body.Step<StartActivity>())
@@ -992,7 +993,7 @@ public class StructuredTryWaitTests
     [Fact]
     public void CatchMappingRejectsUnmarkedObjectPropertyAtBuild()
     {
-        var failure = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("UnmarkedFaultObject")
+        var failure = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<TryData>("UnmarkedFaultObject")
             .Step<StartActivity>()
             .Try(body => body.Step<StartActivity>())
             .Catch<UnmarkedDetailsException, ObjectDetailsFault>(body => body.Step<NoopObjectActivity>(setup => setup
@@ -1005,7 +1006,7 @@ public class StructuredTryWaitTests
     [Fact]
     public void CatchMappingRejectsUnsupportedAllowlistedTypeAtBuild()
     {
-        var failure = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("InvalidFaultAllowlist")
+        var failure = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<TryData>("InvalidFaultAllowlist")
             .Step<StartActivity>()
             .Try(body => body.Step<StartActivity>())
             .Catch<InvalidAllowlistException, ObjectDetailsFault>(body => body.Step<NoopObjectActivity>(setup => setup
@@ -1018,7 +1019,7 @@ public class StructuredTryWaitTests
     [Fact]
     public void WholeExceptionMappingFailsAtBuildWithoutWait()
     {
-        var failure = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("WholeFault")
+        var failure = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<TryData>("WholeFault")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowCustomActivity>())
             .Catch<ApprovalException, Exception>(body => body
@@ -1055,7 +1056,7 @@ public class StructuredTryWaitTests
     [Fact]
     public void ObjectFaultIsRejectedAtBuildEvenWhenCatchWaits()
     {
-        var failure = Assert.Throws<NotSupportedException>(() => Workflow.Create<TryData>("ObjectFaultWait")
+        var failure = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<TryData>("ObjectFaultWait")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowUnlistedDetailsActivity>())
             .Catch<UnmarkedDetailsException, ObjectDetailsFault>(body => body
