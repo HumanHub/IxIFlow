@@ -581,12 +581,14 @@ public class SagaExecutionTests
         // Act
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
-        // Assert
+        // Assert. The retry backoffs park the run, which resumes from its saved data, so the
+        // outcome is read from the result rather than from the object passed in.
         Assert.True(result.IsSuccess); // Should succeed after retries
-        Assert.True(workflowData.Step1Completed);
-        Assert.True(workflowData.RetryAttempts > 0); // Should show retry attempts occurred
-        Assert.False(workflowData.Step1Compensated); // No compensation needed (step eventually succeeded)
-        Assert.True(workflowData.AnalyticsUpdated); // Should continue after step succeeded
+        var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
+        Assert.True(finished.Step1Completed);
+        Assert.True(finished.RetryAttempts > 0); // Should show retry attempts occurred
+        Assert.False(finished.Step1Compensated); // No compensation needed (step eventually succeeded)
+        Assert.True(finished.AnalyticsUpdated); // Should continue after step succeeded
     }
 
     [Fact]

@@ -7,6 +7,7 @@ internal sealed record ExecutionLimits
     public const int DefaultMaxCrashes = 3;
     public const int DefaultMaxActiveBranches = 1_000;
     public const int DefaultMaxActivitiesPerRun = 100;
+    public static readonly TimeSpan DefaultParkRetriesLongerThan = TimeSpan.FromSeconds(1);
 
     public static ExecutionLimits Default { get; } = new();
 
@@ -24,6 +25,12 @@ internal sealed record ExecutionLimits
 
     /// <summary>How many activities one run has in flight at once; further activities wait.</summary>
     public int MaxActivitiesPerRun { get; init; } = DefaultMaxActivitiesPerRun;
+
+    /// <summary>
+    /// A run with nothing in flight whose next retry is further away than this gives its slot and
+    /// lease back and is resumed on time (C-03); a shorter backoff is slept through in the slot.
+    /// </summary>
+    public TimeSpan ParkRetriesLongerThan { get; init; } = DefaultParkRetriesLongerThan;
 }
 
 /// <summary>A configured limit would be exceeded; nothing over it was committed (D-28).</summary>

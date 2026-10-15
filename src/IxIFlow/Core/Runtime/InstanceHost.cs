@@ -697,11 +697,31 @@ internal sealed class InstanceHost(
         }
     }
 
-    private Task<WorkflowExecutionResult> RunAndSaveAsync(WorkflowDefinition definition, WorkflowInstance instance,
-        ExecutionCheckpoint checkpoint, object workflowData, bool persistState, WorkflowExecutionLease? owner,
-        CancellationToken cancellationToken) =>
-        _executor.RunAsync(definition, instance, checkpoint, workflowData,
-            new HostedRun(this, instance, owner, persistState), cancellationToken);
+    // Runs nested in this scope's run, such as children and inline client calls, never park: the
+    // slot they would need to resume is held by the run they are nested in.
+    private int _runDepth;
+
+    private async Task<WorkflowExecutionResult> RunAndSaveAsync(WorkflowDefinition definition,
+        WorkflowInstance instance, ExecutionCheckpoint checkpoint, object workflowData, bool persistState,
+        WorkflowExecutionLease? owner, CancellationToken cancellationToken)
+    {
+        var depth = Interlocked.Increment(ref _runDepth);
+        try
+        {
+            var result = await _executor.RunAsync(definition, instance, checkpoint, workflowData,
+                new HostedRun(this, instance, owner, persistState, canPark: depth == 1), cancellationToken);
+            // The local host resumes what it saved with a runnable time, on time (C-12).
+            if (persistState && instance.RunnableAtUtc is { } due &&
+                result.Status is WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended or
+                    WorkflowExecutionStatus.NeedsResolution)
+                _control.Schedule(instance.InstanceId, due);
+            return result;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _runDepth);
+        }
+    }
 
     // A request whose checkpoint would exceed a limit is refused; the instance keeps its saved state.
     private async Task PersistAsync(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
@@ -747,7 +767,7 @@ internal sealed class InstanceHost(
             case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
                 await MakeParentRunnableAsync(instance);
                 return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision,
-                    PendingCancellation: result.PendingCancellation);
+                    PendingCancellation: result.PendingCancellation, Parked: result.Parked);
             case WorkflowCommitStatus.Conflict:
                 return new CheckpointReply(CheckpointReplyKind.Conflict, result.Revision,
                     new WorkflowEngineException(WorkflowErrorKind.InvalidState,
@@ -804,9 +824,10 @@ internal sealed class InstanceHost(
 
     /// <summary>The host side of one run: the instance's lease, its saved state and its children.</summary>
     private sealed class HostedRun(InstanceHost host, WorkflowInstance instance, WorkflowExecutionLease? owner,
-        bool persistState) : IExecutionHost
+        bool persistState, bool canPark = false) : IExecutionHost
     {
         public bool PersistsState => persistState;
+        public bool CanPark => canPark && persistState && owner != null;
         public CancellationToken Drain => host._control.Drain;
         public long Epoch => owner?.Epoch ?? 0;
         public ExecutionLimits Limits => host._limits;

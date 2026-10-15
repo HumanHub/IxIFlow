@@ -15,15 +15,19 @@ public sealed record RunnableInstance(string InstanceId, DateTime RunnableAtUtc)
 public static class WorkflowStoreRules
 {
     /// <summary>
-    /// When a saved instance becomes runnable (C-01). A running instance is runnable from its save,
-    /// so it can be claimed as soon as its owner's lease ends. An idle save that leaves a
-    /// cancellation request unacknowledged is runnable now, so the request is unwound.
+    /// True when a saved instance is runnable from the moment it is saved, whatever time it carries
+    /// (C-01): an idle save that leaves a cancellation request unacknowledged, so the request is
+    /// unwound, and a running instance saved without a time, so it can be claimed as soon as its
+    /// owner's lease ends. Stores stamp these with their own clock.
     /// </summary>
+    public static bool IsRunnableNow(WorkflowInstance instance, bool unacknowledgedCancellation) =>
+        (unacknowledgedCancellation && instance.CancellationReason == null &&
+         instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) ||
+        (instance.RunnableAtUtc == null && instance.Status == WorkflowStatus.Running);
+
+    /// <summary>When a saved instance becomes runnable, with <paramref name="now"/> as the store's clock.</summary>
     public static DateTime? RunnableAt(WorkflowInstance instance, bool unacknowledgedCancellation, DateTime now) =>
-        unacknowledgedCancellation && instance.CancellationReason == null &&
-        instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution
-            ? now
-            : instance.RunnableAtUtc ?? (instance.Status == WorkflowStatus.Running ? now : null);
+        IsRunnableNow(instance, unacknowledgedCancellation) ? now : instance.RunnableAtUtc;
 }
 
 public interface IWorkflowStateRepository
@@ -396,11 +400,11 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 if (receipt.ExpectedRevision != commit.ExpectedRevision ||
                     !receipt.ContentHash.SequenceEqual(commit.ContentHash))
                     throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
-                // A terminal commit released the lease; only a running owner must still hold it.
-                if (snapshot.Status == WorkflowStatus.Running && !owns)
+                // A terminal or parking commit released the lease; only a running owner must still hold it.
+                if (snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks)
                     return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
-                    PendingCancellation(commit.InstanceId)));
+                    PendingCancellation(commit.InstanceId), commit.Parks && !owns));
             }
 
             if (!owns)
@@ -411,9 +415,12 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
-            snapshot.RunnableAtUtc = WorkflowStoreRules.RunnableAt(snapshot,
-                _cancellations.ContainsKey(commit.InstanceId) &&
-                !_acknowledgedCancellations.Contains(commit.InstanceId), Now);
+            var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
+                !_acknowledgedCancellations.Contains(commit.InstanceId);
+            var parked = commit.Parks && !unacknowledged;
+            snapshot.RunnableAtUtc = commit.Parks && !parked
+                ? Now
+                : WorkflowStoreRules.RunnableAt(snapshot, unacknowledged, Now);
             _instances[commit.InstanceId] = snapshot;
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (snapshot.CancellationReason != null && _cancellations.ContainsKey(commit.InstanceId))
@@ -421,11 +428,12 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             if (_leases.TryGetValue(commit.InstanceId, out var lease))
                 _leases[commit.InstanceId] = lease with
                 {
-                    ExpiresAtUtc = snapshot.Status == WorkflowStatus.Running ? lease.ExpiresAtUtc : DateTime.MinValue,
+                    ExpiresAtUtc = snapshot.Status == WorkflowStatus.Running && !parked
+                        ? lease.ExpiresAtUtc : DateTime.MinValue,
                     CrashCount = commit.ClearsCrashCount ? 0 : lease.CrashCount
                 };
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
-                PendingCancellation(commit.InstanceId)));
+                PendingCancellation(commit.InstanceId), parked));
         }
     }
 

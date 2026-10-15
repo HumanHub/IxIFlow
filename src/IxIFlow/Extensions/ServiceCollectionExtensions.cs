@@ -79,18 +79,24 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The branch limit must be positive");
         if (options.MaxActivitiesPerRun <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The activity limit must be positive");
+        if (options.ParkRetriesLongerThan < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The park threshold cannot be negative");
+        if (options.PollInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The poll interval must be positive");
         services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits
         {
             MaxCheckpointBytes = options.MaxCheckpointBytes,
             MaxCrashes = options.MaxCrashes,
             MaxActiveBranches = options.MaxActiveBranches,
-            MaxActivitiesPerRun = options.MaxActivitiesPerRun
+            MaxActivitiesPerRun = options.MaxActivitiesPerRun,
+            ParkRetriesLongerThan = options.ParkRetriesLongerThan
         }));
         if (options.Slots <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The slot count must be positive");
         if (options.DrainTimeout < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(configure), "The drain timeout cannot be negative");
-        services.Replace(ServiceDescriptor.Singleton(new HostSettings(options.Slots, options.DrainTimeout)));
+        services.Replace(ServiceDescriptor.Singleton(
+            new HostSettings(options.Slots, options.DrainTimeout, options.PollInterval)));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -393,6 +399,19 @@ public class IxIFlowOptions
     /// enough room to run together.
     /// </summary>
     public int MaxActivitiesPerRun { get; set; } = ExecutionLimits.DefaultMaxActivitiesPerRun;
+
+    /// <summary>
+    /// A run with nothing else to do whose next retry is further away than this gives its slot back
+    /// and the host resumes it on time; a shorter backoff is waited out in the slot. Callers waiting
+    /// for the run keep waiting either way.
+    /// </summary>
+    public TimeSpan ParkRetriesLongerThan { get; set; } = ExecutionLimits.DefaultParkRetriesLongerThan;
+
+    /// <summary>
+    /// How often the host looks in the store for instances that are due and that nobody owns, such
+    /// as work left by another host. Its own timers fire without waiting for the poll.
+    /// </summary>
+    public TimeSpan PollInterval { get; set; } = HostSettings.DefaultPollInterval;
 
     /// <summary>
     /// How many instances this host runs at once. A run holds its slot until the instance is idle,

@@ -37,6 +37,12 @@ internal interface IExecutionHost
     /// <summary>The limits the host applies to this run.</summary>
     ExecutionLimits Limits { get; }
 
+    /// <summary>
+    /// True when the run may park on a timer: it is saved, owned, and not nested inside another run
+    /// that holds the slot it would need to resume.
+    /// </summary>
+    bool CanPark { get; }
+
     /// <summary>Sends one checkpoint commit. The same commit may be sent again after Retry or Unknown.</summary>
     Task<CheckpointReply> CommitAsync(CheckpointCommit commit);
 
@@ -82,4 +88,4 @@ internal enum CheckpointReplyKind
 
 /// <summary>The host's answer to a checkpoint commit. Error explains a reply that was not acknowledged.</summary>
 internal sealed record CheckpointReply(CheckpointReplyKind Kind, long Revision = 0, Exception? Error = null,
-    CancellationReason? PendingCancellation = null);
+    CancellationReason? PendingCancellation = null, bool Parked = false);

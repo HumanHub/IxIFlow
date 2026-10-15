@@ -4,7 +4,7 @@
   "try": 71,
   "saga": 65,
   "waits": 61,
-  "timers": 17,
+  "timers": 23,
   "children": 31,
   "recovery": 39,
   "durability": 76,

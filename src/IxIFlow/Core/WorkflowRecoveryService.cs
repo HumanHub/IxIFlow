@@ -1,3 +1,4 @@
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -5,15 +6,24 @@ using Microsoft.Extensions.Logging;
 namespace IxIFlow.Core;
 
 /// <summary>Wakes due waits and deadlines, and recovers interrupted instances.</summary>
-public sealed class WorkflowRecoveryService(
+internal sealed class WorkflowRecoveryService(
     IServiceScopeFactory scopes,
     IWorkflowStateRepository repository,
     ILogger<WorkflowRecoveryService> logger,
-    TimeProvider? timeProvider = null) : BackgroundService
+    TimeProvider? timeProvider = null,
+    HostSettings? settings = null) : BackgroundService
 {
+    private readonly HostSettings _settings = settings ?? HostSettings.Default;
+
     internal async Task RecoverOnceAsync(CancellationToken cancellationToken)
     {
-        var instances = await repository.GetRunnableInstancesAsync(100);
+        // A host claims only what it has slots for (D-10); the rest waits for the next pass or another host.
+        int limit;
+        using (var probe = scopes.CreateScope())
+            limit = probe.ServiceProvider.GetService<LocalWorkflowHost>()?.FreeSlots ?? _settings.Slots;
+        if (limit == 0)
+            return;
+        var instances = await repository.GetRunnableInstancesAsync(limit);
         await Parallel.ForEachAsync(instances, new ParallelOptions
         {
             MaxDegreeOfParallelism = 8,
@@ -51,7 +61,7 @@ public sealed class WorkflowRecoveryService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5), timeProvider ?? TimeProvider.System);
+        using var timer = new PeriodicTimer(_settings.PollInterval, timeProvider ?? TimeProvider.System);
         do
         {
             try

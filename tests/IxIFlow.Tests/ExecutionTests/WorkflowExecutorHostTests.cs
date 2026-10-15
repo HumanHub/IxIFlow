@@ -150,6 +150,7 @@ public sealed class WorkflowExecutorHostTests
         public long Epoch => 1;
         public ExecutionLimits Limits { get; } = new() { MaxCheckpointBytes = long.MaxValue };
         public bool ChildStartIsCheckpointed => true;
+        public bool CanPark => false;
         public Task? OwnershipLoss => null;
         public Task<CancellationReason>? CancellationSignal => null;
         public CancellationReason? ObservedCancellation { get; private set; }
