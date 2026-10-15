@@ -37,6 +37,10 @@ internal sealed class ExecutionCheckpoint
         return checkpoint;
     }
 
+    /// <summary>The operator stop of a saved instance, read without its workflow data.</summary>
+    public static OperatorStopState? StopOf(WorkflowInstance instance) =>
+        IsStructured(instance.ExecutionStateJson) ? Read(instance.ExecutionStateJson).OperatorStop : null;
+
     public static bool IsStructured(string json)
     {
         if (string.IsNullOrWhiteSpace(json))

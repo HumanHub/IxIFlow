@@ -164,11 +164,51 @@ public sealed class CrashAccountingTests
         store.FailCommit = _ => Probe(services).Runs > 0;
         await Assert.ThrowsAnyAsync<Exception>(() => Client(services).ReleaseAsync(instanceId));
         store.FailCommit = _ => false;
-        await CrashOwnersAsync(store, instanceId, 1);
+        // Two more lost owners stay under the limit only if the release started the count again.
+        await CrashOwnersAsync(store, instanceId, 2);
 
         var recovered = await Client(services).RecoverAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+    }
+
+    [Fact]
+    public async Task ACancelledInstanceStoppedAgainWaitsForARelease()
+    {
+        var store = new FaultInjectingRepository();
+        using var services = Services(store);
+        // The run dies between two activities, so nothing is in flight when it is cancelled.
+        var instanceId = Guid.NewGuid().ToString("N");
+        var allowed = 1;
+        store.FailCommit = _ => Probe(services).Runs > 0 && Interlocked.Decrement(ref allowed) < 0;
+        await Assert.ThrowsAnyAsync<Exception>(() => Client(services).RunAsync(GuardedWorkflow(),
+            new CrashData(), new WorkflowOptions { InstanceId = instanceId }));
+        store.FailCommit = _ => false;
+        await CrashOwnersAsync(store, instanceId, 3);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
+            (await Client(services).RecoverAsync(instanceId)).Status);
+
+        // The cancellation leaves the stop durably, then its cleanup dies with its owner.
+        store.FailCommit = _ => Probe(services).Cleanups > 0;
+        await Assert.ThrowsAnyAsync<Exception>(() => Client(services).CancelAsync(instanceId,
+            new CancellationReason { ReasonCode = "operator" }));
+        store.FailCommit = _ => false;
+        var unwinding = (await store.GetWorkflowInstanceAsync(instanceId))!;
+        Assert.Equal(WorkflowStatus.Running, unwinding.Status);
+        Assert.Null(ExecutionCheckpoint.StopOf(unwinding));
+        await CrashOwnersAsync(store, instanceId, 3);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
+            (await Client(services).RecoverAsync(instanceId)).Status);
+
+        // The request on file was already applied, so recovery does not reopen the stop.
+        var recovered = await Client(services).RecoverAsync(instanceId);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, recovered.Status);
+        Assert.Equal(1, Probe(services).Cleanups);
+
+        var released = await Client(services).ReleaseAsync(instanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, released.Status);
+        Assert.Equal(2, Probe(services).Cleanups);
     }
 
     [Fact]
@@ -188,6 +228,10 @@ public sealed class CrashAccountingTests
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, quarantined.Status);
         Assert.Contains("quarantined", quarantined.ErrorMessage);
         Assert.Equal("{ not json", (await store.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson);
+        // A repeated start is answered without reading the data either.
+        var repeated = await Client(services).RunAsync(InterruptedWorkflow(), new CrashData(),
+            new WorkflowOptions { InstanceId = instanceId });
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, repeated.Status);
     }
 
     // Runs a workflow whose commits fail once its activity has run, so it is left running with the
@@ -198,13 +242,23 @@ public sealed class CrashAccountingTests
         var instanceId = Guid.NewGuid().ToString("N");
         store.FailCommit = _ => Probe(services).Runs > 0;
         await Assert.ThrowsAnyAsync<Exception>(() => Client(services).RunAsync(
-            Workflow.Create<CrashData>("Interrupted").Step<CountingActivity>().Build(), new CrashData(),
+            InterruptedWorkflow(), new CrashData(),
             new WorkflowOptions { InstanceId = instanceId }));
         store.FailCommit = _ => false;
         Assert.Equal(WorkflowStatus.Running, (await store.GetWorkflowInstanceAsync(instanceId))!.Status);
         Probe(services).Runs = 0;
         return instanceId;
     }
+
+    private static WorkflowDefinition InterruptedWorkflow() =>
+        Workflow.Create<CrashData>("Interrupted").Step<CountingActivity>().Build();
+
+    private static WorkflowDefinition GuardedWorkflow() =>
+        Workflow.Create<CrashData>("InterruptedWithCleanup")
+            .Step<QuickActivity>()
+            .Try(body => body.Step<CountingActivity>().Step<QuickActivity>())
+            .Finally(cleanup => cleanup.Step<CleanupActivity>())
+            .Build();
 
     // Owners that claim the running instance and die without releasing it.
     private static async Task CrashOwnersAsync(IWorkflowStateRepository store, string instanceId, int count,
@@ -244,6 +298,7 @@ public sealed class CrashAccountingTests
         services.AddSingleton<CrashProbe>();
         services.AddTransient<QuickActivity>();
         services.AddTransient<CountingActivity>();
+        services.AddTransient<CleanupActivity>();
         return services.BuildServiceProvider();
     }
 
@@ -257,6 +312,11 @@ public sealed class CrashAccountingTests
     public sealed class CrashProbe
     {
         private int _runs;
+        private int _cleanups;
+
+        public int Cleanups => Volatile.Read(ref _cleanups);
+
+        public void CleanedUp() => Interlocked.Increment(ref _cleanups);
 
         public int Runs
         {
@@ -279,6 +339,22 @@ public sealed class CrashAccountingTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Ran();
+            return Task.CompletedTask;
+        }
+
+        public bool CaptureRecoveryState(IActivityContext context) => true;
+
+        public Task<ActivityRecoveryResult<bool>> RecoverAsync(bool state, IActivityContext context,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<ActivityRecoveryResult<bool>>(new ActivityRecoveryResult<bool>.Execute());
+    }
+
+    /// <summary>Counts cleanup runs; running it again after a crash is safe.</summary>
+    public sealed class CleanupActivity(CrashProbe probe) : IRecoverableActivity<bool>
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.CleanedUp();
             return Task.CompletedTask;
         }
 
