@@ -451,7 +451,15 @@ internal sealed class InstanceHost(
     /// <summary>Open waits that match the query, across instances (D-13, D-14).</summary>
     public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) => _store.GetOpenWaitsAsync(query);
 
-    private static WorkflowEvent EventFor<TEvent>(string instanceId, string? key, TEvent @event, string eventId)
+    /// <summary>
+    /// Stores a reply addressed to one wait by its token's wait ID (D-33), without running the instance.
+    /// </summary>
+    public Task<EventAppendResult> DeliverReplyAsync<TReply>(string instanceId, string waitId, TReply reply,
+        string eventId) where TReply : class =>
+        AppendAsync(EventFor(instanceId, null, reply, eventId, waitId));
+
+    private static WorkflowEvent EventFor<TEvent>(string instanceId, string? key, TEvent @event, string eventId,
+        string? targetWaitId = null)
         where TEvent : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
@@ -459,7 +467,7 @@ internal sealed class InstanceHost(
         ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
         var type = @event.GetType();
         return new WorkflowEvent(instanceId, eventId, type.AssemblyQualifiedName!,
-            JsonSerializer.Serialize(@event, type), key);
+            JsonSerializer.Serialize(@event, type), key, targetWaitId);
     }
 
     private async Task<EventAppendResult> AppendAsync(WorkflowEvent stored)

@@ -70,6 +70,35 @@ public interface IWorkflowClient
         where TEventData : class;
 
     /// <summary>
+    /// Answers the one wait a reply token addresses (D-33), then waits until the reply is decided and
+    /// the instance is idle. The reply can satisfy only that wait: once it has closed, the reply is
+    /// rejected with the reason it closed. A text that is not a token is refused.
+    /// </summary>
+    Task<WorkflowExecutionResult> ReplyAsync<TReply>(
+        string token,
+        TReply reply,
+        CancellationToken cancellationToken = default)
+        where TReply : class;
+
+    /// <summary>
+    /// Answers a wait by token under an event ID of the caller's choosing, so sending the same reply
+    /// again is recognized.
+    /// </summary>
+    Task<WorkflowExecutionResult> ReplyAsync<TReply>(
+        string token,
+        TReply reply,
+        string eventId,
+        CancellationToken cancellationToken = default)
+        where TReply : class;
+
+    /// <summary>
+    /// Lists open waits across instances (D-14), with the token that answers each. A token is the right
+    /// to answer, so this listing is for trusted callers such as a task inbox. A child's waits are
+    /// listed on the child.
+    /// </summary>
+    Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query);
+
+    /// <summary>
     /// Sends one event to every instance with an open wait for <paramref name="key"/> (D-13), under one
     /// event ID, and wakes them. Each instance decides its copy at its next pass, including one that is
     /// busy; the result lists what each inbox answered. Sending again with the same ID reaches no
