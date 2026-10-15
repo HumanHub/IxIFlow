@@ -38,40 +38,6 @@ public class ErrorHandler
 }
 
 /// <summary>
-/// Handler for saga error configuration
-/// </summary>
-public class SagaErrorConfigHandler : IErrorHandler
-{
-    /// <summary>
-    /// The saga error configuration to apply
-    /// </summary>
-    public SagaErrorConfiguration SagaErrorConfig { get; set; } = null!;
-    
-    /// <summary>
-    /// Handles an error and returns the result of error handling
-    /// </summary>
-    public async Task<ErrorHandlingResult> HandleErrorAsync(Exception exception, object context)
-    {
-        // Map saga error configuration to general error handling result
-        ErrorAction action = SagaErrorConfig.ContinuationAction switch
-        {
-            SagaContinuationAction.Continue => ErrorAction.Continue,
-            SagaContinuationAction.Terminate => ErrorAction.Terminate,
-            SagaContinuationAction.Retry => ErrorAction.Retry,
-            SagaContinuationAction.Suspend => ErrorAction.Suspend,
-            _ => ErrorAction.Terminate
-        };
-
-        return new ErrorHandlingResult
-        {
-            Action = action,
-            Message = $"Saga error handled: {SagaErrorConfig.CompensationStrategy} + {SagaErrorConfig.ContinuationAction}",
-            RetryPolicy = SagaErrorConfig.RetryPolicy
-        };
-    }
-}
-
-/// <summary>
 /// Step-level error handling actions
 /// </summary>
 public enum StepErrorAction
@@ -144,65 +110,6 @@ public class StepErrorHandlingResult
     public string? ErrorMessage { get; set; }
 }
 
-
-/// <summary>
-/// Saga container error handling result for complex scenarios
-/// </summary>
-public class ErrorHandlingResult
-{
-    /// <summary>
-    /// The action to take as a result of error handling
-    /// </summary>
-    public ErrorAction Action { get; set; }
-    
-    /// <summary>
-    /// Message describing the error handling result
-    /// </summary>
-    public string Message { get; set; } = string.Empty;
-    
-    /// <summary>
-    /// Retry policy configuration for retry actions
-    /// </summary>
-    public RetryPolicy? RetryPolicy { get; set; }
-    
-    /// <summary>
-    /// Target for retry operations (failed step or entire saga)
-    /// </summary>
-    public RetryTarget RetryTarget { get; set; } = RetryTarget.FailedStep;
-    
-    /// <summary>
-    /// Event type to wait for when suspending workflow
-    /// </summary>
-    public Type? SuspendEventType { get; set; }
-    
-    /// <summary>
-    /// Condition to evaluate for resuming suspended workflow
-    /// </summary>
-    public Func<object, object, bool>? ResumeCondition { get; set; }
-    
-    /// <summary>
-    /// Handler to execute after workflow resumes
-    /// </summary>
-    public IErrorHandler? PostResumeHandler { get; set; }
-    
-    /// <summary>
-    /// Custom saga builder for complex error handling scenarios
-    /// </summary>
-    public object? CustomSagaBuilder { get; set; }
-}
-
-/// <summary>
-///     Actions that can be taken when handling errors
-/// </summary>
-public enum ErrorAction
-{
-    Terminate,
-    Continue,
-    Retry,
-    Suspend,
-    Ignore,
-    ExecuteCustomSaga
-}
 
 /// <summary>
 ///     Retry targets for error handling

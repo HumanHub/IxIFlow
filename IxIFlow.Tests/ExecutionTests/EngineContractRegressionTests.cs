@@ -387,26 +387,6 @@ public class EngineContractRegressionTests
     }
 
     [Fact]
-    public async Task DefaultEventStore_PreservesEventsAcrossScopes()
-    {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddIxIFlow();
-        using var provider = services.BuildServiceProvider();
-
-        using (var firstScope = provider.CreateScope())
-        {
-            await firstScope.ServiceProvider.GetRequiredService<IEventStore>()
-                .AppendEventAsync("instance-1", new WorkflowEvent { EventType = "Started" });
-        }
-
-        using var secondScope = provider.CreateScope();
-        var events = await secondScope.ServiceProvider.GetRequiredService<IEventStore>()
-            .GetEventsAsync("instance-1");
-        Assert.Single(events);
-    }
-
-    [Fact]
     public async Task InProcessWorkflow_ResumesFromAnotherScope()
     {
         var services = new ServiceCollection();
@@ -483,38 +463,10 @@ public class EngineContractRegressionTests
     }
 
     [Fact]
-    public async Task MemoryStateRepository_ClaimsEachSuspensionOnlyOnce()
+    public Task MemoryStore_AppliesOneDeliveryOnceAcrossHosts()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var firstWait = new SuspensionInfo { SuspendReason = "approval" };
-        await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
-        {
-            InstanceId = "instance-1",
-            Status = WorkflowStatus.Suspended,
-            SuspensionInfo = firstWait
-        });
-
-        WorkflowInstance Claim(SuspensionInfo wait) => new()
-        {
-            InstanceId = "instance-1",
-            Status = WorkflowStatus.Running,
-            SuspensionInfo = wait
-        };
-
-        var claims = await Task.WhenAll(
-            repository.TryClaimSuspendedWorkflowAsync(Claim(firstWait)),
-            repository.TryClaimSuspendedWorkflowAsync(Claim(firstWait)));
-        Assert.Single(claims, claimed => claimed);
-
-        var secondWait = new SuspensionInfo { SuspendReason = "approval" };
-        await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
-        {
-            InstanceId = "instance-1",
-            Status = WorkflowStatus.Suspended,
-            SuspensionInfo = secondWait
-        });
-        Assert.False(await repository.TryClaimSuspendedWorkflowAsync(Claim(firstWait)));
-        Assert.True(await repository.TryClaimSuspendedWorkflowAsync(Claim(secondWait)));
+        return ResumeOnceScenario.RunAsync(repository, repository, "resume-once-memory");
     }
 
     [Fact]

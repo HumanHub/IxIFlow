@@ -18,7 +18,7 @@ public sealed class ActivityRecoveryTests
         using var services = CreateServices(store, new ChargeLedger(store));
 
         var error = await Assert.ThrowsAsync<IOException>(() =>
-            services.GetRequiredService<WorkflowEngine>().ExecuteWorkflowAsync(
+            services.GetRequiredService<IWorkflowEngine>().ExecuteWorkflowAsync(
                 ChargeWorkflow(), new ChargeData { OrderId = "initial-checkpoint" }));
 
         Assert.Equal("Checkpoint unavailable", error.Message);
@@ -33,7 +33,7 @@ public sealed class ActivityRecoveryTests
             .Step<NoopActivity>()
             .WaitFor<RecoveryReply>("reply")
             .Build();
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         var started = await engine.ExecuteWorkflowAsync(definition, new ChargeData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
@@ -55,7 +55,7 @@ public sealed class ActivityRecoveryTests
             .Build();
 
         var error = await Assert.ThrowsAsync<IOException>(() =>
-            services.GetRequiredService<WorkflowEngine>()
+            services.GetRequiredService<IWorkflowEngine>()
                 .ExecuteWorkflowAsync(definition, new ChargeData()));
 
         Assert.Equal("Checkpoint unavailable", error.Message);
@@ -72,7 +72,7 @@ public sealed class ActivityRecoveryTests
             .WaitFor<RecoveryReply>("reply")
             .Build();
 
-        var result = await services.GetRequiredService<WorkflowEngine>()
+        var result = await services.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new CheckpointData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
@@ -92,7 +92,7 @@ public sealed class ActivityRecoveryTests
             .WaitFor<RecoveryReply>("reply")
             .Build();
 
-        var result = await services.GetRequiredService<WorkflowEngine>()
+        var result = await services.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new CheckpointData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
@@ -110,7 +110,7 @@ public sealed class ActivityRecoveryTests
         using var services = CreateServices(store, ledger);
         var data = new ChargeData { OrderId = "order-1" };
 
-        var result = await services.GetRequiredService<WorkflowEngine>()
+        var result = await services.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(ChargeWorkflow(), data);
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -125,7 +125,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore { FailCompletionBeforeApply = 3 };
         var ledger = new ChargeLedger(store);
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
 
         await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
             ChargeWorkflow(), new ChargeData { OrderId = "order-2" }));
@@ -151,7 +151,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore { FailCompletionBeforeApply = 3 };
         var ledger = new ChargeLedger(store);
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
 
         await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
             OrdinaryChargeWorkflow(), new ChargeData { OrderId = "order-3" }));
@@ -175,7 +175,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore { FailCompletionBeforeApply = 3 };
         var ledger = new ChargeLedger(store);
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
             OrdinaryChargeWorkflow(), new ChargeData { OrderId = "operator-complete" }));
         var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
@@ -207,7 +207,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore { FailCompletionBeforeApply = 3 };
         var ledger = new ChargeLedger(store);
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
             OrdinaryChargeWorkflow(), new ChargeData { OrderId = "operator-fail" }));
         var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
@@ -232,7 +232,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore();
         var ledger = new ChargeLedger(store) { FailCompletionAfterCharge = true };
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<ChargeData>("OperatorTypedFailure")
             .Step<NoopActivity>()
             .Try(body => body.Step<OrdinaryChargeActivity>(step => step
@@ -267,7 +267,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore();
         var ledger = new ChargeLedger(store) { FailCompletionAfterCharge = true };
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<ChargeData>("InterruptedCatch")
             .Step<NoopActivity>()
             .Try(body => body.Step<ThrowActivity>())
@@ -306,7 +306,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore();
         var ledger = new ChargeLedger(store) { FailCompletionAfterCharge = true };
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<ChargeData>("InterruptedCompensation")
             .Step<NoopActivity>()
             .Try(body => body.Saga(saga => saga
@@ -351,7 +351,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore { FailCompletionBeforeApply = 3 };
         var ledger = new ChargeLedger(store);
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
             OrdinaryChargeWorkflow(), new ChargeData { OrderId = "missing-output" }));
         var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
@@ -375,7 +375,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore { FailCompletionBeforeApply = 3 };
         var ledger = new ChargeLedger(store);
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
             OrdinaryChargeWorkflow(), new ChargeData { OrderId = "resolution-crash" }));
         var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
@@ -408,7 +408,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore { FailCompletionBeforeApply = 3 };
         var ledger = new ChargeLedger(store);
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
             OrdinaryChargeWorkflow(), new ChargeData { OrderId = "cancel-before-resolution" },
             new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMinutes(1) }));
@@ -439,7 +439,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore { FailStartAfterApply = 3 };
         var ledger = new ChargeLedger(store);
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
 
         await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(
             ChargeWorkflow(), new ChargeData { OrderId = "order-4" }));
@@ -460,7 +460,7 @@ public sealed class ActivityRecoveryTests
         var ledger = new ChargeLedger(store);
         using var services = CreateServices(store, ledger);
 
-        var result = await services.GetRequiredService<WorkflowEngine>()
+        var result = await services.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(ChargeWorkflow(), new ChargeData { OrderId = "order-5" });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -474,7 +474,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore();
         var ledger = new ChargeLedger(store);
         using var services = CreateServices(store, ledger, new InvocationProbe(store));
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
 
         var definition = Workflow.Create<ChargeData>("InterruptedChildInvocation")
             .Step<WorkflowInvocationTests.PrepareDataActivity>(_ => { })
@@ -498,7 +498,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore();
         var probe = new InvocationProbe(store);
         using var services = CreateServices(store, new ChargeLedger(store), probe);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<ChargeData>("ResolveChildInvocation")
             .Step<WorkflowInvocationTests.PrepareDataActivity>(_ => { })
             .Invoke<WorkflowInvocationTests.ChildWorkflow, WorkflowInvocationTests.ChildWorkflowData>(step => step
@@ -530,7 +530,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore();
         var probe = new InvocationProbe(store);
         using var services = CreateServices(store, new ChargeLedger(store), probe);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<ChargeData>("FailChildInvocation")
             .Step<NoopActivity>()
             .Try(body => body
@@ -561,7 +561,7 @@ public sealed class ActivityRecoveryTests
         var store = new FaultStore();
         var ledger = new ChargeLedger(store) { FailCompletionAfterCharge = true };
         using var services = CreateServices(store, ledger);
-        var engine = services.GetRequiredService<WorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowEngine>();
         var definition = Workflow.Create<ChargeData>("UnresolvedParallelCharge")
             .Step<WorkflowInvocationTests.PrepareDataActivity>(_ => { })
             .Parallel(join => join.WaitAny()
@@ -655,7 +655,7 @@ public sealed class ActivityRecoveryTests
                 .Output(activity => activity.Index).To(ctx => ctx.WorkflowData.SecondIndex))
             .Build();
 
-        var result = await services.GetRequiredService<WorkflowEngine>()
+        var result = await services.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new ChargeData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -702,7 +702,6 @@ public sealed class ActivityRecoveryTests
         services.AddTransient<OrdinaryChargeActivity>();
         services.AddTransient<StepIndexActivity>();
         services.AddTransient<HandleOperatorFaultActivity>();
-        services.AddSingleton<WorkflowEngine>();
         return services.BuildServiceProvider();
     }
 
@@ -914,8 +913,6 @@ public sealed class ActivityRecoveryTests
 
         public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
             _inner.SaveWorkflowInstanceAsync(instance);
-        public Task<bool> TryClaimSuspendedWorkflowAsync(WorkflowInstance instance) =>
-            _inner.TryClaimSuspendedWorkflowAsync(instance);
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
@@ -926,8 +923,6 @@ public sealed class ActivityRecoveryTests
             _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
         public Task DeleteWorkflowInstanceAsync(string instanceId) =>
             _inner.DeleteWorkflowInstanceAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsReadyForResumptionAsync() =>
-            _inner.GetSuspendedWorkflowsReadyForResumptionAsync();
     }
 
     public sealed class RecoveryReply;

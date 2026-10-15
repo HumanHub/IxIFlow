@@ -1,4 +1,5 @@
 using IxIFlow.Core;
+using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -8,7 +9,7 @@ public class SqlWorkflowStateRepositoryTests
     [Trait("Category", "SqlIntegration")]
     public async Task SuspendedDeadlineAppearsInRecoveryScanWhenDue()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var repository = new SqlWorkflowStateRepository(connectionString);
         try
@@ -41,46 +42,15 @@ public class SqlWorkflowStateRepositoryTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SuspendedInstance_HasOneClaimAcrossRepositories()
+    public async Task SuspendedInstance_AppliesOneDeliveryOnceAcrossRepositories()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
-        var firstWait = new SuspensionInfo { SuspendReason = "approval" };
-
-        WorkflowInstance Claim(SuspensionInfo wait) => new()
-        {
-            InstanceId = instanceId,
-            Status = WorkflowStatus.Running,
-            SuspensionInfo = wait
-        };
-
         try
         {
-            await firstRepository.SaveWorkflowInstanceAsync(new WorkflowInstance
-            {
-                InstanceId = instanceId,
-                Status = WorkflowStatus.Suspended,
-                SuspensionInfo = firstWait
-            });
-
-            var claims = await Task.WhenAll(
-                firstRepository.TryClaimSuspendedWorkflowAsync(Claim(firstWait)),
-                secondRepository.TryClaimSuspendedWorkflowAsync(Claim(firstWait)));
-            Assert.Single(claims, claimed => claimed);
-            Assert.Equal(WorkflowStatus.Running,
-                (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
-
-            var secondWait = new SuspensionInfo { SuspendReason = "approval" };
-            await secondRepository.SaveWorkflowInstanceAsync(new WorkflowInstance
-            {
-                InstanceId = instanceId,
-                Status = WorkflowStatus.Suspended,
-                SuspensionInfo = secondWait
-            });
-            Assert.False(await firstRepository.TryClaimSuspendedWorkflowAsync(Claim(firstWait)));
-            Assert.True(await secondRepository.TryClaimSuspendedWorkflowAsync(Claim(secondWait)));
+            await ResumeOnceScenario.RunAsync(firstRepository, secondRepository, instanceId);
         }
         finally
         {
@@ -92,7 +62,7 @@ public class SqlWorkflowStateRepositoryTests
     [Trait("Category", "SqlIntegration")]
     public async Task SuspendedInstance_SurvivesRepositoryRecreation()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         try

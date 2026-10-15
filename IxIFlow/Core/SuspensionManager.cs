@@ -25,13 +25,6 @@ public interface ISuspensionManager
         CancellationToken cancellationToken = default) where TEventData : class;
 
     /// <summary>
-    ///     Processes timeouts for suspended workflows
-    /// </summary>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>List of timed out workflow instance IDs</returns>
-    Task<IEnumerable<string>> ProcessTimeoutsAsync(CancellationToken cancellationToken = default);
-
-    /// <summary>
     ///     Gets all suspended workflows
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -134,53 +127,6 @@ public class SuspensionManager : ISuspensionManager
     }
 
     /// <inheritdoc />
-    public async Task<IEnumerable<string>> ProcessTimeoutsAsync(CancellationToken cancellationToken = default)
-    {
-        _logger.LogDebug("Processing timeouts for suspended workflows");
-
-        // Get suspended workflows that have timed out
-        var suspendedWorkflows = await _stateRepository.GetSuspendedWorkflowsReadyForResumptionAsync();
-        var timedOutWorkflows = suspendedWorkflows
-            .Where(w => w.SuspensionInfo?.ExpiresAt != null && w.SuspensionInfo.ExpiresAt <= DateTime.UtcNow)
-            .ToList();
-
-        _logger.LogDebug("Found {Count} timed out workflows", timedOutWorkflows.Count);
-
-        // Create timeout events and resume each timed out workflow
-        var resumedWorkflowIds = new List<string>();
-        foreach (var workflow in timedOutWorkflows)
-            try
-            {
-                _logger.LogDebug("Processing timeout for workflow {InstanceId}", workflow.InstanceId);
-
-                // Create a timeout event
-                var timeoutEvent = new WorkflowTimeoutEvent
-                {
-                    WorkflowInstanceId = workflow.InstanceId,
-                    TimeoutOccurredAt = DateTime.UtcNow,
-                    SuspendedAt = workflow.SuspensionInfo?.SuspendedAt ?? DateTime.UtcNow,
-                    SuspendReason = workflow.SuspensionInfo?.SuspendReason ?? "Unknown",
-                    TimeoutDuration = DateTime.UtcNow - (workflow.SuspensionInfo?.SuspendedAt ?? DateTime.UtcNow)
-                };
-
-                // Resume the workflow with the timeout event
-                await _workflowEngine.ResumeWorkflowAsync(workflow.InstanceId, timeoutEvent, cancellationToken);
-
-                resumedWorkflowIds.Add(workflow.InstanceId);
-
-                _logger.LogInformation("Successfully resumed timed out workflow {InstanceId}", workflow.InstanceId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to resume timed out workflow {InstanceId}", workflow.InstanceId);
-            }
-
-        _logger.LogDebug("Resumed {Count} timed out workflows", resumedWorkflowIds.Count);
-
-        return resumedWorkflowIds;
-    }
-
-    /// <inheritdoc />
     public async Task<IEnumerable<WorkflowInstance>> GetSuspendedWorkflowsAsync(
         CancellationToken cancellationToken = default)
     {
@@ -216,37 +162,6 @@ public class SuspensionManager : ISuspensionManager
 
         return workflow;
     }
-}
-
-/// <summary>
-///     Event that represents a workflow timeout
-/// </summary>
-public class WorkflowTimeoutEvent
-{
-    /// <summary>
-    ///     The workflow instance ID
-    /// </summary>
-    public string WorkflowInstanceId { get; set; } = "";
-
-    /// <summary>
-    ///     When the timeout occurred
-    /// </summary>
-    public DateTime TimeoutOccurredAt { get; set; }
-
-    /// <summary>
-    ///     When the workflow was suspended
-    /// </summary>
-    public DateTime SuspendedAt { get; set; }
-
-    /// <summary>
-    ///     Reason for suspension
-    /// </summary>
-    public string SuspendReason { get; set; } = "";
-
-    /// <summary>
-    ///     Duration of the timeout
-    /// </summary>
-    public TimeSpan TimeoutDuration { get; set; }
 }
 
 /// <summary>

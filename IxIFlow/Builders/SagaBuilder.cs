@@ -6,70 +6,6 @@ using System.Reflection;
 
 namespace IxIFlow.Builders;
 
-///// <summary>
-/////     Core saga builder that implements the saga pattern with compensation
-///// </summary>
-//public class SagaBuilder<TWorkflowData, TPreviousStepData> : ISagaBuilder<TWorkflowData, TPreviousStepData>
-//    where TWorkflowData : class
-//    where TPreviousStepData : class
-//{
-//    private readonly List<SagaStepInfo> _sagaSteps;
-//    private readonly List<WorkflowStep> _steps;
-
-//    public SagaBuilder(List<WorkflowStep> steps)
-//    {
-//        _steps = steps ?? [];
-//        _sagaSteps = [];
-//    }
-
-//    public ISagaActivityBuilder<TWorkflowData, TActivity> Step<TActivity>(
-//        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>> configure)
-//        where TActivity : class, IAsyncActivity
-//    {
-//        var stepId = Guid.NewGuid().ToString();
-//        var workflowStep = new WorkflowStep
-//        {
-//            Id = stepId,
-//            Name = typeof(TActivity).Name,
-//            StepType = WorkflowStepType.Activity,
-//            ActivityType = typeof(TActivity),
-//            WorkflowDataType = typeof(TWorkflowData),
-//            PreviousStepDataType = typeof(TPreviousStepData),
-//            InputMappings = [],
-//            OutputMappings = [],
-//            StepMetadata = new Dictionary<string, object>
-//            {
-//                ["IsSagaStep"] = true,
-//                ["SagaStepOrder"] = _sagaSteps.Count
-//            }
-//        };
-
-//        // Create saga step info for compensation tracking
-//        var sagaStepInfo = new SagaStepInfo
-//        {
-//            StepId = stepId,
-//            ActivityType = typeof(TActivity),
-//            Order = _sagaSteps.Count,
-//            CompensationActivities = []
-//        };
-
-//        // Create the setup builder
-//        var setupBuilder = new SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>(
-//            workflowStep, sagaStepInfo);
-
-//        // Configure the step
-//        configure(setupBuilder);
-
-//        // Add to collections
-//        _steps.Add(workflowStep);
-//        _sagaSteps.Add(sagaStepInfo);
-
-//        // Create activity builder for chaining
-//        return new SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
-//            _steps, _sagaSteps);
-//    }
-//}
-
 /// <summary>
 ///     Saga activity builder for method chaining
 /// </summary>
@@ -189,14 +125,6 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
             configure(setupBuilder);
         }
 
-        //var sagaStepInfo = new SagaStepInfo
-        //{
-        //    StepId = stepId,
-        //    ActivityType = typeof(TActivity),
-        //    Order = _sagaSteps.Count,
-        //    CompensationActivities = []
-        //};
-        //_sagaSteps.Add(sagaStepInfo); ???
         _steps.Add(suspendStep);
 
         // Return a workflow builder with TResumeEvent as the previous step type

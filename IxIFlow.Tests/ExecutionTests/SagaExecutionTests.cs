@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Extensions;
 using IxIFlow.Tests.ExecutionTests.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit.Abstractions;
@@ -13,7 +14,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class SagaExecutionTests
 {
     private readonly ServiceProvider _serviceProvider;
-    private readonly WorkflowEngine _workflowEngine;
+    private readonly IWorkflowEngine _workflowEngine;
     private readonly ITestOutputHelper _output;
 
     public SagaExecutionTests(ITestOutputHelper output)
@@ -22,25 +23,16 @@ public class SagaExecutionTests
         
         var services = new ServiceCollection();
 
-        // Register interfaces for WorkflowEngine dependencies
-        services.AddSingleton<IActivityExecutor, ActivityExecutor>();
-        services.AddSingleton<IExpressionEvaluator, ExpressionEvaluator>();
-        services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
-        services.AddSingleton<IEventCorrelator, EventCorrelator>();
-        services.AddSingleton<IWorkflowTracer, WorkflowTracer>();
-
         // Register mock implementations for persistence dependencies
         services.AddSingleton<IWorkflowStateRepository, MockWorkflowStateRepository>();
-        services.AddSingleton<IEventStore, MockEventStore>();
-        services.AddSingleton<IWorkflowInvoker, WorkflowInvoker>();
 
-        // Register the main engine
-        services.AddSingleton<WorkflowEngine>();
+        // Register IxIFlow
+        services.AddIxIFlow();
 
         services.AddLogging();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<WorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
     }
 
     [Fact]
@@ -1120,53 +1112,6 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
         {
             var instances = await GetWorkflowInstancesByNameAsync(workflowName);
             return instances.Where(instance => !version.HasValue || instance.WorkflowVersion == version.Value).ToList();
-        }
-    }
-
-    /// <summary>
-    ///     Mock implementation of IEventStore for testing
-    /// </summary>
-    private class MockEventStore : IEventStore
-    {
-        public Task AppendEventAsync(string streamId, WorkflowEvent workflowEvent)
-        {
-            return Task.CompletedTask;
-        }
-
-        public Task<IEnumerable<WorkflowEvent>> GetEventsAsync(string streamId)
-        {
-            return Task.FromResult<IEnumerable<WorkflowEvent>>(new List<WorkflowEvent>());
-        }
-
-        public Task<IEnumerable<WorkflowEvent>> GetEventsFromSequenceAsync(string streamId, long fromSequenceNumber)
-        {
-            return Task.FromResult<IEnumerable<WorkflowEvent>>(new List<WorkflowEvent>());
-        }
-
-        public Task<long> GetLatestSequenceNumberAsync(string streamId)
-        {
-            return Task.FromResult(0L);
-        }
-
-        public Task SaveEventAsync<TEvent>(string eventId, TEvent eventData, string? correlationId = null)
-            where TEvent : class
-        {
-            return Task.CompletedTask;
-        }
-
-        public Task<TEvent?> GetEventAsync<TEvent>(string eventId) where TEvent : class
-        {
-            return Task.FromResult<TEvent?>(null);
-        }
-
-        public Task<List<TEvent>> GetEventsAsync<TEvent>(string? correlationId = null) where TEvent : class
-        {
-            return Task.FromResult(new List<TEvent>());
-        }
-
-        public Task DeleteEventAsync(string eventId)
-        {
-            return Task.CompletedTask;
         }
     }
 
