@@ -22,10 +22,13 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     private readonly object _lock = new();
     // An instance with an entry has one item admitted; the queue holds the items behind it.
     private readonly Dictionary<string, Queue<WorkItem>> _instances = new(StringComparer.Ordinal);
-    private readonly HashSet<Task> _running = [];
+    // Every admitted item until it finishes, added under the lock that admits it, so a stopping
+    // host waits for all of them.
+    private readonly HashSet<WorkItem> _admitted = [];
+    // Callers waiting for work on an instance to finish, by instance.
+    private readonly Dictionary<string, SettledSignal> _settled = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _draining = new();
     private readonly CancellationTokenSource _stopped = new();
-    private TaskCompletionSource _settled = NewSignal();
     private bool _accepting = true;
 
     public LocalWorkflowHost(IServiceScopeFactory scopes, HostSettings settings)
@@ -36,15 +39,30 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     }
 
     /// <summary>True inside a slot, where client calls run inline.</summary>
-    public bool IsInsideRun => CurrentRun.Value != null;
+    public bool IsInsideRun => CurrentRun.Value is { IsOpen: true };
 
-    /// <summary>Completes the next time any work item finishes.</summary>
-    public Task Settled
+    /// <summary>
+    /// Watches for the next work item on <paramref name="instanceId"/> to finish on this host.
+    /// Dispose the watch when done waiting.
+    /// </summary>
+    public IDisposable WatchSettled(string instanceId, out Task settled)
     {
-        get
+        lock (_lock)
         {
-            lock (_lock)
-                return _settled.Task;
+            if (!_settled.TryGetValue(instanceId, out var signal))
+                _settled[instanceId] = signal = new SettledSignal();
+            signal.Watchers++;
+            settled = signal.Source.Task;
+            return new SettledWatch(this, instanceId, signal);
+        }
+    }
+
+    private void StopWatching(string instanceId, SettledSignal signal)
+    {
+        lock (_lock)
+        {
+            if (--signal.Watchers == 0 && _settled.TryGetValue(instanceId, out var current) && current == signal)
+                _settled.Remove(instanceId);
         }
     }
 
@@ -57,7 +75,8 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
         Func<DirectInstanceClient, RunControl, CancellationToken, Task<T>> operation,
         CancellationToken cancellationToken)
     {
-        if (CurrentRun.Value is { } current)
+        // A run's context stays with activities that outlive it; once it is closed their calls queue.
+        if (CurrentRun.Value is { IsOpen: true } current)
             return operation(current.Client, current.Control, cancellationToken);
 
         var item = new WorkItem<T>(instanceId, operation, cancellationToken);
@@ -72,6 +91,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
             {
                 if (instanceId != null)
                     _instances[instanceId] = new Queue<WorkItem>();
+                _admitted.Add(item);
                 start = true;
             }
         }
@@ -84,24 +104,14 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     /// <summary>Runs an operation that needs no slot, such as a read, in its own scope.</summary>
     public async Task<T> ReadAsync<T>(Func<DirectInstanceClient, Task<T>> operation)
     {
-        if (CurrentRun.Value is { } current)
+        if (CurrentRun.Value is { IsOpen: true } current)
             return await operation(current.Client);
         await using var scope = _scopes.CreateAsyncScope();
         return await operation(scope.ServiceProvider.GetRequiredService<DirectInstanceClient>());
     }
 
     // Runs the item on the thread pool, so no caller thread or lock holder executes instance code.
-    private void Dispatch(WorkItem item)
-    {
-        var task = Task.Run(() => ExecuteAsync(item));
-        lock (_lock)
-            _running.Add(task);
-        _ = task.ContinueWith(finished =>
-        {
-            lock (_lock)
-                _running.Remove(finished);
-        }, TaskScheduler.Default);
-    }
+    private void Dispatch(WorkItem item) => _ = Task.Run(() => ExecuteAsync(item));
 
     private async Task ExecuteAsync(WorkItem item)
     {
@@ -120,13 +130,15 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
             control.Drain = _draining.Token;
             control.OnInstanceKnown(instanceId => Register(item, instanceId));
             var client = scope.ServiceProvider.GetRequiredService<DirectInstanceClient>();
-            CurrentRun.Value = new RunContext(client, control);
+            var context = new RunContext(client, control);
+            CurrentRun.Value = context;
             try
             {
                 await item.RunAsync(client, control, stop.Token);
             }
             finally
             {
+                context.Close();
                 CurrentRun.Value = null;
             }
         }
@@ -160,9 +172,10 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     private void Finish(WorkItem item)
     {
         WorkItem? next = null;
-        TaskCompletionSource settled;
+        SettledSignal? settled = null;
         lock (_lock)
         {
+            _admitted.Remove(item);
             if (item.InstanceId != null && _instances.TryGetValue(item.InstanceId, out var queue))
             {
                 // Items whose callers gave up are skipped.
@@ -174,11 +187,14 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
                 }
                 if (next == null)
                     _instances.Remove(item.InstanceId);
+                else
+                    _admitted.Add(next);
             }
-            settled = _settled;
-            _settled = NewSignal();
+            if (item.InstanceId != null && _settled.Remove(item.InstanceId, out var signal))
+                settled = signal;
         }
-        settled.TrySetResult();
+        item.Done.TrySetResult();
+        settled?.Source.TrySetResult();
         if (next != null)
             Dispatch(next);
     }
@@ -232,7 +248,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
             foreach (var queue in _instances.Values)
                 while (queue.Count > 0)
                     cancelled.Add(queue.Dequeue());
-            running = _running.ToArray();
+            running = _admitted.Select(item => item.Done.Task).ToArray();
         }
         foreach (var item in cancelled)
             item.Cancel();
@@ -241,7 +257,33 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private sealed record RunContext(DirectInstanceClient Client, RunControl Control);
+    private sealed class RunContext(DirectInstanceClient client, RunControl control)
+    {
+        private int _closed;
+
+        public DirectInstanceClient Client { get; } = client;
+        public RunControl Control { get; } = control;
+        public bool IsOpen => Volatile.Read(ref _closed) == 0;
+
+        public void Close() => Interlocked.Exchange(ref _closed, 1);
+    }
+
+    private sealed class SettledSignal
+    {
+        public TaskCompletionSource Source { get; } = NewSignal();
+        public int Watchers { get; set; }
+    }
+
+    private sealed class SettledWatch(LocalWorkflowHost host, string instanceId, SettledSignal signal) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                host.StopWatching(instanceId, signal);
+        }
+    }
 
     private abstract class WorkItem(string? instanceId, CancellationToken callerToken)
     {
@@ -256,6 +298,9 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
 
         public string? InstanceId { get; set; } = instanceId;
         public CancellationToken CallerToken { get; } = callerToken;
+
+        /// <summary>Completes when the host has finished with the item, run or not.</summary>
+        public TaskCompletionSource Done { get; } = NewSignal();
         public abstract bool IsSettled { get; }
         public abstract Task RunAsync(DirectInstanceClient client, RunControl control, CancellationToken token);
         public abstract void Fail(Exception error);

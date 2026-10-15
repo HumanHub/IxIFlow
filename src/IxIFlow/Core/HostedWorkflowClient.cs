@@ -128,8 +128,9 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         while (true)
         {
-            // Take the signal before reading, so work that finishes in between is not missed.
-            var settled = host.Settled;
+            // Watch before reading, so work that finishes in between is not missed. Only work on
+            // this instance wakes the caller; work elsewhere is seen by the poll.
+            using var watch = host.WatchSettled(instanceId, out var settled);
             var result = await host.ReadAsync(client => client.ReadAsync(instanceId))
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"Workflow instance '{instanceId}' does not exist").At(instanceId);
