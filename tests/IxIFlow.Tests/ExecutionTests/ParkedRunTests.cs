@@ -63,6 +63,30 @@ public sealed class ParkedRunTests
     }
 
     [Fact]
+    [Trait("Spec", "C-12")]
+    public async Task ACancellationFromInsideARunWakesTheParkedInstanceInItsOwnSlot()
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        using var services = Services(store, slots: 1);
+        var probe = services.GetRequiredService<ParkProbe>();
+        probe.Target = Guid.NewGuid().ToString("N");
+        var parked = Client(services).RunAsync(RetryingWorkflow("CancelledWhileParked", 5000), new ParkData(),
+            new WorkflowOptions { InstanceId = probe.Target });
+        await probe.FailedOnce.Task.WaitAsync(Patience);
+        await WaitForAsync(async () =>
+            await store.GetWorkflowInstanceAsync(probe.Target) is { RunnableAtUtc: { } due } saved &&
+            due > DateTime.UtcNow ? saved : null);
+
+        var canceller = await Client(services).RunAsync(Workflow.Create<ParkData>("CancelsAnother")
+            .Step<CancellingActivity>().Build(), new ParkData()).WaitAsync(Patience);
+
+        // The woken instance waited for the slot the canceller held, rather than unwinding inside it.
+        Assert.Equal(WorkflowExecutionStatus.Success, canceller.Status);
+        Assert.Equal(WorkflowStatus.Running, probe.TargetStatusAfterCancel);
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, (await parked.WaitAsync(Patience)).Status);
+    }
+
+    [Fact]
     [Trait("Spec", "C-03")]
     public Task MemoryStoreParksAtomically() => VerifyParking(new InMemoryWorkflowStateRepository());
 
@@ -218,6 +242,7 @@ public sealed class ParkedRunTests
         services.AddSingleton<ParkProbe>();
         services.AddTransient<MarkActivity>();
         services.AddTransient<FailOnceActivity>();
+        services.AddTransient<CancellingActivity>();
         return services.BuildServiceProvider();
     }
 
@@ -232,6 +257,8 @@ public sealed class ParkedRunTests
         private int _marks;
 
         public TaskCompletionSource FailedOnce { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public string Target { get; set; } = "";
+        public WorkflowStatus? TargetStatusAfterCancel { get; set; }
 
         public IReadOnlyList<string> Events
         {
@@ -259,6 +286,19 @@ public sealed class ParkedRunTests
             if (probe.CountMark())
                 probe.Record("marked");
             return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Cancels the probe's target from inside its own run, then holds the slot a moment.</summary>
+    public sealed class CancellingActivity(ParkProbe probe, IWorkflowClient client, IWorkflowStateRepository store)
+        : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            await client.CancelAsync(probe.Target, new CancellationReason { ReasonCode = "operator" },
+                cancellationToken);
+            probe.TargetStatusAfterCancel = (await store.GetWorkflowInstanceAsync(probe.Target))?.Status;
+            await Task.Delay(200, cancellationToken);
         }
     }
 
