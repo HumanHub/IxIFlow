@@ -636,20 +636,22 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
 
         // An event this commit settles must still be pending (D-04). One statement settles them all,
         // so their row locks are taken in one order.
-        if (commit.Settlements.Count > 0)
+        // Batches keep each statement under the server's parameter limit; they share the transaction.
+        var settled = 0;
+        foreach (var batch in commit.Settlements.Chunk(StatementBatch))
         {
             var parameters = new DynamicParameters(new { commit.InstanceId });
             var rows = new List<string>();
-            for (var index = 0; index < commit.Settlements.Count; index++)
+            for (var index = 0; index < batch.Length; index++)
             {
-                var settlement = commit.Settlements[index];
+                var settlement = batch[index];
                 rows.Add($"(@E{index}, @O{index}, @W{index}, @R{index})");
                 parameters.Add($"E{index}", settlement.EventId);
                 parameters.Add($"O{index}", (byte)settlement.Outcome);
                 parameters.Add($"W{index}", settlement.WaitId);
                 parameters.Add($"R{index}", (byte?)settlement.Rejection);
             }
-            var settled = await connection.ExecuteAsync($"""
+            settled += await connection.ExecuteAsync($"""
                 UPDATE stored
                 SET Outcome = settled.Outcome, WaitId = settled.WaitId, Rejection = settled.Rejection,
                     SettledAtUtc = SYSUTCDATETIME()
@@ -658,11 +660,11 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                     ON stored.EventId = settled.EventId
                 WHERE stored.InstanceId = @InstanceId AND stored.Outcome = 0
                 """, parameters, transaction);
-            if (settled != commit.Settlements.Count)
-            {
-                await transaction.RollbackAsync();
-                return new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, currentRevision);
-            }
+        }
+        if (settled != commit.Settlements.Count)
+        {
+            await transaction.RollbackAsync();
+            return new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, currentRevision);
         }
         var unacknowledged = current is { CancellationJson: not null, CancellationAcknowledged: false };
         // A run that has not read every arrival neither parks nor goes idle out of reach.
@@ -744,16 +746,27 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     private static async Task ApplyWaitChangesAsync(SqlConnection connection, SqlTransaction transaction,
         CheckpointCommit commit, long inboxSequence)
     {
-        if (commit.OpenedWaits.Count == 0 && commit.ClosedWaits.Count == 0)
-            return;
-        var parameters = new DynamicParameters(new { commit.InstanceId, Sequence = inboxSequence });
+        foreach (var opened in commit.OpenedWaits.Chunk(StatementBatch))
+            await ApplyWaitChangesAsync(connection, transaction, commit.InstanceId, inboxSequence, opened, []);
+        foreach (var closed in commit.ClosedWaits.Chunk(StatementBatch))
+            await ApplyWaitChangesAsync(connection, transaction, commit.InstanceId, inboxSequence, [], closed);
+    }
+
+    // At most this many rows per statement: five parameters each stays under the server's limit of 2,100.
+    private const int StatementBatch = 400;
+
+    private static async Task ApplyWaitChangesAsync(SqlConnection connection, SqlTransaction transaction,
+        string instanceId, long inboxSequence, IReadOnlyList<OpenedWait> openedWaits,
+        IReadOnlyList<ClosedWait> closedWaits)
+    {
+        var parameters = new DynamicParameters(new { InstanceId = instanceId, Sequence = inboxSequence });
         var batch = new System.Text.StringBuilder();
-        if (commit.OpenedWaits.Count > 0)
+        if (openedWaits.Count > 0)
         {
             var rows = new List<string>();
-            for (var index = 0; index < commit.OpenedWaits.Count; index++)
+            for (var index = 0; index < openedWaits.Count; index++)
             {
-                var wait = commit.OpenedWaits[index];
+                var wait = openedWaits[index];
                 rows.Add($"(@OW{index}, @OK{index}, @OY{index}, @OT{index}, @OD{index})");
                 parameters.Add($"OW{index}", wait.WaitId);
                 parameters.Add($"OK{index}", (byte)wait.Kind);
@@ -772,14 +785,14 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
 
                 """);
         }
-        if (commit.ClosedWaits.Count > 0)
+        if (closedWaits.Count > 0)
         {
             var rows = new List<string>();
-            for (var index = 0; index < commit.ClosedWaits.Count; index++)
+            for (var index = 0; index < closedWaits.Count; index++)
             {
                 rows.Add($"(@CW{index}, @CR{index})");
-                parameters.Add($"CW{index}", commit.ClosedWaits[index].WaitId);
-                parameters.Add($"CR{index}", (byte)commit.ClosedWaits[index].Reason);
+                parameters.Add($"CW{index}", closedWaits[index].WaitId);
+                parameters.Add($"CR{index}", (byte)closedWaits[index].Reason);
             }
             batch.Append($"""
                 UPDATE stored SET CloseReason = closed.Reason, ClosedAtUtc = SYSUTCDATETIME()
