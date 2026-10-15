@@ -198,7 +198,7 @@ internal static class TryScopeTransitions
     private static void RejectUnrestorable(SerializedException? error, bool caught = false)
     {
         if (error?.IsRestorable == false && !(caught && error.Fault != null))
-            throw new InvalidOperationException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Exception '{error.Type}' cannot be restored after a wait: " +
                 (error.RestorationFailureReason ?? "constructor values were unavailable"));
     }

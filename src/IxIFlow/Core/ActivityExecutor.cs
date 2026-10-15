@@ -31,7 +31,8 @@ public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : I
     public IDictionary<string, object> Metadata { get; }
 
     // Explicit interface implementation for untyped access
-    object IActivityContext.WorkflowData => WorkflowData ?? throw new InvalidOperationException("WorkflowData cannot be null"); 
+    object IActivityContext.WorkflowData => WorkflowData ??
+        throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "WorkflowData cannot be null");
     object? IActivityContext.PreviousStepData => PreviousStepData;
 
     public TypedActivityExecutionContext(
@@ -397,9 +398,7 @@ public class ActivityExecutor : IActivityExecutor
             }
 
             // Fall back to Activator.CreateInstance
-            activity = Activator.CreateInstance(activityType) as IAsyncActivity;
-            if (activity == null)
-                throw new InvalidOperationException($"Failed to create activity instance of type {activityType.Name}");
+            activity = (IAsyncActivity)Activator.CreateInstance(activityType)!;
 
             _logger.LogTrace("Created activity {ActivityType} via Activator.CreateInstance", activityType.Name);
             return activity;
@@ -407,7 +406,8 @@ public class ActivityExecutor : IActivityExecutor
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to create activity instance of type {ActivityType}", activityType.Name);
-            throw new ActivityInstantiationException($"Failed to create activity instance of type {activityType.Name}", ex);
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Activity '{activityType.Name}' cannot be created in this host: {ex.Message}", ex);
         }
     }
 
@@ -461,22 +461,23 @@ public class ActivityExecutor : IActivityExecutor
                             _logger.LogTrace("Created CompensationContext: {ContextType}", evaluationContext.GetType().FullName);
                             if (mapping.CompensationSource == CompensationInputSource.PreviousStep)
                                 evaluationContext = compensationPreviousStep
-                                    ?? throw new InvalidOperationException(
+                                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                                         $"Compensation input '{mapping.TargetProperty}' has no saved previous step");
                             else if (mapping.CompensationSource == CompensationInputSource.PreviousCompensation)
                                 evaluationContext = compensationPreviousChain
-                                    ?? throw new InvalidOperationException(
+                                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                                         $"Compensation input '{mapping.TargetProperty}' has no previous compensation result");
                             if (!mapping.SourceType.IsInstanceOfType(evaluationContext))
                             {
-                                throw new InvalidOperationException(
+                                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                                     $"Compensation input '{mapping.TargetProperty}' requires " +
                                     $"{mapping.SourceType.Name}, but saved value is {evaluationContext.GetType().Name}");
                             }
                         }
                         else
                         {
-                            throw new InvalidOperationException("CreateCompensationEvaluationContext method not found");
+                            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                                "CreateCompensationEvaluationContext method not found");
                         }
                     }
                     else
@@ -508,10 +509,8 @@ public class ActivityExecutor : IActivityExecutor
                 }
                 else
                 {
-                    trace.IsSuccess = false;
-                    trace.ErrorMessage = $"Property {mapping.TargetProperty} not found or not writable";
-                    _logger.LogWarning("Target property not found or not writable: {Property} on {ActivityType}",
-                        mapping.TargetProperty, activity.GetType().Name);
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"Activity input '{activity.GetType().Name}.{mapping.TargetProperty}' is not writable");
                 }
             }
             catch (Exception ex)
@@ -520,8 +519,7 @@ public class ActivityExecutor : IActivityExecutor
                 trace.ErrorMessage = ex.Message;
                 _logger.LogError(ex, "Failed to apply typed input mapping for property {Property}",
                     mapping.TargetProperty);
-                throw new InvalidOperationException(
-                    $"Failed to apply input mapping for property {mapping.TargetProperty}: {ex.Message}", ex);
+                throw;
             }
 
             result.InputTraces.Add(trace);
@@ -580,18 +578,14 @@ public class ActivityExecutor : IActivityExecutor
                     }
                     else
                     {
-                        trace.IsSuccess = false;
-                        trace.ErrorMessage = "No target assignment function";
-                        _logger.LogWarning("No target assignment function for typed output mapping: {Property}",
-                            mapping.TargetProperty);
+                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                            $"Activity output '{mapping.TargetProperty}' has no assignment");
                     }
                 }
                 else
                 {
-                    trace.IsSuccess = false;
-                    trace.ErrorMessage = $"Property {mapping.TargetProperty} not found or not readable";
-                    _logger.LogWarning("Source property not found or not readable: {Property} on {ActivityType}",
-                        mapping.TargetProperty, activity.GetType().Name);
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"Activity output '{activity.GetType().Name}.{mapping.TargetProperty}' is not readable");
                 }
             }
             catch (Exception ex)
@@ -600,8 +594,7 @@ public class ActivityExecutor : IActivityExecutor
                 trace.ErrorMessage = ex.Message;
                 _logger.LogError(ex, "Failed to apply typed output mapping for property {Property}",
                     mapping.TargetProperty);
-                throw new InvalidOperationException(
-                    $"Failed to apply output mapping for property {mapping.TargetProperty}: {ex.Message}", ex);
+                throw;
             }
 
             result.OutputTraces.Add(trace);

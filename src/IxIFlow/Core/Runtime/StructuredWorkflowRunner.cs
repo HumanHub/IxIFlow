@@ -1,7 +1,6 @@
 using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
-using System.Runtime.ExceptionServices;
 using System.Reflection;
 using IxIFlow.Builders.Interfaces;
 
@@ -21,6 +20,7 @@ internal sealed class StructuredWorkflowRunner(
     ExecutionLeaseSettings? leaseSettings = null,
     TimeProvider? timeProvider = null)
 {
+    private readonly IWorkflowStateRepository _store = GuardedStateRepository.Wrap(repository);
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
     private readonly WorkflowInvocationTransitionExecutor _invocations = new(workflowInvoker);
@@ -38,19 +38,20 @@ internal sealed class StructuredWorkflowRunner(
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         cancellationToken.ThrowIfCancellationRequested();
-        if (!await repository.RequestCancellationAsync(instanceId, reason))
+        if (!await _store.RequestCancellationAsync(instanceId, reason))
         {
-            var existing = await repository.GetWorkflowInstanceAsync(instanceId);
+            var existing = await _store.GetWorkflowInstanceAsync(instanceId);
             if (existing == null)
-                throw new KeyNotFoundException($"Workflow instance '{instanceId}' does not exist");
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                    $"Workflow instance '{instanceId}' does not exist");
             if (existing.Status is WorkflowStatus.Running or WorkflowStatus.Suspended or
                 WorkflowStatus.NeedsResolution)
-                throw new InvalidOperationException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "The workflow instance changed while cancellation was requested; retry");
             return ExistingResult(existing);
         }
 
-        var instance = await repository.GetWorkflowInstanceAsync(instanceId);
+        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
         if (instance?.Status == WorkflowStatus.Running)
             return new WorkflowExecutionResult
             {
@@ -71,42 +72,46 @@ internal sealed class StructuredWorkflowRunner(
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationId);
         ArgumentNullException.ThrowIfNull(resolution);
         using var lease = await gate.EnterAsync(instanceId, cancellationToken);
-        var instance = await repository.GetWorkflowInstanceAsync(instanceId);
+        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
         if (instance?.Status != WorkflowStatus.NeedsResolution || !HasStructuredCheckpoint(instance))
             return Rejected(instanceId, "The workflow instance has no activity awaiting resolution");
 
         var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
-            ?? throw new InvalidOperationException("The registered workflow definition is unavailable");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "The registered workflow definition is unavailable");
         var scopes = new WorkflowScopeCatalog(definition);
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
         var continuation = checkpoint.Continuations.SingleOrDefault(item =>
             item.PendingActivity?.Id == invocationId && item.Status == ContinuationStatus.WaitingResolution)
-            ?? throw new KeyNotFoundException($"Activity invocation '{invocationId}' is not awaiting resolution");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                $"Activity invocation '{invocationId}' is not awaiting resolution");
         var pending = continuation.PendingActivity!;
         var step = scopes.Step(pending.StepId);
         if (step.StepType is not (WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation))
-            throw new NotSupportedException("This step cannot be resolved by an operator");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                "This step cannot be resolved by an operator");
         var child = pending.ChildWorkflowId == null
-            ? null : await repository.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
+            ? null : await _store.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
         if (ChildIsActive(child))
-            throw new InvalidOperationException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Resolve child workflow '{pending.ChildWorkflowId}' before recovering its parent invocation");
         var childDataType = step.StepType == WorkflowStepType.WorkflowInvocation
             ? await ResolveChildDataTypeAsync(step)
             : null;
         var decision = PrepareResolution(scopes, step, resolution, childDataType);
         var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
-            ?? throw new InvalidOperationException($"Workflow data type '{instance.WorkflowDataType}' is unavailable");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
         var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
-            ?? throw new InvalidOperationException("Saved workflow data cannot be read");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
 
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-            repository, instance, _leaseSettings, _time);
+            _store, instance, _leaseSettings, _time);
         if (owner == null)
             return Busy(instanceId);
-        var current = await repository.GetWorkflowInstanceAsync(instanceId);
+        var current = await _store.GetWorkflowInstanceAsync(instanceId);
         if (current?.Revision != instance.Revision || current.Status != instance.Status)
             return current?.Status == WorkflowStatus.Running
                 ? Busy(instanceId)
@@ -116,7 +121,7 @@ internal sealed class StructuredWorkflowRunner(
         pending.ResolutionReason = null;
         continuation.Status = ContinuationStatus.Active;
         instance.Status = WorkflowStatus.Running;
-        var cancellationReason = await repository.GetCancellationRequestAsync(instanceId);
+        var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
         if (cancellationReason != null && !checkpoint.CancellationRequested &&
             checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
         {
@@ -124,7 +129,7 @@ internal sealed class StructuredWorkflowRunner(
             checkpoint.CancellationRequested = true;
             CancelTree(checkpoint, checkpoint.Continuations[0]);
         }
-        await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+        await PersistAsync(instance, checkpoint, workflowData, scopes, true);
         return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
             true, owner, cancellationToken);
     }
@@ -132,15 +137,17 @@ internal sealed class StructuredWorkflowRunner(
     public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        var instance = await repository.GetWorkflowInstanceAsync(instanceId);
+        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
         if (instance?.Status != WorkflowStatus.NeedsResolution || !HasStructuredCheckpoint(instance))
             return [];
         var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
-            ?? throw new InvalidOperationException("The registered workflow definition is unavailable");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "The registered workflow definition is unavailable");
         var scopes = new WorkflowScopeCatalog(definition);
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
-            throw new InvalidOperationException("The registered workflow definition differs from the saved version");
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "The registered workflow definition differs from the saved version");
         var pendingActivities = new List<PendingActivityInfo>();
         foreach (var continuation in checkpoint.Continuations.Where(item =>
                      item.Status == ContinuationStatus.WaitingResolution &&
@@ -149,7 +156,7 @@ internal sealed class StructuredWorkflowRunner(
             var pending = continuation.PendingActivity!;
             var step = scopes.Step(pending.StepId);
             var child = pending.ChildWorkflowId == null
-                ? null : await repository.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
+                ? null : await _store.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
             pendingActivities.Add(new PendingActivityInfo(pending.Id, pending.StepId,
                 step.ActivityType?.Name ?? step.Name, pending.ResolutionReason,
                 pending.StartedAtUtc,
@@ -173,11 +180,13 @@ internal sealed class StructuredWorkflowRunner(
             var contract = step.WorkflowType.GetInterfaces().FirstOrDefault(type =>
                 type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IWorkflow<>));
             return contract?.GetGenericArguments()[0]
-                ?? throw new InvalidOperationException("The child workflow data type is unavailable");
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    "The child workflow data type is unavailable");
         }
         var definition = await registry.GetWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value);
         return definition?.WorkflowDataType
-            ?? throw new InvalidOperationException("The registered child workflow definition is unavailable");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "The registered child workflow definition is unavailable");
     }
 
     private static ActivityResolutionState PrepareResolution(WorkflowScopeCatalog scopes,
@@ -247,9 +256,10 @@ internal sealed class StructuredWorkflowRunner(
         where TData : class
     {
         if (options.EnableDebugging)
-            throw new NotSupportedException("Workflow debugging is not implemented");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                "Workflow debugging is not implemented");
         if (options.WorkflowRetryPolicy != null)
-            throw new NotSupportedException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 "Workflow-wide retry is not supported; configure retry on a saga or activity step");
         if (options.InstanceId != null && string.IsNullOrWhiteSpace(options.InstanceId))
             throw new ArgumentException("An explicit workflow instance ID cannot be empty", nameof(options));
@@ -257,7 +267,8 @@ internal sealed class StructuredWorkflowRunner(
             throw new ArgumentOutOfRangeException(nameof(options),
                 "Execution timeout must be positive");
         if (options.InstanceId != null && !options.PersistState)
-            throw new InvalidOperationException("An explicit workflow instance ID requires state persistence");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                "An explicit workflow instance ID requires state persistence");
         WorkflowDefinitionIdentity.AssignImplicitName(definition);
         var instance = new WorkflowInstance
         {
@@ -277,7 +288,8 @@ internal sealed class StructuredWorkflowRunner(
         };
         var scopes = new WorkflowScopeCatalog(definition);
         if (!options.PersistState && scopes.RequiresPersistence)
-            throw new InvalidOperationException("A workflow with waits or child workflows requires state persistence");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                "A workflow with waits or child workflows requires state persistence");
         var checkpoint = new ExecutionCheckpoint
         {
             DefinitionFingerprint = scopes.Fingerprint,
@@ -292,41 +304,54 @@ internal sealed class StructuredWorkflowRunner(
             ]
         };
 
-        using var lease = await gate.EnterAsync(instance.InstanceId, cancellationToken);
-        await using var owner = options.PersistState
-            ? await WorkflowExecutionLease.TryAcquireAsync(repository, instance, _leaseSettings, _time)
-                ?? (options.InstanceId == null
-                    ? throw new InvalidOperationException("The new workflow instance could not acquire execution ownership")
-                    : null)
-            : null;
-        if (options.PersistState && owner == null)
-            return Busy(instance.InstanceId);
-        if (options.InstanceId != null)
+        try
         {
-            var existing = await repository.GetWorkflowInstanceAsync(instance.InstanceId);
-            if (existing != null)
+            using var lease = await gate.EnterAsync(instance.InstanceId, cancellationToken);
+            await using var owner = options.PersistState
+                ? await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _time)
+                    ?? (options.InstanceId == null
+                        ? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
+                            "The new workflow instance could not acquire execution ownership")
+                        : null)
+                : null;
+            if (options.PersistState && owner == null)
+                return Busy(instance.InstanceId);
+            if (options.InstanceId != null)
             {
-                if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version ||
-                    ExecutionCheckpoint.Read(existing.ExecutionStateJson).DefinitionFingerprint != scopes.Fingerprint)
-                    throw new InvalidOperationException(
-                        $"Workflow instance '{instance.InstanceId}' belongs to a different definition");
-                return ExistingResult(existing);
+                var existing = await _store.GetWorkflowInstanceAsync(instance.InstanceId);
+                if (existing != null)
+                {
+                    if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version ||
+                        ExecutionCheckpoint.Read(existing.ExecutionStateJson).DefinitionFingerprint != scopes.Fingerprint)
+                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                            $"Workflow instance '{instance.InstanceId}' belongs to a different definition");
+                    return ExistingResult(existing);
+                }
             }
+            var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
+            if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true &&
+                isActive is false)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    $"Workflow {definition.Name} v{definition.Version} is deactivated");
+            instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+            instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
+            if (options.PersistState)
+            {
+                await registry.RegisterWorkflowAsync(definition);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, true);
+            }
+            return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
+                options.PersistState, owner, cancellationToken);
         }
-        var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
-        if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true &&
-            isActive is false)
-            throw new InvalidOperationException(
-                $"Workflow {definition.Name} v{definition.Version} is deactivated");
-        instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-        instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
-        if (options.PersistState)
+        catch (ExecutionLeaseLostException)
         {
-            await registry.RegisterWorkflowAsync(definition);
-            await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+            return Busy(instance.InstanceId);
         }
-        return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-            options.PersistState, owner, cancellationToken);
+        catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error))
+        {
+            error.At(instance.InstanceId);
+            throw;
+        }
     }
 
     public async Task<WorkflowExecutionResult> ResumeAsync<TEvent>(
@@ -341,13 +366,13 @@ internal sealed class StructuredWorkflowRunner(
         var deliveryHash = deliveryId == null ? null : ComputeDeliveryHash(key, @event);
         for (var attempt = 0; attempt < 5; attempt++)
         {
-            var instance = await repository.GetWorkflowInstanceAsync(instanceId);
+            var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (deliveryId != null && HasStructuredCheckpoint(instance) &&
                 ExecutionCheckpoint.Read(instance!.ExecutionStateJson).AcceptedDeliveries
                     .TryGetValue(deliveryId, out var acceptedHash))
             {
                 if (acceptedHash != deliveryHash)
-                    throw new InvalidOperationException(
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                         $"Delivery ID '{deliveryId}' was already used with a different event");
                 var accepted = ExistingResult(instance);
                 accepted.EventAccepted = true;
@@ -370,17 +395,19 @@ internal sealed class StructuredWorkflowRunner(
                 return Rejected(instanceId, "The registered workflow definition is unavailable");
 
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
-                ?? throw new InvalidOperationException($"Workflow data type '{instance.WorkflowDataType}' is unavailable");
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
             var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
-                ?? throw new InvalidOperationException("Saved workflow data cannot be read");
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    "Saved workflow data cannot be read");
             var scopes = new WorkflowScopeCatalog(definition);
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
                 return Rejected(instanceId, "The registered workflow definition differs from the saved version");
             await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-                repository, instance, _leaseSettings, _time);
+                _store, instance, _leaseSettings, _time);
             if (owner == null)
                 return Busy(instanceId);
-            var current = await repository.GetWorkflowInstanceAsync(instanceId);
+            var current = await _store.GetWorkflowInstanceAsync(instanceId);
             if (current?.Revision != instance.Revision || current.Status != instance.Status)
             {
                 if (current?.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution)
@@ -392,7 +419,7 @@ internal sealed class StructuredWorkflowRunner(
             if (await ReconcileChildWaitsAsync(checkpoint))
             {
                 instance.Status = WorkflowStatus.Running;
-                await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, true);
                 var refreshed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                     true, owner, cancellationToken);
                 if (refreshed.Status == WorkflowExecutionStatus.Suspended)
@@ -402,7 +429,7 @@ internal sealed class StructuredWorkflowRunner(
             if (HasDueDeadline(checkpoint))
             {
                 instance.Status = WorkflowStatus.Running;
-                await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, true);
                 var afterDeadline = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                     true, owner, cancellationToken);
                 if (afterDeadline.Status == WorkflowExecutionStatus.Suspended)
@@ -427,14 +454,14 @@ internal sealed class StructuredWorkflowRunner(
             if (matching.Count > 1)
                 return Rejected(instanceId, "The event satisfies more than one wait; provide a unique key");
 
-            var cancellationReason = await repository.GetCancellationRequestAsync(instanceId);
+            var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
             if (cancellationReason != null && !checkpoint.CancellationRequested)
             {
                 instance.CancellationReason = cancellationReason;
                 checkpoint.CancellationRequested = true;
                 CancelTree(checkpoint, checkpoint.Continuations[0]);
                 instance.Status = WorkflowStatus.Running;
-                await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, true);
                 return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                     true, owner, cancellationToken);
             }
@@ -461,7 +488,7 @@ internal sealed class StructuredWorkflowRunner(
             continuation.Status = ContinuationStatus.Active;
 
             instance.Status = WorkflowStatus.Running;
-            await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+            await PersistAsync(instance, checkpoint, workflowData, scopes, true);
 
             var resumed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                 true, owner, cancellationToken);
@@ -483,8 +510,8 @@ internal sealed class StructuredWorkflowRunner(
     public async Task<WorkflowExecutionResult> RecoverAsync(string instanceId, CancellationToken cancellationToken)
     {
         using var lease = await gate.EnterAsync(instanceId, cancellationToken);
-        var instance = await repository.GetWorkflowInstanceAsync(instanceId);
-        var cancellationReason = await repository.GetCancellationRequestAsync(instanceId);
+        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+        var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
         var canRecover = instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
             instance?.Status == WorkflowStatus.Suspended &&
             (cancellationReason != null || HasDueDeadline(instance) || HasChildWait(instance));
@@ -495,18 +522,19 @@ internal sealed class StructuredWorkflowRunner(
         if (definition == null)
             return Rejected(instanceId, "The registered workflow definition is unavailable");
         var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
-            ?? throw new InvalidOperationException($"Workflow data type '{instance.WorkflowDataType}' is unavailable");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
         var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
-            ?? throw new InvalidOperationException("Saved workflow data cannot be read");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         var scopes = new WorkflowScopeCatalog(definition);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-            repository, instance, _leaseSettings, _time);
+            _store, instance, _leaseSettings, _time);
         if (owner == null)
             return Busy(instanceId);
-        var current = await repository.GetWorkflowInstanceAsync(instanceId);
+        var current = await _store.GetWorkflowInstanceAsync(instanceId);
         if (current?.Revision != instance.Revision || current.Status != instance.Status)
             return current?.Status == WorkflowStatus.Running
                 ? Busy(instanceId)
@@ -550,7 +578,8 @@ internal sealed class StructuredWorkflowRunner(
         {
             var scopes = new WorkflowScopeCatalog(definition);
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
-                throw new InvalidOperationException("The registered workflow definition differs from the saved version");
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    "The registered workflow definition differs from the saved version");
             if (await ReconcileChildWaitsAsync(checkpoint))
                 await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
             while (true)
@@ -631,9 +660,10 @@ internal sealed class StructuredWorkflowRunner(
                                     activityCancellation);
                             }
                         }
-                        catch
+                        catch (Exception error)
                         {
                             activityCancellation.Dispose();
+                            AttachStep(error, instance, scopes.Id(next), runnable.PendingActivity);
                             throw;
                         }
                         if (running != null)
@@ -649,6 +679,8 @@ internal sealed class StructuredWorkflowRunner(
                         }
                         catch (Exception error)
                         {
+                            if (next != null)
+                                AttachStep(error, instance, scopes.Id(next), null);
                             if (!CaptureFailure(scopes, checkpoint, runnable, error))
                                 throw;
                         }
@@ -727,12 +759,10 @@ internal sealed class StructuredWorkflowRunner(
                 {
                     await SettleAsync(scopes, checkpoint, completedActivity, inFlight, workflowData, instance);
                 }
-                catch (CheckpointPersistenceException)
-                {
-                    throw;
-                }
                 catch (Exception error)
                 {
+                    AttachStep(error, instance, scopes.Id(completedActivity.Step),
+                        completedActivity.Continuation.PendingActivity);
                     if (!CaptureFailure(scopes, checkpoint, completedActivity.Continuation,
                             error, !completedActivity.ActivityReturned))
                         throw;
@@ -770,7 +800,8 @@ internal sealed class StructuredWorkflowRunner(
             }
             else
             {
-                throw new InvalidOperationException("Execution stopped without a runnable continuation or wait");
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    "Execution stopped without a runnable continuation or wait");
             }
 
             instance.SuspensionInfo = checkpoint.Waits.Count == 1
@@ -846,7 +877,7 @@ internal sealed class StructuredWorkflowRunner(
                     {
                         await SettleAsync(scopes, checkpoint, activity, inFlight, workflowData, instance);
                     }
-                    catch (Exception error) when (error is not (CheckpointPersistenceException or WorkflowInfrastructureException))
+                    catch (Exception error) when (!WorkflowEngineException.IsEngineFailure(error))
                     {
                         if (!CaptureFailure(scopes, checkpoint, activity.Continuation,
                                 error, !activity.ActivityReturned))
@@ -866,8 +897,10 @@ internal sealed class StructuredWorkflowRunner(
             }
             throw;
         }
-        catch (Exception ex) when (ex is CheckpointPersistenceException or WorkflowInfrastructureException)
+        catch (WorkflowEngineException ex) when (WorkflowEngineException.IsEngineFailure(ex) && ex.IsInterruption)
         {
+            // The last committed checkpoint stays recoverable; nothing is written here.
+            ex.At(instance.InstanceId);
             foreach (var activity in inFlight.Values)
                 activity.Cancellation.Cancel();
             try
@@ -884,7 +917,6 @@ internal sealed class StructuredWorkflowRunner(
                     activity.Cancellation.Dispose();
             }
 
-            ExceptionDispatchInfo.Capture(ex.InnerException!).Throw();
             throw;
         }
         catch (Exception ex)
@@ -904,6 +936,8 @@ internal sealed class StructuredWorkflowRunner(
                 foreach (var activity in inFlight.Values)
                     activity.Cancellation.Dispose();
             }
+            if (WorkflowEngineException.IsEngineFailure(ex))
+                ((WorkflowEngineException)ex).At(instance.InstanceId);
 
             var cancelled = ex is OperationCanceledException && cancellationToken.IsCancellationRequested;
             if (!cancelled)
@@ -929,7 +963,7 @@ internal sealed class StructuredWorkflowRunner(
                 var scopes = new WorkflowScopeCatalog(definition);
                 try
                 {
-                    await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes);
+                    await PersistAsync(instance, checkpoint, workflowData, scopes, true);
                 }
                 catch (CheckpointDataException)
                 {
@@ -937,7 +971,7 @@ internal sealed class StructuredWorkflowRunner(
                     // and the execution history even if live state cannot be serialized.
                     checkpoint.Continuations.Clear();
                     checkpoint.UnhandledError = null;
-                    await PersistUnwrappedAsync(instance, checkpoint, workflowData, scopes,
+                    await PersistAsync(instance, checkpoint, workflowData, scopes, true,
                         preserveSavedWorkflowData: true);
                 }
             }
@@ -970,7 +1004,7 @@ internal sealed class StructuredWorkflowRunner(
         {
             try
             {
-                requested = await repository.GetCancellationRequestAsync(instance.InstanceId);
+                requested = await _store.GetCancellationRequestAsync(instance.InstanceId);
             }
             catch (Exception)
             {
@@ -1042,7 +1076,8 @@ internal sealed class StructuredWorkflowRunner(
             var step = scopes.Step(wait.StepId);
             if (continuation.Status != ContinuationStatus.Waiting ||
                 step.StepType != WorkflowStepType.Delay && step.TimeoutSteps.Count == 0)
-                throw new InvalidOperationException("A due wait has no active timeout branch");
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    "A due wait has no active timeout branch");
             checkpoint.Waits.Remove(wait);
             continuation.Status = ContinuationStatus.Active;
             if (step.StepType == WorkflowStepType.Delay)
@@ -1071,12 +1106,12 @@ internal sealed class StructuredWorkflowRunner(
         if (due.Length == 0)
             return false;
         var engine = (IWorkflowEngine?)services.GetService(typeof(IWorkflowEngine))
-            ?? throw new InvalidOperationException("The workflow engine is not registered");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "The workflow engine is not registered");
         foreach (var childWaits in due)
         {
             var childId = childWaits.Key.ChildWorkflowId!;
-            var result = await WorkflowInfrastructureException.GuardAsync(
-                () => engine.RecoverWorkflowAsync(childId), $"Recovering child workflow '{childId}'");
+            var result = await engine.RecoverWorkflowAsync(childId);
             if (result.Status == WorkflowExecutionStatus.Running)
             {
                 foreach (var wait in childWaits)
@@ -1110,11 +1145,9 @@ internal sealed class StructuredWorkflowRunner(
             .GroupBy(wait => (wait.ContinuationId, wait.ChildWorkflowId)).ToArray();
         foreach (var group in childWaits)
         {
-            var child = await WorkflowInfrastructureException.GuardAsync(
-                () => repository.GetWorkflowInstanceAsync(group.Key.ChildWorkflowId!),
-                $"Reading child workflow '{group.Key.ChildWorkflowId}'");
+            var child = await _store.GetWorkflowInstanceAsync(group.Key.ChildWorkflowId!);
             if (child == null)
-                throw new InvalidOperationException(
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Saved child workflow '{group.Key.ChildWorkflowId}' is missing");
             var continuation = checkpoint.Continuations.Single(item =>
                 item.Id == group.Key.ContinuationId);
@@ -1188,10 +1221,12 @@ internal sealed class StructuredWorkflowRunner(
             var acceptedPosition = continuation.Stack[^1];
             var acceptedStep = scopes.Steps(acceptedPosition.ScopeId)[acceptedPosition.NextStepIndex];
             if (scopes.Id(acceptedStep) != accepted.StepId)
-                throw new InvalidOperationException("The accepted event does not match its saved wait");
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    "The accepted event does not match its saved wait");
             continuation.AcceptedWait = null;
             var @event = accepted.Event.Read(services)
-                ?? throw new InvalidOperationException("The accepted event could not be restored");
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    "The accepted event could not be restored");
             SagaScopeTransitions.RecordAcceptedWait(continuation, accepted.StepId, @event);
             WorkflowValueBinding.ApplyEventOutputs(acceptedStep, @event, workflowData);
             continuation.SetPrevious(@event);
@@ -1273,7 +1308,8 @@ internal sealed class StructuredWorkflowRunner(
                 var conditionContext = WorkflowValueBinding.EvaluationContext(workflowData, step.PreviousStepDataType,
                     continuation.GetPrevious(services));
                 var selected = step.CompiledCondition?.Invoke(conditionContext)
-                    ?? throw new InvalidOperationException($"If step '{step.Id}' has no condition");
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"If step '{step.Id}' has no condition");
                 continuation.Stack.Add(new ScopePosition
                 {
                     ScopeId = selected
@@ -1304,7 +1340,8 @@ internal sealed class StructuredWorkflowRunner(
                     var loopContext = WorkflowValueBinding.EvaluationContext(workflowData,
                         step.PreviousStepDataType, continuation.GetPrevious(services));
                     shouldRun = step.CompiledCondition?.Invoke(loopContext)
-                        ?? throw new InvalidOperationException($"Loop step '{step.Id}' has no condition");
+                        ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                            $"Loop step '{step.Id}' has no condition");
                 }
                 if (!shouldRun)
                 {
@@ -1333,7 +1370,8 @@ internal sealed class StructuredWorkflowRunner(
                     break;
                 }
                 var key = keyValue as string
-                    ?? throw new InvalidOperationException($"Wait step '{step.Id}' has an invalid key");
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"Wait step '{step.Id}' has an invalid key");
                 checkpoint.Waits.Add(new WaitState
                 {
                     RegisteredAtUtc = Now,
@@ -1343,7 +1381,8 @@ internal sealed class StructuredWorkflowRunner(
                     DeadlineUtc = step.WaitTimeout is { } timeout
                         ? Now.Add(timeout) : null,
                     EventType = step.ResumeEventType?.AssemblyQualifiedName
-                        ?? throw new InvalidOperationException($"Wait step '{step.Id}' has no event type")
+                        ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                            $"Wait step '{step.Id}' has no event type")
                 });
                 continuation.Status = ContinuationStatus.Waiting;
                 break;
@@ -1362,7 +1401,8 @@ internal sealed class StructuredWorkflowRunner(
                 break;
 
             default:
-                throw new NotSupportedException($"Structured execution does not yet support {step.StepType}");
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Structured execution does not yet support {step.StepType}");
         }
 
     }
@@ -1382,7 +1422,8 @@ internal sealed class StructuredWorkflowRunner(
         var pending = continuation.PendingActivity;
         var isRecovery = pending != null;
         if (pending != null && pending.StepId != scopes.Id(step))
-            throw new InvalidOperationException("The saved activity does not match its continuation");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                "The saved activity does not match its continuation");
 
         var invocationId = pending?.Id ?? NewInvocationId(instance, continuation, scopes.Id(step));
         var attempt = new ActivityAttemptState
@@ -1436,18 +1477,23 @@ internal sealed class StructuredWorkflowRunner(
                 }
             }
         }
-        catch (Exception error) when (!isRecovery)
+        catch (Exception error) when (!isRecovery && !WorkflowEngineException.IsEngineFailure(error))
         {
             return new RunningActivity(continuation, step,
                 Task.FromResult(ActivityRunResult.Threw(error)), activityCancellation,
                 null, continuation.Stack[^1].NextStepIndex);
         }
-        catch (Exception error)
+        catch (Exception error) when (isRecovery && error is not WorkflowEngineException { IsInterruption: true })
         {
             pending!.ResolutionReason = $"Activity recovery could not be prepared: {error.Message}";
             continuation.Status = ContinuationStatus.WaitingResolution;
             await PersistAsync(instance, checkpoint, workflowData, scopes, persistState);
             return null;
+        }
+        catch (WorkflowEngineException error)
+        {
+            error.At(instance.InstanceId, scopes.Id(step), attempt.Id);
+            throw;
         }
 
         if (isRecovery && pending!.Resolution == null && prepared.Activity is not IRecoverableActivity)
@@ -1570,7 +1616,7 @@ internal sealed class StructuredWorkflowRunner(
                 ? ActivityRunResult.Suspended(result.ChildInstanceId!)
                 : ActivityRunResult.Returned(result.Output);
         }
-        catch (Exception error)
+        catch (Exception error) when (!WorkflowEngineException.IsEngineFailure(error))
         {
             return ActivityRunResult.Threw(error);
         }
@@ -1591,8 +1637,7 @@ internal sealed class StructuredWorkflowRunner(
         var pending = continuation.PendingActivity;
         if (pending != null && pending.Resolution == null)
         {
-            var savedChild = await WorkflowInfrastructureException.GuardAsync(
-                () => repository.GetWorkflowInstanceAsync(pending.Id), $"Reading child workflow '{pending.Id}'");
+            var savedChild = await _store.GetWorkflowInstanceAsync(pending.Id);
             // The child commits its initial checkpoint before running any activity.
             // No child record means the invocation can be started with the same ID.
             if (savedChild == null && !_childStartIsCheckpointed)
@@ -1645,9 +1690,7 @@ internal sealed class StructuredWorkflowRunner(
             pending.Resolution == null &&
             pending.ChildWorkflowId != null)
         {
-            var child = await WorkflowInfrastructureException.GuardAsync(
-                () => repository.GetWorkflowInstanceAsync(pending.ChildWorkflowId),
-                $"Reading child workflow '{pending.ChildWorkflowId}'");
+            var child = await _store.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
             if (child == null && _childStartIsCheckpointed)
                 return new RunningActivity(continuation, step,
                     Task.FromResult(ActivityRunResult.Skipped()), cancellation, null,
@@ -1656,7 +1699,8 @@ internal sealed class StructuredWorkflowRunner(
                 WorkflowStatus.NeedsResolution)
             {
                 var engine = (IWorkflowEngine?)services.GetService(typeof(IWorkflowEngine))
-                    ?? throw new InvalidOperationException("The workflow engine is not registered");
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                        "The workflow engine is not registered");
                 var childResult = await engine.CancelWorkflowAsync(pending.ChildWorkflowId,
                     instance.CancellationReason ?? new CancellationReason
                     {
@@ -1715,9 +1759,10 @@ internal sealed class StructuredWorkflowRunner(
         AcceptedWaitState accepted, CancellationToken cancellationToken)
     {
         var @event = accepted.Event.Read(services)
-            ?? throw new InvalidOperationException("A child resume event cannot be null");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A child resume event cannot be null");
         var engine = (IWorkflowEngine?)services.GetService(typeof(IWorkflowEngine))
-            ?? throw new InvalidOperationException("The workflow engine is not registered");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "The workflow engine is not registered");
         var method = typeof(IWorkflowEngine).GetMethods().Single(candidate =>
             candidate.Name == nameof(IWorkflowEngine.ResumeWorkflowDeliveryAsync));
         var task = (Task<WorkflowExecutionResult>)method.MakeGenericMethod(@event.GetType())
@@ -1729,9 +1774,9 @@ internal sealed class StructuredWorkflowRunner(
     private async Task ProjectChildStateAsync(ExecutionCheckpoint checkpoint,
         ContinuationState continuation, string childInstanceId)
     {
-        var child = await WorkflowInfrastructureException.GuardAsync(
-            () => repository.GetWorkflowInstanceAsync(childInstanceId), $"Reading child workflow '{childInstanceId}'")
-            ?? throw new InvalidOperationException($"Child workflow '{childInstanceId}' was not saved");
+        var child = await _store.GetWorkflowInstanceAsync(childInstanceId)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"Child workflow '{childInstanceId}' was not saved");
         if (child.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
             child.Status == WorkflowStatus.Suspended && ShouldCancelInvokedChild(continuation))
         {
@@ -1745,11 +1790,11 @@ internal sealed class StructuredWorkflowRunner(
             return;
         }
         if (!HasStructuredCheckpoint(child))
-            throw new InvalidOperationException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Child workflow '{childInstanceId}' has no saved waits to project");
         var childCheckpoint = ExecutionCheckpoint.Read(child.ExecutionStateJson);
         if (childCheckpoint.Waits.Count == 0)
-            throw new InvalidOperationException(
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Suspended child workflow '{childInstanceId}' has no active waits");
 
         ProjectChildWaits(checkpoint, continuation, childInstanceId, childCheckpoint);
@@ -1764,7 +1809,7 @@ internal sealed class StructuredWorkflowRunner(
         ContinuationState continuation, string childInstanceId, bool needsResolution)
     {
         var pending = continuation.PendingActivity
-            ?? throw new InvalidOperationException("A child has no parent invocation");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A child has no parent invocation");
         checkpoint.Waits.RemoveAll(wait => wait.ChildWorkflowId == childInstanceId &&
             wait.ContinuationId == continuation.Id);
         checkpoint.Waits.Add(new WaitState
@@ -1787,7 +1832,8 @@ internal sealed class StructuredWorkflowRunner(
     {
 
         var pending = continuation.PendingActivity
-            ?? throw new InvalidOperationException("A child wait has no parent invocation");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                "A child wait has no parent invocation");
         pending.ChildWorkflowId = childInstanceId;
         checkpoint.Waits.RemoveAll(wait => wait.ChildWorkflowId == childInstanceId &&
             wait.ContinuationId == continuation.Id);
@@ -1844,8 +1890,7 @@ internal sealed class StructuredWorkflowRunner(
                     activity.Step.StepType == WorkflowStepType.WorkflowInvocation &&
                     ShouldCancelInvokedChild(activity.Continuation) &&
                     activity.Continuation.PendingActivity?.ChildWorkflowId is { } childId &&
-                    (await WorkflowInfrastructureException.GuardAsync(() => repository.GetWorkflowInstanceAsync(childId),
-                        $"Reading child workflow '{childId}'"))?.Status is
+                    (await _store.GetWorkflowInstanceAsync(childId))?.Status is
                         (WorkflowStatus.Running or WorkflowStatus.Suspended or
                             WorkflowStatus.NeedsResolution))
                 {
@@ -1855,7 +1900,8 @@ internal sealed class StructuredWorkflowRunner(
                     return;
                 }
                 MarkActivityEnd(activity, instance, "Threw", outcome.Error);
-                throw outcome.Error ?? new InvalidOperationException("Activity failed without an exception");
+                throw outcome.Error ?? new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    "Activity failed without an exception");
             }
 
             activity.ActivityReturned = true;
@@ -1906,7 +1952,7 @@ internal sealed class StructuredWorkflowRunner(
             }
         }
         catch (Exception error) when (
-            error is not (CheckpointPersistenceException or WorkflowInfrastructureException) &&
+            !WorkflowEngineException.IsEngineFailure(error) &&
             (activity.Continuation.Status is (ContinuationStatus.Cancelling or ContinuationStatus.Cancelled) ||
              activity.Continuation.CancellationUnwind &&
              !TryScopeTransitions.IsInsideFinally(activity.Continuation) &&
@@ -1925,7 +1971,8 @@ internal sealed class StructuredWorkflowRunner(
     private void MarkActivityUnresolved(RunningActivity activity, string? reason)
     {
         var pending = activity.Continuation.PendingActivity
-            ?? throw new InvalidOperationException("Unresolved activity has no saved Start");
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                "Unresolved activity has no saved Start");
         pending.ResolutionReason = reason;
         pending.Attempts[^1].EndedAtUtc = Now;
         pending.Attempts[^1].Observation = "Unresolved";
@@ -1973,8 +2020,9 @@ internal sealed class StructuredWorkflowRunner(
     {
         public static ActivityRunResult Returned(object? output) =>
             new(ActivityRunKind.Returned, Output: output);
+        // A thrown result is always the step's own failure; engine failures fault the activity task instead.
         public static ActivityRunResult Threw(Exception error) =>
-            new(ActivityRunKind.Threw, Error: error);
+            new(ActivityRunKind.Threw, Error: WorkflowEngineException.FromWorkflowCode(error));
         public static ActivityRunResult Unresolved(string reason) =>
             new(ActivityRunKind.Unresolved, Reason: reason);
         public static ActivityRunResult Skipped() => new(ActivityRunKind.Skipped);
@@ -1997,7 +2045,8 @@ internal sealed class StructuredWorkflowRunner(
         ContinuationState parent)
     {
         if (step.ParallelBranches.Count == 0)
-            throw new InvalidOperationException($"Parallel step '{step.Id}' has no branches");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Parallel step '{step.Id}' has no branches");
 
         var join = new ParallelJoinState
         {
@@ -2042,7 +2091,8 @@ internal sealed class StructuredWorkflowRunner(
             ParallelJoinMode.WaitAny => true,
             ParallelJoinMode.WaitConditionally =>
                 (scopes.Step(join.StepId).ParallelCompletionCondition?.Invoke(workflowData)
-                 ?? throw new InvalidOperationException("Conditional parallel join has no completion condition")) ||
+                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                     "Conditional parallel join has no completion condition")) ||
                 allCompleted,
             _ => throw new ArgumentOutOfRangeException(nameof(join.Mode))
         };
@@ -2116,10 +2166,18 @@ internal sealed class StructuredWorkflowRunner(
         }
     }
 
+    // Records where an engine failure happened. Failures raised by workflow code keep their own message.
+    private static void AttachStep(Exception error, WorkflowInstance instance, string stepId,
+        ActivityInvocationState? pending)
+    {
+        if (WorkflowEngineException.IsEngineFailure(error))
+            ((WorkflowEngineException)error).At(instance.InstanceId, stepId, pending?.Attempts.LastOrDefault()?.Id);
+    }
+
     private bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, Exception error, bool allowStepRetry = true)
     {
-        if (error is WorkflowInfrastructureException)
+        if (WorkflowEngineException.IsEngineFailure(error))
             return false;
         if (allowStepRetry && !continuation.CancellationUnwind &&
             SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, Now))
@@ -2215,7 +2273,7 @@ internal sealed class StructuredWorkflowRunner(
         ErrorMessage = reason
     };
 
-    private static WorkflowExecutionResult Busy(string instanceId) => new()
+    internal static WorkflowExecutionResult Busy(string instanceId) => new()
     {
         InstanceId = instanceId,
         Status = WorkflowExecutionStatus.Running,
@@ -2243,22 +2301,6 @@ internal sealed class StructuredWorkflowRunner(
         ErrorMessage = instance.LastError,
         ErrorStackTrace = instance.LastErrorStackTrace
     };
-
-    private async Task PersistUnwrappedAsync(WorkflowInstance instance,
-        ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes,
-        bool preserveSavedWorkflowData = false)
-    {
-        try
-        {
-            await PersistAsync(instance, checkpoint, workflowData, scopes, true,
-                preserveSavedWorkflowData);
-        }
-        catch (CheckpointPersistenceException error)
-        {
-            ExceptionDispatchInfo.Capture(error.InnerException!).Throw();
-            throw;
-        }
-    }
 
     private async Task PersistAsync(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
         object workflowData, WorkflowScopeCatalog scopes, bool persistState,
@@ -2291,34 +2333,27 @@ internal sealed class StructuredWorkflowRunner(
             throw new CheckpointDataException(ex);
         }
 
-        try
+        var expectedRevision = instance.Revision;
+        var commitId = Guid.NewGuid().ToString("N");
+        for (var attempt = 0; ; attempt++)
         {
-            var expectedRevision = instance.Revision;
-            var commitId = Guid.NewGuid().ToString("N");
-            for (var attempt = 0; attempt < 3; attempt++)
+            WorkflowCommitResult result;
+            try
             {
-                WorkflowCommitResult result;
-                try
-                {
-                    result = await repository.CommitWorkflowInstanceAsync(
-                        instance, expectedRevision, commitId);
-                }
-                catch (Exception) when (attempt < 2)
-                {
-                    continue;
-                }
-
-                if (result.Status == WorkflowCommitStatus.Conflict)
-                    throw new InvalidOperationException(
-                        $"Workflow instance '{instance.InstanceId}' changed at revision {result.Revision}");
-                instance.Revision = result.Revision;
-                await MakeParentRunnableAsync(instance);
-                return;
+                result = await _store.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
             }
-        }
-        catch (Exception ex)
-        {
-            throw new CheckpointPersistenceException(ex);
+            catch (WorkflowEngineException) when (attempt < 2)
+            {
+                continue;
+            }
+
+            // Another owner committed first, so this run no longer owns the instance.
+            if (result.Status == WorkflowCommitStatus.Conflict)
+                throw new ExecutionLeaseLostException(new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    $"Workflow instance '{instance.InstanceId}' changed at revision {result.Revision}"));
+            instance.Revision = result.Revision;
+            await MakeParentRunnableAsync(instance);
+            return;
         }
     }
 
@@ -2332,7 +2367,7 @@ internal sealed class StructuredWorkflowRunner(
             return;
         try
         {
-            await repository.MakeRunnableAsync(instance.ParentInstanceId);
+            await _store.MakeRunnableAsync(instance.ParentInstanceId);
         }
         catch (Exception)
         {
@@ -2342,9 +2377,6 @@ internal sealed class StructuredWorkflowRunner(
 
     private sealed class CheckpointDataException(Exception inner) : Exception(
         $"The workflow state could not be checkpointed: {inner.Message}", inner);
-
-    private sealed class CheckpointPersistenceException(Exception inner) : Exception(
-        "The workflow checkpoint could not be saved", inner);
 
     private static void PrepareCheckpoint(ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes)
     {

@@ -4,6 +4,7 @@ using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
+using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -58,7 +59,7 @@ public sealed class WorkflowRecoveryServiceTests
         var definition = Workflow.Create<RecoveryData>("ScanInterrupted")
             .Step<ActivityRecoveryTests.NoopActivity>()
             .Build();
-        await Assert.ThrowsAsync<IOException>(() => provider.GetRequiredService<IWorkflowEngine>()
+        await EngineAssert.StoreFailureAsync(() => provider.GetRequiredService<IWorkflowEngine>()
             .ExecuteWorkflowAsync(definition, new RecoveryData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         using var scanner = new WorkflowRecoveryService(
@@ -90,7 +91,7 @@ public sealed class WorkflowRecoveryServiceTests
             .Step<RecoveryStopActivity>()
             .Build();
         var engine = provider.GetRequiredService<IWorkflowEngine>();
-        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new RecoveryData()));
+        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new RecoveryData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
@@ -216,7 +217,7 @@ public sealed class WorkflowRecoveryServiceTests
             .Step<ActivityRecoveryTests.NoopActivity>()
             .Build();
         var engine = provider.GetRequiredService<IWorkflowEngine>();
-        await Assert.ThrowsAsync<IOException>(() => engine.ExecuteWorkflowAsync(definition, new RecoveryData()));
+        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new RecoveryData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         await engine.RecoverWorkflowAsync(saved.InstanceId);
         Assert.Equal(WorkflowStatus.NeedsResolution,

@@ -34,9 +34,11 @@ internal static class WorkflowValueBinding
         foreach (var mapping in step.OutputMappings)
         {
             var property = @event.GetType().GetProperty(mapping.TargetProperty)
-                ?? throw new InvalidOperationException($"Event has no '{mapping.TargetProperty}' output");
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Event has no '{mapping.TargetProperty}' output");
             var assign = mapping.TargetAssignmentFunction
-                ?? throw new InvalidOperationException($"Wait output '{mapping.TargetProperty}' has no assignment");
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Wait output '{mapping.TargetProperty}' has no assignment");
             assign(context, property.GetValue(@event));
         }
     }
@@ -50,9 +52,11 @@ internal static class WorkflowValueBinding
         foreach (var mapping in step.OutputMappings)
         {
             var property = output.GetType().GetProperty(mapping.TargetProperty)
-                ?? throw new InvalidOperationException($"Activity has no '{mapping.TargetProperty}' output");
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Activity has no '{mapping.TargetProperty}' output");
             var assign = mapping.TargetAssignmentFunction
-                ?? throw new InvalidOperationException($"Activity output '{mapping.TargetProperty}' has no assignment");
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Activity output '{mapping.TargetProperty}' has no assignment");
             assign(context, property.GetValue(output));
         }
     }

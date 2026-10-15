@@ -406,7 +406,8 @@ public class WorkflowQueueService : BackgroundService
             result = await engine.CancelWorkflowAsync(
                 command.InstanceId, command.Reason, cancellationToken);
         }
-        catch (KeyNotFoundException) when (!IsExpired(command.QueuedAt))
+        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidRequest &&
+            !IsExpired(command.QueuedAt))
         {
             throw new WorkflowInstanceBusyException(
                 $"Cancellation for '{command.InstanceId}' arrived before its execute command",

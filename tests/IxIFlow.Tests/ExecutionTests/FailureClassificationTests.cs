@@ -83,7 +83,7 @@ public sealed class FailureClassificationTests
             var result = await Engine(services).ExecuteWorkflowAsync(parent, new ParentData());
             parentId = result.InstanceId;
         }
-        catch (IOException)
+        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure)
         {
             parentId = (await repository.GetWorkflowInstancesByNameAsync("ClassifiedParent")).Single().InstanceId;
         }

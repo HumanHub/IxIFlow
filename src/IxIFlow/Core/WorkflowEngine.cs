@@ -32,7 +32,7 @@ internal sealed class WorkflowEngine : IWorkflowEngine
         TEventData @event,
         CancellationToken cancellationToken = default)
         where TEventData : class =>
-        _runner.ResumeAsync(instanceId, null, @event, cancellationToken);
+        ForInstanceAsync(instanceId, _runner.ResumeAsync(instanceId, null, @event, cancellationToken));
 
     public Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(
         string instanceId,
@@ -42,7 +42,7 @@ internal sealed class WorkflowEngine : IWorkflowEngine
         where TEventData : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        return _runner.ResumeAsync(instanceId, key, @event, cancellationToken);
+        return ForInstanceAsync(instanceId, _runner.ResumeAsync(instanceId, key, @event, cancellationToken));
     }
 
     public Task<WorkflowExecutionResult> ResumeWorkflowDeliveryAsync<TEventData>(
@@ -51,24 +51,55 @@ internal sealed class WorkflowEngine : IWorkflowEngine
         where TEventData : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(deliveryId);
-        return _runner.ResumeAsync(instanceId, key, @event, cancellationToken, deliveryId);
+        return ForInstanceAsync(instanceId,
+            _runner.ResumeAsync(instanceId, key, @event, cancellationToken, deliveryId));
     }
 
     public Task<WorkflowExecutionResult> RecoverWorkflowAsync(
         string instanceId,
         CancellationToken cancellationToken = default) =>
-        _runner.RecoverAsync(instanceId, cancellationToken);
+        ForInstanceAsync(instanceId, _runner.RecoverAsync(instanceId, cancellationToken));
 
     public Task<WorkflowExecutionResult> CancelWorkflowAsync(
         string instanceId, CancellationReason reason,
         CancellationToken cancellationToken = default) =>
-        _runner.CancelAsync(instanceId, reason, cancellationToken);
+        ForInstanceAsync(instanceId, _runner.CancelAsync(instanceId, reason, cancellationToken));
 
     public Task<WorkflowExecutionResult> ResolveActivityAsync(
         string instanceId, string invocationId, ActivityResolution resolution,
         CancellationToken cancellationToken = default) =>
-        _runner.ResolveAsync(instanceId, invocationId, resolution, cancellationToken);
+        ForInstanceAsync(instanceId, _runner.ResolveAsync(instanceId, invocationId, resolution, cancellationToken));
 
-    public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
-        _runner.GetPendingActivitiesAsync(instanceId);
+    public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId)
+    {
+        try
+        {
+            return await _runner.GetPendingActivitiesAsync(instanceId);
+        }
+        catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error))
+        {
+            error.At(instanceId);
+            throw;
+        }
+    }
+
+    // An engine failure names the instance it belongs to. A commit that lost a race means
+    // another owner is running the instance.
+    private static async Task<WorkflowExecutionResult> ForInstanceAsync(string instanceId,
+        Task<WorkflowExecutionResult> operation)
+    {
+        try
+        {
+            return await operation;
+        }
+        catch (ExecutionLeaseLostException)
+        {
+            return StructuredWorkflowRunner.Busy(instanceId);
+        }
+        catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error))
+        {
+            error.At(instanceId);
+            throw;
+        }
+    }
 }
