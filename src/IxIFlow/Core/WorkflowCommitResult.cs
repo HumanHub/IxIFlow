@@ -31,7 +31,8 @@ public sealed record WorkflowCommitResult(
     WorkflowCommitStatus Status,
     long Revision,
     CancellationReason? PendingCancellation = null,
-    bool Parked = false);
+    bool Parked = false,
+    bool UnreadEvents = false);
 
 /// <summary>
 /// An execution lease granted by the store. <see cref="Epoch"/> fences the owner's commits.
@@ -47,7 +48,8 @@ public sealed record ExecutionLeaseGrant(long Epoch, int CrashCount);
 public sealed class CheckpointCommit
 {
     private CheckpointCommit(string instanceId, string payload, long epoch, string commitId,
-        long expectedRevision, bool clearsCrashCount, bool parks)
+        long expectedRevision, bool clearsCrashCount, bool parks, IReadOnlyList<EventSettlement> settlements,
+        long? inboxReadThrough)
     {
         InstanceId = instanceId;
         Payload = payload;
@@ -56,8 +58,11 @@ public sealed class CheckpointCommit
         ExpectedRevision = expectedRevision;
         ClearsCrashCount = clearsCrashCount;
         Parks = parks;
+        Settlements = settlements;
+        InboxReadThrough = inboxReadThrough;
         _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes(
-            $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}\n{payload}"));
+            $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}\n{inboxReadThrough?.ToString() ?? "-"}\n" +
+            $"{JsonSerializer.Serialize(settlements)}\n{payload}"));
     }
 
     private readonly byte[] _contentHash;
@@ -90,13 +95,26 @@ public sealed class CheckpointCommit
     public bool Parks { get; }
 
     /// <summary>
-    /// SHA-256 of <see cref="Payload"/>, <see cref="ClearsCrashCount"/> and <see cref="Parks"/>; a reused commit ID must
+    /// Inbox events this commit settles, in the same transaction: consumed by the activation that
+    /// took each, or rejected. Each must still be pending, or the commit is a conflict (D-04).
+    /// </summary>
+    public IReadOnlyList<EventSettlement> Settlements { get; }
+
+    /// <summary>
+    /// The highest inbox sequence the run has read, or null for a run that does not read the inbox.
+    /// An idle commit that has not read every arrival leaves the instance runnable now and does not park.
+    /// </summary>
+    public long? InboxReadThrough { get; }
+
+    /// <summary>
+    /// SHA-256 of <see cref="Payload"/> and every other field that changes what the commit does; a reused commit ID must
     /// carry the same hash. Returns a copy.
     /// </summary>
     public byte[] ContentHash => (byte[])_contentHash.Clone();
 
     public static CheckpointCommit Create(WorkflowInstance instance, long epoch, long expectedRevision,
-        string? commitId = null, bool clearsCrashCount = true, bool parks = false)
+        string? commitId = null, bool clearsCrashCount = true, bool parks = false,
+        IReadOnlyList<EventSettlement>? settlements = null, long? inboxReadThrough = null)
     {
         ArgumentNullException.ThrowIfNull(instance);
         ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
@@ -107,7 +125,7 @@ public sealed class CheckpointCommit
         if (commitId.Length > 100)
             throw new ArgumentException("Commit IDs must be at most 100 characters", nameof(commitId));
         return new CheckpointCommit(instance.InstanceId, JsonSerializer.Serialize(instance), epoch, commitId,
-            expectedRevision, clearsCrashCount, parks);
+            expectedRevision, clearsCrashCount, parks, settlements ?? [], inboxReadThrough);
     }
 
     /// <summary>A fresh copy of the committed instance.</summary>

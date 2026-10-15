@@ -157,7 +157,7 @@ public interface IWorkflowCompletionOutbox
 /// <summary>
 ///     In-memory implementation of workflow state repository
 /// </summary>
-public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox
+public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox, IWorkflowInbox
 {
     private readonly TimeProvider _time;
 
@@ -180,6 +180,9 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch, int CrashCount)> _leases =
         new();
     private readonly Dictionary<string, CancellationReason> _cancellations = new();
+    private readonly Dictionary<(string InstanceId, string EventId), (StoredWorkflowEvent Event, byte[] Hash)> _events = new();
+    private readonly Dictionary<string, long> _inboxSequence = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _inboxReadThrough = new(StringComparer.Ordinal);
     private readonly HashSet<string> _acknowledgedCancellations = new();
     private readonly HashSet<string> _publishedCompletions = new();
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _completionClaims = new();
@@ -411,6 +414,11 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
 
             if (!owns)
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+            // An event this commit settles must still be pending; otherwise another commit took it.
+            if (commit.Settlements.Any(settlement =>
+                    !_events.TryGetValue((commit.InstanceId, settlement.EventId), out var pending) ||
+                    pending.Event.Outcome != EventOutcome.Pending))
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
             if (revision != commit.ExpectedRevision ||
                 ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or
                     WorkflowStatus.TimedOut) &&
@@ -419,10 +427,23 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
             var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
                 !_acknowledgedCancellations.Contains(commit.InstanceId);
-            var parked = commit.Parks && !unacknowledged;
-            snapshot.RunnableAtUtc = commit.Parks && !parked
+            // A run that has not read every arrival neither parks nor goes idle out of reach.
+            var unread = commit.InboxReadThrough is { } readThrough &&
+                _inboxSequence.GetValueOrDefault(commit.InstanceId) > readThrough;
+            var parked = commit.Parks && !unacknowledged && !unread;
+            snapshot.RunnableAtUtc = (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended)
                 ? Now
                 : WorkflowStoreRules.RunnableAt(snapshot, unacknowledged, Now);
+            foreach (var settlement in commit.Settlements)
+            {
+                var settled = _events[(commit.InstanceId, settlement.EventId)];
+                _events[(commit.InstanceId, settlement.EventId)] = (settled.Event with
+                {
+                    Outcome = settlement.Outcome, ActivationId = settlement.ActivationId, Reason = settlement.Reason
+                }, settled.Hash);
+            }
+            if (commit.InboxReadThrough is { } read)
+                _inboxReadThrough[commit.InstanceId] = read;
             _instances[commit.InstanceId] = snapshot;
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (snapshot.CancellationReason != null && _cancellations.ContainsKey(commit.InstanceId))
@@ -435,7 +456,81 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                     CrashCount = commit.ClearsCrashCount ? 0 : lease.CrashCount
                 };
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
-                PendingCancellation(commit.InstanceId), parked));
+                PendingCancellation(commit.InstanceId), parked, unread));
+        }
+    }
+
+    public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent, TimeSpan retention)
+    {
+        ArgumentNullException.ThrowIfNull(workflowEvent);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflowEvent.InstanceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflowEvent.EventId);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retention, TimeSpan.Zero);
+        var hash = workflowEvent.ContentHash();
+        lock (_claimLock)
+        {
+            // A known event ID answers the same way whatever happened to the instance since.
+            if (_events.TryGetValue((workflowEvent.InstanceId, workflowEvent.EventId), out var existing))
+                return Task.FromResult(existing.Hash.SequenceEqual(hash)
+                    ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Event.Sequence)
+                    : new EventAppendResult(EventAppendStatus.Conflict));
+            if (!_instances.TryGetValue(workflowEvent.InstanceId, out var instance))
+                return Task.FromResult(new EventAppendResult(EventAppendStatus.NotFound));
+            if (instance.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
+                WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
+                return Task.FromResult(new EventAppendResult(EventAppendStatus.Closed));
+            var now = Now;
+            var sequence = _inboxSequence.GetValueOrDefault(workflowEvent.InstanceId) + 1;
+            _inboxSequence[workflowEvent.InstanceId] = sequence;
+            _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (new StoredWorkflowEvent(
+                workflowEvent.InstanceId, workflowEvent.EventId, sequence, workflowEvent.EventType, workflowEvent.Key,
+                workflowEvent.TargetActivationId, workflowEvent.PayloadJson, now, now + retention,
+                EventOutcome.Pending), hash);
+            // A stopped instance waits for its operator; the event is consumed after the release.
+            var madeRunnable = instance.Status is WorkflowStatus.Running or WorkflowStatus.Suspended;
+            if (madeRunnable)
+                instance.RunnableAtUtc = now;
+            return Task.FromResult(new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable));
+        }
+    }
+
+    public Task<IReadOnlyList<StoredWorkflowEvent>> GetPendingEventsAsync(string instanceId, long afterSequence,
+        int limit)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentOutOfRangeException.ThrowIfNegative(limit);
+        lock (_claimLock)
+        {
+            var now = Now;
+            return Task.FromResult<IReadOnlyList<StoredWorkflowEvent>>(_events.Values
+                .Select(item => item.Event)
+                .Where(item => item.InstanceId == instanceId && item.Outcome == EventOutcome.Pending &&
+                               item.ExpiresAtUtc > now && item.Sequence > afterSequence)
+                .OrderBy(item => item.Sequence)
+                .Take(limit)
+                .ToArray());
+        }
+    }
+
+    public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId)
+    {
+        lock (_claimLock)
+            return Task.FromResult(_events.TryGetValue((instanceId, eventId), out var stored)
+                ? stored.Event : null);
+    }
+
+    public Task<int> SettleExpiredEventsAsync(int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(limit);
+        lock (_claimLock)
+        {
+            var now = Now;
+            var expired = _events.Where(item => item.Value.Event.Outcome == EventOutcome.Pending &&
+                                                item.Value.Event.ExpiresAtUtc <= now)
+                .Take(limit).ToArray();
+            foreach (var (key, stored) in expired)
+                _events[key] = (stored.Event with { Outcome = EventOutcome.Expired }, stored.Hash);
+            return Task.FromResult(expired.Length);
         }
     }
 
@@ -505,6 +600,10 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             _cancellations.Remove(instanceId);
             _acknowledgedCancellations.Remove(instanceId);
             _publishedCompletions.Remove(instanceId);
+            foreach (var key in _events.Keys.Where(key => key.InstanceId == instanceId).ToArray())
+                _events.Remove(key);
+            _inboxSequence.Remove(instanceId);
+            _inboxReadThrough.Remove(instanceId);
             foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
                 _commits.Remove(key);
         }
