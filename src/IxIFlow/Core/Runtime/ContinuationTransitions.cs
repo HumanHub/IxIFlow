@@ -37,11 +37,15 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         return true;
     }
 
+    /// <summary>
+    /// Times out the waits due by <paramref name="cutoff"/>. The run reads its inbox after taking the
+    /// cutoff and before this, so every event received before such a deadline has been seen (D-33).
+    /// </summary>
     public bool ProcessDueWaits(ExecutionCheckpoint checkpoint,
-        WorkflowScopeCatalog scopes)
+        WorkflowScopeCatalog scopes, DateTime cutoff)
     {
         var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId == null &&
-            wait.DeadlineUtc <= Now).ToArray();
+            wait.DeadlineUtc <= cutoff).ToArray();
         foreach (var wait in due)
         {
             var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);

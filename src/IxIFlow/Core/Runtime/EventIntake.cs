@@ -9,15 +9,13 @@ namespace IxIFlow.Core.Runtime;
 /// wait. An event received before a wait's deadline still beats the deadline. Decisions are settled
 /// by the next commit, together with the checkpoint they produce.
 /// </summary>
-internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
+internal sealed class EventIntake(IServiceProvider services)
 {
     private const int PageSize = 100;
 
-    private DateTime Now => time.GetUtcNow().UtcDateTime;
-
     /// <summary>Reads and decides the events that arrived since the last read; true when it decided any.</summary>
     public async Task<bool> TakeAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        object workflowData, IExecutionHost host)
+        object workflowData, IExecutionHost host, DateTime cutoff)
     {
         var inbox = checkpoint.Inbox;
         if (!host.PersistsState || !inbox.MayHaveUnread)
@@ -33,7 +31,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
                 if (inbox.IsDecided(stored.EventId) || checkpoint.Continuations.Any(item =>
                         item.AcceptedWait?.EventId == stored.EventId))
                     continue;
-                await DecideAsync(scopes, checkpoint, workflowData, host, stored, page.OpenWaits);
+                await DecideAsync(scopes, checkpoint, workflowData, host, stored, page.OpenWaits, cutoff);
                 decided = true;
             }
             inbox.Read(page.ReadThrough);
@@ -44,9 +42,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
 
     private async Task DecideAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         object workflowData, IExecutionHost host, StoredWorkflowEvent stored,
-        IReadOnlyDictionary<string, long> openedAt)
+        IReadOnlyDictionary<string, long> openedAt, DateTime now)
     {
-        var now = Now;
         var payload = Read(stored);
         if (payload == null)
         {

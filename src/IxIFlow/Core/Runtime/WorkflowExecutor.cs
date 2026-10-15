@@ -19,7 +19,7 @@ internal sealed class WorkflowExecutor
         _time = time;
         _transitions = new ContinuationTransitions(services, time);
         _attempts = new ActivityAttempts(services, activityExecutor, _transitions, time);
-        _intake = new EventIntake(services, time);
+        _intake = new EventIntake(services);
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
@@ -66,6 +66,9 @@ internal sealed class WorkflowExecutor
                 cancellationToken.ThrowIfCancellationRequested();
                 host.ThrowIfOwnershipLost();
                 var progressed = _transitions.ProcessExecutionDeadline(instance, checkpoint);
+                // Wait deadlines are judged at this instant, before the inbox is read, so an event that
+                // arrives during the read is in time only if a later pass finds it so.
+                var cutoff = Now;
                 // Events are taken before wait deadlines, so one received in time beats its deadline
                 // (D-33). A cancellation request the run has not applied yet goes first: its unwind
                 // closes the waits, and the events are then refused as cancelled.
@@ -73,10 +76,10 @@ internal sealed class WorkflowExecutor
                     _transitions.HasDueDeadline(checkpoint))
                     checkpoint.Inbox.ExpectArrivals();
                 if (!CancellationPending(checkpoint, host))
-                    progressed |= await _intake.TakeAsync(scopes, checkpoint, workflowData, host);
+                    progressed |= await _intake.TakeAsync(scopes, checkpoint, workflowData, host, cutoff);
                 var children = await ProcessDueChildWaitsAsync(checkpoint, host);
                 progressed |= children == ChildCheck.Progressed;
-                progressed |= _transitions.ProcessDueWaits(checkpoint, scopes);
+                progressed |= _transitions.ProcessDueWaits(checkpoint, scopes, cutoff);
                 // A check that only finds children still running reschedules itself; that is not progress.
                 if (progressed || children == ChildCheck.Rescheduled)
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
