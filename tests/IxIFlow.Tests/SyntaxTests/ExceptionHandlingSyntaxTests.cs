@@ -7,6 +7,7 @@ namespace IxIFlow.Tests.SyntaxTests;
 /// <summary>
 /// Tests exception handling with Try/Catch syntax validation.
 /// </summary>
+[Trait("Feature", "authoring")]
 public class ExceptionHandlingSyntaxTests
 {
     [Fact]

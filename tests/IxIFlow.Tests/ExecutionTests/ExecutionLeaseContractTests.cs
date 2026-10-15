@@ -11,6 +11,7 @@ using Microsoft.Data.SqlClient;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "durability")]
 public sealed class ExecutionLeaseContractTests
 {
     [Fact]

@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "waits")]
 public class StructuredLoopWaitTests
 {
     [Fact]

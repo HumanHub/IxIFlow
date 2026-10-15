@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "timers")]
 public sealed class WorkflowDeadlineTests
 {
     [Fact]

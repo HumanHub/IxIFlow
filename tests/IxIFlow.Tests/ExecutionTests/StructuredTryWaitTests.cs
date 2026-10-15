@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "try")]
 public class StructuredTryWaitTests
 {
     public sealed class ApprovalFault

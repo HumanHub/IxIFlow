@@ -3,6 +3,7 @@ using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "durability")]
 public class WorkflowCommitTests
 {
     [Fact]

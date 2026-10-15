@@ -17,6 +17,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// Tests for distributed WorkflowHost functionality including tag-based selection,
 /// coordination, and distributed execution scenarios
 /// </summary>
+[Trait("Feature", "distribution")]
 public class WorkflowHostDistributionTests
 {
     [Fact(Timeout = 1000)]

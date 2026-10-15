@@ -57,6 +57,7 @@ namespace IxIFlow.Tests.ExecutionTests.Models
 
 namespace IxIFlow.Tests.ExecutionTests
 {
+    [Trait("Feature", "control-flow")]
     public class ParallelTests
     {
         private readonly IServiceProvider _serviceProvider;

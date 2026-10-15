@@ -5,6 +5,7 @@ using Microsoft.Data.SqlClient;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "distribution")]
 public class SqlMessageBusReliabilityTests
 {
     [SqlServerFact]

@@ -11,6 +11,7 @@ using Moq;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "durability")]
 public sealed class WorkflowCompletionOutboxTests
 {
     [Fact]

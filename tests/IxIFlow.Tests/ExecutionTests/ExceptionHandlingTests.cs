@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "try")]
 public class ExceptionHandlingTests
 {
     private readonly IServiceProvider _serviceProvider;

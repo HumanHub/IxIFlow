@@ -7,6 +7,7 @@ using System.Text.Json;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "saga")]
 public class SagaResumeRegressionTests
 {
     [Fact]
