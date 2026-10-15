@@ -36,6 +36,7 @@ public class StructuredLoopWaitTests
     }
 
     [Fact]
+    [Trait("Spec", "D-01")]
     public async Task WhileDo_WaitsOnEachIterationAndDoesNotRepeatCompletedWork()
     {
         using var services = CreateServices();

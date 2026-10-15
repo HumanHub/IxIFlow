@@ -177,6 +177,7 @@ public sealed class LocalHostTests
 
     [Fact]
     [Trait("Spec", "B-03")]
+    [Trait("Spec", "D-01")]
     public async Task StartReturnsOnceSavedAndAwaitReturnsWhenIdle()
     {
         var repository = new InMemoryWorkflowStateRepository();
@@ -196,6 +197,7 @@ public sealed class LocalHostTests
 
     [Fact]
     [Trait("Spec", "B-03")]
+    [Trait("Spec", "D-01")]
     public async Task AwaitFinishedWaitsThroughASuspension()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), slots: 4);
@@ -219,6 +221,7 @@ public sealed class LocalHostTests
 
     [Fact]
     [Trait("Spec", "B-03")]
+    [Trait("Spec", "D-01")]
     public async Task CancellationIsSavedWhileEverySlotIsBusy()
     {
         var repository = new InMemoryWorkflowStateRepository();

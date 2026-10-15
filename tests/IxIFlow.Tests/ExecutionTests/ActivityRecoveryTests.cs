@@ -173,6 +173,7 @@ public sealed class ActivityRecoveryTests
     }
 
     [Fact]
+    [Trait("Spec", "D-01")]
     public async Task OperatorCanCompleteUnknownActivityWithObservedOutput()
     {
         var store = new FaultStore { FailCompletionBeforeApply = 3 };
