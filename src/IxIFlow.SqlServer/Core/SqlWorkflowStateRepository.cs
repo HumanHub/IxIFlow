@@ -854,9 +854,19 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await connection.ExecuteAsync(
             "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = CAST('0001-01-01' AS DATETIME2), CrashCount = 0 WHERE InstanceId = @InstanceId",
             new { InstanceId = instanceId });
-        await connection.ExecuteAsync(
-            "DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId",
-            new { InstanceId = instanceId });
+        // The instance row is locked first, as commits and appends lock it, and its rows in the other
+        // tables are deleted by key. A cascading delete would take range locks in those tables, which
+        // deadlock with commits of other instances inserting into the same ranges.
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+        await connection.ExecuteAsync("""
+            SELECT InstanceId FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
+            WHERE InstanceId = @InstanceId;
+            DELETE FROM dbo.IxIFlowWorkflowWaits WHERE InstanceId = @InstanceId;
+            DELETE FROM dbo.IxIFlowWorkflowEvents WHERE InstanceId = @InstanceId;
+            DELETE FROM dbo.IxIFlowWorkflowCommits WHERE InstanceId = @InstanceId;
+            DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId;
+            """, new { InstanceId = instanceId }, transaction);
+        await transaction.CommitAsync();
     }
 
     private async Task<IEnumerable<WorkflowInstance>> QueryAsync(string predicate, string value)
@@ -979,9 +989,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                         WaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
                         Rejection TINYINT NULL,
                         SettledAtUtc DATETIME2 NULL,
-                        CONSTRAINT PK_IxIFlowWorkflowEvents PRIMARY KEY (InstanceId, EventId),
-                        CONSTRAINT FK_IxIFlowWorkflowEvents_Instance FOREIGN KEY (InstanceId)
-                            REFERENCES dbo.IxIFlowWorkflowInstances (InstanceId) ON DELETE CASCADE
+                        CONSTRAINT PK_IxIFlowWorkflowEvents PRIMARY KEY (InstanceId, EventId)
                     );
                     EXEC(N'CREATE INDEX IX_IxIFlowWorkflowEvents_Pending
                         ON dbo.IxIFlowWorkflowEvents (InstanceId, Sequence) WHERE Outcome = 0');
@@ -999,9 +1007,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                         OpenedAtUtc DATETIME2 NOT NULL,
                         CloseReason TINYINT NULL,
                         ClosedAtUtc DATETIME2 NULL,
-                        CONSTRAINT PK_IxIFlowWorkflowWaits PRIMARY KEY (InstanceId, WaitId),
-                        CONSTRAINT FK_IxIFlowWorkflowWaits_Instance FOREIGN KEY (InstanceId)
-                            REFERENCES dbo.IxIFlowWorkflowInstances (InstanceId) ON DELETE CASCADE
+                        CONSTRAINT PK_IxIFlowWorkflowWaits PRIMARY KEY (InstanceId, WaitId)
                     );
                     EXEC(N'CREATE INDEX IX_IxIFlowWorkflowWaits_Open
                         ON dbo.IxIFlowWorkflowWaits (WaitKey, EventType, WaitId) WHERE CloseReason IS NULL');
@@ -1051,9 +1057,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                         ExpectedRevision BIGINT NOT NULL,
                         Revision BIGINT NOT NULL,
                         PayloadHash BINARY(32) NOT NULL,
-                        CONSTRAINT PK_IxIFlowWorkflowCommits PRIMARY KEY (InstanceId, CommitId),
-                        CONSTRAINT FK_IxIFlowWorkflowCommits_Instance FOREIGN KEY (InstanceId)
-                            REFERENCES dbo.IxIFlowWorkflowInstances (InstanceId) ON DELETE CASCADE
+                        CONSTRAINT PK_IxIFlowWorkflowCommits PRIMARY KEY (InstanceId, CommitId)
                     );
                 IF OBJECT_ID(N'dbo.IxIFlowWorkflowLeases', N'U') IS NULL
                 BEGIN
