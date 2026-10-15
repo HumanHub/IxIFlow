@@ -107,9 +107,13 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
     public async Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
-        // A child's waits shown on its parent are answered on the child, where they are listed too.
-        var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(query));
-        return waits.Where(wait => wait.Kind != WaitKind.Child)
+        // Only waits without a request are listed: a request's answer goes to the token the request
+        // sent, and a child's waits shown on its parent are listed on the child (D-33). The store
+        // applies the filter, so paging by wait ID never skips a listed wait.
+        if (query.Kind is not (null or WaitKind.Event))
+            return [];
+        var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(query with { Kind = WaitKind.Event }));
+        return waits
             .Select(wait => new OpenWait(wait.InstanceId, wait.WaitId, wait.Kind, wait.Key, wait.EventType,
                 EventSchema(wait.EventType), wait.DeadlineUtc, wait.OpenedAtUtc,
                 ReplyToken.Create(wait.InstanceId, wait.WaitId)))
