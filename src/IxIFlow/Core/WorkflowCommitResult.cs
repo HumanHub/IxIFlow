@@ -41,8 +41,10 @@ public sealed class CheckpointCommit
         Epoch = epoch;
         CommitId = commitId;
         ExpectedRevision = expectedRevision;
-        PayloadHash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
+        _payloadHash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
     }
+
+    private readonly byte[] _payloadHash;
 
     public string InstanceId { get; }
 
@@ -56,8 +58,8 @@ public sealed class CheckpointCommit
 
     public long ExpectedRevision { get; }
 
-    /// <summary>SHA-256 of <see cref="Payload"/>; a reused commit ID must carry the same hash.</summary>
-    public byte[] PayloadHash { get; }
+    /// <summary>SHA-256 of <see cref="Payload"/>; a reused commit ID must carry the same hash. Returns a copy.</summary>
+    public byte[] PayloadHash => (byte[])_payloadHash.Clone();
 
     public static CheckpointCommit Create(WorkflowInstance instance, long epoch, long expectedRevision,
         string? commitId = null)
