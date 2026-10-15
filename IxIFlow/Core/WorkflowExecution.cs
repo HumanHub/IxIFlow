@@ -729,17 +729,6 @@ public class WorkflowDefinition
     {
         return Steps.FirstOrDefault(s => s.Id == stepId);
     }
-
-    /// <summary>
-    ///     Gets the next step after the given step
-    /// </summary>
-    public WorkflowStep? GetNextStep(WorkflowStep currentStep)
-    {
-        var currentIndex = Steps.IndexOf(currentStep);
-        return currentIndex >= 0 && currentIndex < Steps.Count - 1
-            ? Steps[currentIndex + 1]
-            : null;
-    }
 }
 
 /// <summary>
