@@ -297,16 +297,16 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             """, new { InstanceId = instanceId });
     }
 
-    public async Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent, TimeSpan retention)
+    public async Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent)
     {
         ArgumentNullException.ThrowIfNull(workflowEvent);
         workflowEvent.Validate();
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retention, TimeSpan.Zero);
         var hash = workflowEvent.ContentHash();
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
-        // The instance row is locked first, in the same order as a commit.
+        // The instance row is locked first, in the same order as a commit, so the waits read below are
+        // exactly those committed before this event arrives.
         var instance = await connection.QuerySingleOrDefaultAsync<InboxRow>("""
             SELECT Status, InboxSequence FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId
@@ -333,28 +333,43 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             await transaction.CommitAsync();
             return new EventAppendResult(EventAppendStatus.Closed);
         }
-        var sequence = instance.InboxSequence + 1;
+        var waits = (await connection.QueryAsync<WaitRow>($"""
+            SELECT TOP (1) {WaitColumns} FROM dbo.IxIFlowWorkflowWaits
+            WHERE InstanceId = @InstanceId AND (@TargetWaitId IS NOT NULL AND WaitId = @TargetWaitId
+                OR @TargetWaitId IS NULL AND CloseReason IS NULL
+                    AND (Kind = @Child OR Kind = @Event AND (@Key IS NULL OR WaitKey = @Key)))
+            """, new
+        {
+            workflowEvent.InstanceId, workflowEvent.TargetWaitId, workflowEvent.Key,
+            Child = (byte)WaitKind.Child, Event = (byte)WaitKind.Event
+        }, transaction)).Select(row => row.Read()).ToArray();
+        var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent, waits.SingleOrDefault(), waits);
+        // A refused event is recorded so a resend is recognized, but takes no place in the inbox.
+        var sequence = rejection == null ? instance.InboxSequence + 1 : 0;
         // A stopped instance waits for its operator; the event is consumed after the release.
-        var madeRunnable = instance.Status is "Running" or "Suspended";
+        var madeRunnable = rejection == null && instance.Status is "Running" or "Suspended";
         await connection.ExecuteAsync("""
-            UPDATE dbo.IxIFlowWorkflowInstances
-            SET InboxSequence = @Sequence,
-                RunnableAtUtc = CASE WHEN @MadeRunnable = 1 THEN SYSUTCDATETIME() ELSE RunnableAtUtc END
-            WHERE InstanceId = @InstanceId;
+            IF @Rejection IS NULL
+                UPDATE dbo.IxIFlowWorkflowInstances
+                SET InboxSequence = @Sequence,
+                    RunnableAtUtc = CASE WHEN @MadeRunnable = 1 THEN SYSUTCDATETIME() ELSE RunnableAtUtc END
+                WHERE InstanceId = @InstanceId;
             INSERT INTO dbo.IxIFlowWorkflowEvents
-                (InstanceId, EventId, Sequence, EventType, EventKey, TargetActivationId, PayloadJson,
-                 PayloadHash, ReceivedAtUtc, ExpiresAtUtc, Outcome)
-            VALUES (@InstanceId, @EventId, @Sequence, @EventType, @Key, @TargetActivationId, @PayloadJson,
-                @Hash, SYSUTCDATETIME(), DATEADD(SECOND, @RetentionSeconds, SYSUTCDATETIME()), 0);
+                (InstanceId, EventId, Sequence, EventType, EventKey, TargetWaitId, PayloadJson,
+                 PayloadHash, ReceivedAtUtc, Outcome, Rejection, SettledAtUtc)
+            VALUES (@InstanceId, @EventId, @Sequence, @EventType, @Key, @TargetWaitId, @PayloadJson,
+                @Hash, SYSUTCDATETIME(), CASE WHEN @Rejection IS NULL THEN 0 ELSE 2 END, @Rejection,
+                CASE WHEN @Rejection IS NULL THEN NULL ELSE SYSUTCDATETIME() END);
             """, new
         {
             workflowEvent.InstanceId, workflowEvent.EventId, Sequence = sequence, MadeRunnable = madeRunnable,
-            workflowEvent.EventType, workflowEvent.Key, workflowEvent.TargetActivationId,
-            workflowEvent.PayloadJson, Hash = hash,
-            RetentionSeconds = checked((int)Math.Ceiling(retention.TotalSeconds))
+            workflowEvent.EventType, workflowEvent.Key, workflowEvent.TargetWaitId,
+            workflowEvent.PayloadJson, Hash = hash, Rejection = (byte?)rejection
         }, transaction);
         await transaction.CommitAsync();
-        return new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable);
+        return rejection == null
+            ? new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable)
+            : new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection);
     }
 
     public async Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit)
@@ -364,45 +379,77 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         // The inbox sequence is read first and bounds the page, so the page covers everything up to it.
-        using var results = await connection.QueryMultipleAsync("""
+        // The open waits are read after it: a wait opened in between carries a sequence at least as high
+        // as every event on the page, so none of them can satisfy it.
+        using var results = await connection.QueryMultipleAsync($"""
             DECLARE @Through BIGINT = COALESCE(
                 (SELECT InboxSequence FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId), 0);
             SELECT @Through;
-            SELECT TOP (@Limit) InstanceId, EventId, Sequence, EventType, EventKey, TargetActivationId,
-                PayloadJson, ReceivedAtUtc, ExpiresAtUtc, Outcome, ActivationId, Reason
+            SELECT TOP (@Limit) {EventColumns}
             FROM dbo.IxIFlowWorkflowEvents
-            WHERE InstanceId = @InstanceId AND Outcome = 0 AND Sequence > @AfterSequence
-              AND Sequence <= @Through AND ExpiresAtUtc > SYSUTCDATETIME()
+            WHERE InstanceId = @InstanceId AND Outcome = 0 AND Sequence > @AfterSequence AND Sequence <= @Through
             ORDER BY Sequence;
+            SELECT WaitId, OpenedSequence FROM dbo.IxIFlowWorkflowWaits
+            WHERE InstanceId = @InstanceId AND CloseReason IS NULL;
             """, new { InstanceId = instanceId, AfterSequence = afterSequence, Limit = limit });
         var through = await results.ReadSingleAsync<long>();
         var events = (await results.ReadAsync<EventRow>()).Select(row => row.Read()).ToArray();
-        return InboxPage.Of(events, limit, afterSequence, through);
+        var openWaits = (await results.ReadAsync<(string WaitId, long OpenedSequence)>())
+            .ToDictionary(wait => wait.WaitId, wait => wait.OpenedSequence, StringComparer.Ordinal);
+        return InboxPage.Of(events, limit, afterSequence, through, openWaits);
     }
 
     public async Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId)
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var row = await connection.QuerySingleOrDefaultAsync<EventRow>("""
-            SELECT InstanceId, EventId, Sequence, EventType, EventKey, TargetActivationId,
-                PayloadJson, ReceivedAtUtc, ExpiresAtUtc, Outcome, ActivationId, Reason
+        var row = await connection.QuerySingleOrDefaultAsync<EventRow>($"""
+            SELECT {EventColumns}
             FROM dbo.IxIFlowWorkflowEvents WHERE InstanceId = @InstanceId AND EventId = @EventId
             """, new { InstanceId = instanceId, EventId = eventId });
         return row?.Read();
     }
 
-    public async Task<int> SettleExpiredEventsAsync(int limit)
+    public async Task<StoredWait?> GetWaitAsync(string instanceId, string waitId)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(limit);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        return await connection.ExecuteAsync("""
-            UPDATE TOP (@Limit) dbo.IxIFlowWorkflowEvents
-            SET Outcome = 3, SettledAtUtc = SYSUTCDATETIME()
-            WHERE Outcome = 0 AND ExpiresAtUtc <= SYSUTCDATETIME()
-            """, new { Limit = limit });
+        var row = await connection.QuerySingleOrDefaultAsync<WaitRow>($"""
+            SELECT {WaitColumns} FROM dbo.IxIFlowWorkflowWaits
+            WHERE InstanceId = @InstanceId AND WaitId = @WaitId
+            """, new { InstanceId = instanceId, WaitId = waitId });
+        return row?.Read();
     }
+
+    public async Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(query.Limit);
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var rows = await connection.QueryAsync<WaitRow>($"""
+            SELECT TOP (@Limit) {WaitColumns} FROM dbo.IxIFlowWorkflowWaits
+            WHERE CloseReason IS NULL
+              AND (@InstanceId IS NULL OR InstanceId = @InstanceId)
+              AND (@Key IS NULL OR WaitKey = @Key)
+              AND (@EventType IS NULL OR EventType = @EventType)
+              AND (@Kind IS NULL OR Kind = @Kind)
+              AND (@AfterWaitId IS NULL OR WaitId > @AfterWaitId)
+            ORDER BY WaitId
+            """, new
+        {
+            query.Limit, query.InstanceId, query.Key, query.EventType, Kind = (byte?)query.Kind, query.AfterWaitId
+        });
+        return rows.Select(row => row.Read()).ToArray();
+    }
+
+    private const string EventColumns =
+        "InstanceId, EventId, Sequence, EventType, EventKey, TargetWaitId, PayloadJson, ReceivedAtUtc, " +
+        "Outcome, WaitId, Rejection";
+
+    private const string WaitColumns =
+        "InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, CloseReason, " +
+        "ClosedAtUtc";
 
     private sealed class InboxRow
     {
@@ -423,17 +470,35 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         public long Sequence { get; set; }
         public string EventType { get; set; } = "";
         public string? EventKey { get; set; }
-        public string? TargetActivationId { get; set; }
+        public string? TargetWaitId { get; set; }
         public string PayloadJson { get; set; } = "";
         public DateTime ReceivedAtUtc { get; set; }
-        public DateTime ExpiresAtUtc { get; set; }
         public byte Outcome { get; set; }
-        public string? ActivationId { get; set; }
-        public string? Reason { get; set; }
+        public string? WaitId { get; set; }
+        public byte? Rejection { get; set; }
 
         public StoredWorkflowEvent Read() => new(InstanceId, EventId, Sequence, EventType, EventKey,
-            TargetActivationId, PayloadJson, DateTime.SpecifyKind(ReceivedAtUtc, DateTimeKind.Utc),
-            DateTime.SpecifyKind(ExpiresAtUtc, DateTimeKind.Utc), (EventOutcome)Outcome, ActivationId, Reason);
+            TargetWaitId, PayloadJson, DateTime.SpecifyKind(ReceivedAtUtc, DateTimeKind.Utc),
+            (EventOutcome)Outcome, WaitId, (EventRejection?)Rejection);
+    }
+
+    private sealed class WaitRow
+    {
+        public string InstanceId { get; set; } = "";
+        public string WaitId { get; set; } = "";
+        public byte Kind { get; set; }
+        public string WaitKey { get; set; } = "";
+        public string EventType { get; set; } = "";
+        public DateTime? DeadlineUtc { get; set; }
+        public long OpenedSequence { get; set; }
+        public DateTime OpenedAtUtc { get; set; }
+        public byte? CloseReason { get; set; }
+        public DateTime? ClosedAtUtc { get; set; }
+
+        public StoredWait Read() => new(InstanceId, WaitId, (WaitKind)Kind, WaitKey, EventType,
+            DeadlineUtc is { } deadline ? DateTime.SpecifyKind(deadline, DateTimeKind.Utc) : null, OpenedSequence,
+            DateTime.SpecifyKind(OpenedAtUtc, DateTimeKind.Utc), (WaitCloseReason?)CloseReason,
+            ClosedAtUtc is { } closed ? DateTime.SpecifyKind(closed, DateTimeKind.Utc) : null);
     }
 
     private sealed class RunnableRow
@@ -569,8 +634,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
         }
 
-        // An event this commit settles must still be pending, and one it consumes unexpired (D-04).
-        // One statement settles them all, so their row locks are taken in one order.
+        // An event this commit settles must still be pending (D-04). One statement settles them all,
+        // so their row locks are taken in one order.
         if (commit.Settlements.Count > 0)
         {
             var parameters = new DynamicParameters(new { commit.InstanceId });
@@ -578,21 +643,20 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             for (var index = 0; index < commit.Settlements.Count; index++)
             {
                 var settlement = commit.Settlements[index];
-                rows.Add($"(@E{index}, @O{index}, @A{index}, @R{index})");
+                rows.Add($"(@E{index}, @O{index}, @W{index}, @R{index})");
                 parameters.Add($"E{index}", settlement.EventId);
                 parameters.Add($"O{index}", (byte)settlement.Outcome);
-                parameters.Add($"A{index}", settlement.ActivationId);
-                parameters.Add($"R{index}", settlement.Reason);
+                parameters.Add($"W{index}", settlement.WaitId);
+                parameters.Add($"R{index}", (byte?)settlement.Rejection);
             }
             var settled = await connection.ExecuteAsync($"""
                 UPDATE stored
-                SET Outcome = settled.Outcome, ActivationId = settled.ActivationId, Reason = settled.Reason,
+                SET Outcome = settled.Outcome, WaitId = settled.WaitId, Rejection = settled.Rejection,
                     SettledAtUtc = SYSUTCDATETIME()
                 FROM dbo.IxIFlowWorkflowEvents AS stored
-                JOIN (VALUES {string.Join(", ", rows)}) AS settled (EventId, Outcome, ActivationId, Reason)
+                JOIN (VALUES {string.Join(", ", rows)}) AS settled (EventId, Outcome, WaitId, Rejection)
                     ON stored.EventId = settled.EventId
                 WHERE stored.InstanceId = @InstanceId AND stored.Outcome = 0
-                  AND (settled.Outcome <> 1 OR stored.ExpiresAtUtc > SYSUTCDATETIME())
                 """, parameters, transaction);
             if (settled != commit.Settlements.Count)
             {
@@ -645,13 +709,19 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         // An idle owner that has not read every arrival keeps the lease and reads them.
         var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
         var releases = (snapshot.Status != WorkflowStatus.Running || parked) && !keepsLease;
-        // A finished instance takes no more events; those still pending are closed.
+        await ApplyWaitChangesAsync(connection, transaction, commit, current?.InboxSequence ?? 0);
+        // A finished instance takes no more events; those still pending are closed, and so are its waits.
         if (snapshot.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
             WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
             await connection.ExecuteAsync("""
                 UPDATE dbo.IxIFlowWorkflowEvents SET Outcome = 4, SettledAtUtc = SYSUTCDATETIME()
-                WHERE InstanceId = @InstanceId AND Outcome = 0
-                """, new { snapshot.InstanceId }, transaction);
+                WHERE InstanceId = @InstanceId AND Outcome = 0;
+                UPDATE dbo.IxIFlowWorkflowWaits SET CloseReason = @Reason, ClosedAtUtc = SYSUTCDATETIME()
+                WHERE InstanceId = @InstanceId AND CloseReason IS NULL;
+                """, new
+            {
+                snapshot.InstanceId, Reason = (byte)WorkflowStoreRules.FinalWaitCloseReason(snapshot.Status)
+            }, transaction);
         var clears = commit.ClearsCrashCount && lease?.CrashCount > 0;
         if (lease != null && (releases || clears))
             await connection.ExecuteAsync("""
@@ -667,6 +737,58 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
             ReadReason(current?.CancellationJson), parked, unread);
+    }
+
+    // A wait opens at the inbox sequence read under the instance row's lock, which appends also take,
+    // so it is ordered exactly against every event. Opening it again keeps its first record.
+    private static async Task ApplyWaitChangesAsync(SqlConnection connection, SqlTransaction transaction,
+        CheckpointCommit commit, long inboxSequence)
+    {
+        if (commit.OpenedWaits.Count == 0 && commit.ClosedWaits.Count == 0)
+            return;
+        var parameters = new DynamicParameters(new { commit.InstanceId, Sequence = inboxSequence });
+        var batch = new System.Text.StringBuilder();
+        if (commit.OpenedWaits.Count > 0)
+        {
+            var rows = new List<string>();
+            for (var index = 0; index < commit.OpenedWaits.Count; index++)
+            {
+                var wait = commit.OpenedWaits[index];
+                rows.Add($"(@OW{index}, @OK{index}, @OY{index}, @OT{index}, @OD{index})");
+                parameters.Add($"OW{index}", wait.WaitId);
+                parameters.Add($"OK{index}", (byte)wait.Kind);
+                parameters.Add($"OY{index}", wait.Key);
+                parameters.Add($"OT{index}", wait.EventType);
+                parameters.Add($"OD{index}", wait.DeadlineUtc);
+            }
+            batch.Append($"""
+                INSERT INTO dbo.IxIFlowWorkflowWaits
+                    (InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc)
+                SELECT @InstanceId, opened.WaitId, opened.Kind, opened.WaitKey, opened.EventType, opened.DeadlineUtc,
+                    @Sequence, SYSUTCDATETIME()
+                FROM (VALUES {string.Join(", ", rows)}) AS opened (WaitId, Kind, WaitKey, EventType, DeadlineUtc)
+                WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowWaits AS stored
+                    WHERE stored.InstanceId = @InstanceId AND stored.WaitId = opened.WaitId);
+
+                """);
+        }
+        if (commit.ClosedWaits.Count > 0)
+        {
+            var rows = new List<string>();
+            for (var index = 0; index < commit.ClosedWaits.Count; index++)
+            {
+                rows.Add($"(@CW{index}, @CR{index})");
+                parameters.Add($"CW{index}", commit.ClosedWaits[index].WaitId);
+                parameters.Add($"CR{index}", (byte)commit.ClosedWaits[index].Reason);
+            }
+            batch.Append($"""
+                UPDATE stored SET CloseReason = closed.Reason, ClosedAtUtc = SYSUTCDATETIME()
+                FROM dbo.IxIFlowWorkflowWaits AS stored
+                JOIN (VALUES {string.Join(", ", rows)}) AS closed (WaitId, Reason) ON stored.WaitId = closed.WaitId
+                WHERE stored.InstanceId = @InstanceId AND stored.CloseReason IS NULL;
+                """);
+        }
+        await connection.ExecuteAsync(batch.ToString(), parameters, transaction);
     }
 
     private sealed class CommitReceipt
@@ -849,14 +971,13 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                         Sequence BIGINT NOT NULL,
                         EventType NVARCHAR(400) NOT NULL,
                         EventKey NVARCHAR(400) NULL,
-                        TargetActivationId NVARCHAR(100) NULL,
+                        TargetWaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
                         PayloadJson NVARCHAR(MAX) NOT NULL,
                         PayloadHash BINARY(32) NOT NULL,
                         ReceivedAtUtc DATETIME2 NOT NULL,
-                        ExpiresAtUtc DATETIME2 NOT NULL,
                         Outcome TINYINT NOT NULL,
-                        ActivationId NVARCHAR(100) NULL,
-                        Reason NVARCHAR(1000) NULL,
+                        WaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
+                        Rejection TINYINT NULL,
                         SettledAtUtc DATETIME2 NULL,
                         CONSTRAINT PK_IxIFlowWorkflowEvents PRIMARY KEY (InstanceId, EventId),
                         CONSTRAINT FK_IxIFlowWorkflowEvents_Instance FOREIGN KEY (InstanceId)
@@ -864,8 +985,26 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                     );
                     EXEC(N'CREATE INDEX IX_IxIFlowWorkflowEvents_Pending
                         ON dbo.IxIFlowWorkflowEvents (InstanceId, Sequence) WHERE Outcome = 0');
-                    EXEC(N'CREATE INDEX IX_IxIFlowWorkflowEvents_Expiry
-                        ON dbo.IxIFlowWorkflowEvents (ExpiresAtUtc) WHERE Outcome = 0');
+                END
+                IF OBJECT_ID(N'dbo.IxIFlowWorkflowWaits', N'U') IS NULL
+                BEGIN
+                    CREATE TABLE dbo.IxIFlowWorkflowWaits (
+                        InstanceId NVARCHAR(100) NOT NULL,
+                        WaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                        Kind TINYINT NOT NULL,
+                        WaitKey NVARCHAR(400) NOT NULL,
+                        EventType NVARCHAR(400) NOT NULL,
+                        DeadlineUtc DATETIME2 NULL,
+                        OpenedSequence BIGINT NOT NULL,
+                        OpenedAtUtc DATETIME2 NOT NULL,
+                        CloseReason TINYINT NULL,
+                        ClosedAtUtc DATETIME2 NULL,
+                        CONSTRAINT PK_IxIFlowWorkflowWaits PRIMARY KEY (InstanceId, WaitId),
+                        CONSTRAINT FK_IxIFlowWorkflowWaits_Instance FOREIGN KEY (InstanceId)
+                            REFERENCES dbo.IxIFlowWorkflowInstances (InstanceId) ON DELETE CASCADE
+                    );
+                    EXEC(N'CREATE INDEX IX_IxIFlowWorkflowWaits_Open
+                        ON dbo.IxIFlowWorkflowWaits (WaitKey, EventType, WaitId) WHERE CloseReason IS NULL');
                 END
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'RunnableAtUtc') IS NULL
                 BEGIN
