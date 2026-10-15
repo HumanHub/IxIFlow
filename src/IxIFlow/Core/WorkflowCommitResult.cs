@@ -33,23 +33,31 @@ public sealed record WorkflowCommitResult(
     CancellationReason? PendingCancellation = null);
 
 /// <summary>
+/// An execution lease granted by the store. <see cref="Epoch"/> fences the owner's commits.
+/// <see cref="CrashCount"/> counts how many owners in a row lost the instance while it was running,
+/// including the one before this grant; a commit that records progress resets it (B-08).
+/// </summary>
+public sealed record ExecutionLeaseGrant(long Epoch, int CrashCount);
+
+/// <summary>
 /// One checkpoint write: the serialized instance, fenced by the owner's execution epoch and the
 /// revision it was based on. A commit is immutable, so sending the same commit again is safe.
 /// </summary>
 public sealed class CheckpointCommit
 {
     private CheckpointCommit(string instanceId, string payload, long epoch, string commitId,
-        long expectedRevision)
+        long expectedRevision, bool clearsCrashCount)
     {
         InstanceId = instanceId;
         Payload = payload;
         Epoch = epoch;
         CommitId = commitId;
         ExpectedRevision = expectedRevision;
-        _payloadHash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
+        ClearsCrashCount = clearsCrashCount;
+        _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes($"{(clearsCrashCount ? 1 : 0)}\n{payload}"));
     }
 
-    private readonly byte[] _payloadHash;
+    private readonly byte[] _contentHash;
 
     public string InstanceId { get; }
 
@@ -63,11 +71,21 @@ public sealed class CheckpointCommit
 
     public long ExpectedRevision { get; }
 
-    /// <summary>SHA-256 of <see cref="Payload"/>; a reused commit ID must carry the same hash. Returns a copy.</summary>
-    public byte[] PayloadHash => (byte[])_payloadHash.Clone();
+    /// <summary>
+    /// True when the commit records progress, so the instance's crash count starts again from zero.
+    /// A commit that only claims an activity or child before it starts, or only reschedules a check,
+    /// leaves the count, so work that keeps killing its owner is still counted (B-08).
+    /// </summary>
+    public bool ClearsCrashCount { get; }
+
+    /// <summary>
+    /// SHA-256 of <see cref="Payload"/> and <see cref="ClearsCrashCount"/>; a reused commit ID must
+    /// carry the same hash. Returns a copy.
+    /// </summary>
+    public byte[] ContentHash => (byte[])_contentHash.Clone();
 
     public static CheckpointCommit Create(WorkflowInstance instance, long epoch, long expectedRevision,
-        string? commitId = null)
+        string? commitId = null, bool clearsCrashCount = true)
     {
         ArgumentNullException.ThrowIfNull(instance);
         ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
@@ -78,7 +96,7 @@ public sealed class CheckpointCommit
         if (commitId.Length > 100)
             throw new ArgumentException("Commit IDs must be at most 100 characters", nameof(commitId));
         return new CheckpointCommit(instance.InstanceId, JsonSerializer.Serialize(instance), epoch, commitId,
-            expectedRevision);
+            expectedRevision, clearsCrashCount);
     }
 
     /// <summary>A fresh copy of the committed instance.</summary>

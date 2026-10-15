@@ -750,6 +750,9 @@ public sealed class WorkflowQueueServiceTests
                     ? WorkflowExecutionStatus.Running : WorkflowExecutionStatus.Suspended
             });
 
+        public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> RecoverAsync(string instanceId,
             CancellationToken cancellationToken = default)
         {

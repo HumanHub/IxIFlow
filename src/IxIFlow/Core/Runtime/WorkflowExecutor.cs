@@ -55,11 +55,14 @@ internal sealed class WorkflowExecutor
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 host.ThrowIfOwnershipLost();
-                var deadlineAdvanced = _transitions.ProcessExecutionDeadline(instance, checkpoint);
-                deadlineAdvanced |= await ProcessDueChildWaitsAsync(checkpoint, host);
-                deadlineAdvanced |= _transitions.ProcessDueWaits(checkpoint, scopes);
-                if (deadlineAdvanced)
-                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+                var progressed = _transitions.ProcessExecutionDeadline(instance, checkpoint);
+                var children = await ProcessDueChildWaitsAsync(checkpoint, host);
+                progressed |= children == ChildCheck.Progressed;
+                progressed |= _transitions.ProcessDueWaits(checkpoint, scopes);
+                // A check that only finds children still running reschedules itself; that is not progress.
+                if (progressed || children == ChildCheck.Rescheduled)
+                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
+                        clearsCrashCount: progressed);
                 await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
                     scopes, host, host.ObservedCancellation);
                 await SignalCancellationsAsync(inFlight, uncommitted, host, instance, checkpoint, workflowData,
@@ -453,14 +456,22 @@ internal sealed class WorkflowExecutor
         return true;
     }
 
-    private async Task<bool> ProcessDueChildWaitsAsync(ExecutionCheckpoint checkpoint, IExecutionHost host)
+    private enum ChildCheck
+    {
+        None,
+        Rescheduled,
+        Progressed
+    }
+
+    private async Task<ChildCheck> ProcessDueChildWaitsAsync(ExecutionCheckpoint checkpoint, IExecutionHost host)
     {
         var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId != null &&
             wait.DeadlineUtc <= Now)
             .GroupBy(wait => (wait.ContinuationId, wait.ChildWorkflowId))
             .ToArray();
         if (due.Length == 0)
-            return false;
+            return ChildCheck.None;
+        var check = ChildCheck.Rescheduled;
         foreach (var childWaits in due)
         {
             var childId = childWaits.Key.ChildWorkflowId!;
@@ -471,6 +482,7 @@ internal sealed class WorkflowExecutor
                     wait.DeadlineUtc = Now.AddSeconds(5);
                 continue;
             }
+            check = ChildCheck.Progressed;
             if (result.Status == WorkflowExecutionStatus.NeedsResolution)
             {
                 foreach (var wait in childWaits)
@@ -478,8 +490,10 @@ internal sealed class WorkflowExecutor
                 var unresolved = checkpoint.Continuations.Single(item =>
                     item.Id == childWaits.Key.ContinuationId);
                 unresolved.Status = ContinuationStatus.WaitingResolution;
-                unresolved.PendingActivity!.ResolutionReason =
-                    $"Child workflow '{childId}' needs activity resolution";
+                // A stopped child says why; recovering it never releases the stop.
+                unresolved.PendingActivity!.ResolutionReason = result.ErrorMessage != null
+                    ? $"Child workflow '{childId}' needs resolution: {result.ErrorMessage}"
+                    : $"Child workflow '{childId}' needs activity resolution";
                 continue;
             }
             checkpoint.Waits.RemoveAll(wait => wait.ChildWorkflowId == childId &&
@@ -488,7 +502,7 @@ internal sealed class WorkflowExecutor
                 item.Id == childWaits.Key.ContinuationId);
             continuation.Status = ContinuationStatus.Active;
         }
-        return true;
+        return check;
     }
 
     public async Task<bool> ReconcileChildWaitsAsync(ExecutionCheckpoint checkpoint, IExecutionHost host)
@@ -689,12 +703,15 @@ internal sealed class WorkflowExecutor
     }
 
     // A checkpoint over the limit is never saved. The instance keeps its last checkpoint and
-    // stops at NeedsResolution until an operator raises the limit and recovers it, or cancels it (D-28).
+    // stops at NeedsResolution until an operator raises the limit and releases it, or cancels it (D-28).
     private async Task<WorkflowExecutionResult> StopAtLimitAsync(WorkflowDefinition definition,
         WorkflowInstance instance, object workflowData, IExecutionHost host, CheckpointLimitExceededException limit)
     {
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
-        checkpoint.ResourceStop = new ResourceStopState { Reason = limit.Message, StoppedAtUtc = Now };
+        checkpoint.OperatorStop = new OperatorStopState
+        {
+            Kind = OperatorStopKind.ResourceLimit, Reason = limit.Message, StoppedAtUtc = Now
+        };
         instance.Status = WorkflowStatus.NeedsResolution;
         instance.LastError = limit.Message;
         instance.SuspensionInfo = null;

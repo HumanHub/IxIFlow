@@ -108,8 +108,8 @@ internal sealed class InstanceHost(
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
-        if (StoppedAtLimit(instanceId, checkpoint) is { } stopped)
-            return stopped;
+        if (checkpoint.OperatorStop is { } stop)
+            return Rejected(instanceId, stop.Describe());
         var continuation = checkpoint.Continuations.SingleOrDefault(item =>
             item.PendingActivity?.Id == invocationId && item.Status == ContinuationStatus.WaitingResolution)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
@@ -334,6 +334,11 @@ internal sealed class InstanceHost(
         try
         {
             using var lease = await gate.EnterAsync(instance.InstanceId, cancellationToken);
+            // A repeated start of an existing instance is answered without claiming it, so retries
+            // never count as crashes of an instance another host lost (B-08).
+            if (options.InstanceId != null &&
+                await _store.GetWorkflowInstanceAsync(instance.InstanceId) is { } started)
+                return ExistingStart(started, definition, scopes);
             await using var owner = options.PersistState
                 ? await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, _time)
                     ?? (options.InstanceId == null
@@ -343,18 +348,10 @@ internal sealed class InstanceHost(
                 : null;
             if (options.PersistState && owner == null)
                 return WorkflowExecutor.Busy(instance.InstanceId);
-            if (options.InstanceId != null)
-            {
-                var existing = await _store.GetWorkflowInstanceAsync(instance.InstanceId);
-                if (existing != null)
-                {
-                    if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version ||
-                        ExecutionCheckpoint.Read(existing.ExecutionStateJson).DefinitionFingerprint != scopes.Fingerprint)
-                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                            $"Workflow instance '{instance.InstanceId}' belongs to a different definition");
-                    return ExistingResult(existing);
-                }
-            }
+            // Another start may have saved the instance since the first read.
+            if (options.InstanceId != null &&
+                await _store.GetWorkflowInstanceAsync(instance.InstanceId) is { } existing)
+                return ExistingStart(existing, definition, scopes);
             var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
             if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true &&
                 isActive is false)
@@ -419,8 +416,8 @@ internal sealed class InstanceHost(
                 return Rejected(instanceId, "The workflow instance is not waiting");
 
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
-            if (StoppedAtLimit(instanceId, checkpoint) is { } stopped)
-                return stopped;
+            if (checkpoint.OperatorStop is { } stop)
+                return Rejected(instanceId, stop.Describe());
             var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
             if (definition == null)
                 return Rejected(instanceId, "The registered workflow definition is unavailable");
@@ -538,7 +535,18 @@ internal sealed class InstanceHost(
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
     }
 
-    public async Task<WorkflowExecutionResult> RecoverAsync(string instanceId, CancellationToken cancellationToken)
+    public Task<WorkflowExecutionResult> RecoverAsync(string instanceId, CancellationToken cancellationToken) =>
+        ContinueAsync(instanceId, release: false, cancellationToken);
+
+    /// <summary>
+    /// Releases an instance stopped for an operator and runs it. Automatic recovery, including a
+    /// parent checking its child, never releases a stop.
+    /// </summary>
+    public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId, CancellationToken cancellationToken) =>
+        ContinueAsync(instanceId, release: true, cancellationToken);
+
+    private async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, bool release,
+        CancellationToken cancellationToken)
     {
         using var lease = await gate.EnterAsync(instanceId, cancellationToken);
         var instance = await _store.GetWorkflowInstanceAsync(instanceId);
@@ -547,20 +555,21 @@ internal sealed class InstanceHost(
             instance?.Status == WorkflowStatus.Suspended &&
             (cancellationReason != null || HasDueDeadline(instance) || HasChildWait(instance));
         if (!canRecover || !HasStructuredCheckpoint(instance))
-            return Rejected(instanceId, "The workflow instance has no interrupted execution to recover");
+            return Rejected(instanceId, release
+                ? "The workflow instance is not stopped for an operator"
+                : "The workflow instance has no interrupted execution to recover");
+        var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+        if (release && checkpoint.OperatorStop == null)
+            return Rejected(instanceId, "The workflow instance is not stopped for an operator");
 
         var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
         if (definition == null)
             return Rejected(instanceId, "The registered workflow definition is unavailable");
-        var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
-            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-        var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
-            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
-        var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         var scopes = new WorkflowScopeCatalog(definition);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
+        // Ownership comes before the workflow data is read, so an instance whose data or code kills
+        // its host is still counted by the next claim, and quarantined (B-08).
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
             _store, instance, _leaseSettings, _watch, _time);
         if (owner == null)
@@ -570,18 +579,39 @@ internal sealed class InstanceHost(
             return current?.Status == WorkflowStatus.Running
                 ? WorkflowExecutor.Busy(instanceId)
                 : Rejected(instanceId, "The workflow instance changed before recovery could start");
+        // Only a claim of a running instance can see crashes: every commit that leaves Running
+        // records progress and clears the count, and other entry points refuse running instances.
+        if (owner.CrashCount >= _limits.MaxCrashes)
+            return await QuarantineAsync(instance, checkpoint, scopes, owner);
+        if (checkpoint.OperatorStop is { } stop)
+        {
+            // Only a release or a cancellation moves a stopped instance. A cancelled one unwinds,
+            // and stops again if its cleanup crashes its owners or exceeds a limit.
+            if (!release && cancellationReason == null)
+                return Stopped(instance, stop);
+            checkpoint.OperatorStop = null;
+            instance.LastError = null;
+            instance.LastErrorStackTrace = null;
+        }
         foreach (var continuation in checkpoint.Continuations.Where(item =>
                      item.PendingActivity is { ChildWorkflowId: null } &&
                      item.Status is (ContinuationStatus.WaitingResolution or
                          ContinuationStatus.Cancelling)))
             continuation.Status = ContinuationStatus.Active;
-        // An instance stopped at a resource limit runs again; it stops again if the limit still applies.
-        if (checkpoint.ResourceStop != null)
-        {
-            checkpoint.ResourceStop = null;
-            instance.LastError = null;
-        }
         instance.Status = WorkflowStatus.Running;
+        if (release)
+        {
+            // The release is saved before any workflow code runs: a crash after it is counted again.
+            // It saves the stopped checkpoint without its marker, so no limit applies; a run that
+            // still exceeds a limit stops again at its next commit.
+            await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner, true), instance,
+                checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
+        }
+        var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
+        var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
         if (cancellationReason != null && !checkpoint.CancellationRequested &&
             checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
         {
@@ -603,6 +633,16 @@ internal sealed class InstanceHost(
         HasStructuredCheckpoint(instance) &&
         ExecutionCheckpoint.Read(instance.ExecutionStateJson).Waits.Any(wait =>
             wait.ChildWorkflowId != null);
+
+    private static WorkflowExecutionResult ExistingStart(WorkflowInstance existing, WorkflowDefinition definition,
+        WorkflowScopeCatalog scopes)
+    {
+        if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version ||
+            ExecutionCheckpoint.Read(existing.ExecutionStateJson).DefinitionFingerprint != scopes.Fingerprint)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                $"Workflow instance '{existing.InstanceId}' belongs to a different definition");
+        return ExistingResult(existing);
+    }
 
     private static WorkflowExecutionResult Rejected(string instanceId, string reason) => new()
     {
@@ -717,13 +757,38 @@ internal sealed class InstanceHost(
         }
     }
 
-    // Only an operator moves an instance stopped at a resource limit, by recovering or cancelling it.
-    private static WorkflowExecutionResult? StoppedAtLimit(string instanceId, ExecutionCheckpoint checkpoint) =>
-        checkpoint.ResourceStop is { } stop
-            ? Rejected(instanceId,
-                $"The workflow instance is stopped at a resource limit ({stop.Reason}); " +
-                "raise the limit and recover it, or cancel it")
-            : null;
+    // A stopped instance as a result: it waits for an operator to release or cancel it.
+    private static WorkflowExecutionResult Stopped(WorkflowInstance instance, OperatorStopState stop) => new()
+    {
+        InstanceId = instance.InstanceId,
+        Status = WorkflowExecutionStatus.NeedsResolution,
+        TraceEntries = instance.ExecutionHistory.ToList(),
+        ErrorMessage = stop.Describe()
+    };
+
+    // A claim that finds the instance lost by MaxCrashes owners in a row stops it instead of running
+    // it (B-08). Nothing of the workflow runs and its data is not read; the last checkpoint stays.
+    // The stop clears the live count, so a released instance gets MaxCrashes new attempts.
+    private async Task<WorkflowExecutionResult> QuarantineAsync(WorkflowInstance instance,
+        ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes, WorkflowExecutionLease owner)
+    {
+        var stop = new OperatorStopState
+        {
+            Kind = OperatorStopKind.Quarantine,
+            Reason = $"{owner.CrashCount} owners in a row lost it while it was running",
+            StoppedAtUtc = Now,
+            CrashCount = owner.CrashCount
+        };
+        checkpoint.OperatorStop = stop;
+        instance.Status = WorkflowStatus.NeedsResolution;
+        instance.LastError = stop.Reason;
+        instance.LastErrorStackTrace = null;
+        instance.SuspensionInfo = null;
+        // Like the resource stop, this saves the last checkpoint plus a marker, so no limit applies.
+        await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner, true), instance,
+            checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
+        return Stopped(instance, stop);
+    }
 
     // Children run inline in the parent's slot and scope (D-17 makes them independent later).
     private DirectInstanceClient Children =>

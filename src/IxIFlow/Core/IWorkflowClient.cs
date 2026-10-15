@@ -59,8 +59,20 @@ public interface IWorkflowClient
         CancellationToken cancellationToken = default)
         where TEventData : class;
 
-    /// <summary>Continues an interrupted or due instance without an external event.</summary>
+    /// <summary>
+    /// Continues an interrupted or due instance without an external event. An instance stopped for
+    /// an operator, at a resource limit or in quarantine, stays stopped and is returned as
+    /// NeedsResolution.
+    /// </summary>
     Task<WorkflowExecutionResult> RecoverAsync(
+        string instanceId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Releases an instance stopped for an operator, at a resource limit (after raising it) or in
+    /// quarantine after repeated crashes, and runs it. Its crash count starts again from zero.
+    /// </summary>
+    Task<WorkflowExecutionResult> ReleaseAsync(
         string instanceId,
         CancellationToken cancellationToken = default);
 

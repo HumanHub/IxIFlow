@@ -65,7 +65,7 @@ public sealed class CommitProtocolTests
         try
         {
             var first = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", TimeSpan.FromSeconds(10));
-            Assert.Equal(1, first);
+            Assert.Equal(1, first?.Epoch);
             var instance = new WorkflowInstance
             {
                 InstanceId = instanceId, WorkflowName = "EpochFencing", Status = WorkflowStatus.Running,
@@ -77,7 +77,7 @@ public sealed class CommitProtocolTests
 
             // A released lease keeps its epoch, so the next owner is always newer.
             var second = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", TimeSpan.FromSeconds(10));
-            Assert.Equal(2, second);
+            Assert.Equal(2, second?.Epoch);
             instance.Revision = 1;
             Assert.Equal(WorkflowCommitStatus.StaleEpoch,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 1, 1))).Status);
@@ -88,12 +88,12 @@ public sealed class CommitProtocolTests
             Assert.Equal(WorkflowCommitStatus.Applied,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 2, 1))).Status);
             // A terminal commit releases the lease but not the epoch.
-            Assert.Equal(3, await repository.TryAcquireExecutionLeaseAsync(instanceId, "third", TimeSpan.FromSeconds(10)));
+            Assert.Equal(3, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "third", TimeSpan.FromSeconds(10)))?.Epoch);
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "third"));
 
             // A deleted and recreated instance never reuses an epoch, so a former owner stays fenced.
             await repository.DeleteWorkflowInstanceAsync(instanceId);
-            Assert.Equal(4, await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10)));
+            Assert.Equal(4, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10)))?.Epoch);
             instance.Status = WorkflowStatus.Running;
             instance.Revision = 0;
             Assert.Equal(WorkflowCommitStatus.StaleEpoch,
@@ -110,7 +110,7 @@ public sealed class CommitProtocolTests
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            var epoch = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromSeconds(10)))!.Value;
+            var epoch = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromSeconds(10)))!.Epoch;
             var instance = new WorkflowInstance
             {
                 InstanceId = instanceId, WorkflowName = "DistinctResults", Status = WorkflowStatus.Running,
@@ -139,7 +139,7 @@ public sealed class CommitProtocolTests
         Assert.Equal(retries + 1, resent.Count);
         Assert.All(resent, commit =>
         {
-            Assert.Equal(resent[0].PayloadHash, commit.PayloadHash);
+            Assert.Equal(resent[0].ContentHash, commit.ContentHash);
             Assert.Equal(resent[0].ExpectedRevision, commit.ExpectedRevision);
             Assert.Equal(resent[0].Epoch, commit.Epoch);
         });
