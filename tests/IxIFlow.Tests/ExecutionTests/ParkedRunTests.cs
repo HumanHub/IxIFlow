@@ -18,6 +18,7 @@ public sealed class ParkedRunTests
 
     [Fact]
     [Trait("Spec", "C-03")]
+    [Trait("Spec", "C-12")]
     public async Task ALongRetryGivesItsSlotToOtherWork()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
@@ -111,11 +112,13 @@ public sealed class ParkedRunTests
 
     [Fact]
     [Trait("Spec", "C-01")]
+    [Trait("Spec", "C-05")]
     public Task MemoryStoreKeepsOneRunnableTime() => VerifyRunnableTimes(new InMemoryWorkflowStateRepository());
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "C-01")]
+    [Trait("Spec", "C-05")]
     public Task SqlStoreKeepsOneRunnableTime() =>
         VerifyRunnableTimes(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
 

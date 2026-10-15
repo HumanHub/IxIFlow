@@ -47,10 +47,12 @@ public sealed class ExecutionLeaseContractTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "C-02")]
     public Task SqlLeaseIsExclusive() => VerifyExclusiveLease(SqlRepository());
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "C-02")]
     public async Task SqlConcurrentFirstLeaseHasOneOwner()
     {
         var instanceId = Guid.NewGuid().ToString("N");
