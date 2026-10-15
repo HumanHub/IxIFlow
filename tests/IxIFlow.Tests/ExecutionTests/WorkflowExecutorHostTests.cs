@@ -198,6 +198,9 @@ public sealed class WorkflowExecutorHostTests
             string eventId, CancellationToken cancellationToken) =>
             throw new NotSupportedException("No child is resumed in this test");
 
+        public long ObservedInboxSequence => 0;
+        public Task? InboxChanged => null;
+
         // No event is sent in these tests: the inbox is always empty.
         public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) =>
             Task.FromResult(new InboxPage([], afterSequence, new Dictionary<string, long>()));

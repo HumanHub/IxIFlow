@@ -27,7 +27,37 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         _token = token;
         _renewal = RenewUntilStoppedAsync(settings, requestedAtUtc.Add(settings.Duration));
         _cancellationWatch = watch.Watch(instanceId, _cancellation,
-            error => _loss.TrySetResult(error), settings.Duration, settings.RenewalInterval);
+            error => _loss.TrySetResult(error), settings.Duration, settings.RenewalInterval, ObserveInbox);
+    }
+
+    private readonly object _inboxLock = new();
+    private long _inboxSequence;
+    private TaskCompletionSource _inboxChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>The highest inbox sequence the host's watch has seen for this instance.</summary>
+    public long InboxSequence
+    {
+        get { lock (_inboxLock) return _inboxSequence; }
+    }
+
+    /// <summary>Completes when the watch sees the inbox sequence rise; a new task follows each rise.</summary>
+    public Task InboxChanged
+    {
+        get { lock (_inboxLock) return _inboxChanged.Task; }
+    }
+
+    private void ObserveInbox(long sequence)
+    {
+        TaskCompletionSource? risen = null;
+        lock (_inboxLock)
+        {
+            if (sequence <= _inboxSequence)
+                return;
+            _inboxSequence = sequence;
+            risen = _inboxChanged;
+            _inboxChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        risen.TrySetResult();
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;

@@ -548,10 +548,11 @@ internal sealed class InstanceHost(
             instance.LastError = null;
             instance.LastErrorStackTrace = null;
         }
+        // A run for an event only takes it: an activity waiting for an operator stays waiting.
         foreach (var continuation in checkpoint.Continuations.Where(item =>
                      item.PendingActivity is { ChildWorkflowId: null } &&
-                     item.Status is (ContinuationStatus.WaitingResolution or
-                         ContinuationStatus.Cancelling)))
+                     (item.Status == ContinuationStatus.Cancelling ||
+                      item.Status == ContinuationStatus.WaitingResolution && (!forEvent || stopCleared))))
             continuation.Status = ContinuationStatus.Active;
         instance.Status = WorkflowStatus.Running;
         if (newCancellation)
@@ -730,7 +731,8 @@ internal sealed class InstanceHost(
             case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
                 await MakeParentRunnableAsync(instance);
                 return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision,
-                    PendingCancellation: result.PendingCancellation, Parked: result.Parked);
+                    PendingCancellation: result.PendingCancellation, Parked: result.Parked,
+                    UnreadEvents: result.UnreadEvents);
             case WorkflowCommitStatus.EventsChanged:
                 return new CheckpointReply(CheckpointReplyKind.EventsChanged, result.Revision,
                     new WorkflowEngineException(WorkflowErrorKind.InvalidState,
@@ -801,6 +803,8 @@ internal sealed class InstanceHost(
         public bool ChildStartIsCheckpointed => host._childStartIsCheckpointed;
         public Task? OwnershipLoss => owner?.Loss;
         public Task<CancellationReason>? CancellationSignal => owner?.Cancellation;
+        public long ObservedInboxSequence => owner?.InboxSequence ?? 0;
+        public Task? InboxChanged => owner?.InboxChanged;
 
         public CancellationReason? ObservedCancellation =>
             owner?.Cancellation.IsCompletedSuccessfully == true ? owner.Cancellation.Result : null;

@@ -53,6 +53,9 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
     public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
         Guard(() => Inbox.GetOpenWaitsAsync(query), "Listing open workflow waits");
 
+    public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds) =>
+        Guard(() => Inbox.GetInboxSequencesAsync(instanceIds), "Reading workflow inbox sequences");
+
     public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit) =>
         Guard(() => _store.CommitWorkflowInstanceAsync(commit),
             $"Saving workflow instance '{commit.InstanceId}'");

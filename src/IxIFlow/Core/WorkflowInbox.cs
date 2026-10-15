@@ -266,4 +266,10 @@ public interface IWorkflowInbox
 
     /// <summary>Open waits that match the query, ordered by wait ID.</summary>
     Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query);
+
+    /// <summary>
+    /// The inbox sequence of each instance that exists, read in one call, so a host can tell its busy
+    /// owners that events arrived (D-32).
+    /// </summary>
+    Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds);
 }

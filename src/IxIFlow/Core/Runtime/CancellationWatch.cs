@@ -7,7 +7,9 @@ namespace IxIFlow.Core.Runtime;
 /// One cancellation watch for every instance this host runs (B-10): it reads the cancellation
 /// requests of all watched instances in one store call per interval and tells each lease whose
 /// instance has a request. Instances do not poll for cancellation individually; a run also learns
-/// of a request from its own commit replies. The watch needs a singleton store.
+/// of a request from its own commit replies. With the requests it reads the inbox sequences of the
+/// instances whose leases asked, so a busy owner learns that events arrived (D-32). The watch needs a
+/// singleton store.
 /// </summary>
 internal sealed class CancellationWatch
 {
@@ -43,10 +45,10 @@ internal sealed class CancellationWatch
     /// failed read never outlasts a lease renewal.
     /// </summary>
     public IDisposable Watch(string instanceId, TaskCompletionSource<CancellationReason> cancellation,
-        Action<Exception> lost, TimeSpan tolerance, TimeSpan interval)
+        Action<Exception> lost, TimeSpan tolerance, TimeSpan interval, Action<long>? arrivals = null)
     {
         var subscriber = new Subscriber(this, instanceId, cancellation, lost, tolerance,
-            interval < MaximumInterval ? interval : MaximumInterval, Now);
+            interval < MaximumInterval ? interval : MaximumInterval, Now, arrivals);
         lock (_lock)
         {
             if (!_watched.TryGetValue(instanceId, out var subscribers))
@@ -135,6 +137,30 @@ internal sealed class CancellationWatch
             else if (readAt > subscriber.ConfirmedAtUtc)
                 subscriber.ConfirmedAtUtc = readAt;
         }
+        await ReadArrivalsAsync(instanceIds);
+    }
+
+    // Arrivals are a hint: a run also learns of them from its commit replies, so a failed read only
+    // delays them and never affects cancellation or ownership.
+    private async Task ReadArrivalsAsync(string[] instanceIds)
+    {
+        var listening = Subscribers(instanceIds).Where(item => item.Arrivals != null).ToArray();
+        if (listening.Length == 0)
+            return;
+        try
+        {
+            var sequences = await _store.GetInboxSequencesAsync(
+                    listening.Select(item => item.InstanceId).Distinct(StringComparer.Ordinal).ToArray())
+                .WaitAsync(ReadTimeout, _time);
+            foreach (var subscriber in listening)
+                if (sequences.TryGetValue(subscriber.InstanceId, out var sequence))
+                    subscriber.Arrivals!(sequence);
+        }
+        catch (Exception error)
+        {
+            _logger.LogDebug(error, "Could not read inbox sequences for {Count} workflow instances",
+                listening.Length);
+        }
     }
 
     private string[] WatchedIds()
@@ -160,8 +186,9 @@ internal sealed class CancellationWatch
 
     private sealed class Subscriber(CancellationWatch watch, string instanceId,
         TaskCompletionSource<CancellationReason> cancellation, Action<Exception> lost, TimeSpan tolerance,
-        TimeSpan interval, DateTime subscribedAtUtc) : IDisposable
+        TimeSpan interval, DateTime subscribedAtUtc, Action<long>? arrivals) : IDisposable
     {
+        public Action<long>? Arrivals { get; } = arrivals;
         public string InstanceId { get; } = instanceId;
         public TaskCompletionSource<CancellationReason> Cancellation { get; } = cancellation;
         public Action<Exception> Lost { get; } = lost;

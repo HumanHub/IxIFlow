@@ -410,6 +410,24 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         return row?.Read();
     }
 
+    public async Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(
+        IReadOnlyCollection<string> instanceIds)
+    {
+        ArgumentNullException.ThrowIfNull(instanceIds);
+        var sequences = new Dictionary<string, long>(StringComparer.Ordinal);
+        if (instanceIds.Count == 0)
+            return sequences;
+        await EnsureSchemaAsync();
+        await using var connection = await OpenOwnershipConnectionAsync();
+        foreach (var batch in instanceIds.Distinct(StringComparer.Ordinal).Chunk(1000))
+            foreach (var row in await connection.QueryAsync<(string InstanceId, long InboxSequence)>("""
+                         SELECT InstanceId, InboxSequence FROM dbo.IxIFlowWorkflowInstances
+                         WHERE InstanceId IN @InstanceIds
+                         """, new { InstanceIds = batch }))
+                sequences[row.InstanceId] = row.InboxSequence;
+        return sequences;
+    }
+
     public async Task<StoredWait?> GetWaitAsync(string instanceId, string waitId)
     {
         await EnsureSchemaAsync();

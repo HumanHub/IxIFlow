@@ -358,15 +358,20 @@ internal sealed class ActivityAttempts(
                 // a duplicate there; the parent settles its copy with the child's answer.
                 var childResult = await ResumeChildWaitAsync(host, pending.ChildWorkflowId,
                     accepted, cancellation.Token);
-                accepted.Forwarded = true;
-                checkpoint.Inbox.Settle(childResult.Event?.Outcome switch
+                // A child that has not decided yet, such as one another host runs, leaves the parent's
+                // copy pending; a later pass forwards it again and the child answers the duplicate.
+                if (childResult.Event?.Outcome is EventOutcome.Consumed or EventOutcome.Rejected or EventOutcome.Closed)
                 {
-                    EventOutcome.Rejected => new EventSettlement(accepted.EventId, EventOutcome.Rejected,
-                        Rejection: childResult.Event.Rejection ?? EventRejection.NotMatched),
-                    EventOutcome.Closed => new EventSettlement(accepted.EventId, EventOutcome.Rejected,
-                        Rejection: EventRejection.InstanceFinished),
-                    _ => new EventSettlement(accepted.EventId, EventOutcome.Consumed, accepted.WaitId)
-                });
+                    accepted.Forwarded = true;
+                    checkpoint.Inbox.Settle(childResult.Event.Outcome switch
+                    {
+                        EventOutcome.Rejected => new EventSettlement(accepted.EventId, EventOutcome.Rejected,
+                            Rejection: childResult.Event.Rejection ?? EventRejection.NotMatched),
+                        EventOutcome.Closed => new EventSettlement(accepted.EventId, EventOutcome.Rejected,
+                            Rejection: EventRejection.InstanceFinished),
+                        _ => new EventSettlement(accepted.EventId, EventOutcome.Consumed, accepted.WaitId)
+                    });
+                }
             }
             task = ObserveInvocationAsync(host.InvokeChildAsync(step, definition, instance,
                 sourceData, continuation.GetPrevious(services), pending.Id, cancellation.Token));

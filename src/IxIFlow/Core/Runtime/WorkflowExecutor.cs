@@ -69,7 +69,9 @@ internal sealed class WorkflowExecutor
                 // Events are taken before wait deadlines, so one received in time beats its deadline
                 // (D-33). A cancellation request the run has not applied yet goes first: its unwind
                 // closes the waits, and the events are then refused as cancelled.
-                if (checkpoint.CancellationRequested || host.ObservedCancellation == null)
+                if (host.ObservedInboxSequence > (checkpoint.Inbox.ReadThrough ?? long.MaxValue))
+                    checkpoint.Inbox.ExpectArrivals();
+                if (!CancellationPending(checkpoint, host))
                     progressed |= await _intake.TakeAsync(scopes, checkpoint, workflowData, host);
                 var children = await ProcessDueChildWaitsAsync(checkpoint, host);
                 progressed |= children == ChildCheck.Progressed;
@@ -231,7 +233,7 @@ internal sealed class WorkflowExecutor
                         continue;
                     // Events that arrived since the last read are taken before the run goes idle.
                     if (host.PersistsState && checkpoint.Inbox.MayHaveUnread && limitStop == null &&
-                        !host.Drain.IsCancellationRequested)
+                        !host.Drain.IsCancellationRequested && !CancellationPending(checkpoint, host))
                         continue;
                     break;
                 }
@@ -276,6 +278,15 @@ internal sealed class WorkflowExecutor
                     !checkpoint.CancellationRequested &&
                     checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                     runningTasks.Add(cancellationSignal);
+                // An event that arrives while the run waits for an activity is taken at once (D-32).
+                var inboxChanged = host.PersistsState && !CancellationPending(checkpoint, host)
+                    ? host.InboxChanged : null;
+                if (inboxChanged != null)
+                {
+                    if (host.ObservedInboxSequence > (checkpoint.Inbox.ReadThrough ?? long.MaxValue))
+                        continue;
+                    runningTasks.Add(inboxChanged);
+                }
                 if (uncommitted.IsPending(instance))
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
                 var finished = await Task.WhenAny(runningTasks);
@@ -283,7 +294,7 @@ internal sealed class WorkflowExecutor
                     retryTimerCancellation.Cancel();
                 cancellationToken.ThrowIfCancellationRequested();
                 if (finished == retryTimer || finished == callerCancellation ||
-                    finished == host.CancellationSignal || finished == drainRequested)
+                    finished == host.CancellationSignal || finished == drainRequested || finished == inboxChanged)
                     continue;
                 host.ThrowIfOwnershipLost();
                 var completedActivity = inFlight.Values.First(item => item.Task == finished);
@@ -494,6 +505,12 @@ internal sealed class WorkflowExecutor
             };
         }
     }
+
+    // A cancellation request the host observed and the run has not applied yet; while one is pending,
+    // the run applies it before it takes events.
+    private static bool CancellationPending(ExecutionCheckpoint checkpoint, IExecutionHost host) =>
+        !checkpoint.CancellationRequested && host.ObservedCancellation != null &&
+        checkpoint.Continuations[0].Status != ContinuationStatus.Completed;
 
     private async Task<bool> ApplyCancellationRequestAsync(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes,

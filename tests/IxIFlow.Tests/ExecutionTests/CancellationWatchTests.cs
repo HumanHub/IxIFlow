@@ -270,6 +270,9 @@ public sealed class CancellationWatchTests
             throw new NotSupportedException();
         public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
             throw new NotSupportedException();
+        public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(
+            IReadOnlyCollection<string> instanceIds) =>
+            throw new NotSupportedException();
         public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
             throw new NotSupportedException();
 
