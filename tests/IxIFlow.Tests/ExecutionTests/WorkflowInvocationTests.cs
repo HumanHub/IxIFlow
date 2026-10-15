@@ -11,7 +11,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class WorkflowInvocationTests
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly IWorkflowEngine _workflowEngine;
+    private readonly IWorkflowClient _workflowEngine;
 
     public WorkflowInvocationTests()
     {
@@ -21,7 +21,7 @@ public class WorkflowInvocationTests
         services.AddIxIFlow();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
     }
 
     [Fact]
@@ -35,8 +35,8 @@ public class WorkflowInvocationTests
         var builder = new WorkflowBuilder<ParentWorkflowData>("InvocationTrace");
         new ParentWorkflow().Build(builder);
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(builder.Build(), new ParentWorkflowData { OrderId = "O-1" });
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(builder.Build(), new ParentWorkflowData { OrderId = "O-1" });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var saved = await provider.GetRequiredService<IWorkflowStateRepository>()
@@ -76,7 +76,7 @@ public class WorkflowInvocationTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -125,7 +125,7 @@ public class WorkflowInvocationTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -160,7 +160,7 @@ public class WorkflowInvocationTests
                 .Output(child => child.ProcessedResult).To(ctx => ctx.WorkflowData.ValidationResult))
             .Build();
 
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition,
+        var result = await _workflowEngine.RunAsync(definition,
             new ParentWorkflowData { OrderId = "ORD-004", ProcessingCount = 4 });
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
@@ -200,7 +200,7 @@ public class WorkflowInvocationTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);

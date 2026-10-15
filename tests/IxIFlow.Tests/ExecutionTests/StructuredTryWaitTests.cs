@@ -51,7 +51,7 @@ public class StructuredTryWaitTests
     public async Task WaitInsideTry_ContinuesThroughFinallyWithoutEnteringCatch()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<TryData>("WaitInTry")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval")
@@ -69,10 +69,10 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var completed = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, Data(completed).Body);
         Assert.Equal(1, Data(completed).Finally);
@@ -84,7 +84,7 @@ public class StructuredTryWaitTests
     public async Task FailureAfterWait_EntersMatchingCatchThenFinally()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<TryData>("FailureAfterWait")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>())
@@ -99,10 +99,10 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var completed = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal("boom", Data(completed).Error);
         Assert.Equal(1, Data(completed).Finally);
@@ -113,15 +113,15 @@ public class StructuredTryWaitTests
     public async Task WaitInsideCatch_ResumesTheHandlerAndRunsFinally()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = CatchWaitWorkflow();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Equal("boom", Data(started).Error);
         Assert.Equal(0, Data(started).Finally);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "review", new Approval());
+        var completed = await engine.ResumeAsync(started.InstanceId, "review", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, Data(completed).Catch);
         Assert.Equal(1, Data(completed).Finally);
@@ -134,8 +134,8 @@ public class StructuredTryWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var engine = firstProvider.GetRequiredService<IWorkflowEngine>();
-            var started = await engine.ExecuteWorkflowAsync(CatchWaitWorkflow(), new TryData());
+            var engine = firstProvider.GetRequiredService<IWorkflowClient>();
+            var started = await engine.RunAsync(CatchWaitWorkflow(), new TryData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -143,8 +143,8 @@ public class StructuredTryWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(CatchWaitWorkflow());
-        var completed = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "review", new Approval());
+        var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "review", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal("boom", Data(completed).Error);
@@ -169,8 +169,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("boom", Data(result).Error);
@@ -200,8 +200,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(1, Data(result).Finally);
@@ -232,8 +232,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(2, Data(result).Finally);
@@ -244,7 +244,7 @@ public class StructuredTryWaitTests
     public async Task WaitAny_CleanupCanWaitBeforeTheParentContinues()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<TryData>("WaitAnyCleanupWait")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -262,11 +262,11 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Equal(0, Data(started).After);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "cleanup", new Approval());
+        var completed = await engine.ResumeAsync(started.InstanceId, "cleanup", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, Data(completed).Finally);
         Assert.Equal(2, Data(completed).After);
@@ -276,7 +276,7 @@ public class StructuredTryWaitTests
     public async Task WaitAny_DoesNotDiscardAFinallyAlreadyWaiting()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<TryData>("ExistingFinallyWait")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -292,14 +292,14 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var winner = await engine.ResumeWorkflowAsync(started.InstanceId, "winner", new Approval());
+        var winner = await engine.ResumeAsync(started.InstanceId, "winner", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Suspended, winner.Status);
         Assert.Equal(0, Data(winner).After);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "audit", new Approval());
+        var completed = await engine.ResumeAsync(started.InstanceId, "audit", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, Data(completed).Finally);
         Assert.Equal(2, Data(completed).After);
@@ -333,8 +333,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(2, Data(result).Finally);
@@ -367,8 +367,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(3, Data(result).Finally);
@@ -388,8 +388,8 @@ public class StructuredTryWaitTests
                 .Do(branch => branch.Step<StartActivity>()))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
@@ -403,7 +403,7 @@ public class StructuredTryWaitTests
     public async Task ExceptionWithoutRestorableConstructorStillEntersCatchAndFinally()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<TryData>("OpaqueCatch")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval").Step<ThrowOpaqueActivity>())
@@ -415,9 +415,9 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("opaque 17", Data(result).Error);
@@ -440,8 +440,8 @@ public class StructuredTryWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new TryData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new TryData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -449,8 +449,8 @@ public class StructuredTryWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(definition);
-        var completed = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "cleanup", new Approval());
+        var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "cleanup", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, completed.Status);
         Assert.Contains("opaque 17", completed.ErrorMessage);
@@ -471,12 +471,12 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
 
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine
-            .ExecuteWorkflowAsync(definition, new TryData());
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "review", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "review", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(1, Data(result).Finally);
     }
@@ -495,12 +495,12 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
 
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine
-            .ExecuteWorkflowAsync(definition, new TryData());
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "review", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "review", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(1, Data(result).Finally);
     }
@@ -520,8 +520,8 @@ public class StructuredTryWaitTests
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal("opaque 17", result.ErrorMessage);
@@ -545,13 +545,13 @@ public class StructuredTryWaitTests
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var running = engine.ResumeWorkflowAsync(started.InstanceId, "begin", new Approval());
+        var running = engine.ResumeAsync(started.InstanceId, "begin", new Approval());
         await services.GetRequiredService<CancellationProbe>().Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await engine.CancelWorkflowAsync(started.InstanceId,
+        await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
         var result = await running.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -563,7 +563,7 @@ public class StructuredTryWaitTests
     public async Task RemoteCancellationOfWaitRunsFinallyAndSkipsFollowingStep()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<TryData>("RemoteCancellationCleanup")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval"))
@@ -574,10 +574,10 @@ public class StructuredTryWaitTests
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.After)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var result = await engine.CancelWorkflowAsync(started.InstanceId,
+        var result = await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "withdrawn" });
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
@@ -589,7 +589,7 @@ public class StructuredTryWaitTests
     public async Task RemoteCancellationCanWaitForFinallyBeforeEnding()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<TryData>("RemoteCancellationWaitCleanup")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval"))
@@ -598,12 +598,12 @@ public class StructuredTryWaitTests
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var started = await engine.RunAsync(definition, new TryData());
 
-        var cleaning = await engine.CancelWorkflowAsync(started.InstanceId,
+        var cleaning = await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "withdrawn" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, cleaning.Status);
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "cleanup", new Approval());
+        var completed = await engine.ResumeAsync(started.InstanceId, "cleanup", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, completed.Status);
         Assert.Equal(1, Data(completed).Finally);
@@ -627,16 +627,16 @@ public class StructuredTryWaitTests
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
-        var resuming = engine.ResumeWorkflowAsync(started.InstanceId, "begin", new Approval());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new TryData());
+        var resuming = engine.ResumeAsync(started.InstanceId, "begin", new Approval());
         await services.GetRequiredService<CancellationProbe>().Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await engine.CancelWorkflowAsync(started.InstanceId,
+        await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
 
         var cleaning = await resuming.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(WorkflowExecutionStatus.Suspended, cleaning.Status);
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "cleanup", new Approval());
+        var completed = await engine.ResumeAsync(started.InstanceId, "cleanup", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Cancelled, completed.Status);
         Assert.Equal(1, Data(completed).Finally);
     }
@@ -656,12 +656,12 @@ public class StructuredTryWaitTests
             .Finally(body => body.Step<ManualCleanupActivity>(setup => setup
                 .Output(activity => activity.Completed).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
-        var resuming = engine.ResumeWorkflowAsync(started.InstanceId, "begin", new Approval());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new TryData());
+        var resuming = engine.ResumeAsync(started.InstanceId, "begin", new Approval());
         var probe = services.GetRequiredService<ManualCleanupProbe>();
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await engine.CancelWorkflowAsync(started.InstanceId,
+        await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
         probe.Release.SetResult();
 
@@ -685,8 +685,8 @@ public class StructuredTryWaitTests
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal("boom", result.ErrorMessage);
@@ -717,8 +717,8 @@ public class StructuredTryWaitTests
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("outer failure", result.ErrorMessage);
@@ -747,8 +747,8 @@ public class StructuredTryWaitTests
                 .Do(branch => branch.Step<WaitForOuterCancellationActivity>()))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("losing cleanup failure", result.ErrorMessage);
@@ -778,8 +778,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(1, Data(result).Catch);
@@ -808,8 +808,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(0, Data(result).Catch);
@@ -835,8 +835,8 @@ public class StructuredTryWaitTests
                     .Finally(cleanup => cleanup.Step<ThrowActivity>()))))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData())
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData())
             .WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
@@ -847,7 +847,7 @@ public class StructuredTryWaitTests
     public async Task UncaughtParallelFailureCanWaitForSiblingCleanupBeforeFaulting()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<TryData>("UncaughtParallelCleanupWait")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -860,10 +860,10 @@ public class StructuredTryWaitTests
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "cleanup", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "cleanup", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal("boom", result.ErrorMessage);
         Assert.Equal(1, Data(result).Finally);
@@ -873,7 +873,7 @@ public class StructuredTryWaitTests
     public async Task ParallelActivityInsideCatchReceivesTheCaughtException()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<TryData>("ParallelInsideCatch")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>())
@@ -893,8 +893,8 @@ public class StructuredTryWaitTests
                 ((FaultContext<TryData, MessageFault, StartActivity>)context).Fault.Message
         });
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var started = await engine.RunAsync(definition, new TryData());
+        var completed = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal("boom", Data(completed).Error);
@@ -907,8 +907,8 @@ public class StructuredTryWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var engine = firstProvider.GetRequiredService<IWorkflowEngine>();
-            var started = await engine.ExecuteWorkflowAsync(CustomErrorWorkflow(), new TryData());
+            var engine = firstProvider.GetRequiredService<IWorkflowClient>();
+            var started = await engine.RunAsync(CustomErrorWorkflow(), new TryData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -916,8 +916,8 @@ public class StructuredTryWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(CustomErrorWorkflow());
-        var completed = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "review", new Approval());
+        var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "review", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal("restored: custom failure", Data(completed).Error);
@@ -974,8 +974,8 @@ public class StructuredTryWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new TryData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new TryData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             Assert.Equal("callback failure", Data(started).Error);
             instanceId = started.InstanceId;
@@ -984,8 +984,8 @@ public class StructuredTryWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(definition);
-        var completed = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "review", new Approval());
+        var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "review", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal("callback failure", Data(completed).Error);
     }
@@ -1036,8 +1036,8 @@ public class StructuredTryWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(MarkedObjectWorkflow(), new TryData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(MarkedObjectWorkflow(), new TryData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             Assert.Equal(0, Data(started).After);
             instanceId = started.InstanceId;
@@ -1046,8 +1046,8 @@ public class StructuredTryWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(MarkedObjectWorkflow());
-        var completed = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "review", new Approval());
+        var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "review", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(42, Data(completed).After);
@@ -1086,8 +1086,8 @@ public class StructuredTryWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new TryData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new TryData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             Assert.Equal("fallback", Data(started).Error);
             instanceId = started.InstanceId;
@@ -1096,8 +1096,8 @@ public class StructuredTryWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(definition);
-        var completed = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "review", new Approval());
+        var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "review", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal("fallback", Data(completed).Error);
@@ -1158,8 +1158,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Code).To(ctx => ctx.WorkflowData.After)))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(42, Data(result).After);
@@ -1179,12 +1179,12 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
-        var completed = await services.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(result.InstanceId, "review", new Approval());
+        var completed = await services.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(result.InstanceId, "review", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, Data(completed).Finally);
     }
@@ -1206,9 +1206,9 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
 
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new TryData());
+        var result = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(1, Data(result).Finally);
@@ -1229,8 +1229,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(0, Data(result).Catch);
@@ -1241,7 +1241,7 @@ public class StructuredTryWaitTests
     public async Task WaitInsideFinally_CompletesBeforeTheNextStep()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<TryData>("WaitInFinally")
             .Step<StartActivity>()
             .Try(body => body.Step<CountActivity>(setup => setup
@@ -1256,12 +1256,12 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Equal(1, Data(started).Body);
         Assert.Equal(0, Data(started).After);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "audit", new Approval());
+        var completed = await engine.ResumeAsync(started.InstanceId, "audit", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, Data(completed).Finally);
         Assert.Equal(1, Data(completed).After);
@@ -1279,10 +1279,10 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
 
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new TryData());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(1, Data(result).Finally);
@@ -1376,8 +1376,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.FinallyCount)))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new OutputMappingData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new OutputMappingData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var data = Assert.IsType<OutputMappingData>(result.WorkflowData);
@@ -1402,8 +1402,8 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new TryData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(0, Data(result).Catch);
@@ -1415,7 +1415,7 @@ public class StructuredTryWaitTests
     public async Task WaitOutputMappingFailureRunsCatchAndFinally()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<OutputMappingData>("WaitOutputMappingFailure")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval", null, setup => setup
@@ -1427,10 +1427,10 @@ public class StructuredTryWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.FinallyCount)))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new OutputMappingData());
+        var started = await engine.RunAsync(definition, new OutputMappingData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval { Value = 1 });
+        var result = await engine.ResumeAsync(started.InstanceId, "approval", new Approval { Value = 1 });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var data = Assert.IsType<OutputMappingData>(result.WorkflowData);
@@ -1456,8 +1456,8 @@ public class StructuredTryWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new OutputMappingData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new OutputMappingData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -1480,8 +1480,8 @@ public class StructuredTryWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(definition);
-        var result = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .RecoverWorkflowAsync(instanceId);
+        var result = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .RecoverAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var data = Assert.IsType<OutputMappingData>(result.WorkflowData);

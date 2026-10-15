@@ -15,7 +15,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class ActionFuncSerializationTests
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly IWorkflowEngine _workflowEngine;
+    private readonly IWorkflowClient _workflowEngine;
 
     public ActionFuncSerializationTests()
     {
@@ -25,7 +25,7 @@ public class ActionFuncSerializationTests
         services.AddIxIFlow();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
     }
 
     [Fact]
@@ -54,7 +54,7 @@ public class ActionFuncSerializationTests
         var data = new ActionTestWorkflowData();
 
         // Act & Assert - Should not throw serialization exception
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, data);
+        var result = await _workflowEngine.RunAsync(definition, data);
 
         Assert.NotNull(result);
         Assert.True(result.IsSuccess);
@@ -88,7 +88,7 @@ public class ActionFuncSerializationTests
         var data = new StaticMethodTestWorkflowData();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, data);
+        var result = await _workflowEngine.RunAsync(definition, data);
 
         // Assert
         Assert.NotNull(result);
@@ -109,7 +109,7 @@ public class ActionFuncSerializationTests
         var data = new AsyncActionTestWorkflowData();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, data);
+        var result = await _workflowEngine.RunAsync(definition, data);
 
         // Assert
         Assert.NotNull(result);
@@ -156,7 +156,7 @@ public class ActionFuncSerializationTests
         var data = new ComplexCatchTestWorkflowData();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, data);
+        var result = await _workflowEngine.RunAsync(definition, data);
 
         // Assert
         Assert.NotNull(result);
@@ -191,7 +191,7 @@ public class ActionFuncSerializationTests
         var data = new WorkflowDataWithMethods();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, data);
+        var result = await _workflowEngine.RunAsync(definition, data);
 
         // Assert
         Assert.NotNull(result);

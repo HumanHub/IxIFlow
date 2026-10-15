@@ -37,7 +37,7 @@ public sealed class FailureClassificationTests
         var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
         await registry.RegisterWorkflowAsync(child);
         await registry.RegisterWorkflowAsync(parent);
-        var started = await Engine(services).ExecuteWorkflowAsync(parent, new ParentData());
+        var started = await Engine(services).RunAsync(parent, new ParentData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var parentId = started.InstanceId;
 
@@ -80,7 +80,7 @@ public sealed class FailureClassificationTests
         string parentId;
         try
         {
-            var result = await Engine(services).ExecuteWorkflowAsync(parent, new ParentData());
+            var result = await Engine(services).RunAsync(parent, new ParentData());
             parentId = result.InstanceId;
         }
         catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure)
@@ -113,8 +113,8 @@ public sealed class FailureClassificationTests
         return services.BuildServiceProvider();
     }
 
-    private static IWorkflowEngine Engine(IServiceProvider services) =>
-        services.GetRequiredService<IWorkflowEngine>();
+    private static IWorkflowClient Engine(IServiceProvider services) =>
+        services.GetRequiredService<IWorkflowClient>();
 
     private static async Task RecoverOnceAsync(IServiceProvider services,
         IWorkflowStateRepository repository, TimeProvider time)

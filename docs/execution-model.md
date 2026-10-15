@@ -3,7 +3,7 @@ title: Execution model
 description: How IxIFlow definitions, instances, steps, and hosts work.
 ---
 
-IxIFlow has a definition, an execution engine, and an instance record. A definition contains ordered steps and the workflow data type. `IWorkflowEngine.ExecuteWorkflowAsync` runs that definition with a data object and returns a `WorkflowExecutionResult`.
+IxIFlow has a definition, an execution engine, and an instance record. A definition contains ordered steps and the workflow data type. `IWorkflowClient.RunAsync` runs that definition with a data object and returns a `WorkflowExecutionResult`.
 
 ## Normal execution
 
@@ -35,11 +35,11 @@ The SQL host overload registers a SQL workflow state repository, host registry, 
 
 ## Checkpoints
 
-The scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. The SQL host scans for interrupted running instances. An uncertain external activity outcome stops for an explicit resolution decision; inspect pending attempts and resolve them through `IWorkflowEngine` before continuing.
+The scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. The SQL host scans for interrupted running instances. An uncertain external activity outcome stops for an explicit resolution decision; inspect pending attempts and resolve them through `IWorkflowClient` before continuing.
 
 A checkpoint is saved at effect boundaries: when the instance starts, before and after each activity or child workflow, when a wait is saved or a scheduled retry is set, when a branch is cancelled, and when the run stops. Control flow between them, such as `If`, loops and scope changes, is not saved; after an interruption it is evaluated again from the last checkpoint. Conditions, mappings, wait predicates and parallel completion conditions may therefore run more than once. Keep them pure: read the workflow data and the previous step, perform no I/O, and read time only through the injected `TimeProvider`.
 
-A checkpoint larger than `IxIFlowOptions.MaxCheckpointBytes` (4 MiB of workflow data and execution state by default) is never saved. The instance stops at `NeedsResolution` with its last checkpoint and the limit as its error; raise the limit and call `RecoverWorkflowAsync`, or cancel it. A start, event or resolution that would exceed the limit is refused with a `WorkflowEngineException` of kind `ResourceExhausted`.
+A checkpoint larger than `IxIFlowOptions.MaxCheckpointBytes` (4 MiB of workflow data and execution state by default) is never saved. The instance stops at `NeedsResolution` with its last checkpoint and the limit as its error; raise the limit and call `RecoverAsync`, or cancel it. A start, event or resolution that would exceed the limit is refused with a `WorkflowEngineException` of kind `ResourceExhausted`.
 
 ## Interrupted activities
 
@@ -81,10 +81,10 @@ public sealed class ChargeCardActivity(IPaymentLedger ledger) : IRecoverableActi
 An activity without this contract, or one that returns `Unresolved`, stops at `NeedsResolution`. An operator lists the pending attempts and records a decision. A completed decision supplies the activity's output properties; a failed decision supplies an error. The decision is saved before execution continues.
 
 ```csharp
-var pending = await engine.GetPendingActivitiesAsync(instanceId);
+var pending = await client.GetPendingActivitiesAsync(instanceId);
 var attempt = pending.Single();
 
-await engine.ResolveActivityAsync(instanceId, attempt.InvocationId,
+await client.ResolveAsync(instanceId, attempt.InvocationId,
     ActivityResolution.Completed(
         new Dictionary<string, object?> { ["ChargeId"] = "ch_123" },
         note: "Confirmed in the payment dashboard",

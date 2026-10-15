@@ -1,6 +1,6 @@
 # IxIFlow Workflow Engine
 
-A type-safe, durable workflow engine for .NET. Define activities and control flow with a fluent C# API, then execute the definition through `IWorkflowEngine`. Workflows can suspend, survive restarts with persisted state, and resume where they stopped.
+A type-safe, durable workflow engine for .NET. Define activities and control flow with a fluent C# API, then execute the definition through `IWorkflowClient`. Workflows can suspend, survive restarts with persisted state, and resume where they stopped.
 
 ## Features
 
@@ -99,7 +99,7 @@ services.AddTransient<RejectOrderActivity>();
 
 using var provider = services.BuildServiceProvider();
 using var scope = provider.CreateScope();
-var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+var client = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
 
 var definition = Workflow.Create<OrderData>("OrderProcessing", version: 1)
     .Step<ValidateOrderActivity>(step => step
@@ -113,7 +113,7 @@ var definition = Workflow.Create<OrderData>("OrderProcessing", version: 1)
         @else => @else.Step<RejectOrderActivity>())
     .Build();
 
-var result = await engine.ExecuteWorkflowAsync(
+var result = await client.RunAsync(
     definition, new OrderData { OrderId = "ORD-001", Amount = 100.50m });
 
 if (result.IsSuccess)
@@ -222,9 +222,9 @@ var definition = Workflow.Create<OrderData>("Approval")
         .Input(activity => activity.Approved).From(ctx => ctx.PreviousStep.Approved))
     .Build();
 
-var started = await engine.ExecuteWorkflowAsync(definition, orderData);
+var started = await client.RunAsync(definition, orderData);
 // started.Status is Suspended
-var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "manager-approval", approvalEvent);
+var resumed = await client.ResumeAsync(started.InstanceId, "manager-approval", approvalEvent);
 ```
 
 `Delay(TimeSpan)` suspends until a deadline, and `Invoke<TWorkflow, TChildData>` runs a child workflow with its own saved state.

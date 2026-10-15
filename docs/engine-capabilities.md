@@ -3,7 +3,7 @@ title: Engine capabilities
 description: IxIFlow execution, persistence, recovery, and host behavior.
 ---
 
-IxIFlow defines workflows with the [fluent C# API](/docs/fluent-api/) and executes them through `IWorkflowEngine`. The core engine runs in one application process with `AddIxIFlow()`. SQL Server state and host services are optional.
+IxIFlow defines workflows with the [fluent C# API](/docs/fluent-api/) and executes them through `IWorkflowClient`. The core engine runs in one application process with `AddIxIFlow()`. SQL Server state and host services are optional.
 
 ## Workflow execution
 
@@ -17,9 +17,9 @@ IxIFlow defines workflows with the [fluent C# API](/docs/fluent-api/) and execut
 
 `AddIxIFlow()` registers in-memory workflow state and event storage. These singleton stores retain instances across dependency injection scopes in one process. The SQL Server host registers shared workflow instance state with revisioned checkpoints and renewable execution leases. Its definition registry and event store remain in memory; each resuming host registers the matching workflow definitions and activity code.
 
-An interrupted activity or child workflow with an uncertain external outcome can stop at `NeedsResolution`. `IWorkflowEngine.GetPendingActivitiesAsync` lists pending attempts. `ResolveActivityAsync` records a decision to complete a step with explicit outputs or fail it with a typed exception. External effects require an idempotency or recovery policy in the application.
+An interrupted activity or child workflow with an uncertain external outcome can stop at `NeedsResolution`. `IWorkflowClient.GetPendingActivitiesAsync` lists pending attempts. `ResolveAsync` records a decision to complete a step with explicit outputs or fail it with a typed exception. External effects require an idempotency or recovery policy in the application.
 
-A caller's `CancellationToken` stops the current engine call and leaves a saved instance recoverable. `CancelWorkflowAsync` requests workflow cancellation and unwinds through saga compensation and `Finally`. Recovery scans claim eligible running instances after an owner's lease expires and apply cancellation requests to idle suspended instances.
+A caller's `CancellationToken` stops the current engine call and leaves a saved instance recoverable. `CancelAsync` requests workflow cancellation and unwinds through saga compensation and `Finally`. Recovery scans claim eligible running instances after an owner's lease expires and apply cancellation requests to idle suspended instances.
 
 ## Child workflows
 

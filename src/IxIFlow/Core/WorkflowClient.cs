@@ -3,18 +3,18 @@ using IxIFlow.Core.Runtime;
 namespace IxIFlow.Core;
 
 /// <summary>
-/// Runs workflow definitions and resumes saved continuations through one execution model.
+/// The in-process client: each call runs on the instance host in the caller's scope.
 /// </summary>
-internal sealed class WorkflowEngine : IWorkflowEngine
+internal sealed class WorkflowClient : IWorkflowClient
 {
     private readonly InstanceHost _runner;
 
-    public WorkflowEngine(InstanceHost runner)
+    public WorkflowClient(InstanceHost runner)
     {
         _runner = runner ?? throw new ArgumentNullException(nameof(runner));
     }
 
-    public Task<WorkflowExecutionResult> ExecuteWorkflowAsync<TWorkflowData>(
+    public Task<WorkflowExecutionResult> RunAsync<TWorkflowData>(
         WorkflowDefinition definition,
         TWorkflowData workflowData,
         WorkflowOptions? options = null,
@@ -27,14 +27,14 @@ internal sealed class WorkflowEngine : IWorkflowEngine
             cancellationToken);
     }
 
-    public Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(
+    public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
         string instanceId,
         TEventData @event,
         CancellationToken cancellationToken = default)
         where TEventData : class =>
         ForInstanceAsync(instanceId, _runner.ResumeAsync(instanceId, null, @event, cancellationToken));
 
-    public Task<WorkflowExecutionResult> ResumeWorkflowAsync<TEventData>(
+    public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
         string instanceId,
         string key,
         TEventData @event,
@@ -45,7 +45,7 @@ internal sealed class WorkflowEngine : IWorkflowEngine
         return ForInstanceAsync(instanceId, _runner.ResumeAsync(instanceId, key, @event, cancellationToken));
     }
 
-    public Task<WorkflowExecutionResult> ResumeWorkflowDeliveryAsync<TEventData>(
+    public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
         string instanceId, string? key, TEventData @event, string deliveryId,
         CancellationToken cancellationToken = default)
         where TEventData : class
@@ -55,17 +55,17 @@ internal sealed class WorkflowEngine : IWorkflowEngine
             _runner.ResumeAsync(instanceId, key, @event, cancellationToken, deliveryId));
     }
 
-    public Task<WorkflowExecutionResult> RecoverWorkflowAsync(
+    public Task<WorkflowExecutionResult> RecoverAsync(
         string instanceId,
         CancellationToken cancellationToken = default) =>
         ForInstanceAsync(instanceId, _runner.RecoverAsync(instanceId, cancellationToken));
 
-    public Task<WorkflowExecutionResult> CancelWorkflowAsync(
+    public Task<WorkflowExecutionResult> CancelAsync(
         string instanceId, CancellationReason reason,
         CancellationToken cancellationToken = default) =>
         ForInstanceAsync(instanceId, _runner.CancelAsync(instanceId, reason, cancellationToken));
 
-    public Task<WorkflowExecutionResult> ResolveActivityAsync(
+    public Task<WorkflowExecutionResult> ResolveAsync(
         string instanceId, string invocationId, ActivityResolution resolution,
         CancellationToken cancellationToken = default) =>
         ForInstanceAsync(instanceId, _runner.ResolveAsync(instanceId, invocationId, resolution, cancellationToken));

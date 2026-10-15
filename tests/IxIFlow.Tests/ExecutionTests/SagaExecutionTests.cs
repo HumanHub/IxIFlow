@@ -15,7 +15,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class SagaExecutionTests
 {
     private readonly ServiceProvider _serviceProvider;
-    private readonly IWorkflowEngine _workflowEngine;
+    private readonly IWorkflowClient _workflowEngine;
     private readonly ITestOutputHelper _output;
 
     public SagaExecutionTests(ITestOutputHelper output)
@@ -33,7 +33,7 @@ public class SagaExecutionTests
         services.AddLogging();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
     }
 
     [Fact]
@@ -96,7 +96,7 @@ public class SagaExecutionTests
             .Build();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -191,7 +191,7 @@ public class SagaExecutionTests
             .Build();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess); // Workflow succeeded (caught SagaTerminatedException)
@@ -273,7 +273,7 @@ public class SagaExecutionTests
             .Build();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess); // Workflow continued despite saga failure
@@ -353,7 +353,7 @@ public class SagaExecutionTests
             .Build();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -421,7 +421,7 @@ public class SagaExecutionTests
             .Build();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess); // Workflow succeeded (caught SagaTerminatedException)
@@ -518,7 +518,7 @@ public class SagaExecutionTests
             .Build();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess); // Workflow succeeded (caught SagaTerminatedException)
@@ -579,7 +579,7 @@ public class SagaExecutionTests
             .Build();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess); // Should succeed after retries
@@ -669,7 +669,7 @@ public class SagaExecutionTests
             .Build();
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - This will be suspended, so check suspension state
         Assert.False(result.IsSuccess); // Should be suspended
@@ -693,7 +693,7 @@ public class SagaExecutionTests
             ConfirmedBy = "TestManager",
             Notes = "Order confirmed for testing"
         };
-        var resumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, confirmationEvent);
+        var resumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, confirmationEvent);
         Assert.True(resumeResult.IsSuccess, $"Resume returned {resumeResult.Status}: {resumeResult.ErrorMessage}"); // Should succeed after resume
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SagaTestData)resumeResult.WorkflowData!;
@@ -771,7 +771,7 @@ _output.WriteLine("WORKFLOW STRUCTURE:");
             }
         }
         
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // DEBUG OUTPUT
         _output.WriteLine($"AFTER: Step1Completed = {workflowData.Step1Completed}, Step1Compensated = {workflowData.Step1Compensated}");
@@ -848,7 +848,7 @@ _output.WriteLine("WORKFLOW STRUCTURE:");
 _output.WriteLine("DEBUG: Executing saga suspend test...");
         _output.WriteLine($"BEFORE: Step1Completed = {workflowData.Step1Completed}");
 
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Debug output
         _output.WriteLine($"AFTER: Step1Completed = {workflowData.Step1Completed}");
@@ -935,7 +935,7 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
         _output.WriteLine("TESTING: OutcomeOn pattern execution...");
         _output.WriteLine($"PaymentMethod: {workflowData.PaymentMethod}");
 
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
         _output.WriteLine($"Result.IsSuccess: {result.IsSuccess}");
@@ -1028,7 +1028,7 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
 _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend)...");
         _output.WriteLine($"PaymentMethod: {workflowData.PaymentMethod}");
 
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - Should be suspended
         _output.WriteLine($"Result.IsSuccess: {result.IsSuccess}");
@@ -1078,7 +1078,7 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
         
         _output.WriteLine($"RESUME EVENT: ConfirmedProductId = '{confirmationEvent.ConfirmedProductId}'");
 
-        var resumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, confirmationEvent);
+        var resumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, confirmationEvent);
         
         // Assert resume success
         _output.WriteLine($"Resume Result.IsSuccess: {resumeResult.IsSuccess}");

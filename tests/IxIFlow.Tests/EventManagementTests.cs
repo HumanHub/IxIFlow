@@ -10,8 +10,8 @@ public class EventManagementTests
     [Fact]
     public async Task TargetedEventReportsBusyInstanceForRetry()
     {
-        var engine = new Mock<IWorkflowEngine>();
-        engine.Setup(item => item.ResumeWorkflowAsync(
+        var engine = new Mock<IWorkflowClient>();
+        engine.Setup(item => item.ResumeAsync(
                 "busy-instance", It.IsAny<TestEvent>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new WorkflowExecutionResult
             {
@@ -29,8 +29,8 @@ public class EventManagementTests
     [Fact]
     public async Task CorrelatedEventReportsBusyInstanceForRetry()
     {
-        var engine = new Mock<IWorkflowEngine>();
-        engine.Setup(item => item.ResumeWorkflowAsync(
+        var engine = new Mock<IWorkflowClient>();
+        engine.Setup(item => item.ResumeAsync(
                 "busy-instance", It.IsAny<TestEvent>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new WorkflowExecutionResult
             {

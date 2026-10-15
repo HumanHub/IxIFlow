@@ -36,7 +36,7 @@ public sealed class EffectBoundaryTests
             .Build();
 
         await EngineAssert.StoreFailureAsync(() => Engine(services)
-            .ExecuteWorkflowAsync(definition, new BoundaryData { Branch = "then" }));
+            .RunAsync(definition, new BoundaryData { Branch = "then" }));
 
         // The If was never committed: the last checkpoint ends after the first activity.
         var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("ReDerivedControlFlow"));
@@ -66,7 +66,7 @@ public sealed class EffectBoundaryTests
                 .Do(branch => branch.Step<RecordActivity>(setup => setup.Input(activity => activity.Name).From(_ => "winner"))))
             .Build();
 
-        var result = await Engine(services).ExecuteWorkflowAsync(definition, new BoundaryData());
+        var result = await Engine(services).RunAsync(definition, new BoundaryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.True(Probe(services).CancellationWasSavedBeforeSignal,
@@ -93,7 +93,7 @@ public sealed class EffectBoundaryTests
         };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Engine(services)
-            .ExecuteWorkflowAsync(definition, new BoundaryData(), cancellationToken: stop.Token));
+            .RunAsync(definition, new BoundaryData(), cancellationToken: stop.Token));
 
         var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("CommittedSagaRetry"));
         Assert.Contains(ExecutionCheckpoint.Read(saved.ExecutionStateJson).Continuations,
@@ -112,12 +112,12 @@ public sealed class EffectBoundaryTests
                 .Do(branch => branch.WaitFor<Approval>("approval")))
             .Build();
 
-        var started = await Engine(services).ExecuteWorkflowAsync(definition, new BoundaryData());
+        var started = await Engine(services).RunAsync(definition, new BoundaryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.True(Probe(services).WaitWasSavedWhileRunning,
             "The wait was not saved while the sibling activity ran");
 
-        var resumed = await Engine(services).ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var resumed = await Engine(services).ResumeAsync(started.InstanceId, "approval", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
     }
 
@@ -135,8 +135,8 @@ public sealed class EffectBoundaryTests
         return services.BuildServiceProvider();
     }
 
-    private static IWorkflowEngine Engine(IServiceProvider services) =>
-        services.GetRequiredService<IWorkflowEngine>();
+    private static IWorkflowClient Engine(IServiceProvider services) =>
+        services.GetRequiredService<IWorkflowClient>();
 
     private static BoundaryProbe Probe(IServiceProvider services) => services.GetRequiredService<BoundaryProbe>();
 

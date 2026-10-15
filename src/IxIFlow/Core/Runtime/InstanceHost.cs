@@ -701,8 +701,8 @@ internal sealed class InstanceHost(
                 "raise the limit and recover it, or cancel it")
             : null;
 
-    private IWorkflowEngine Engine =>
-        (IWorkflowEngine?)services.GetService(typeof(IWorkflowEngine))
+    private IWorkflowClient Engine =>
+        (IWorkflowClient?)services.GetService(typeof(IWorkflowClient))
         ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
             "The workflow engine is not registered");
 
@@ -739,17 +739,17 @@ internal sealed class InstanceHost(
 
         public Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,
             CancellationToken cancellationToken = default) =>
-            host.Engine.RecoverWorkflowAsync(childInstanceId, cancellationToken);
+            host.Engine.RecoverAsync(childInstanceId, cancellationToken);
 
         public Task<WorkflowExecutionResult> CancelChildAsync(string childInstanceId, CancellationReason reason,
             CancellationToken cancellationToken) =>
-            host.Engine.CancelWorkflowAsync(childInstanceId, reason, cancellationToken);
+            host.Engine.CancelAsync(childInstanceId, reason, cancellationToken);
 
         public async Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key,
             object @event, string deliveryId, CancellationToken cancellationToken)
         {
-            var method = typeof(IWorkflowEngine).GetMethods().Single(candidate =>
-                candidate.Name == nameof(IWorkflowEngine.ResumeWorkflowDeliveryAsync));
+            var method = typeof(IWorkflowClient).GetMethods().Single(candidate =>
+                candidate.Name == nameof(IWorkflowClient.ResumeAsync) && candidate.GetParameters().Length == 5);
             var task = (Task<WorkflowExecutionResult>)method.MakeGenericMethod(@event.GetType())
                 .Invoke(host.Engine, [childInstanceId, key, @event, deliveryId, cancellationToken])!;
             return await task;

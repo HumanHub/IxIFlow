@@ -16,11 +16,11 @@ public sealed class WorkflowDeadlineTests
     public async Task ApprovalBeforeDeadlineRunsOnlyTheReceivedPath()
     {
         using var services = Services();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(ApprovalWorkflow("ApprovedInTime"),
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(ApprovalWorkflow("ApprovedInTime"),
             new ApprovalData());
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+        var result = await engine.ResumeAsync(started.InstanceId, "approval",
             new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -31,13 +31,13 @@ public sealed class WorkflowDeadlineTests
     public async Task WaitDeadlineRunsTimeoutPathAndSkipsReceivedPath()
     {
         using var services = Services();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(ApprovalWorkflow("ApprovalTimedOut"),
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(ApprovalWorkflow("ApprovalTimedOut"),
             new ApprovalData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         await Task.Delay(160);
-        var result = await engine.RecoverWorkflowAsync(started.InstanceId);
+        var result = await engine.RecoverAsync(started.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("timeout", Assert.IsType<ApprovalData>(result.WorkflowData).Outcome);
@@ -47,12 +47,12 @@ public sealed class WorkflowDeadlineTests
     public async Task LateApprovalCannotBeatItsCommittedDeadline()
     {
         using var services = Services();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(ApprovalWorkflow("LateApproval"),
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(ApprovalWorkflow("LateApproval"),
             new ApprovalData());
         await Task.Delay(160);
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+        var result = await engine.ResumeAsync(started.InstanceId, "approval",
             new Approval());
 
         Assert.False(result.EventAccepted);
@@ -63,7 +63,7 @@ public sealed class WorkflowDeadlineTests
     public async Task DueWaitDoesNotDiscardAnEventForAnotherBranch()
     {
         using var services = Services();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("ParallelDeadlineAndApproval")
             .Step<SeedActivity>()
             .Parallel(parallel => parallel
@@ -76,10 +76,10 @@ public sealed class WorkflowDeadlineTests
                     .Step<AfterActivity>(step => step
                         .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After))))
             .Build();
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
+        var started = await engine.RunAsync(definition, new ApprovalData());
         await Task.Delay(160);
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "second", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "second", new Approval());
 
         Assert.True(result.EventAccepted);
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -92,17 +92,17 @@ public sealed class WorkflowDeadlineTests
     public async Task InstanceDeadlineIncludesTimeParkedAtWait()
     {
         using var services = Services();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("WholeInstanceTimeout")
             .Step<SeedActivity>()
             .WaitFor<Approval>("approval")
             .Build();
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData(),
+        var started = await engine.RunAsync(definition, new ApprovalData(),
             new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(80) });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         await Task.Delay(160);
-        var result = await engine.RecoverWorkflowAsync(started.InstanceId);
+        var result = await engine.RecoverAsync(started.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.TimedOut, result.Status);
     }
@@ -111,13 +111,13 @@ public sealed class WorkflowDeadlineTests
     public async Task InstanceDeadlineInterruptsAnActiveActivity()
     {
         using var services = Services();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var blocking = services.GetRequiredService<BlockingProbe>();
         var definition = Workflow.Create<ApprovalData>("ActiveExecutionTimeout")
             .Step<BlockingActivity>()
             .Build();
 
-        var execution = engine.ExecuteWorkflowAsync(definition, new ApprovalData(),
+        var execution = engine.RunAsync(definition, new ApprovalData(),
             new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(500) });
         await blocking.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
         var result = await execution.WaitAsync(TimeSpan.FromSeconds(3));
@@ -139,12 +139,12 @@ public sealed class WorkflowDeadlineTests
             .AddIxIFlow()
             .AddSingleton<IWorkflowStateRepository>(repository)
             .BuildServiceProvider();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("DeadlineAfterCompletion")
             .Step<SeedActivity>()
             .Build();
 
-        var result = await engine.ExecuteWorkflowAsync(definition, new ApprovalData(),
+        var result = await engine.RunAsync(definition, new ApprovalData(),
                 new WorkflowOptions { ExecutionTimeout = timeout })
             .WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -160,9 +160,9 @@ public sealed class WorkflowDeadlineTests
         using var services = Services();
         Assert.Contains(services.GetServices<IHostedService>(),
             service => service is WorkflowRecoveryService);
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
-        var started = await engine.ExecuteWorkflowAsync(ApprovalWorkflow("ScannedApproval"),
+        var started = await engine.RunAsync(ApprovalWorkflow("ScannedApproval"),
             new ApprovalData());
         await Task.Delay(160);
         Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
@@ -198,7 +198,7 @@ public sealed class WorkflowDeadlineTests
     public async Task TimeoutExitsOnlyItsContainingSequence()
     {
         using var services = Services();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("NestedWaitTimeout")
             .Step<SeedActivity>()
             .Sequence(sequence => sequence
@@ -213,10 +213,10 @@ public sealed class WorkflowDeadlineTests
             .Step<AfterActivity>(step => step
                 .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After))
             .Build();
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
+        var started = await engine.RunAsync(definition, new ApprovalData());
         await Task.Delay(160);
 
-        var result = await engine.RecoverWorkflowAsync(started.InstanceId);
+        var result = await engine.RecoverAsync(started.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var data = Assert.IsType<ApprovalData>(result.WorkflowData);
@@ -236,8 +236,8 @@ public sealed class WorkflowDeadlineTests
                 .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After)))
             .Build();
 
-        var execution = services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new ApprovalData(),
+        var execution = services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new ApprovalData(),
                 new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(500) });
         await blocking.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
         var result = await execution.WaitAsync(TimeSpan.FromSeconds(3));
@@ -251,14 +251,14 @@ public sealed class WorkflowDeadlineTests
     {
         using var services = Services();
         var definition = CleanupWaitWorkflow("CancelCleanupTimeout");
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
-        var cleaning = await engine.CancelWorkflowAsync(started.InstanceId,
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new ApprovalData());
+        var cleaning = await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, cleaning.Status);
         await Task.Delay(160);
 
-        var result = await engine.RecoverWorkflowAsync(started.InstanceId);
+        var result = await engine.RecoverAsync(started.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
         Assert.True(Assert.IsType<ApprovalData>(result.WorkflowData).After);
@@ -269,15 +269,15 @@ public sealed class WorkflowDeadlineTests
     {
         using var services = Services();
         var definition = CleanupWaitWorkflow("DeadlineCleanupTimeout");
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData(),
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new ApprovalData(),
             new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(80) });
         await Task.Delay(160);
-        var cleaning = await engine.RecoverWorkflowAsync(started.InstanceId);
+        var cleaning = await engine.RecoverAsync(started.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.Suspended, cleaning.Status);
         await Task.Delay(160);
 
-        var result = await engine.RecoverWorkflowAsync(started.InstanceId);
+        var result = await engine.RecoverAsync(started.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.TimedOut, result.Status);
         Assert.True(Assert.IsType<ApprovalData>(result.WorkflowData).After);

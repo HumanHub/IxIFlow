@@ -261,7 +261,7 @@ public class WorkflowQueueService : BackgroundService
         CancellationToken cancellationToken = default)
     {
         using var scope = _serviceProvider.CreateScope();
-        var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
         var versionRegistry = scope.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>();
         var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
 
@@ -301,13 +301,13 @@ public class WorkflowQueueService : BackgroundService
                     StartedAt = DateTime.UtcNow
                 });
             }
-            var result = await workflowEngine.ExecuteWorkflowAsync(
+            var result = await workflowEngine.RunAsync(
                 definition, workflowData, options, cancellationToken);
             if (result.Status == WorkflowExecutionStatus.Running)
             {
                 var saved = await repository.GetWorkflowInstanceAsync(command.InstanceId);
                 if (saved?.Status != WorkflowStatus.Running)
-                    result = await workflowEngine.ExecuteWorkflowAsync(
+                    result = await workflowEngine.RunAsync(
                         definition, workflowData, options, cancellationToken);
                 if (result.Status == WorkflowExecutionStatus.Running)
                     throw new WorkflowInstanceBusyException(
@@ -342,7 +342,7 @@ public class WorkflowQueueService : BackgroundService
             throw new InvalidOperationException(
                 $"Resume command for '{command.InstanceId}' expired without an accepting wait");
         using var scope = _serviceProvider.CreateScope();
-        var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var workflowEngine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
         var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
 
         try
@@ -358,7 +358,7 @@ public class WorkflowQueueService : BackgroundService
                 ?? throw new InvalidOperationException("Resume event data cannot be null");
 
             // Resume workflow
-            var result = await workflowEngine.ResumeWorkflowDeliveryAsync(
+            var result = await workflowEngine.ResumeAsync(
                 command.InstanceId, command.Key, eventData, command.CommandId, cancellationToken);
             if (!result.EventAccepted)
             {
@@ -399,11 +399,11 @@ public class WorkflowQueueService : BackgroundService
         CancellationToken cancellationToken = default)
     {
         using var scope = _serviceProvider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
         WorkflowExecutionResult result;
         try
         {
-            result = await engine.CancelWorkflowAsync(
+            result = await engine.CancelAsync(
                 command.InstanceId, command.Reason, cancellationToken);
         }
         catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidRequest &&

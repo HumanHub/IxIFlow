@@ -111,9 +111,9 @@ var definition = Workflow.Create<OrderData>("Approval")
         .Input(activity => activity.Approved).From(ctx => ctx.PreviousStep.Approved))
     .Build();
 
-var started = await engine.ExecuteWorkflowAsync(definition, orderData);
+var started = await client.RunAsync(definition, orderData);
 // After started.Status is Suspended:
-var resumed = await engine.ResumeWorkflowAsync(
+var resumed = await client.ResumeAsync(
     started.InstanceId, "manager-approval", approvalEvent);
 ```
 
@@ -133,10 +133,10 @@ Register child definitions and activity code on any host that may execute or res
 
 ## Execute
 
-`IWorkflowEngine.ExecuteWorkflowAsync` accepts a definition and a data object. It returns `WorkflowExecutionResult` with `Status`, `InstanceId`, `WorkflowData`, `ErrorMessage`, and `TraceEntries`. `IsSuccess` is true when `Status` is `Success`.
+`IWorkflowClient.RunAsync` accepts a definition and a data object. It returns `WorkflowExecutionResult` with `Status`, `InstanceId`, `WorkflowData`, `ErrorMessage`, and `TraceEntries`. `IsSuccess` is true when `Status` is `Success`.
 
 ```csharp
-var result = await engine.ExecuteWorkflowAsync(definition, orderData);
+var result = await client.RunAsync(definition, orderData);
 if (!result.IsSuccess)
     Console.WriteLine($"{result.Status}: {result.ErrorMessage}");
 ```

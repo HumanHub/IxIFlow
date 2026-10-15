@@ -13,7 +13,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class SuspendResumeExecutionTests
 {
     private readonly ServiceProvider _serviceProvider;
-    private readonly IWorkflowEngine _workflowEngine;
+    private readonly IWorkflowClient _workflowEngine;
     private readonly IWorkflowStateRepository _stateRepository;
 
     public SuspendResumeExecutionTests()
@@ -29,7 +29,7 @@ public class SuspendResumeExecutionTests
         services.AddLogging();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
         _stateRepository = _serviceProvider.GetRequiredService<IWorkflowStateRepository>();
     }
 
@@ -61,7 +61,7 @@ public class SuspendResumeExecutionTests
             .Build();
 
         // Act - Execute workflow (should suspend)
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - Workflow should be suspended
         Assert.False(result.IsSuccess);
@@ -83,7 +83,7 @@ public class SuspendResumeExecutionTests
             Declined = false
         };
 
-        var resumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, approvalEvent);
+        var resumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, approvalEvent);
 
         // Debug: Check the resume result
         Console.WriteLine($"RESUME RESULT: IsSuccess={resumeResult.IsSuccess}, Status={resumeResult.Status}");
@@ -134,7 +134,7 @@ public class SuspendResumeExecutionTests
             .Build();
 
         // Act - Execute workflow (should suspend)
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - Workflow should be suspended
         Assert.False(result.IsSuccess);
@@ -152,7 +152,7 @@ public class SuspendResumeExecutionTests
             RequiresDoubleApproval = true // This should prevent resumption
         };
 
-        var invalidResumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, invalidApprovalEvent);
+        var invalidResumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, invalidApprovalEvent);
 
         // Assert - Workflow should still be suspended (condition not met)
         Assert.False(invalidResumeResult.IsSuccess);
@@ -172,7 +172,7 @@ public class SuspendResumeExecutionTests
             RequiresDoubleApproval = false // This should allow resumption
         };
 
-        var validResumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, validApprovalEvent);
+        var validResumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, validApprovalEvent);
 
         // Assert - Workflow should complete successfully
         Assert.True(validResumeResult.IsSuccess);
@@ -222,7 +222,7 @@ public class SuspendResumeExecutionTests
             .Build();
 
         // Act - Execute workflow (should suspend at first suspend point)
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - Workflow should be suspended at first suspend point
         Assert.False(result.IsSuccess);
@@ -242,7 +242,7 @@ public class SuspendResumeExecutionTests
             RequiresDoubleApproval = true
         };
 
-        var firstResumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, firstApprovalEvent);
+        var firstResumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, firstApprovalEvent);
 
         // Assert - Workflow should be suspended at second suspend point
         Assert.False(firstResumeResult.IsSuccess);
@@ -265,7 +265,7 @@ public class SuspendResumeExecutionTests
             Declined = false
         };
 
-        var secondResumeResult = await _workflowEngine.ResumeWorkflowAsync(firstResumeResult.InstanceId, secondApprovalEvent);
+        var secondResumeResult = await _workflowEngine.ResumeAsync(firstResumeResult.InstanceId, secondApprovalEvent);
 
         // Assert - Workflow should complete successfully
         Assert.True(secondResumeResult.IsSuccess);
@@ -308,7 +308,7 @@ public class SuspendResumeExecutionTests
             .Build();
 
         // Act - Execute workflow (should suspend)
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - Workflow should be suspended
         Assert.False(result.IsSuccess);
@@ -327,7 +327,7 @@ public class SuspendResumeExecutionTests
             ApproverName = "John Manager"
         };
 
-        var resumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, approvalEvent);
+        var resumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, approvalEvent);
 
         // Assert - Workflow should complete and event data should be mapped
         Assert.True(resumeResult.IsSuccess);
@@ -368,11 +368,11 @@ public class SuspendResumeExecutionTests
                 .Output(act => act.ApprovalStatus).To(ctx => ctx.WorkflowData.ObservedApprovalStatus))
             .Build();
 
-        var startResult = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var startResult = await _workflowEngine.RunAsync(workflow, workflowData);
 
         Assert.False(startResult.IsSuccess);
 
-        var resumeResult = await _workflowEngine.ResumeWorkflowAsync(startResult.InstanceId, new ApprovalEvent
+        var resumeResult = await _workflowEngine.ResumeAsync(startResult.InstanceId, new ApprovalEvent
         {
             OrderId = "ORDER-004B",
             Approved = true,
@@ -406,7 +406,7 @@ public class SuspendResumeExecutionTests
                               evt.ApproverName.Contains("Manager"))
             .Build();
 
-        var startResult = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var startResult = await _workflowEngine.RunAsync(workflow, workflowData);
         Assert.False(startResult.IsSuccess);
 
         var instance = await _stateRepository.GetWorkflowInstanceAsync(startResult.InstanceId);
@@ -450,7 +450,7 @@ public class SuspendResumeExecutionTests
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.RequiresApproval)))
             .Build();
 
-        var startResult = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var startResult = await _workflowEngine.RunAsync(workflow, workflowData);
 
         Assert.False(startResult.IsSuccess);
 
@@ -487,10 +487,10 @@ public class SuspendResumeExecutionTests
                     .Output(act => act.Logged).To(ctx => ctx.WorkflowData.RequiresApproval)))
             .Build();
 
-        var startResult = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var startResult = await _workflowEngine.RunAsync(workflow, workflowData);
         Assert.False(startResult.IsSuccess);
 
-        var resumeResult = await _workflowEngine.ResumeWorkflowAsync(startResult.InstanceId, new ApprovalEvent
+        var resumeResult = await _workflowEngine.ResumeAsync(startResult.InstanceId, new ApprovalEvent
         {
             OrderId = "ORDER-TRY-002",
             Approved = true,
@@ -532,7 +532,7 @@ public class SuspendResumeExecutionTests
             .Build();
 
         // Act - Execute workflow (should suspend in conditional branch)
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - Workflow should be suspended
         Assert.False(result.IsSuccess);
@@ -552,7 +552,7 @@ public class SuspendResumeExecutionTests
             Declined = false
         };
 
-        var resumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, approvalEvent);
+        var resumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, approvalEvent);
 
         // Assert - Workflow should complete successfully
         Assert.True(resumeResult.IsSuccess);
@@ -590,7 +590,7 @@ public class SuspendResumeExecutionTests
             .Build();
 
         // Act - Execute workflow (should suspend)
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - Workflow should be suspended
         Assert.False(result.IsSuccess);
@@ -636,7 +636,7 @@ public class SuspendResumeExecutionTests
             .Build();
 
         // Act - Execute workflow (should suspend)
-        var result = await _workflowEngine.ExecuteWorkflowAsync(workflow, workflowData);
+        var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - Workflow should be suspended
         Assert.False(result.IsSuccess);
@@ -654,7 +654,7 @@ public class SuspendResumeExecutionTests
             ApproverName = "John Employee" // Doesn't contain "Manager"
         };
 
-        var invalidResumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, invalidApprovalEvent);
+        var invalidResumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, invalidApprovalEvent);
 
         // Assert - Workflow should still be suspended
         Assert.False(invalidResumeResult.IsSuccess);
@@ -672,7 +672,7 @@ public class SuspendResumeExecutionTests
             ApproverName = "John Manager" // Contains "Manager"
         };
 
-        var validResumeResult = await _workflowEngine.ResumeWorkflowAsync(result.InstanceId, validApprovalEvent);
+        var validResumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, validApprovalEvent);
 
         // Assert - Workflow should complete successfully
         Assert.True(validResumeResult.IsSuccess);

@@ -15,7 +15,7 @@ public class ParallelApprovalContractTests
     public async Task WaitFor_ResumesMatchingEventAsThePreviousStep()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("OneApproval")
             .Step<StartActivity>()
             .WaitFor<ApprovalReply>("finance", Matches("finance"), setup => setup
@@ -27,10 +27,10 @@ public class ParallelApprovalContractTests
                 .Output(activity => activity.CompletedCount).To(ctx => ctx.WorkflowData.FinanceCompleted))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "finance",
+        var completed = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -44,11 +44,11 @@ public class ParallelApprovalContractTests
     public async Task WaitAll_KeepsTwoApprovalsAndResumesEitherOrder(string first, string second)
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var definition = CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false);
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
         Assert.True(started.Status == WorkflowExecutionStatus.Suspended, started.ErrorMessage);
         Assert.Equal(1, GetData(started).FinanceStarted);
@@ -56,7 +56,7 @@ public class ParallelApprovalContractTests
         Assert.Equal(2, (await repository.GetWorkflowInstanceAsync(started.InstanceId))!
             .ExecutionSnapshot!.Pointers.Count(pointer => pointer.Status == "Waiting"));
 
-        var firstReply = await engine.ResumeWorkflowAsync(started.InstanceId, first,
+        var firstReply = await engine.ResumeAsync(started.InstanceId, first,
             Reply(first, approved: true));
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, firstReply.Status);
@@ -67,7 +67,7 @@ public class ParallelApprovalContractTests
         Assert.Equal(first == "legal" ? 1 : 0, halfway.LegalCompleted);
         Assert.Equal(0, halfway.Finished);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, second,
+        var completed = await engine.ResumeAsync(started.InstanceId, second,
             Reply(second, approved: true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -83,7 +83,7 @@ public class ParallelApprovalContractTests
     public async Task WaitAll_RoutesSharedKeyByApprovalPredicate()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("SharedApprovalKey")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -96,15 +96,15 @@ public class ParallelApprovalContractTests
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.LegalCompleted)
                         .Output(activity => activity.CompletedCount).To(ctx => ctx.WorkflowData.LegalCompleted))))
             .Build();
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
-        var first = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+        var first = await engine.ResumeAsync(started.InstanceId, "approval",
             Reply("finance", approved: true));
         Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
         Assert.Equal(1, GetData(first).FinanceCompleted);
         Assert.Equal(0, GetData(first).LegalCompleted);
 
-        var second = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+        var second = await engine.ResumeAsync(started.InstanceId, "approval",
             Reply("legal", approved: true));
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
         Assert.Equal(1, GetData(second).FinanceCompleted);
@@ -115,7 +115,7 @@ public class ParallelApprovalContractTests
     public async Task ResumeRestoresActivityOutputWithPropertyJsonConverter()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("ConvertedPrevious")
             .Step<ConvertedOutputActivity>()
             .If(ctx => true, then => then.WaitFor<ApprovalReply>("approval"))
@@ -123,9 +123,9 @@ public class ParallelApprovalContractTests
                 .Input(activity => activity.Status).From(ctx => ctx.PreviousStep.Status)
                 .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.EntrySeen))
             .Build();
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
+        var started = await engine.RunAsync(definition, new ApprovalData());
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+        var completed = await engine.ResumeAsync(started.InstanceId, "approval",
             Reply("finance", approved: true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -136,9 +136,9 @@ public class ParallelApprovalContractTests
     public async Task EventManager_RoutesParallelApprovalsWithoutSuspensionInfo()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var manager = services.GetRequiredService<ISuspensionManager>();
-        var started = await engine.ExecuteWorkflowAsync(
+        var started = await engine.RunAsync(
             CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false),
             new ApprovalData { RequestId = "request-1" });
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
@@ -158,9 +158,9 @@ public class ParallelApprovalContractTests
     public async Task EventManager_DoesNotReportRejectedApprovalAsResumed()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var manager = services.GetRequiredService<ISuspensionManager>();
-        var started = await engine.ExecuteWorkflowAsync(
+        var started = await engine.RunAsync(
             CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false),
             new ApprovalData { RequestId = "request-1" });
 
@@ -186,19 +186,19 @@ public class ParallelApprovalContractTests
     public async Task WaitAll_DuplicateReplyDoesNotConsumeAnotherApproval()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var definition = CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false);
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
-        await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", approved: true));
-        var duplicate = await engine.ResumeWorkflowAsync(started.InstanceId, "finance",
+        await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true));
+        var duplicate = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: true));
 
         Assert.NotEqual(WorkflowExecutionStatus.Success, duplicate.Status);
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
-        var legal = await engine.ResumeWorkflowAsync(started.InstanceId, "legal",
+        var legal = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
         Assert.Equal(WorkflowExecutionStatus.Success, legal.Status);
         Assert.Equal(1, GetData(legal).FinanceCompleted);
@@ -209,20 +209,20 @@ public class ParallelApprovalContractTests
     public async Task WaitAll_UnmatchedReplyLeavesBothApprovalsWaiting()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var definition = CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false);
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
-        var unmatched = await engine.ResumeWorkflowAsync(started.InstanceId, "finance",
+        var unmatched = await engine.ResumeAsync(started.InstanceId, "finance",
             new ApprovalReply { RequestId = "different-request", ApproverId = "finance", Approved = true });
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, unmatched.Status);
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(2, saved!.ExecutionSnapshot!.Pointers.Count(pointer => pointer.Status == "Waiting"));
 
-        await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", approved: true));
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "legal",
+        await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true));
+        var completed = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -234,13 +234,13 @@ public class ParallelApprovalContractTests
     public async Task WaitAll_ConcurrentRepliesAdvanceEachBranchOnce()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false);
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
         await Task.WhenAll(
-            engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", approved: true)),
-            engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", approved: true)));
+            engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true)),
+            engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", approved: true)));
 
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
@@ -260,7 +260,7 @@ public class ParallelApprovalContractTests
         services.AddTransient<BlockApprovalActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
         var probe = provider.GetRequiredService<ResumeGateProbe>();
         var definition = Workflow.Create<ApprovalData>("QueuedApprovals")
             .Step<StartActivity>()
@@ -275,14 +275,14 @@ public class ParallelApprovalContractTests
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finished)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
             .Build();
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
+        var started = await engine.RunAsync(definition, new ApprovalData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var first = engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true));
+        var first = engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true));
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         try
         {
-            var second = engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", true));
+            var second = engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", true));
             Assert.False(second.IsCompleted);
             probe.Release.TrySetResult();
             var results = await Task.WhenAll(first, second);
@@ -301,20 +301,20 @@ public class ParallelApprovalContractTests
     public async Task ResumeReportsRunningInstanceAsRetryable()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var definition = Workflow.Create<ApprovalData>("RunningApproval")
             .Step<StartActivity>()
             .WaitFor<ApprovalReply>("finance")
             .Build();
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
+        var started = await engine.RunAsync(definition, new ApprovalData());
         var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         saved.Status = WorkflowStatus.Running;
         var claimed = await repository.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(saved, 0, saved.Revision, Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, claimed.Status);
 
-        var busy = await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true));
+        var busy = await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true));
         Assert.Equal(WorkflowExecutionStatus.Running, busy.Status);
         Assert.False(busy.EventAccepted);
 
@@ -323,7 +323,7 @@ public class ParallelApprovalContractTests
         var released = await repository.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(saved, 0, saved.Revision, Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, released.Status);
-        var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true));
+        var resumed = await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true));
         Assert.True(resumed.EventAccepted);
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
     }
@@ -332,13 +332,13 @@ public class ParallelApprovalContractTests
     public async Task WaitAll_ConcurrentDuplicateRepliesAdvanceOnlyOneWait()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false);
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
         await Task.WhenAll(
-            engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", approved: true)),
-            engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", approved: true)));
+            engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true)),
+            engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true)));
 
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(started.InstanceId);
@@ -347,7 +347,7 @@ public class ParallelApprovalContractTests
         Assert.Equal(1, data.FinanceCompleted);
         Assert.Equal(0, data.LegalCompleted);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "legal",
+        var completed = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, GetData(completed).FinanceCompleted);
@@ -357,7 +357,7 @@ public class ParallelApprovalContractTests
     public async Task BranchFailureClosesOtherApprovalWaits()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("FailedApproval")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -365,7 +365,7 @@ public class ParallelApprovalContractTests
                 .Do(branch => branch.Step<ThrowActivity>()))
             .Build();
 
-        var result = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var result = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(result.InstanceId);
 
@@ -385,8 +385,8 @@ public class ParallelApprovalContractTests
 
         using (var startScope = services.CreateScope())
         {
-            var engine = startScope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-            var started = await engine.ExecuteWorkflowAsync(definition,
+            var engine = startScope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+            var started = await engine.RunAsync(definition,
                 new ApprovalData { RequestId = "request-1" });
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
@@ -394,16 +394,16 @@ public class ParallelApprovalContractTests
 
         using (var resumeScope = services.CreateScope())
         {
-            var engine = resumeScope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-            var halfway = await engine.ResumeWorkflowAsync(instanceId, "legal",
+            var engine = resumeScope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+            var halfway = await engine.ResumeAsync(instanceId, "legal",
                 Reply("legal", approved: true));
             Assert.Equal(WorkflowExecutionStatus.Suspended, halfway.Status);
         }
 
         using (var finishScope = services.CreateScope())
         {
-            var engine = finishScope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-            var completed = await engine.ResumeWorkflowAsync(instanceId, "finance",
+            var engine = finishScope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+            var completed = await engine.ResumeAsync(instanceId, "finance",
                 Reply("finance", approved: true));
             Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
             Assert.Equal(1, GetData(completed).FinanceCompleted);
@@ -421,8 +421,8 @@ public class ParallelApprovalContractTests
 
         using (var firstProvider = CreateServices(repository))
         {
-            var engine = firstProvider.GetRequiredService<IWorkflowEngine>();
-            var started = await engine.ExecuteWorkflowAsync(original,
+            var engine = firstProvider.GetRequiredService<IWorkflowClient>();
+            var started = await engine.RunAsync(original,
                 new ApprovalData { RequestId = "request-1" });
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
@@ -432,10 +432,10 @@ public class ParallelApprovalContractTests
         Assert.NotEqual(original.Steps[0].Id, rebuilt.Steps[0].Id);
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(rebuilt);
-        var resumedEngine = secondProvider.GetRequiredService<IWorkflowEngine>();
+        var resumedEngine = secondProvider.GetRequiredService<IWorkflowClient>();
 
-        await resumedEngine.ResumeWorkflowAsync(instanceId, "finance", Reply("finance", approved: true));
-        var completed = await resumedEngine.ResumeWorkflowAsync(instanceId, "legal",
+        await resumedEngine.ResumeAsync(instanceId, "finance", Reply("finance", approved: true));
+        var completed = await resumedEngine.ResumeAsync(instanceId, "legal",
             Reply("legal", approved: true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -454,8 +454,8 @@ public class ParallelApprovalContractTests
 
         using (var firstProvider = CreateServices(recording))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new ApprovalData { RequestId = "request-1" });
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         }
 
@@ -468,13 +468,13 @@ public class ParallelApprovalContractTests
         using var secondProvider = CreateServices(recoveredRepository);
         var rebuilt = CreateRecoverWorkflow();
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(rebuilt);
-        var engine = secondProvider.GetRequiredService<IWorkflowEngine>();
+        var engine = secondProvider.GetRequiredService<IWorkflowClient>();
 
-        var idle = await engine.RecoverWorkflowAsync(saved.InstanceId);
+        var idle = await engine.RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.Suspended, idle.Status);
         Assert.Equal(1, GetData(idle).FinanceStarted);
 
-        var completed = await engine.ResumeWorkflowAsync(saved.InstanceId, "finance",
+        var completed = await engine.ResumeAsync(saved.InstanceId, "finance",
             Reply("finance", approved: true));
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, GetData(completed).FinanceStarted);
@@ -486,15 +486,15 @@ public class ParallelApprovalContractTests
     {
         var repository = new RecordingRepository { FailOnFinanceStartCount = 3 };
         using var services = CreateServices(repository);
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
 
-        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(
+        await EngineAssert.StoreFailureAsync(() => engine.RunAsync(
             CreateRecoverWorkflow(), new ApprovalData { RequestId = "request-1" }));
 
         var saved = (await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running)).Single();
         Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceStarted);
 
-        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+        var recovered = await engine.RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, recovered.Status);
         Assert.Equal(0, GetData(recovered).FinanceStarted);
     }
@@ -505,8 +505,8 @@ public class ParallelApprovalContractTests
         var recording = new RecordingRepository();
         using (var firstProvider = CreateServices(recording))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(CreateRecoverWorkflow(),
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(CreateRecoverWorkflow(),
                     new ApprovalData { RequestId = "request-1" });
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         }
@@ -522,8 +522,8 @@ public class ParallelApprovalContractTests
                 .Build();
             await wrongProvider.GetRequiredService<IWorkflowVersionRegistry>()
                 .RegisterWorkflowAsync(changed);
-            var rejected = await wrongProvider.GetRequiredService<IWorkflowEngine>()
-                .RecoverWorkflowAsync(saved.InstanceId);
+            var rejected = await wrongProvider.GetRequiredService<IWorkflowClient>()
+                .RecoverAsync(saved.InstanceId);
             Assert.Equal(WorkflowExecutionStatus.Faulted, rejected.Status);
         }
 
@@ -532,8 +532,8 @@ public class ParallelApprovalContractTests
         using var correctProvider = CreateServices(repository);
         await correctProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(CreateRecoverWorkflow());
-        var recovered = await correctProvider.GetRequiredService<IWorkflowEngine>()
-            .RecoverWorkflowAsync(saved.InstanceId);
+        var recovered = await correctProvider.GetRequiredService<IWorkflowClient>()
+            .RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
         Assert.Equal(1, GetData(recovered).FinanceStarted);
     }
@@ -542,7 +542,7 @@ public class ParallelApprovalContractTests
     public async Task IncompleteInvocationIsRejectedBeforeAnActivityRuns()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("UnsupportedScope")
             .Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.FinanceStarted)
@@ -556,7 +556,7 @@ public class ParallelApprovalContractTests
         });
         var data = new ApprovalData();
 
-        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidDefinition, () => engine.ExecuteWorkflowAsync(definition, data));
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidDefinition, () => engine.RunAsync(definition, data));
         Assert.Equal(0, data.FinanceStarted);
     }
 
@@ -564,11 +564,11 @@ public class ParallelApprovalContractTests
     public async Task WaitAny_FirstCompletedBranchCancelsOtherApproval()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = CreateApprovalWorkflow(ParallelJoinMode.WaitAny, includeRisk: false);
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "finance",
+        var completed = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: false));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -577,7 +577,7 @@ public class ParallelApprovalContractTests
         Assert.Equal(0, data.LegalCompleted);
         Assert.Equal(1, data.Finished);
 
-        var late = await engine.ResumeWorkflowAsync(started.InstanceId, "legal",
+        var late = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
         Assert.NotEqual(WorkflowExecutionStatus.Success, late.Status);
     }
@@ -586,7 +586,7 @@ public class ParallelApprovalContractTests
     public async Task WaitAny_FirstReplyDoesNotJoinUntilItsBranchCompletes()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("TwoStageApproval")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -606,22 +606,22 @@ public class ParallelApprovalContractTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var firstReply = await engine.ResumeWorkflowAsync(started.InstanceId, "finance",
+        var firstReply = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: true));
         Assert.Equal(WorkflowExecutionStatus.Suspended, firstReply.Status);
         Assert.Equal(0, GetData(firstReply).Finished);
 
-        var legal = await engine.ResumeWorkflowAsync(started.InstanceId, "legal",
+        var legal = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
         Assert.Equal(WorkflowExecutionStatus.Success, legal.Status);
         Assert.Equal(0, GetData(legal).FinanceCompleted);
         Assert.Equal(1, GetData(legal).LegalCompleted);
         Assert.Equal(1, GetData(legal).Finished);
 
-        var late = await engine.ResumeWorkflowAsync(started.InstanceId, "finance-review",
+        var late = await engine.ResumeAsync(started.InstanceId, "finance-review",
             Reply("finance-review", approved: true));
         Assert.NotEqual(WorkflowExecutionStatus.Success, late.Status);
     }
@@ -633,7 +633,7 @@ public class ParallelApprovalContractTests
         ParallelJoinMode joinMode, WorkflowExecutionStatus expectedStatus)
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("CompletedBranch")
             .Step<StartActivity>()
             .Parallel(parallel =>
@@ -651,7 +651,7 @@ public class ParallelApprovalContractTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
         Assert.Equal(expectedStatus, started.Status);
         Assert.Equal(1, GetData(started).FinanceCompleted);
@@ -659,14 +659,14 @@ public class ParallelApprovalContractTests
 
         if (joinMode == ParallelJoinMode.WaitAll)
         {
-            var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "legal",
+            var completed = await engine.ResumeAsync(started.InstanceId, "legal",
                 Reply("legal", approved: true));
             Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
             Assert.Equal(1, GetData(completed).Finished);
         }
         else
         {
-            var late = await engine.ResumeWorkflowAsync(started.InstanceId, "legal",
+            var late = await engine.ResumeAsync(started.InstanceId, "legal",
                 Reply("legal", approved: true));
             Assert.NotEqual(WorkflowExecutionStatus.Success, late.Status);
         }
@@ -676,18 +676,18 @@ public class ParallelApprovalContractTests
     public async Task WaitConditionally_RejectionKeepsWaitingUntilAnApprovalCompletes()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = CreateApprovalWorkflow(ParallelJoinMode.WaitConditionally, includeRisk: true);
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
-        var rejected = await engine.ResumeWorkflowAsync(started.InstanceId, "finance",
+        var rejected = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: false));
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, rejected.Status);
         Assert.Equal(1, GetData(rejected).FinanceCompleted);
         Assert.Equal(0, GetData(rejected).Finished);
 
-        var approved = await engine.ResumeWorkflowAsync(started.InstanceId, "legal",
+        var approved = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, approved.Status);
@@ -696,7 +696,7 @@ public class ParallelApprovalContractTests
         Assert.Equal(0, data.RiskCompleted);
         Assert.Equal(1, data.Finished);
 
-        var late = await engine.ResumeWorkflowAsync(started.InstanceId, "risk",
+        var late = await engine.ResumeAsync(started.InstanceId, "risk",
             Reply("risk", approved: true));
         Assert.NotEqual(WorkflowExecutionStatus.Success, late.Status);
     }
@@ -705,13 +705,13 @@ public class ParallelApprovalContractTests
     public async Task WaitConditionally_AllRejectedStillCompletesTheParallelStep()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = CreateApprovalWorkflow(ParallelJoinMode.WaitConditionally, includeRisk: true);
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
-        await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", approved: false));
-        await engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", approved: false));
-        var last = await engine.ResumeWorkflowAsync(started.InstanceId, "risk",
+        await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: false));
+        await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", approved: false));
+        var last = await engine.ResumeAsync(started.InstanceId, "risk",
             Reply("risk", approved: false));
 
         Assert.Equal(WorkflowExecutionStatus.Success, last.Status);
@@ -727,7 +727,7 @@ public class ParallelApprovalContractTests
     public async Task NestedWait_ResumesItsOwnBranchWithoutRepeatingEarlierSteps()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("NestedApprovals")
             .Step<StartActivity>()
             .Parallel(parallel =>
@@ -751,11 +751,11 @@ public class ParallelApprovalContractTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        await engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", approved: true));
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "finance",
+        await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", approved: true));
+        var completed = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -772,7 +772,7 @@ public class ParallelApprovalContractTests
     public async Task If_PreservesItsEntryPreviousStepAfterAnActivityOrWait(bool waitInsideIf)
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("IfPreviousStep")
             .Step<StartActivity>(setup => setup
                 .Input(activity => activity.Marker).From(ctx => ctx.WorkflowData.RequestId))
@@ -792,9 +792,9 @@ public class ParallelApprovalContractTests
             .WaitFor<ApprovalReply>("legal", Matches("legal"))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
         var result = waitInsideIf
-            ? await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", approved: true))
+            ? await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true))
             : started;
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
@@ -805,7 +805,7 @@ public class ParallelApprovalContractTests
     public async Task ActivityWithPrivateOutputSetterPassesValueToNextStep()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("PrivateOutput")
             .Step<PrivateOutputActivity>()
             .Step<CapturePreviousActivity>(setup => setup
@@ -814,7 +814,7 @@ public class ParallelApprovalContractTests
             .WaitFor<ApprovalReply>("finance", Matches("finance"))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Equal("private-output", GetData(started).EntrySeen);
@@ -829,7 +829,7 @@ public class ParallelApprovalContractTests
         services.AddTransient<InjectedOutputActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("InjectedPrevious")
             .Step<InjectedOutputActivity>()
             .If(ctx => true,
@@ -839,10 +839,10 @@ public class ParallelApprovalContractTests
                 .Output(activity => activity.Captured).To(ctx => ctx.WorkflowData.EntrySeen))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "finance",
+        var completed = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -853,7 +853,7 @@ public class ParallelApprovalContractTests
     public async Task ResumeRestoresAnActivityOutputWithAJsonPropertyName()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("RenamedOutput")
             .Step<NamedOutputActivity>()
             .If(ctx => true, then => then.WaitFor<ApprovalReply>("finance", Matches("finance")))
@@ -862,10 +862,10 @@ public class ParallelApprovalContractTests
                 .Output(activity => activity.Captured).To(ctx => ctx.WorkflowData.EntrySeen))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new ApprovalData { RequestId = "request-1" });
+        var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "finance",
+        var completed = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: true));
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal("named-output", GetData(completed).EntrySeen);
@@ -875,14 +875,14 @@ public class ParallelApprovalContractTests
     public async Task GetterOnlyActivityOutputIsRejectedBeforeExecution()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("GetterOnlyOutput")
             .Step<GetterOnlyActivity>()
             .WaitFor<ApprovalReply>("finance")
             .Build();
 
         await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidDefinition, () =>
-            engine.ExecuteWorkflowAsync(definition, new ApprovalData()));
+            engine.RunAsync(definition, new ApprovalData()));
     }
 
     [Fact]
@@ -895,7 +895,7 @@ public class ParallelApprovalContractTests
         services.AddTransient<SignalSiblingActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("ConcurrentBranches")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -906,7 +906,7 @@ public class ParallelApprovalContractTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
             .Build();
 
-        var result = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
+        var result = await engine.RunAsync(definition, new ApprovalData());
 
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(1, GetData(result).Finished);
@@ -924,7 +924,7 @@ public class ParallelApprovalContractTests
         services.AddTransient<CheckCleanupActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("CancelLosingBranch")
             .Step<StartActivity>()
             .Parallel(parallel =>
@@ -941,7 +941,7 @@ public class ParallelApprovalContractTests
             .Step<CheckCleanupActivity>()
             .Build();
 
-        var result = await engine.ExecuteWorkflowAsync(definition, new ApprovalData());
+        var result = await engine.RunAsync(definition, new ApprovalData());
 
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal("finance", GetData(result).ApprovedBy);
@@ -974,8 +974,8 @@ public class ParallelApprovalContractTests
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.LegalCompleted))))
             .Build();
 
-        var execution = provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new ApprovalData());
+        var execution = provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new ApprovalData());
         var otherCommittedBeforeLoserEnded = false;
         try
         {
@@ -1047,8 +1047,8 @@ public class ParallelApprovalContractTests
                     .If(_ => true, then => then.Step<GateOtherActivity>())))
             .Build();
 
-        var execution = provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new ApprovalData());
+        var execution = provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new ApprovalData());
         var startedBeforeLoserEnded = false;
         try
         {
@@ -1097,8 +1097,8 @@ public class ParallelApprovalContractTests
                 .Do(branch => branch.Step<GateOtherActivity>()))
             .Build();
 
-        var execution = provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new ApprovalData());
+        var execution = provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new ApprovalData());
         var nextStepStartedBeforeOtherEnded = false;
         try
         {
@@ -1148,19 +1148,19 @@ public class ParallelApprovalContractTests
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finished)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
 
-        var started = await engine.ExecuteWorkflowAsync(definition,
+        var started = await engine.RunAsync(definition,
             new ApprovalData { RequestId = "request-1" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var legal = await engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", true));
+        var legal = await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", true));
         Assert.Equal(WorkflowExecutionStatus.Suspended, legal.Status);
         Assert.Equal(0, GetData(legal).RiskCompleted);
-        var finance = await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true));
+        var finance = await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true));
         Assert.Equal(WorkflowExecutionStatus.Suspended, finance.Status);
         Assert.Equal(1, GetData(finance).RiskCompleted);
         Assert.Equal(0, GetData(finance).Finished);
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "risk", Reply("risk", true));
+        var completed = await engine.ResumeAsync(started.InstanceId, "risk", Reply("risk", true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, GetData(completed).FinanceCompleted);
@@ -1189,19 +1189,19 @@ public class ParallelApprovalContractTests
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finished)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished)))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition,
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition,
             new ApprovalData { RequestId = "request-1" });
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Equal(WorkflowExecutionStatus.Suspended,
-            (await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true))).Status);
-        var nextIteration = await engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", true));
+            (await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true))).Status);
+        var nextIteration = await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", true));
         Assert.Equal(WorkflowExecutionStatus.Suspended, nextIteration.Status);
         Assert.Equal(1, GetData(nextIteration).Finished);
         Assert.Equal(WorkflowExecutionStatus.Suspended,
-            (await engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", true))).Status);
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true));
+            (await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", true))).Status);
+        var completed = await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(2, GetData(completed).FinanceCompleted);
@@ -1222,16 +1222,16 @@ public class ParallelApprovalContractTests
             .Step<CountActivity>(step => step
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition,
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition,
             new ApprovalData { RequestId = "request-1" });
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var failed = await engine.ResumeWorkflowAsync(started.InstanceId, "finance", Reply("finance", true));
+        var failed = await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true));
         Assert.Equal(WorkflowExecutionStatus.Faulted, failed.Status);
         Assert.Contains("Approval branch failed", failed.ErrorMessage);
         Assert.Equal(0, GetData(failed).Finished);
-        var late = await engine.ResumeWorkflowAsync(started.InstanceId, "legal", Reply("legal", true));
+        var late = await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", true));
         Assert.False(late.EventAccepted);
     }
 

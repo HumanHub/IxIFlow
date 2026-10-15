@@ -10,7 +10,7 @@ description: IxIFlow workflow hosts, host selection, SQL state, and the message 
 - `IWorkflowStateRepository` has a SQL implementation with revisioned checkpoints and renewable execution leases.
 - `IMessageBus` has a SQL implementation for queued commands, with explicit acknowledgement after handling.
 - `IHostRegistry` has a SQL implementation for host registration, health, and metrics.
-- `WorkflowQueueService` consumes execute, resume, and cancel commands addressed to its host and runs them through the local `IWorkflowEngine`.
+- `WorkflowQueueService` consumes execute, resume, and cancel commands addressed to its host and runs them through the local `IWorkflowClient`.
 - `HostHealthService` registers the host and reports its health on an interval.
 - `WorkflowCoordinator` selects a host using required or preferred host IDs, tags, health, and capacity.
 

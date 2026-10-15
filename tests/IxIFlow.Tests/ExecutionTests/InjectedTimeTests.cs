@@ -27,7 +27,7 @@ public sealed class InjectedTimeTests
                 .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))
             .Build();
 
-        var started = await Engine(services).ExecuteWorkflowAsync(definition, new TimeData());
+        var started = await Engine(services).RunAsync(definition, new TimeData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         time.Advance(TimeSpan.FromMinutes(59));
@@ -55,7 +55,7 @@ public sealed class InjectedTimeTests
                     .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))))
             .Build();
 
-        var started = await Engine(services).ExecuteWorkflowAsync(definition, new TimeData());
+        var started = await Engine(services).RunAsync(definition, new TimeData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         time.Advance(TimeSpan.FromMinutes(9));
@@ -79,7 +79,7 @@ public sealed class InjectedTimeTests
             .WaitFor<Approval>("approval")
             .Build();
 
-        var started = await Engine(services).ExecuteWorkflowAsync(definition, new TimeData(),
+        var started = await Engine(services).RunAsync(definition, new TimeData(),
             new WorkflowOptions { ExecutionTimeout = TimeSpan.FromHours(1) });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
@@ -103,8 +103,8 @@ public sealed class InjectedTimeTests
         return services.BuildServiceProvider();
     }
 
-    private static IWorkflowEngine Engine(IServiceProvider services) =>
-        services.GetRequiredService<IWorkflowEngine>();
+    private static IWorkflowClient Engine(IServiceProvider services) =>
+        services.GetRequiredService<IWorkflowClient>();
 
     private static async Task<WorkflowInstance> InstanceAsync(IServiceProvider services, string instanceId) =>
         (await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(instanceId))!;

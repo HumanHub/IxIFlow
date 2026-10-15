@@ -299,7 +299,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
     where TChildWorkflowData : class
     {
         // Get the workflow engine from DI
-        var workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
+        var workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
 
         // Create child workflow options
         var childOptions = new WorkflowOptions
@@ -311,7 +311,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
         };
 
         // Execute child workflow recursively
-        return await workflowEngine.ExecuteWorkflowAsync(childDefinition, childData, childOptions, cancellationToken);
+        return await workflowEngine.RunAsync(childDefinition, childData, childOptions, cancellationToken);
     }
 
     /// <summary>

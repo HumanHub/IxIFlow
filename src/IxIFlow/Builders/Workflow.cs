@@ -105,8 +105,8 @@ public static class WorkflowBuilderExtensions
         var definition = builder.Build();
         await using var defaultProvider = serviceProvider == null ? CreateDefaultServiceProvider() : null;
         using var scope = (serviceProvider ?? defaultProvider!).CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-        return await engine.ExecuteWorkflowAsync(definition, workflowData, cancellationToken: cancellationToken);
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+        return await engine.RunAsync(definition, workflowData, cancellationToken: cancellationToken);
     }
 
     /// <summary>

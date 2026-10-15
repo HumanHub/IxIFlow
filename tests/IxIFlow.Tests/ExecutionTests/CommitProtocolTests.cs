@@ -40,7 +40,7 @@ public sealed class CommitProtocolTests
         var store = new ReplyingStore { RetriesBeforeApply = 2 };
         using var services = Services(store);
 
-        var result = await Engine(services).ExecuteWorkflowAsync(Definition("CommitRetry"), new CommitData());
+        var result = await Engine(services).RunAsync(Definition("CommitRetry"), new CommitData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         AssertRetriedCommitWasResentUnchanged(store, retries: 2);
@@ -52,7 +52,7 @@ public sealed class CommitProtocolTests
         var store = new ReplyingStore { LostAcknowledgments = 1 };
         using var services = Services(store);
 
-        var result = await Engine(services).ExecuteWorkflowAsync(Definition("CommitUnknown"), new CommitData());
+        var result = await Engine(services).RunAsync(Definition("CommitUnknown"), new CommitData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Contains(store.Results, status => status == WorkflowCommitStatus.AlreadyApplied);
@@ -161,8 +161,8 @@ public sealed class CommitProtocolTests
         return services.BuildServiceProvider();
     }
 
-    private static IWorkflowEngine Engine(IServiceProvider services) =>
-        services.GetRequiredService<IWorkflowEngine>();
+    private static IWorkflowClient Engine(IServiceProvider services) =>
+        services.GetRequiredService<IWorkflowClient>();
 
     /// <summary>
     /// Asks for a retry, or applies a commit and loses its acknowledgment, for the commit that
