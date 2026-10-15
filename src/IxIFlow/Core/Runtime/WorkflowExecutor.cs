@@ -59,9 +59,8 @@ internal sealed class WorkflowExecutor
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
                 await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
                     scopes, host, host.ObservedCancellation);
-                foreach (var activity in inFlight.Values.Where(item =>
-                             item.Continuation.Status == ContinuationStatus.Cancelling))
-                    activity.Cancellation.Cancel();
+                await SignalCancellationsAsync(inFlight, uncommitted, host, instance, checkpoint, workflowData,
+                    scopes);
 
                 var unwinding = checkpoint.Continuations.FirstOrDefault(item =>
                     item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id));
@@ -152,9 +151,8 @@ internal sealed class WorkflowExecutor
                                 throw;
                         }
                         uncommitted.NoteIf(boundary.CrossedBy(checkpoint), instance);
-                        foreach (var activity in inFlight.Values.Where(item =>
-                                     item.Continuation.Status == ContinuationStatus.Cancelling))
-                            activity.Cancellation.Cancel();
+                        await SignalCancellationsAsync(inFlight, uncommitted, host, instance, checkpoint,
+                            workflowData, scopes);
                     }
                 }
 
@@ -184,9 +182,8 @@ internal sealed class WorkflowExecutor
                     break;
                 }
 
-                foreach (var activity in inFlight.Values.Where(item =>
-                             item.Continuation.Status == ContinuationStatus.Cancelling))
-                    activity.Cancellation.Cancel();
+                await SignalCancellationsAsync(inFlight, uncommitted, host, instance, checkpoint, workflowData,
+                    scopes);
 
                 var runningTasks = inFlight.Values.Select(item => (Task)item.Task).ToList();
                 using var retryTimerCancellation = new CancellationTokenSource();
@@ -322,7 +319,8 @@ internal sealed class WorkflowExecutor
             try
             {
                 await Task.WhenAll(inFlight.Values.Select(item => item.Task));
-                await SettleCancelledRunAsync(definition, instance, checkpoint, workflowData, host, inFlight);
+                await SettleCancelledRunAsync(definition, instance, checkpoint, workflowData, host, inFlight,
+                    uncommitted);
             }
             catch (CheckpointLimitExceededException)
             {
@@ -564,9 +562,11 @@ internal sealed class WorkflowExecutor
     // The caller cancelled the run: activities that finished are settled and saved before it stops.
     private async Task SettleCancelledRunAsync(WorkflowDefinition definition, WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object workflowData, IExecutionHost host,
-        Dictionary<string, RunningActivity> inFlight)
+        Dictionary<string, RunningActivity> inFlight, UncommittedBoundary uncommitted)
     {
         var scopes = new WorkflowScopeCatalog(definition);
+        if (uncommitted.IsPending(instance))
+            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
         foreach (var activity in inFlight.Values.ToArray())
         {
             if (activity.Task.Result is { Kind: ActivityRunKind.Threw,
@@ -591,14 +591,22 @@ internal sealed class WorkflowExecutor
     }
 
     /// <summary>
-    /// What a control-flow step can change that the outside world must see: a saved wait, which
-    /// accepts events, or a branch stopped for resolution. Other control flow is not committed and
-    /// is re-derived from the last checkpoint after a crash (A-04).
+    /// What a control-flow step can change that must be saved before anything outside the instance
+    /// depends on it: the saved waits, which accept events; branches stopped for resolution;
+    /// scheduled retries, whose deadline must not move; and branches being cancelled, whose running
+    /// activities are told to stop. Other control flow is not committed and is re-derived from the
+    /// last checkpoint after a crash (A-04).
     /// </summary>
-    private readonly record struct EffectBoundary(int Waits, int Resolutions)
+    private readonly record struct EffectBoundary(string Key)
     {
-        public static EffectBoundary Of(ExecutionCheckpoint checkpoint) => new(checkpoint.Waits.Count,
-            checkpoint.Continuations.Count(item => item.Status == ContinuationStatus.WaitingResolution));
+        public static EffectBoundary Of(ExecutionCheckpoint checkpoint) => new(string.Join("|",
+            string.Join(",", checkpoint.Waits.Select(wait => wait.Id)),
+            string.Join(",", checkpoint.Continuations
+                .Where(item => item.Status is ContinuationStatus.WaitingResolution or ContinuationStatus.Cancelling)
+                .Select(item => $"{item.Id}:{item.Status}")),
+            string.Join(",", checkpoint.Continuations
+                .Where(item => item.RetryAfterUtc != null)
+                .Select(item => $"{item.Id}@{item.RetryAfterUtc:O}"))));
 
         public bool CrossedBy(ExecutionCheckpoint checkpoint) => Of(checkpoint) != this;
     }
@@ -610,11 +618,27 @@ internal sealed class WorkflowExecutor
 
         public void NoteIf(bool crossed, WorkflowInstance instance)
         {
-            if (crossed && _afterRevision != instance.Revision)
+            if (crossed)
                 _afterRevision = instance.Revision;
         }
 
         public bool IsPending(WorkflowInstance instance) => _afterRevision == instance.Revision;
+    }
+
+    // Telling a running activity to stop is visible outside the instance, so the decision that
+    // cancels its branch is committed first.
+    private async Task SignalCancellationsAsync(Dictionary<string, RunningActivity> inFlight,
+        UncommittedBoundary uncommitted, IExecutionHost host, WorkflowInstance instance,
+        ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes)
+    {
+        var cancelled = inFlight.Values.Where(item => item.Continuation.Status == ContinuationStatus.Cancelling &&
+            !item.Cancellation.IsCancellationRequested).ToList();
+        if (cancelled.Count == 0)
+            return;
+        if (uncommitted.IsPending(instance))
+            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+        foreach (var activity in cancelled)
+            activity.Cancellation.Cancel();
     }
 
     private static async Task AbandonInFlightAsync(Dictionary<string, RunningActivity> inFlight)
