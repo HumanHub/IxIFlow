@@ -8,7 +8,8 @@ namespace IxIFlow.Core;
 public sealed class WorkflowRecoveryService(
     IServiceScopeFactory scopes,
     IWorkflowStateRepository repository,
-    ILogger<WorkflowRecoveryService> logger) : BackgroundService
+    ILogger<WorkflowRecoveryService> logger,
+    TimeProvider? timeProvider = null) : BackgroundService
 {
     internal async Task RecoverOnceAsync(CancellationToken cancellationToken)
     {
@@ -41,7 +42,7 @@ public sealed class WorkflowRecoveryService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5), timeProvider ?? TimeProvider.System);
         do
         {
             try

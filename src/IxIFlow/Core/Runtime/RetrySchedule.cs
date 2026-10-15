@@ -4,7 +4,7 @@ namespace IxIFlow.Core.Runtime;
 
 internal static class RetrySchedule
 {
-    public static DateTime? NextAttemptUtc(RetryPolicy? policy, int attempt)
+    public static DateTime? NextAttemptUtc(RetryPolicy? policy, int attempt, DateTime now)
     {
         if (policy == null || policy.InitialInterval == TimeSpan.Zero)
             return null;
@@ -18,6 +18,6 @@ internal static class RetrySchedule
         var milliseconds = Math.Min(maximum.TotalMilliseconds,
             policy.InitialInterval.TotalMilliseconds *
             Math.Pow(policy.BackoffCoefficient, Math.Max(0, attempt - 1)));
-        return DateTime.UtcNow + TimeSpan.FromMilliseconds(milliseconds);
+        return now + TimeSpan.FromMilliseconds(milliseconds);
     }
 }

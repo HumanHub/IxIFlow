@@ -10,6 +10,7 @@ namespace IxIFlow.Core;
 /// </summary>
 public class EventCorrelator : IEventCorrelator
 {
+    private readonly TimeProvider _time;
     private readonly IExpressionEvaluator _expressionEvaluator;
     private readonly ILogger<EventCorrelator> _logger;
     private readonly IWorkflowStateRepository _stateRepository;
@@ -21,8 +22,10 @@ public class EventCorrelator : IEventCorrelator
         IExpressionEvaluator expressionEvaluator,
         IWorkflowVersionRegistry versionRegistry,
         IServiceProvider services,
-        ILogger<EventCorrelator> logger)
+        ILogger<EventCorrelator> logger,
+        TimeProvider? timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         _stateRepository = stateRepository ?? throw new ArgumentNullException(nameof(stateRepository));
         _expressionEvaluator = expressionEvaluator ?? throw new ArgumentNullException(nameof(expressionEvaluator));
         _versionRegistry = versionRegistry ?? throw new ArgumentNullException(nameof(versionRegistry));
@@ -285,7 +288,7 @@ public class EventCorrelator : IEventCorrelator
         return null;
     }
 
-    private static object CreateCombinedConditionContext<TEvent>(TEvent @event, object workflowData, WorkflowInstance workflowInstance)
+    private object CreateCombinedConditionContext<TEvent>(TEvent @event, object workflowData, WorkflowInstance workflowInstance)
         where TEvent : class
     {
         var contextType = typeof(ResumeEventContext<,>).MakeGenericType(workflowData.GetType(), typeof(TEvent));
@@ -301,11 +304,11 @@ public class EventCorrelator : IEventCorrelator
         contextType.GetProperty(nameof(ResumeEventContext<object, object>.CorrelationId))?.SetValue(context, workflowInstance.CorrelationId);
         contextType.GetProperty(nameof(ResumeEventContext<object, object>.Properties))?.SetValue(context, workflowInstance.Properties);
         contextType.GetProperty(nameof(ResumeEventContext<object, object>.SuspendedAt))?.SetValue(context, workflowInstance.SuspensionInfo?.SuspendedAt ?? workflowInstance.CreatedAt);
-        contextType.GetProperty(nameof(ResumeEventContext<object, object>.ResumedAt))?.SetValue(context, DateTime.UtcNow);
+        contextType.GetProperty(nameof(ResumeEventContext<object, object>.ResumedAt))?.SetValue(context, _time.GetUtcNow().UtcDateTime);
         contextType.GetProperty(nameof(ResumeEventContext<object, object>.SuspendReason))?.SetValue(context, workflowInstance.SuspensionInfo?.SuspendReason ?? string.Empty);
 
         var suspendedAt = workflowInstance.SuspensionInfo?.SuspendedAt ?? workflowInstance.CreatedAt;
-        contextType.GetProperty(nameof(ResumeEventContext<object, object>.SuspensionDuration))?.SetValue(context, DateTime.UtcNow - suspendedAt);
+        contextType.GetProperty(nameof(ResumeEventContext<object, object>.SuspensionDuration))?.SetValue(context, _time.GetUtcNow().UtcDateTime - suspendedAt);
 
         return context;
     }

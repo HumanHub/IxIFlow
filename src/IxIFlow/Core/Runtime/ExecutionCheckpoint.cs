@@ -84,7 +84,7 @@ internal sealed class ActivityInvocationState
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string StepId { get; set; } = "";
-    public DateTime StartedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime StartedAtUtc { get; set; }
     public ActivityInputSnapshot Inputs { get; set; } = new();
     public SerializedValue? RecoveryState { get; set; }
     public string? ChildWorkflowId { get; set; }
@@ -106,7 +106,7 @@ internal sealed class ActivityResolutionState
 internal sealed class ActivityAttemptState
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
-    public DateTime StartedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime StartedAtUtc { get; set; }
     public DateTime? EndedAtUtc { get; set; }
     public string Kind { get; set; } = "Execute";
     public string? Observation { get; set; }
@@ -286,7 +286,7 @@ internal sealed class WaitState
     public string StepId { get; set; } = "";
     public string Key { get; set; } = "";
     public string EventType { get; set; } = "";
-    public DateTime RegisteredAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime RegisteredAtUtc { get; set; }
     public DateTime? DeadlineUtc { get; set; }
     public string? ChildWorkflowId { get; set; }
     public string? ChildWaitId { get; set; }
