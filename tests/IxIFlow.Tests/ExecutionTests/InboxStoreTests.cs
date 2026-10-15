@@ -162,9 +162,8 @@ public sealed class InboxStoreTests
             instance.Revision = started.Revision;
             await inbox.AppendEventAsync(Event(instanceId, "arrived", "{}"));
 
-            instance.RunnableAtUtc = DateTime.UtcNow.AddHours(1);
             var park = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, grant.Epoch,
-                instance.Revision, parks: true, inboxReadThrough: 0));
+                instance.Revision, parks: true, wakeAfter: TimeSpan.FromHours(1), inboxReadThrough: 0));
 
             // The run keeps its lease and is told to read the inbox first.
             Assert.Equal(WorkflowCommitStatus.Applied, park.Status);
@@ -317,13 +316,14 @@ public sealed class InboxStoreTests
             await inbox.AppendEventAsync(Event(instanceId, "early", "{}"));
 
             // A wait opened after an event arrived is stamped with the inbox's sequence at its commit,
-            // so the owner can tell that the event came before it.
+            // so the owner can tell that the event came before it. Its deadline is the commit's time on
+            // the store's clock plus its timeout (D-35).
             var saved = (await store.GetWorkflowInstanceAsync(instanceId))!;
-            var deadline = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var timeout = TimeSpan.FromDays(30);
             var applied = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, 0, saved.Revision,
                 openedWaits:
                 [
-                    new OpenedWait(next, WaitKind.Event, "approval", "Approval", deadline),
+                    new OpenedWait(next, WaitKind.Event, "approval", "Approval", timeout),
                     new OpenedWait(child, WaitKind.Child, "shipment", "Shipment", null)
                 ]));
             Assert.Equal(WorkflowCommitStatus.Applied, applied.Status);
@@ -332,15 +332,16 @@ public sealed class InboxStoreTests
             Assert.Equal(0, page.OpenWaits[first]);
             Assert.Equal(1, page.OpenWaits[next]);
             var stored = (await inbox.GetWaitAsync(instanceId, next))!;
-            Assert.Equal((WaitKind.Event, "approval", "Approval", deadline, 1L),
-                (stored.Kind, stored.Key, stored.EventType, stored.DeadlineUtc, stored.OpenedSequence));
+            Assert.Equal((WaitKind.Event, "approval", "Approval", timeout, 1L),
+                (stored.Kind, stored.Key, stored.EventType, stored.DeadlineUtc - stored.OpenedAtUtc,
+                    stored.OpenedSequence));
             Assert.True(stored.IsOpen);
 
             // Opening a wait again keeps its first record.
             saved.Revision = applied.Revision;
             await inbox.AppendEventAsync(Event(instanceId, "later", "{}"));
             applied = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, 0, saved.Revision,
-                openedWaits: [new OpenedWait(next, WaitKind.Event, "approval", "Approval", deadline)]));
+                openedWaits: [new OpenedWait(next, WaitKind.Event, "approval", "Approval", timeout)]));
             Assert.Equal(1, (await inbox.GetWaitAsync(instanceId, next))!.OpenedSequence);
 
             // While a child's wait is shown here, an event with any key is kept for the child to decide.

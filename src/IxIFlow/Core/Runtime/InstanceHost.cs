@@ -33,7 +33,6 @@ internal sealed class InstanceHost(
     private readonly CancellationWatch _watch = watch ?? new CancellationWatch(repository, timeProvider);
     private readonly WorkflowExecutor _executor = new(services, activityExecutor,
         timeProvider ?? TimeProvider.System);
-    private readonly ContinuationTransitions _transitions = new(services, timeProvider ?? TimeProvider.System);
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
@@ -328,8 +327,11 @@ internal sealed class InstanceHost(
         var checkpoint = new ExecutionCheckpoint
         {
             DefinitionFingerprint = scopes.Fingerprint,
-            ExecutionDeadlineUtc = options.ExecutionTimeout is { } timeout
-                ? instance.StartedAt!.Value.Add(timeout) : null,
+            // The store stamps the execution deadline when the start is committed (D-35); a run that
+            // saves nothing keeps its own.
+            ExecutionTimeout = options.ExecutionTimeout,
+            ExecutionTimerId = options.ExecutionTimeout != null ? Guid.NewGuid().ToString("N") : null,
+            ExecutionDeadlineUtc = instance.StartedAt + options.ExecutionTimeout,
             Continuations =
             [
                 new ContinuationState
@@ -509,8 +511,7 @@ internal sealed class InstanceHost(
         var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
         var canRecover = instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
             instance?.Status == WorkflowStatus.Suspended &&
-            (cancellationReason != null || HasDueDeadline(instance) || HasChildWait(instance) ||
-             await HasPendingEventsAsync(instanceId));
+            (cancellationReason != null || HasChildWait(instance) || await HasInboxWorkAsync(instanceId));
         // Another run may have decided the event since the instance was read, so it is read again.
         if (!canRecover || !HasStructuredCheckpoint(instance))
             return forEvent && await ReadAsync(instanceId) is { } latest ? latest
@@ -589,12 +590,18 @@ internal sealed class InstanceHost(
             workflowData, true, owner, cancellationToken);
     }
 
-    private bool HasDueDeadline(WorkflowInstance instance) =>
-        HasStructuredCheckpoint(instance) &&
-        _transitions.HasDueDeadline(ExecutionCheckpoint.Read(instance.ExecutionStateJson));
-
-    private async Task<bool> HasPendingEventsAsync(string instanceId) =>
-        (await _store.GetPendingEventsAsync(instanceId, 0, 1)).Events.Count > 0;
+    // An idle instance has work when an event waits for it or the store finds one of its deadlines due
+    // (D-35). A host that looked too early, because its clock runs ahead of the store's, looks again when
+    // the store's clock reaches the earliest deadline.
+    private async Task<bool> HasInboxWorkAsync(string instanceId)
+    {
+        var page = await _store.GetPendingEventsAsync(instanceId, 0, 1);
+        if (page.Events.Count > 0 || page.Deadlines?.Keys.Any(page.IsDue) == true)
+            return true;
+        if (page is { StoreTimeUtc: { } storeTime, Deadlines.Count: > 0 })
+            _control.Schedule(instanceId, Now + (page.Deadlines.Values.Min() - storeTime));
+        return false;
+    }
 
     // A stopped instance is answered without reading its data, which may be what stopped it.
     private static WorkflowExecutionResult ReadResult(WorkflowInstance instance) =>
@@ -681,7 +688,7 @@ internal sealed class InstanceHost(
                 new HostedRun(this, instance, owner, persistState, canPark: depth == 1), cancellationToken);
             // The local host resumes what it saved with a runnable time, on time (C-12), and forgets
             // what has finished.
-            if (persistState && instance.RunnableAtUtc is { } due &&
+            if (persistState && checkpoint.LocalWakeUtc is { } due &&
                 result.Status is WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended or
                     WorkflowExecutionStatus.NeedsResolution)
                 _control.Schedule(instance.InstanceId, due);

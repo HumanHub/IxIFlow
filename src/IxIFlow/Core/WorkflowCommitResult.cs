@@ -55,7 +55,8 @@ public sealed class CheckpointCommit
 {
     private CheckpointCommit(string instanceId, string payload, long epoch, string commitId,
         long expectedRevision, bool clearsCrashCount, bool parks, IReadOnlyList<EventSettlement> settlements,
-        long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ClosedWait> closedWaits)
+        long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
+        IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped)
     {
         InstanceId = instanceId;
         Payload = payload;
@@ -67,12 +68,19 @@ public sealed class CheckpointCommit
         Settlements = settlements;
         InboxReadThrough = inboxReadThrough;
         OpenedWaits = openedWaits;
+        ArmedWaits = armedWaits;
         ClosedWaits = closedWaits;
+        WakeAfter = wakeAfter;
+        Stopped = stopped;
         _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes(
-            $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}\n{inboxReadThrough?.ToString() ?? "-"}\n" +
+            $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}{(stopped ? 1 : 0)}\n" +
+            $"{inboxReadThrough?.ToString() ?? "-"}\n{wakeAfter?.Ticks.ToString() ?? "-"}\n" +
             $"{JsonSerializer.Serialize(settlements)}\n{JsonSerializer.Serialize(openedWaits)}\n" +
-            $"{JsonSerializer.Serialize(closedWaits)}\n{payload}"));
+            $"{JsonSerializer.Serialize(armedWaits)}\n{JsonSerializer.Serialize(closedWaits)}\n{payload}"));
     }
+
+    /// <summary>The longest timeout, delay or park a commit may carry.</summary>
+    public static readonly TimeSpan MaxDuration = TimeSpan.FromDays(36500);
 
     private readonly byte[] _contentHash;
 
@@ -96,12 +104,22 @@ public sealed class CheckpointCommit
     public bool ClearsCrashCount { get; }
 
     /// <summary>
-    /// True when the run stops until the instance's runnable time, for example a retry backoff,
-    /// while the instance stays Running: the store releases the lease in the same step (C-03). If a
-    /// cancellation request is waiting to be taken up, the store keeps the lease and makes the
-    /// instance runnable now instead, and the receipt says it did not park.
+    /// True when the run stops for <see cref="WakeAfter"/>, for example a retry backoff, while the
+    /// instance stays Running: the store releases the lease in the same step (C-03). If a cancellation
+    /// request is waiting to be taken up, the store keeps the lease and makes the instance runnable now
+    /// instead, and the receipt says it did not park.
     /// </summary>
     public bool Parks { get; }
+
+    /// <summary>
+    /// For a park, how long the run stops. For an idle instance, the longest it may wait before it is
+    /// runnable again even with no deadline due, so it checks its children. The store adds it to its own
+    /// time at this commit (D-35).
+    /// </summary>
+    public TimeSpan? WakeAfter { get; }
+
+    /// <summary>True when the instance is stopped for an operator: only a release or a cancellation moves it.</summary>
+    public bool Stopped { get; }
 
     /// <summary>
     /// Inbox events this commit settles, in the same transaction: consumed by the wait that took each,
@@ -121,6 +139,9 @@ public sealed class CheckpointCommit
     /// </summary>
     public IReadOnlyList<OpenedWait> OpenedWaits { get; }
 
+    /// <summary>Open waits this commit gives their deadline.</summary>
+    public IReadOnlyList<ArmedWait> ArmedWaits { get; }
+
     /// <summary>Waits this commit closes. A finished instance's open waits close without being listed.</summary>
     public IReadOnlyList<ClosedWait> ClosedWaits { get; }
 
@@ -133,7 +154,8 @@ public sealed class CheckpointCommit
     public static CheckpointCommit Create(WorkflowInstance instance, long epoch, long expectedRevision,
         string? commitId = null, bool clearsCrashCount = true, bool parks = false,
         IReadOnlyList<EventSettlement>? settlements = null, long? inboxReadThrough = null,
-        IReadOnlyList<OpenedWait>? openedWaits = null, IReadOnlyList<ClosedWait>? closedWaits = null)
+        IReadOnlyList<OpenedWait>? openedWaits = null, IReadOnlyList<ClosedWait>? closedWaits = null,
+        IReadOnlyList<ArmedWait>? armedWaits = null, TimeSpan? wakeAfter = null, bool stopped = false)
     {
         ArgumentNullException.ThrowIfNull(instance);
         ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
@@ -165,20 +187,44 @@ public sealed class CheckpointCommit
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(wait.WaitId, nameof(openedWaits));
             ArgumentNullException.ThrowIfNull(wait.Key, nameof(openedWaits));
-            ArgumentException.ThrowIfNullOrWhiteSpace(wait.EventType, nameof(openedWaits));
+            ArgumentNullException.ThrowIfNull(wait.EventType, nameof(openedWaits));
+            // An answerable wait names what answers it; a delay or an execution deadline is only its time.
+            var timed = wait.Kind is WaitKind.Delay or WaitKind.Execution;
+            if (!timed && string.IsNullOrWhiteSpace(wait.EventType))
+                throw new ArgumentException("A wait an event can answer names its event type", nameof(openedWaits));
+            if (timed && wait.Timeout == null || wait.Kind == WaitKind.Child && wait.Timeout != null)
+                throw new ArgumentException("Delays and execution deadlines have a timeout; a child's wait has none",
+                    nameof(openedWaits));
             if (wait.WaitId.Length > 100 || wait.Key.Length > 400 || wait.EventType.Length > 400)
                 throw new ArgumentException("Wait IDs are at most 100 characters, keys and event types 400",
                     nameof(openedWaits));
+            ValidateDuration(wait.Timeout, nameof(openedWaits));
+        }
+        var armed = (armedWaits ?? []).ToArray();
+        foreach (var wait in armed)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(wait.WaitId, nameof(armedWaits));
+            ValidateDuration(wait.Timeout, nameof(armedWaits));
         }
         var closed = (closedWaits ?? []).ToArray();
         foreach (var wait in closed)
             ArgumentException.ThrowIfNullOrWhiteSpace(wait.WaitId, nameof(closedWaits));
-        if (opened.Select(wait => wait.WaitId).Concat(closed.Select(wait => wait.WaitId))
-                .Distinct(StringComparer.Ordinal).Count() != opened.Length + closed.Length)
-            throw new ArgumentException("A commit opens or closes each wait once", nameof(openedWaits));
+        if (opened.Select(wait => wait.WaitId).Concat(armed.Select(wait => wait.WaitId))
+                .Concat(closed.Select(wait => wait.WaitId))
+                .Distinct(StringComparer.Ordinal).Count() != opened.Length + armed.Length + closed.Length)
+            throw new ArgumentException("A commit opens, arms or closes each wait once", nameof(openedWaits));
+        ValidateDuration(wakeAfter, nameof(wakeAfter));
+        if (parks && wakeAfter == null)
+            throw new ArgumentException("A park says how long the run stops", nameof(wakeAfter));
         return new CheckpointCommit(instance.InstanceId, JsonSerializer.Serialize(instance), epoch, commitId,
             expectedRevision, clearsCrashCount, parks, Array.AsReadOnly(settled), inboxReadThrough,
-            Array.AsReadOnly(opened), Array.AsReadOnly(closed));
+            Array.AsReadOnly(opened), Array.AsReadOnly(armed), Array.AsReadOnly(closed), wakeAfter, stopped);
+    }
+
+    private static void ValidateDuration(TimeSpan? duration, string parameter)
+    {
+        if (duration < TimeSpan.Zero || duration > MaxDuration)
+            throw new ArgumentOutOfRangeException(parameter, "Durations are between zero and 100 years");
     }
 
     /// <summary>A fresh copy of the committed instance.</summary>

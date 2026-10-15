@@ -8,23 +8,23 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
 {
     private DateTime Now => time.GetUtcNow().UtcDateTime;
 
-    // A deadline that passes after the root finishes has nothing left to interrupt.
-    public bool HasDueDeadline(ExecutionCheckpoint checkpoint) =>
-        (!checkpoint.CancellationRequested && !RootFinished(checkpoint) &&
-         checkpoint.ExecutionDeadlineUtc <= Now) ||
-        checkpoint.Waits.Any(wait => wait.DeadlineUtc <= Now);
+    /// <summary>
+    /// True when a deadline may be due by the store's clock as the run last read it, or a child is due
+    /// for a check by the host's own: the run reads the inbox, and the store says which are due (D-35).
+    /// A deadline that passes after the root finishes has nothing left to interrupt.
+    /// </summary>
+    public bool MayBeDue(ExecutionCheckpoint checkpoint) => checkpoint.NextDeadlineLocal() <= Now;
 
     public static bool RootFinished(ExecutionCheckpoint checkpoint) =>
         checkpoint.Continuations[0].Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled;
 
+    /// <summary>Ends the run at its execution deadline when the store found it due at the run's last read.</summary>
     public bool ProcessExecutionDeadline(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint)
     {
-        if (checkpoint.CancellationRequested || checkpoint.TimedOut ||
-            checkpoint.ExecutionDeadlineUtc > Now ||
-            checkpoint.ExecutionDeadlineUtc == null ||
-            RootFinished(checkpoint))
+        if (!checkpoint.ExecutionTimerOpen || !checkpoint.Inbox.IsDue(checkpoint.ExecutionTimerId!))
             return false;
+        checkpoint.Inbox.Closed(checkpoint.ExecutionTimerId!, WaitCloseReason.TimedOut);
         checkpoint.TimedOut = true;
         checkpoint.CancellationRequested = true;
         instance.CancellationReason = new CancellationReason
@@ -38,14 +38,13 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     }
 
     /// <summary>
-    /// Times out the waits due by <paramref name="cutoff"/>. The run reads its inbox after taking the
-    /// cutoff and before this, so every event received before such a deadline has been seen (D-33).
+    /// Times out the waits the store found due when the run last read its inbox. That read covered every
+    /// event received before their deadlines, and the run decided those first (D-33, D-35).
     /// </summary>
-    public bool ProcessDueWaits(ExecutionCheckpoint checkpoint,
-        WorkflowScopeCatalog scopes, DateTime cutoff)
+    public bool ProcessDueWaits(ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes)
     {
         var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId == null &&
-            wait.DeadlineUtc <= cutoff).ToArray();
+            checkpoint.Inbox.IsDue(wait.Id)).ToArray();
         foreach (var wait in due)
         {
             var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
@@ -254,8 +253,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     ContinuationId = continuation.Id,
                     StepId = scopes.Id(step),
                     Key = key,
-                    DeadlineUtc = step.WaitTimeout is { } timeout
-                        ? Now.Add(timeout) : null,
+                    Timeout = step.WaitTimeout,
                     EventType = step.ResumeEventType?.AssemblyQualifiedName
                         ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                             $"Wait step '{step.Id}' has no event type")
@@ -271,7 +269,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     ContinuationId = continuation.Id,
                     StepId = scopes.Id(step),
                     Key = "delay",
-                    DeadlineUtc = Now.Add(step.DelayDuration!.Value)
+                    Timeout = step.DelayDuration!.Value
                 });
                 continuation.Status = ContinuationStatus.Waiting;
                 break;
@@ -284,8 +282,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     }
 
     // A request's WaitFor takes an answer that arrived early at once; otherwise it waits on the wait its
-    // request opened in the same scope occurrence, from now until its own deadline (D-33). A saga retry
-    // sends the request again, so an answer is never replayed from an earlier attempt.
+    // request opened in the same scope occurrence, until its own timeout from the commit that records
+    // this (D-33, D-35). A saga retry sends the request again, so an answer is never replayed from an
+    // earlier attempt.
     private void AwaitReply(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, WorkflowStep step)
     {
@@ -305,7 +304,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 item.IsReply && item.StepId == stepId && item.ScopeActivationId == activation)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"The request '{step.ReplyToRequest}' this wait answers has no open wait");
-        wait.DeadlineUtc = step.WaitTimeout is { } timeout ? Now.Add(timeout) : null;
+        wait.Timeout ??= step.WaitTimeout;
         continuation.Status = ContinuationStatus.Waiting;
     }
 

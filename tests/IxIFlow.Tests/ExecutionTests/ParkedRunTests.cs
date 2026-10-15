@@ -151,23 +151,28 @@ public sealed class ParkedRunTests
         var ids = Enumerable.Range(0, 4).Select(_ => Guid.NewGuid().ToString("N")).ToArray();
         try
         {
-            // Three idle instances due long ago, earliest last; one waits only for an event.
+            // Three idle instances whose delays end in the reverse order of their commits: the store
+            // stamps each deadline from its own clock, so the last one committed is due first. One more
+            // waits only for an event.
             for (var index = 0; index < 3; index++)
                 await Commit(store, new WorkflowInstance
                 {
                     InstanceId = ids[index], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
-                    WorkflowDataJson = "{}", RunnableAtUtc = new DateTime(2000, 1, 3 - index, 0, 0, 0, DateTimeKind.Utc)
-                });
+                    WorkflowDataJson = "{}"
+                }, new OpenedWait($"{ids[index]}-delay", WaitKind.Delay, "delay", "",
+                    TimeSpan.FromMilliseconds(1500 - 500 * index)));
             await Commit(store, new WorkflowInstance
             {
                 InstanceId = ids[3], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
                 WorkflowDataJson = "{}"
             });
+            Assert.DoesNotContain(await store.GetRunnableInstancesAsync(1000), item => ids.Contains(item.InstanceId));
+            await Task.Delay(TimeSpan.FromMilliseconds(1700));
 
-            // The poll takes the earliest first, no more than it asks for.
-            var earliest = await store.GetRunnableInstancesAsync(2);
-            Assert.Equal([ids[2], ids[1]], earliest.Select(item => item.InstanceId));
-            Assert.DoesNotContain(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == ids[3]);
+            // The poll takes the earliest first, no more than it asks for. Other rows of a shared store
+            // may be due earlier, so only these instances' order is checked.
+            Assert.Single(await store.GetRunnableInstancesAsync(1));
+            Assert.Equal([ids[2], ids[1], ids[0]], await Ours(store, ids));
 
             // A cancellation request makes an idle instance runnable in the same step.
             Assert.True(await store.RequestCancellationAsync(ids[3], new CancellationReason { ReasonCode = "stop" }));
@@ -175,7 +180,7 @@ public sealed class ParkedRunTests
 
             // An owned instance is not offered, however due.
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(ids[2], "owner", TimeSpan.FromSeconds(30)));
-            Assert.Equal([ids[1], ids[0]], (await store.GetRunnableInstancesAsync(2)).Select(item => item.InstanceId));
+            Assert.Equal([ids[1], ids[0], ids[3]], await Ours(store, ids));
         }
         finally
         {
@@ -198,15 +203,18 @@ public sealed class ParkedRunTests
         return (instance, grant);
     }
 
-    private static CheckpointCommit Park(WorkflowInstance instance, ExecutionLeaseGrant grant)
-    {
-        instance.RunnableAtUtc = DateTime.UtcNow.AddHours(1);
-        return CheckpointCommit.Create(instance, grant.Epoch, instance.Revision, parks: true);
-    }
+    private static CheckpointCommit Park(WorkflowInstance instance, ExecutionLeaseGrant grant) =>
+        CheckpointCommit.Create(instance, grant.Epoch, instance.Revision, parks: true,
+            wakeAfter: TimeSpan.FromHours(1));
 
-    private static async Task Commit(IWorkflowStateRepository store, WorkflowInstance instance) =>
+    private static async Task<string[]> Ours(IWorkflowStateRepository store, string[] ids) =>
+        (await store.GetRunnableInstancesAsync(1000)).Select(item => item.InstanceId).Where(ids.Contains).ToArray();
+
+    private static async Task Commit(IWorkflowStateRepository store, WorkflowInstance instance,
+        params OpenedWait[] waits) =>
         Assert.Equal(WorkflowCommitStatus.Applied,
-            (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0))).Status);
+            (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
+                openedWaits: waits))).Status);
 
     private static async Task<T> WaitForAsync<T>(Func<Task<T?>> probe) where T : class
     {

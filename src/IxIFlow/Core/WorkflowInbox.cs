@@ -46,22 +46,32 @@ public sealed record WorkflowEvent(
 /// including events already settled, so a run that has seen the page can mark the inbox read up to
 /// it. <see cref="OpenWaits"/> are the instance's open waits with the inbox sequence each opened at:
 /// an event addressed by key alone may satisfy only a wait that opened before it arrived (D-33).
+/// <see cref="Deadlines"/> are the open waits' deadlines and <see cref="StoreTimeUtc"/> the store's
+/// time, read together with the events, so every event received before a deadline that is due at
+/// that time is on this page or an earlier one (D-35).
 /// </summary>
 public sealed record InboxPage(
     IReadOnlyList<StoredWorkflowEvent> Events,
     long ReadThrough,
-    IReadOnlyDictionary<string, long> OpenWaits)
+    IReadOnlyDictionary<string, long> OpenWaits,
+    IReadOnlyDictionary<string, DateTime>? Deadlines = null,
+    DateTime? StoreTimeUtc = null)
 {
+    /// <summary>True when the open wait's deadline had passed by the store's time when the page was read.</summary>
+    public bool IsDue(string waitId) =>
+        Deadlines != null && Deadlines.TryGetValue(waitId, out var deadline) && deadline <= StoreTimeUtc;
+
     /// <summary>
     /// A page of up to <paramref name="limit"/> events read after <paramref name="afterSequence"/> from
     /// an inbox at <paramref name="inboxSequence"/>: a full page reads through its last event, a short
     /// one through the whole inbox.
     /// </summary>
     public static InboxPage Of(IReadOnlyList<StoredWorkflowEvent> events, int limit, long afterSequence,
-        long inboxSequence, IReadOnlyDictionary<string, long> openWaits) =>
+        long inboxSequence, IReadOnlyDictionary<string, long> openWaits,
+        IReadOnlyDictionary<string, DateTime> deadlines, DateTime storeTimeUtc) =>
         new(events, limit == 0 ? afterSequence
             : events.Count == limit ? events[^1].Sequence
-            : Math.Max(afterSequence, inboxSequence), openWaits);
+            : Math.Max(afterSequence, inboxSequence), openWaits, deadlines, storeTimeUtc);
 }
 
 public enum EventAppendStatus
@@ -173,7 +183,13 @@ public enum WaitKind
     Reply,
 
     /// <summary>A child's wait shown on its parent; the child decides events forwarded to it.</summary>
-    Child
+    Child,
+
+    /// <summary>A delay: only its deadline ends it. No event can answer it.</summary>
+    Delay,
+
+    /// <summary>The instance's execution deadline. No event can answer it.</summary>
+    Execution
 }
 
 /// <summary>Why a wait closed.</summary>
@@ -186,8 +202,19 @@ public enum WaitCloseReason
     InstanceFinished
 }
 
-/// <summary>A wait a commit opens. The store stamps it with the instance's inbox sequence at that commit.</summary>
-public sealed record OpenedWait(string WaitId, WaitKind Kind, string Key, string EventType, DateTime? DeadlineUtc);
+/// <summary>
+/// A wait a commit opens. The store stamps it with the instance's inbox sequence at that commit and,
+/// when it has a <paramref name="Timeout"/>, with a deadline: the store's time at that commit plus the
+/// timeout (D-35).
+/// </summary>
+public sealed record OpenedWait(string WaitId, WaitKind Kind, string Key, string EventType, TimeSpan? Timeout);
+
+/// <summary>
+/// An open wait a commit gives its deadline: a request's reply wait, when its <c>WaitFor</c> is reached.
+/// The deadline is the store's time at that commit plus <paramref name="Timeout"/>; a wait that has a
+/// deadline keeps it (D-35).
+/// </summary>
+public sealed record ArmedWait(string WaitId, TimeSpan Timeout);
 
 /// <summary>A wait a commit closes, and why.</summary>
 public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
@@ -247,16 +274,19 @@ public sealed record WaitQuery(
 public interface IWorkflowInbox
 {
     /// <summary>
-    /// Stores an event before it is acknowledged. An event for a closed or unknown wait, or one
-    /// addressed by key when no wait with that key is open, is recorded as rejected. A pending event
-    /// makes a running or suspended instance runnable in the same step; a stopped one waits for its
-    /// release.
+    /// Stores an event before it is acknowledged, received at the store's time. An event for a closed or
+    /// unknown wait, one addressed by key when no wait with that key is open, and one that arrives when
+    /// every wait it could reach is past its deadline, is recorded as rejected (D-33, D-35). A pending
+    /// event makes a running or suspended instance runnable in the same step; a stopped one waits for
+    /// its release.
     /// </summary>
     Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent);
 
     /// <summary>
     /// Pending events after <paramref name="afterSequence"/>, in arrival order, how far the page reads,
-    /// and the instance's open waits with the sequence each opened at.
+    /// the instance's open waits with the sequence each opened at and their deadlines, and the store's
+    /// time. The read is ordered against appends to the instance: an event appended meanwhile is on the
+    /// page or received after the page's time.
     /// </summary>
     Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit);
 
@@ -266,7 +296,10 @@ public interface IWorkflowInbox
     /// <summary>One wait, open or closed, or null.</summary>
     Task<StoredWait?> GetWaitAsync(string instanceId, string waitId);
 
-    /// <summary>Open waits that match the query, ordered by wait ID.</summary>
+    /// <summary>
+    /// Open waits that match the query, ordered by wait ID. Delays and execution deadlines are listed
+    /// only when the query names their kind.
+    /// </summary>
     Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query);
 
     /// <summary>

@@ -19,7 +19,7 @@ internal sealed class WorkflowExecutor
         _time = time;
         _transitions = new ContinuationTransitions(services, time);
         _attempts = new ActivityAttempts(services, activityExecutor, _transitions, time);
-        _intake = new EventIntake(services);
+        _intake = new EventIntake(services, time);
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
@@ -65,21 +65,27 @@ internal sealed class WorkflowExecutor
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 host.ThrowIfOwnershipLost();
-                var progressed = _transitions.ProcessExecutionDeadline(instance, checkpoint);
-                // Wait deadlines are judged at this instant, before the inbox is read, so an event that
-                // arrives during the read is in time only if a later pass finds it so.
-                var cutoff = Now;
-                // Events are taken before wait deadlines, so one received in time beats its deadline
-                // (D-33). A cancellation request the run has not applied yet goes first: its unwind
-                // closes the waits, and the events are then refused as cancelled.
+                var progressed = false;
+                // The store says which deadlines are due when the run reads its inbox, and that read
+                // covers every event received before them, so events are taken before deadlines and one
+                // received in time beats its deadline (D-33, D-35). A cancellation request the run has
+                // not applied yet goes first: its unwind closes the waits, and the events are then
+                // refused as cancelled. The execution deadline ends the run before any event is taken.
                 if (host.ObservedInboxSequence > (checkpoint.Inbox.ReadThrough ?? long.MaxValue) ||
-                    _transitions.HasDueDeadline(checkpoint))
+                    _transitions.MayBeDue(checkpoint))
                     checkpoint.Inbox.ExpectArrivals();
                 if (!CancellationPending(checkpoint, host))
-                    progressed |= await _intake.TakeAsync(scopes, checkpoint, workflowData, host, cutoff);
+                {
+                    progressed |= await _intake.TakeAsync(scopes, checkpoint, workflowData, host);
+                    if (_transitions.ProcessExecutionDeadline(instance, checkpoint))
+                    {
+                        progressed = true;
+                        await _intake.TakeAsync(scopes, checkpoint, workflowData, host);
+                    }
+                    progressed |= _transitions.ProcessDueWaits(checkpoint, scopes);
+                }
                 var children = await ProcessDueChildWaitsAsync(checkpoint, host);
                 progressed |= children == ChildCheck.Progressed;
-                progressed |= _transitions.ProcessDueWaits(checkpoint, scopes, cutoff);
                 // A check that only finds children still running reschedules itself; that is not progress.
                 if (progressed || children == ChildCheck.Rescheduled)
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
@@ -119,7 +125,7 @@ internal sealed class WorkflowExecutor
                     cancellationToken.ThrowIfCancellationRequested();
                     host.ThrowIfOwnershipLost();
                     // A draining host starts no new steps (B-12), nor does a run stopping at a limit.
-                    if (_transitions.HasDueDeadline(checkpoint) || host.Drain.IsCancellationRequested ||
+                    if (_transitions.MayBeDue(checkpoint) || host.Drain.IsCancellationRequested ||
                         limitStop != null)
                         break;
                     await ApplyCancellationRequestAsync(instance, checkpoint, workflowData,
@@ -220,15 +226,12 @@ internal sealed class WorkflowExecutor
                         checkpoint.Continuations.Where(child => item.ChildContinuationIds.Contains(child.Id))
                             .All(child => child.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)))
                     continue;
-                if (_transitions.HasDueDeadline(checkpoint))
+                if (_transitions.MayBeDue(checkpoint))
                     continue;
                 var nextRetry = checkpoint.Continuations
                     .Where(item => item.Status == ContinuationStatus.Active &&
                                    item.RetryAfterUtc > Now)
                     .Min(item => item.RetryAfterUtc);
-                var nextWaitDeadline = checkpoint.Waits
-                    .Where(wait => wait.DeadlineUtc > Now)
-                    .Min(wait => wait.DeadlineUtc);
                 if (inFlight.Count == 0 &&
                     (nextRetry == null || host.Drain.IsCancellationRequested || limitStop != null))
                 {
@@ -249,16 +252,15 @@ internal sealed class WorkflowExecutor
                 using var retryTimerCancellation = new CancellationTokenSource();
                 Task? retryTimer = null;
                 // A sibling's wait deadline may come before a retry; the run wakes for whichever is first.
-                var nextWake = new[] { nextRetry, nextWaitDeadline,
-                        checkpoint.CancellationRequested ? null : checkpoint.ExecutionDeadlineUtc }
-                    .Where(due => due != null).Min();
+                // Deadlines are the store's, seen on the host's clock (D-35).
+                var nextWake = new[] { nextRetry, checkpoint.NextDeadlineLocal() }.Min();
                 // With nothing in flight, a long wait for a retry gives the slot and lease back; the
                 // host resumes the run on time (C-03). A request that arrived meanwhile keeps it here.
                 if (inFlight.Count == 0 && host.CanPark && nextWake is { } parkUntil &&
                     parkUntil - Now > host.Limits.ParkRetriesLongerThan)
                 {
                     if (await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData,
-                            scopes, Now, parkUntil: parkUntil))
+                            scopes, Now, parkFor: parkUntil - Now))
                         return Parked(instance, workflowData, parkUntil);
                     continue;
                 }

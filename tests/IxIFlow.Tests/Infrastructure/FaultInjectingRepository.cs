@@ -22,7 +22,14 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
     public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
         _inner.GetOpenWaitsAsync(query);
 
-    private readonly InMemoryWorkflowStateRepository _inner = new();
+    private readonly InMemoryWorkflowStateRepository _inner;
+
+    public FaultInjectingRepository() : this(TimeProvider.System)
+    {
+    }
+
+    /// <summary>A store whose clock is <paramref name="time"/>, as a test that drives the engine's clock needs.</summary>
+    public FaultInjectingRepository(TimeProvider time) => _inner = new InMemoryWorkflowStateRepository(time);
     private int _failedReads;
     private int _failedCommits;
 

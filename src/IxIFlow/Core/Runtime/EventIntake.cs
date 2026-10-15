@@ -6,43 +6,69 @@ namespace IxIFlow.Core.Runtime;
 /// Takes an instance's pending events at the start of a pass (D-32, D-33). Each event is decided once:
 /// consumed by exactly one open wait, or rejected with the reason. An event addressed by key may
 /// satisfy only a wait that was open when it arrived; one addressed to a wait may satisfy only that
-/// wait. An event received before a wait's deadline still beats the deadline. Decisions are settled
-/// by the next commit, together with the checkpoint they produce.
+/// wait. The store's deadlines and its time are read with the events, so an event received before a
+/// wait's deadline still beats the deadline (D-35). Decisions are settled by the next commit, together
+/// with the checkpoint they produce.
 /// </summary>
-internal sealed class EventIntake(IServiceProvider services)
+internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
 {
     private const int PageSize = 100;
 
-    /// <summary>Reads and decides the events that arrived since the last read; true when it decided any.</summary>
+    private DateTime Now => time.GetUtcNow().UtcDateTime;
+
+    /// <summary>
+    /// Reads and decides the events that arrived since the last read, and records which deadlines the
+    /// store found due; true when it decided any event. A due execution deadline is recorded before any
+    /// event is decided, and the events stay unread until the run has applied it. A run that saves
+    /// nothing has no store, so its own clock decides its execution deadline.
+    /// </summary>
     public async Task<bool> TakeAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        object workflowData, IExecutionHost host, DateTime cutoff)
+        object workflowData, IExecutionHost host)
     {
         var inbox = checkpoint.Inbox;
-        if (!host.PersistsState || !inbox.MayHaveUnread)
+        if (!host.PersistsState)
+        {
+            inbox.Due(checkpoint.ExecutionTimerOpen && checkpoint.ExecutionDeadlineUtc <= Now
+                ? [checkpoint.ExecutionTimerId!] : []);
+            return false;
+        }
+        if (!inbox.MayHaveUnread)
             return false;
         checkpoint.CloseEndedRequests();
         var decided = false;
         while (true)
         {
             var page = await host.ReadInboxAsync(inbox.ReadThrough ?? 0, PageSize);
+            if (page.StoreTimeUtc is { } storeTime)
+                checkpoint.Clock.Observe(storeTime, Now);
+            checkpoint.ReadDeadlines(page);
+            if (checkpoint.ExecutionTimerOpen && page.IsDue(checkpoint.ExecutionTimerId!))
+            {
+                inbox.Due([checkpoint.ExecutionTimerId!]);
+                return decided;
+            }
             foreach (var stored in page.Events)
             {
                 // An event taken for a child is settled once the child has decided it.
                 if (inbox.IsDecided(stored.EventId) || checkpoint.Continuations.Any(item =>
                         item.AcceptedWait?.EventId == stored.EventId))
                     continue;
-                await DecideAsync(scopes, checkpoint, workflowData, host, stored, page.OpenWaits, cutoff);
+                await DecideAsync(scopes, checkpoint, workflowData, host, stored, page);
                 decided = true;
             }
             inbox.Read(page.ReadThrough);
+            // Only a page that reads to the end of the inbox has seen every event received before a
+            // deadline it finds due.
             if (page.Events.Count < PageSize)
+            {
+                inbox.Due(page.Deadlines?.Keys.Where(page.IsDue) ?? []);
                 return decided;
+            }
         }
     }
 
     private async Task DecideAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        object workflowData, IExecutionHost host, StoredWorkflowEvent stored,
-        IReadOnlyDictionary<string, long> openedAt, DateTime now)
+        object workflowData, IExecutionHost host, StoredWorkflowEvent stored, InboxPage page)
     {
         var payload = Read(stored);
         if (payload == null)
@@ -53,18 +79,19 @@ internal sealed class EventIntake(IServiceProvider services)
         var eventType = payload.GetType();
         // The waits this event is addressed to and that were open for it. A request's answer is
         // addressed by its token only, and is taken even before its WaitFor is reached.
-        var addressed = checkpoint.Waits.Where(wait => wait.TableKind != null &&
+        var addressed = checkpoint.Waits.Where(wait => wait.Answerable &&
             (stored.TargetWaitId != null
                 ? wait.Id == stored.TargetWaitId
                 : wait.TableKind != WaitKind.Reply && (stored.Key == null || wait.Key == stored.Key) &&
                   (wait.TableKind == WaitKind.Child ||
-                   openedAt.TryGetValue(wait.Id, out var opened) && opened < stored.Sequence)) &&
+                   page.OpenWaits.TryGetValue(wait.Id, out var opened) && opened < stored.Sequence)) &&
             checkpoint.Continuations.Any(item => item.Id == wait.ContinuationId &&
                 (item.Status == ContinuationStatus.Waiting || wait.IsReply &&
                  item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled)))).ToList();
-        // A wait whose deadline has passed takes only an event received before it.
-        var onTime = addressed.Where(wait => wait.DeadlineUtc is not { } deadline || deadline > now ||
-                                              stored.ReceivedAtUtc <= deadline).ToList();
+        // A wait the store found due takes only an event received before its deadline; both are the
+        // store's times (D-35).
+        var onTime = addressed.Where(wait => !page.IsDue(wait.Id) ||
+                                              stored.ReceivedAtUtc < page.Deadlines![wait.Id]).ToList();
         var typed = onTime.Where(wait =>
             WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(eventType) == true).ToList();
         // An answer can confirm only what its request was about.

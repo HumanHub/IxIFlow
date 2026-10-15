@@ -19,6 +19,19 @@ internal sealed class ExecutionCheckpoint
     /// by the <c>WaitFor</c> of its request's scope occurrence, or dropped when that scope ends.
     /// </summary>
     public List<BoundReplyState> BoundReplies { get; set; } = [];
+
+    /// <summary>
+    /// How long the instance may run in all, or null. The store stamps the deadline when it records the
+    /// execution deadline's row, <see cref="ExecutionTimerId"/>, in the waits table (D-35).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TimeSpan? ExecutionTimeout { get; set; }
+
+    /// <summary>The waits-table row of the execution deadline, when there is one.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExecutionTimerId { get; set; }
+
+    /// <summary>The execution deadline as the store stamped it, or the run's estimate until it reads it.</summary>
     public DateTime? ExecutionDeadlineUtc { get; set; }
     public bool TimedOut { get; set; }
     public SerializedException? UnhandledError { get; set; }
@@ -40,6 +53,25 @@ internal sealed class ExecutionCheckpoint
     [JsonIgnore]
     public InboxProgress Inbox { get; private set; } = new();
 
+    /// <summary>The store's clock as this run last read it (D-35). It is not saved.</summary>
+    [JsonIgnore]
+    public StoreClock Clock { get; } = new();
+
+    /// <summary>
+    /// When the host should next look at the instance after its last commit, in the host's clock, or
+    /// null when nothing but an event or an operator moves it. It is not saved.
+    /// </summary>
+    [JsonIgnore]
+    public DateTime? LocalWakeUtc { get; set; }
+
+    /// <summary>
+    /// True while the execution deadline can still end the run: it is set, and the run has neither
+    /// reached it nor been cancelled, and its root has not finished.
+    /// </summary>
+    [JsonIgnore]
+    public bool ExecutionTimerOpen => ExecutionTimerId != null && !CancellationRequested && !TimedOut &&
+        Continuations.Count > 0 && !ContinuationTransitions.RootFinished(this);
+
     public static ExecutionCheckpoint Read(string json)
     {
         var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(json);
@@ -47,9 +79,34 @@ internal sealed class ExecutionCheckpoint
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 "Unsupported execution checkpoint version");
         // Every wait in a saved checkpoint was committed with it.
-        checkpoint.Inbox = InboxProgress.Committed(checkpoint.Waits);
+        checkpoint.Inbox = InboxProgress.Committed(checkpoint);
         return checkpoint;
     }
+
+    /// <summary>
+    /// Takes the deadlines the store stamped from a page it read (D-35). A wait the store has no deadline
+    /// for has none yet: it is not committed, or not armed.
+    /// </summary>
+    public void ReadDeadlines(InboxPage page)
+    {
+        if (page.Deadlines == null)
+            return;
+        foreach (var wait in Waits.Where(wait => wait.TableKind is not (null or WaitKind.Child)))
+            wait.DeadlineUtc = page.Deadlines.TryGetValue(wait.Id, out var deadline) ? deadline : null;
+        if (ExecutionTimerId != null)
+            ExecutionDeadlineUtc = page.Deadlines.TryGetValue(ExecutionTimerId, out var execution)
+                ? execution : null;
+    }
+
+    /// <summary>
+    /// The earliest time, in the host's clock, at which a wait or the execution deadline may be due, or
+    /// a child is to be checked.
+    /// </summary>
+    public DateTime? NextDeadlineLocal() =>
+        Waits.Select(wait => wait.ChildWorkflowId == null && wait.DeadlineUtc is { } deadline
+                ? Clock.ToLocal(deadline) : wait.DeadlineUtc)
+            .Append(ExecutionTimerOpen && ExecutionDeadlineUtc is { } execution ? Clock.ToLocal(execution) : null)
+            .Min();
 
     /// <summary>
     /// Closes the reply waits, and drops the answers kept, of scope occurrences that have ended: their
@@ -362,7 +419,19 @@ internal sealed class WaitState
     public string Key { get; set; } = "";
     public string EventType { get; set; } = "";
     public DateTime RegisteredAtUtc { get; set; }
+
+    /// <summary>
+    /// For a wait the store times out, its deadline as the store stamped it, or the run's estimate until
+    /// the run reads it (D-35). For a child's wait, when the parent next checks the child, in the host's clock.
+    /// </summary>
     public DateTime? DeadlineUtc { get; set; }
+
+    /// <summary>
+    /// The wait's timeout or delay, from the commit that records it, or for a reply wait from the commit
+    /// that reaches its <c>WaitFor</c>. The store adds it to its own time (D-35).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TimeSpan? Timeout { get; set; }
     public string? ChildWorkflowId { get; set; }
     public string? ChildWaitId { get; set; }
 
@@ -382,14 +451,18 @@ internal sealed class WaitState
     public string? Subject { get; set; }
 
     /// <summary>
-    /// How the waits table knows this wait, or null for a wait no event can answer: a delay, or a
-    /// child shown only as running (D-33).
+    /// How the waits table knows this wait, or null for a child shown only as running (D-33, D-35).
     /// </summary>
     [JsonIgnore]
-    public WaitKind? TableKind => string.IsNullOrEmpty(EventType) ? null
+    public WaitKind? TableKind => string.IsNullOrEmpty(EventType)
+            ? ChildWorkflowId == null ? WaitKind.Delay : null
         : IsReply ? WaitKind.Reply
         : ChildWorkflowId != null ? WaitKind.Child
         : WaitKind.Event;
+
+    /// <summary>True for a wait an event can answer.</summary>
+    [JsonIgnore]
+    public bool Answerable => TableKind is WaitKind.Event or WaitKind.Reply or WaitKind.Child;
 }
 
 /// <summary>An answer to a request kept until its <c>WaitFor</c> takes it (D-33).</summary>

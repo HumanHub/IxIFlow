@@ -1,0 +1,565 @@
+using System.Text.Json;
+using IxIFlow.Builders;
+using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
+using IxIFlow.Extensions;
+using IxIFlow.Tests.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
+
+namespace IxIFlow.Tests.ExecutionTests;
+
+/// <summary>
+/// The store's clock decides deadlines (D-35): the store stamps a deadline at the commit that records
+/// its wait, refuses an event that arrives after it, and says which deadlines are due when the inbox is
+/// read, so an event received in time beats its deadline. A host's clock only decides when to look.
+/// </summary>
+[Trait("Feature", "timers")]
+[Trait("Spec", "C-03")]
+public sealed class StoreClockTests
+{
+    private static readonly DateTimeOffset Start = new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(-5)]
+    public async Task AWaitTimesOutByTheStoreClockWhateverTheHostClockSays(int hostAheadMinutes)
+    {
+        var clocks = new Clocks(hostAheadMinutes);
+        using var services = Services(clocks);
+        var started = await Engine(services).RunAsync(ApprovalWorkflow("StoreClockTimeout"), new ClockData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
+        // Nine minutes on the store's clock: a host five minutes ahead reads fourteen, and still nothing is due.
+        clocks.Advance(TimeSpan.FromMinutes(9));
+        await RecoverOnceAsync(services, clocks);
+        Assert.Equal(WorkflowStatus.Suspended, (await InstanceAsync(services, started.InstanceId)).Status);
+
+        // Eleven on the store's clock: a host five minutes behind reads six, and the wait has timed out.
+        clocks.Advance(TimeSpan.FromMinutes(2));
+        await RecoverOnceAsync(services, clocks);
+        var saved = await InstanceAsync(services, started.InstanceId);
+        Assert.Equal(WorkflowStatus.Completed, saved.Status);
+        Assert.Contains("\"Outcome\":\"timeout\"", saved.WorkflowDataJson);
+    }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(-5)]
+    public async Task AnEventReceivedInTimeBeatsTheDeadlineWhateverTheHostClockSays(int hostAheadMinutes)
+    {
+        var clocks = new Clocks(hostAheadMinutes);
+        using var services = Services(clocks);
+        var started = await Engine(services).RunAsync(ApprovalWorkflow("StoreClockOnTime"), new ClockData());
+        var store = services.GetRequiredService<IWorkflowStateRepository>();
+
+        // The approval arrives at nine minutes on the store's clock, and nothing runs the instance until
+        // after the deadline.
+        clocks.Advance(TimeSpan.FromMinutes(9));
+        Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(ApprovalEvent(started.InstanceId, "a1"))).Status);
+        clocks.Advance(TimeSpan.FromMinutes(2));
+        await RecoverOnceAsync(services, clocks);
+
+        var saved = await InstanceAsync(services, started.InstanceId);
+        Assert.Equal(WorkflowStatus.Completed, saved.Status);
+        Assert.Contains("\"Outcome\":\"approved\"", saved.WorkflowDataJson);
+        Assert.Equal(EventOutcome.Consumed, (await store.GetEventAsync(started.InstanceId, "a1"))!.Outcome);
+    }
+
+    [Fact]
+    public async Task ADelayEndsByTheStoreClockAndAHostThatLooksEarlyFindsNothingDue()
+    {
+        var clocks = new Clocks(5);
+        using var services = Services(clocks);
+        var definition = Workflow.Create<ClockData>("StoreClockDelay")
+            .Step<NoopActivity>()
+            .Delay(TimeSpan.FromHours(1))
+            .Step<MarkActivity>(step => step
+                .Input(activity => activity.Value).From(_ => "after-delay")
+                .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))
+            .Build();
+        var started = await Engine(services).RunAsync(definition, new ClockData());
+
+        // The host's clock passed the hour; the store's has not, so a look finds nothing to run.
+        clocks.Advance(TimeSpan.FromMinutes(57));
+        var early = await Engine(services).RecoverAsync(started.InstanceId);
+        Assert.Equal(WorkflowExecutionStatus.Faulted, early.Status);
+        Assert.Equal(WorkflowStatus.Suspended, (await InstanceAsync(services, started.InstanceId)).Status);
+
+        clocks.Advance(TimeSpan.FromMinutes(4));
+        await RecoverOnceAsync(services, clocks);
+        var saved = await InstanceAsync(services, started.InstanceId);
+        Assert.Equal(WorkflowStatus.Completed, saved.Status);
+        Assert.Contains("after-delay", saved.WorkflowDataJson);
+    }
+
+    [Fact]
+    public async Task AnExecutionDeadlineEndsTheRunByTheStoreClock()
+    {
+        var clocks = new Clocks(-5);
+        using var services = Services(clocks);
+        var definition = Workflow.Create<ClockData>("StoreClockExecution")
+            .Step<NoopActivity>()
+            .WaitFor<Approval>("approval")
+            .Build();
+        var started = await Engine(services).RunAsync(definition, new ClockData(),
+            new WorkflowOptions { ExecutionTimeout = TimeSpan.FromHours(1) });
+
+        clocks.Advance(TimeSpan.FromMinutes(59));
+        await RecoverOnceAsync(services, clocks);
+        Assert.Equal(WorkflowStatus.Suspended, (await InstanceAsync(services, started.InstanceId)).Status);
+
+        // An hour and a minute on the store's clock; the host's reads fifty-six minutes.
+        clocks.Advance(TimeSpan.FromMinutes(2));
+        await RecoverOnceAsync(services, clocks);
+        Assert.Equal(WorkflowStatus.TimedOut, (await InstanceAsync(services, started.InstanceId)).Status);
+    }
+
+    [Fact]
+    public async Task AnEventReceivedInTimeBeatsTheDeadlineWhenItsOwnerWasBusy()
+    {
+        var clocks = new Clocks(0);
+        using var services = Services(clocks);
+        var gate = services.GetRequiredService<Gate>();
+        var store = services.GetRequiredService<IWorkflowStateRepository>();
+        var definition = Workflow.Create<ClockData>("StoreClockBusyOwner")
+            .Step<NoopActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch.Step<GatedActivity>())
+                .Do(branch => branch.WaitFor<Approval>("approval", configure: wait => wait
+                    .TimeoutAfter(TimeSpan.FromMinutes(10))
+                    .Output(approval => approval.Decision).To(ctx => ctx.WorkflowData.Outcome)
+                    .OnTimeout(path => path.Step<MarkActivity>(step => step
+                        .Input(activity => activity.Value).From(_ => "timeout")
+                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))))))
+            .Build();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var run = Engine(services).RunAsync(definition, new ClockData(),
+            new WorkflowOptions { InstanceId = instanceId });
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        while ((await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId, Key: "approval"))).Count == 0)
+            await Task.Delay(10);
+
+        // The approval is stored five seconds before the deadline while the owner runs the gated
+        // activity; the owner next reads its inbox after the deadline. The clocks move in small steps,
+        // so the owner keeps renewing its lease.
+        await clocks.AdvanceInStepsAsync(TimeSpan.FromSeconds(595));
+        Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(ApprovalEvent(instanceId, "a1"))).Status);
+        await clocks.AdvanceInStepsAsync(TimeSpan.FromSeconds(10));
+        gate.Release.TrySetResult();
+
+        var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal("approved", Assert.IsType<ClockData>(result.WorkflowData).Outcome);
+    }
+
+    [Fact]
+    public async Task AnObservedCancellationGoesBeforeADeadlineTheStoreFindsDue()
+    {
+        var time = new FakeTimeProvider(Start);
+        using var services = Services(new Clocks(0));
+        var gate = services.GetRequiredService<Gate>();
+        var host = new DueHost(time);
+        var definition = Workflow.Create<ClockData>("StoreClockCancelFirst")
+            .Step<NoopActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch.Step<GatedActivity>())
+                .Do(branch => branch.WaitFor<Approval>("approval", configure: wait => wait
+                    .TimeoutAfter(TimeSpan.FromMinutes(10))
+                    .OnTimeout(path => path.Step<MarkActivity>(step => step
+                        .Input(activity => activity.Value).From(_ => "timeout")
+                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))))))
+            .Build();
+        var run = RunExecutorAsync(services, definition, host, time);
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        while (host.Opened.Count == 0)
+            await Task.Delay(10);
+        var waitId = Assert.Single(host.Opened);
+
+        // The run learns of a cancellation request and the store finds the wait due, both before the
+        // run looks again; then its clock passes the deadline and wakes it.
+        host.Cancel();
+        time.Advance(TimeSpan.FromMinutes(11));
+        gate.Release.TrySetResult();
+
+        var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.Equal(WaitCloseReason.Cancelled, host.Closed[waitId]);
+        Assert.Equal("", Assert.IsType<ClockData>(result.WorkflowData).Outcome);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-03")]
+    public Task MemoryStoreRefusesEventsThatArriveAfterTheirDeadline() =>
+        VerifyLateArrivals(new InMemoryWorkflowStateRepository());
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "D-03")]
+    public Task SqlStoreRefusesEventsThatArriveAfterTheirDeadline() =>
+        VerifyLateArrivals(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+
+    private static async Task VerifyLateArrivals(IWorkflowStateRepository store)
+    {
+        var instanceId = Guid.NewGuid().ToString("N");
+        try
+        {
+            // A wait already past its deadline, one with time left under another key, a reply wait
+            // without a deadline yet, and a delay.
+            await CommitAsync(store, instanceId, null,
+                new OpenedWait("late", WaitKind.Event, "late", "Approval", TimeSpan.Zero),
+                new OpenedWait("open", WaitKind.Event, "open", "Approval", TimeSpan.FromHours(1)),
+                new OpenedWait("reply", WaitKind.Reply, "reply", "Approval", null),
+                new OpenedWait("delay", WaitKind.Delay, "delay", "", TimeSpan.FromHours(1)));
+
+            Assert.Equal(EventRejection.WaitTimedOut, (await store.AppendEventAsync(
+                Event(instanceId, "by-token", targetWaitId: "late"))).Rejection);
+            Assert.Equal(EventRejection.WaitTimedOut, (await store.AppendEventAsync(
+                Event(instanceId, "by-key", key: "late"))).Rejection);
+            Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(
+                Event(instanceId, "to-reply", targetWaitId: "reply"))).Status);
+            // Without a key, the wait with time left could still take it.
+            Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(
+                Event(instanceId, "any-key"))).Status);
+            // No event can answer a delay.
+            Assert.Equal(EventRejection.UnknownWait, (await store.AppendEventAsync(
+                Event(instanceId, "to-delay", targetWaitId: "delay"))).Rejection);
+
+            // Delays are kept out of listings unless asked for.
+            var listed = await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId));
+            Assert.DoesNotContain(listed, wait => wait.WaitId == "delay");
+            Assert.Equal("delay", Assert.Single(await store.GetOpenWaitsAsync(
+                new WaitQuery(InstanceId: instanceId, Kind: WaitKind.Delay))).WaitId);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+    [Fact]
+    [Trait("Spec", "D-03")]
+    public Task MemoryStoreFindsDeadlinesDueWithTheEventsReceivedBeforeThem() =>
+        VerifyDuePage(new InMemoryWorkflowStateRepository());
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "D-03")]
+    public Task SqlStoreFindsDeadlinesDueWithTheEventsReceivedBeforeThem() =>
+        VerifyDuePage(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+
+    private static async Task VerifyDuePage(IWorkflowStateRepository store)
+    {
+        var instanceId = Guid.NewGuid().ToString("N");
+        try
+        {
+            await CommitAsync(store, instanceId, null,
+                new OpenedWait("short", WaitKind.Event, "approval", "Approval", TimeSpan.FromMilliseconds(500)),
+                new OpenedWait("long", WaitKind.Event, "other", "Approval", TimeSpan.FromHours(1)));
+            var before = await store.GetPendingEventsAsync(instanceId, 0, 10);
+            Assert.False(before.IsDue("short"));
+            Assert.Equal(EventAppendStatus.Stored,
+                (await store.AppendEventAsync(Event(instanceId, "in-time", key: "approval"))).Status);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(700));
+            var page = await store.GetPendingEventsAsync(instanceId, 0, 10);
+
+            // The page says which deadlines had passed at its time, and holds every event received before them.
+            Assert.True(page.IsDue("short"));
+            Assert.False(page.IsDue("long"));
+            var inTime = Assert.Single(page.Events);
+            Assert.True(inTime.ReceivedAtUtc < page.Deadlines!["short"]);
+            Assert.True(page.Deadlines["short"] <= page.StoreTimeUtc);
+            Assert.Equal(page.Deadlines["short"], (await store.GetWaitAsync(instanceId, "short"))!.DeadlineUtc);
+            // An event for that wait now is too late, and never reaches a page.
+            Assert.Equal(EventRejection.WaitTimedOut, (await store.AppendEventAsync(
+                Event(instanceId, "late", key: "approval"))).Rejection);
+            Assert.Single((await store.GetPendingEventsAsync(instanceId, 0, 10)).Events);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+    [Fact]
+    [Trait("Spec", "D-03")]
+    public Task MemoryStoreArmsAReplyWaitOnce() => VerifyArming(new InMemoryWorkflowStateRepository());
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "D-03")]
+    public Task SqlStoreArmsAReplyWaitOnce() =>
+        VerifyArming(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+
+    private static async Task VerifyArming(IWorkflowStateRepository store)
+    {
+        var instanceId = Guid.NewGuid().ToString("N");
+        try
+        {
+            // The request's start opens its reply wait without a deadline; its WaitFor arms it.
+            var instance = await CommitAsync(store, instanceId, null,
+                new OpenedWait("reply", WaitKind.Reply, "payment", "Payment", null));
+            Assert.Null((await store.GetWaitAsync(instanceId, "reply"))!.DeadlineUtc);
+            var arming = CheckpointCommit.Create(instance, 0, instance.Revision, commitId: "arm",
+                armedWaits: [new ArmedWait("reply", TimeSpan.FromHours(1))]);
+            var armed = await store.CommitWorkflowInstanceAsync(arming);
+            Assert.Equal(WorkflowCommitStatus.Applied, armed.Status);
+            var deadline = (await store.GetWaitAsync(instanceId, "reply"))!.DeadlineUtc;
+            Assert.NotNull(deadline);
+
+            // The same commit again, and a later one that arms it again, keep the first deadline.
+            await Task.Delay(TimeSpan.FromMilliseconds(50));
+            Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(arming)).Status);
+            instance.Revision = armed.Revision;
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
+                CheckpointCommit.Create(instance, 0, instance.Revision,
+                    armedWaits: [new ArmedWait("reply", TimeSpan.FromHours(2))]))).Status);
+            Assert.Equal(deadline, (await store.GetWaitAsync(instanceId, "reply"))!.DeadlineUtc);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+    // An idle instance with the given waits, committed without a lease.
+    private static async Task<WorkflowInstance> CommitAsync(IWorkflowStateRepository store, string instanceId,
+        TimeSpan? wakeAfter, params OpenedWait[] waits)
+    {
+        var instance = new WorkflowInstance
+        {
+            InstanceId = instanceId, WorkflowName = "StoreClock", Status = WorkflowStatus.Suspended,
+            WorkflowDataJson = "{}"
+        };
+        var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
+            openedWaits: waits, wakeAfter: wakeAfter));
+        Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
+        instance.Revision = result.Revision;
+        return instance;
+    }
+
+    private static WorkflowEvent Event(string instanceId, string eventId, string? key = null,
+        string? targetWaitId = null) =>
+        new(instanceId, eventId, "Approval", "{}", key, targetWaitId);
+
+    private static WorkflowEvent ApprovalEvent(string instanceId, string eventId) =>
+        new(instanceId, eventId, typeof(Approval).AssemblyQualifiedName!,
+            JsonSerializer.Serialize(new Approval { Decision = "approved" }), "approval");
+
+    private static WorkflowDefinition ApprovalWorkflow(string name) =>
+        Workflow.Create<ClockData>(name)
+            .Step<NoopActivity>()
+            .WaitFor<Approval>("approval", configure: wait => wait
+                .TimeoutAfter(TimeSpan.FromMinutes(10))
+                .Output(approval => approval.Decision).To(ctx => ctx.WorkflowData.Outcome)
+                .OnTimeout(path => path.Step<MarkActivity>(step => step
+                    .Input(activity => activity.Value).From(_ => "timeout")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))))
+            .Build();
+
+    /// <summary>The host's clock and the store's, a fixed number of minutes apart, moving together.</summary>
+    private sealed class Clocks(int hostAheadMinutes)
+    {
+        public FakeTimeProvider Host { get; } = new(Start.AddMinutes(hostAheadMinutes));
+        public FakeTimeProvider Store { get; } = new(Start);
+
+        public void Advance(TimeSpan by)
+        {
+            Store.Advance(by);
+            Host.Advance(by);
+        }
+
+        // Steps shorter than a lease renewal, with time between them for the host's timers to run.
+        public async Task AdvanceInStepsAsync(TimeSpan by)
+        {
+            var step = TimeSpan.FromSeconds(5);
+            for (var moved = TimeSpan.Zero; moved < by; moved += step)
+            {
+                Advance(by - moved < step ? by - moved : step);
+                await Task.Delay(5);
+            }
+        }
+    }
+
+    private static ServiceProvider Services(Clocks clocks)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<TimeProvider>(clocks.Host);
+        services.AddSingleton<IWorkflowStateRepository>(new InMemoryWorkflowStateRepository(clocks.Store));
+        services.AddIxIFlow();
+        services.AddSingleton<Gate>();
+        services.AddTransient<NoopActivity>();
+        services.AddTransient<MarkActivity>();
+        services.AddTransient<GatedActivity>();
+        return services.BuildServiceProvider();
+    }
+
+    private static IWorkflowClient Engine(IServiceProvider services) =>
+        services.GetRequiredService<IWorkflowClient>();
+
+    private static async Task<WorkflowInstance> InstanceAsync(IServiceProvider services, string instanceId) =>
+        (await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(instanceId))!;
+
+    private static async Task RecoverOnceAsync(IServiceProvider services, Clocks clocks)
+    {
+        using var scanner = new WorkflowRecoveryService(services.GetRequiredService<IServiceScopeFactory>(),
+            services.GetRequiredService<IWorkflowStateRepository>(), NullLogger<WorkflowRecoveryService>.Instance,
+            clocks.Host);
+        await scanner.RecoverOnceAsync(CancellationToken.None);
+    }
+
+    private static Task<WorkflowExecutionResult> RunExecutorAsync(IServiceProvider services,
+        WorkflowDefinition definition, IExecutionHost host, TimeProvider time)
+    {
+        var now = time.GetUtcNow().UtcDateTime;
+        var data = new ClockData();
+        var instance = new WorkflowInstance
+        {
+            InstanceId = Guid.NewGuid().ToString("N"),
+            WorkflowName = definition.Name,
+            WorkflowVersion = definition.Version,
+            WorkflowDataType = typeof(ClockData).AssemblyQualifiedName!,
+            WorkflowDataJson = JsonSerializer.Serialize(data),
+            Status = WorkflowStatus.Running,
+            CreatedAt = now,
+            StartedAt = now
+        };
+        var checkpoint = new ExecutionCheckpoint
+        {
+            DefinitionFingerprint = new WorkflowScopeCatalog(definition).Fingerprint,
+            Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
+        };
+        var executor = new WorkflowExecutor(services, services.GetRequiredService<IActivityExecutor>(), time);
+        return Task.Run(() => executor.RunAsync(definition, instance, checkpoint, data, host, CancellationToken.None));
+    }
+
+    /// <summary>
+    /// A host whose store finds every wait due once <see cref="Cancel"/> is called, and which has then
+    /// also learned of a cancellation request. It records the waits commits open and close.
+    /// </summary>
+    private sealed class DueHost(TimeProvider time) : IExecutionHost
+    {
+        private readonly object _lock = new();
+        private readonly List<string> _opened = [];
+        private readonly Dictionary<string, WaitCloseReason> _closed = new(StringComparer.Ordinal);
+        private volatile bool _cancelled;
+        private long _revision;
+
+        public IReadOnlyList<string> Opened
+        {
+            get { lock (_lock) return _opened.ToArray(); }
+        }
+
+        public IReadOnlyDictionary<string, WaitCloseReason> Closed
+        {
+            get { lock (_lock) return new Dictionary<string, WaitCloseReason>(_closed); }
+        }
+
+        public void Cancel() => _cancelled = true;
+
+        public bool PersistsState => true;
+        public CancellationToken Drain => CancellationToken.None;
+        public long Epoch => 1;
+        public ExecutionLimits Limits { get; } = new() { MaxCheckpointBytes = long.MaxValue };
+        public bool ChildStartIsCheckpointed => true;
+        public bool CanPark => false;
+        public Task? OwnershipLoss => null;
+        public Task<CancellationReason>? CancellationSignal => null;
+        public CancellationReason? ObservedCancellation =>
+            _cancelled ? new CancellationReason { ReasonCode = "stop" } : null;
+        public long ObservedInboxSequence => 0;
+        public Task? InboxChanged => null;
+
+        public void ThrowIfOwnershipLost()
+        {
+        }
+
+        public Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
+        {
+            lock (_lock)
+            {
+                _opened.AddRange(commit.OpenedWaits.Where(wait => wait.Timeout != null).Select(wait => wait.WaitId));
+                foreach (var closed in commit.ClosedWaits)
+                    _closed[closed.WaitId] = closed.Reason;
+            }
+            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged,
+                Interlocked.Increment(ref _revision)));
+        }
+
+        public void ObserveCancellation(CancellationReason reason)
+        {
+        }
+
+        public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit)
+        {
+            var now = time.GetUtcNow().UtcDateTime;
+            var deadlines = Opened.ToDictionary(id => id, _ => _cancelled ? now.AddHours(-1) : now.AddHours(1));
+            return Task.FromResult(new InboxPage([], afterSequence, Opened.ToDictionary(id => id, _ => 0L),
+                deadlines, now));
+        }
+
+        public Task<StoredWait?> ReadWaitAsync(string waitId) => Task.FromResult<StoredWait?>(null);
+
+        public Task<WorkflowInstance?> ReadChildAsync(string childInstanceId) =>
+            throw new NotSupportedException();
+
+        public Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step,
+            WorkflowDefinition definition, WorkflowInstance instance, object workflowData, object? previous,
+            string invocationId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<WorkflowExecutionResult> CancelChildAsync(string childInstanceId, CancellationReason reason,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key, object @event,
+            string eventId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
+    public sealed class ClockData
+    {
+        public string Outcome { get; set; } = "";
+    }
+
+    public sealed class Approval
+    {
+        public string Decision { get; set; } = "";
+    }
+
+    public sealed class Gate
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public sealed class NoopActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    public sealed class MarkActivity : IAsyncActivity
+    {
+        public string Value { get; set; } = "";
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    public sealed class GatedActivity(Gate gate) : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            gate.Entered.TrySetResult();
+            await gate.Release.Task;
+        }
+    }
+}
