@@ -11,6 +11,7 @@ using IxIFlow.Tests.Infrastructure;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "recovery")]
+[Trait("Spec", "A-09")]
 public sealed class ActivityRecoveryTests
 {
     [Fact]
