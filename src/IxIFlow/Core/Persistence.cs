@@ -21,6 +21,20 @@ public interface IWorkflowStateRepository
     Task<CancellationReason?> GetCancellationRequestAsync(string instanceId);
 
     /// <summary>
+    /// Reads the durable cancellation requests of several instances at once; instances without a
+    /// request are left out. A host watches all its running instances with one call per interval.
+    /// </summary>
+    async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        IReadOnlyCollection<string> instanceIds)
+    {
+        var requests = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
+        foreach (var instanceId in instanceIds)
+            if (await GetCancellationRequestAsync(instanceId) is { } reason)
+                requests[instanceId] = reason;
+        return requests;
+    }
+
+    /// <summary>
     /// Lists running instances without a live owner and suspended instances whose
     /// durable cancellation request still needs to be unwound.
     /// </summary>
@@ -230,6 +244,22 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             return Task.FromResult(_cancellations.TryGetValue(instanceId, out var reason)
                 ? JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))
                 : null);
+        }
+    }
+
+    public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        IReadOnlyCollection<string> instanceIds)
+    {
+        ArgumentNullException.ThrowIfNull(instanceIds);
+        lock (_claimLock)
+        {
+            IReadOnlyDictionary<string, CancellationReason> requests = instanceIds
+                .Where(_cancellations.ContainsKey)
+                .Distinct(StringComparer.Ordinal)
+                .ToDictionary(instanceId => instanceId, instanceId =>
+                    JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(_cancellations[instanceId]))!,
+                    StringComparer.Ordinal);
+            return Task.FromResult(requests);
         }
     }
 

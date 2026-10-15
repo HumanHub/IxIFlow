@@ -24,6 +24,7 @@ public static class ServiceCollectionExtensions
         // Core workflow services
         services.TryAddSingleton(HostSettings.Default);
         services.AddSingleton<LocalWorkflowHost>();
+        services.AddSingleton<CancellationWatch>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
         services.AddScoped<DirectInstanceClient>();
         services.AddScoped<RunControl>();

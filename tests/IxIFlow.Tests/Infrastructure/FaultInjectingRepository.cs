@@ -42,6 +42,9 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
         _inner.RequestCancellationAsync(instanceId, reason);
     public virtual Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         _inner.GetCancellationRequestAsync(instanceId);
+    public virtual Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        IReadOnlyCollection<string> instanceIds) =>
+        _inner.GetCancellationRequestsAsync(instanceIds);
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
         _inner.GetWorkflowsRequiringRecoveryAsync();
     public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>

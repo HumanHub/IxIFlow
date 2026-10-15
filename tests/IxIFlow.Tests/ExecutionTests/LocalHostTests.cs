@@ -240,6 +240,70 @@ public sealed class LocalHostTests
     }
 
     [Fact]
+    [Trait("Spec", "B-10")]
+    public async Task OneWatchReadsCancellationForAllRunningInstances()
+    {
+        var store = new CountingStore();
+        using var services = Services(store, slots: 8);
+        var gate = Gate(services);
+        var runs = Enumerable.Range(0, 5)
+            .Select(index => Client(services).RunAsync(BlockingWorkflow($"Watched{index}"), new HostData()))
+            .ToArray();
+        await gate.WaitForRunningAsync(5);
+
+        var singleBefore = store.CancellationReads;
+        var batchBefore = store.BatchCancellationReads;
+        await Task.Delay(1000);
+        var single = store.CancellationReads - singleBefore;
+        var batches = store.BatchCancellationReads - batchBefore;
+
+        // Five leases polling on their own would read about 20 times a second.
+        Assert.Equal(0, single);
+        Assert.InRange(batches, 1, 8);
+        Assert.Equal(5, store.LargestBatch);
+        gate.Release();
+        await Task.WhenAll(runs).WaitAsync(Patience);
+    }
+
+    [Fact]
+    [Trait("Spec", "B-10")]
+    public Task MemoryStoreReadsCancellationRequestsInOneCall() =>
+        VerifyBatchCancellationReads(new InMemoryWorkflowStateRepository());
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "B-10")]
+    public Task SqlStoreReadsCancellationRequestsInOneCall() =>
+        VerifyBatchCancellationReads(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+
+    private static async Task VerifyBatchCancellationReads(IWorkflowStateRepository repository)
+    {
+        var ids = Enumerable.Range(0, 3).Select(_ => Guid.NewGuid().ToString("N")).ToArray();
+        try
+        {
+            foreach (var id in ids)
+                await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(new WorkflowInstance
+                {
+                    InstanceId = id, WorkflowName = "BatchCancellation", Status = WorkflowStatus.Running,
+                    WorkflowDataJson = "{}"
+                }, 0, 0));
+            Assert.True(await repository.RequestCancellationAsync(ids[0], new CancellationReason { ReasonCode = "a" }));
+            Assert.True(await repository.RequestCancellationAsync(ids[2], new CancellationReason { ReasonCode = "c" }));
+
+            var requests = await repository.GetCancellationRequestsAsync([.. ids, "missing-instance"]);
+
+            Assert.Equal(2, requests.Count);
+            Assert.Equal("a", requests[ids[0]].ReasonCode);
+            Assert.Equal("c", requests[ids[2]].ReasonCode);
+        }
+        finally
+        {
+            foreach (var id in ids)
+                await repository.DeleteWorkflowInstanceAsync(id);
+        }
+    }
+
+    [Fact]
     [Trait("Spec", "B-11")]
     public async Task OneInstanceWaitingOnItsCommitDoesNotHoldBackAnother()
     {
@@ -381,6 +445,24 @@ public sealed class LocalHostTests
         {
             Interlocked.Increment(ref _cancellationReads);
             return base.GetCancellationRequestAsync(instanceId);
+        }
+
+        private int _batchReads;
+        private int _largestBatch;
+
+        public int BatchCancellationReads => Volatile.Read(ref _batchReads);
+        public int LargestBatch => Volatile.Read(ref _largestBatch);
+
+        public override Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+            IReadOnlyCollection<string> instanceIds)
+        {
+            Interlocked.Increment(ref _batchReads);
+            int seen;
+            while (instanceIds.Count > (seen = Volatile.Read(ref _largestBatch)) &&
+                   Interlocked.CompareExchange(ref _largestBatch, instanceIds.Count, seen) != seen)
+            {
+            }
+            return base.GetCancellationRequestsAsync(instanceIds);
         }
     }
 
