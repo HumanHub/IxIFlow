@@ -1,4 +1,5 @@
 using IxIFlow.Core;
+using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -79,7 +80,7 @@ public class WorkflowCommitTests
     public async Task SqlCommitHandlesConflictsAndLostAcknowledgments()
     {
         var repository = new SqlWorkflowStateRepository(
-            Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!);
+            SqlServerTestServer.ConnectionString);
         await VerifyFailureBeforeCommit(repository);
         await VerifyLostAcknowledgment(repository);
         await VerifyConflict(repository);

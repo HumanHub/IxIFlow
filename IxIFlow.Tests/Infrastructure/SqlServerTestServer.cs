@@ -10,7 +10,16 @@ namespace IxIFlow.Tests.Infrastructure;
 internal static class SqlServerTestServer
 {
     private const string ExternalServerVariable = "IXIFLOW_TEST_SQL_CONNECTION_STRING";
+    private const string SharedDatabase = "IxIFlowTests";
     private static readonly Lazy<Task<string>> Server = new(StartAsync);
+    private static readonly Lazy<string> Shared = new(() =>
+        Task.Run(CreateSharedDatabaseAsync).GetAwaiter().GetResult());
+
+    /// <summary>
+    /// The shared test database for the whole run. With IXIFLOW_TEST_SQL_CONNECTION_STRING set,
+    /// that connection string is used as is; otherwise an IxIFlowTests database is created in the container.
+    /// </summary>
+    public static string ConnectionString => Shared.Value;
 
     /// <summary>Creates an empty database and returns a connection string for it.</summary>
     public static async Task<string> CreateDatabaseAsync(string prefix)
@@ -43,6 +52,23 @@ internal static class SqlServerTestServer
             DROP DATABASE [{name}];
             """;
         await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<string> CreateSharedDatabaseAsync()
+    {
+        var server = await Server.Value;
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ExternalServerVariable)))
+            return server;
+
+        await using (var connection = new SqlConnection(server))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"IF DB_ID('{SharedDatabase}') IS NULL CREATE DATABASE [{SharedDatabase}]";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        return new SqlConnectionStringBuilder(server) { InitialCatalog = SharedDatabase }.ConnectionString;
     }
 
     private static async Task<string> StartAsync()

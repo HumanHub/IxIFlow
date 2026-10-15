@@ -1,5 +1,6 @@
 using Dapper;
 using IxIFlow.Core;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.Data.SqlClient;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -10,7 +11,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task GenericConsumerContinuesAfterLosingAcknowledgementClaim()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -49,7 +50,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task GenericConsumerAcknowledgesEachMessageAfterProcessing()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -88,7 +89,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task RetriedCompletionPublishQueuesOneEventPerInstance()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
@@ -125,7 +126,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task RetriedStartPublishQueuesOneEventPerInstance()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
@@ -159,7 +160,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task PendingMessagePollHasAFilteredIndex()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         using var bus = new SqlMessageBus(connectionString);
         try
@@ -192,7 +193,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task PruningOldProcessedMessagesKeepsDeadLetters()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var processedToken = Guid.NewGuid().ToString("N");
         var deadToken = Guid.NewGuid().ToString("N");
         try
@@ -247,7 +248,7 @@ public class SqlMessageBusReliabilityTests
     public async Task ConsumerRecoversAfterConnectionPoolExhaustion()
     {
         var builder = new SqlConnectionStringBuilder(
-            Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!)
+            SqlServerTestServer.ConnectionString)
         {
             MaxPoolSize = 1,
             ConnectTimeout = 1,
@@ -287,7 +288,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task OldNotificationIsPrunedWithoutAConsumer()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var hostId = Guid.NewGuid().ToString("N");
         try
         {
@@ -325,7 +326,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task ActiveDeliveryKeepsItsClaimPastTheOriginalExpiry()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -362,7 +363,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task OneClaimRenewalErrorDoesNotExposeAnActiveDelivery()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -415,7 +416,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task MessageWithoutHandlerAcknowledgement_IsRedelivered()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
 
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync();
@@ -469,7 +470,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task AcknowledgedMessage_IsNotRedelivered()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -503,7 +504,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task RejectedMessageIsDelayedAndRecordsTheFailure()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -543,7 +544,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task BusyMessageCanBeDeferredWithoutUsingItsFailureBudget()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -579,7 +580,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task RepeatedFailureDeadLettersTheMessage()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -618,7 +619,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task InvalidPayloadIsDeadLetteredWithoutStoppingTheConsumer()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         string? messageId = null;
         try
@@ -698,13 +699,10 @@ public sealed class GenericConsumerProbe
     public string Token { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// A test that needs SQL Server. It always runs: against IXIFLOW_TEST_SQL_CONNECTION_STRING when set,
+/// otherwise against a Testcontainers SQL Server (see SqlServerTestServer). Without Docker it fails.
+/// </summary>
 public sealed class SqlServerFactAttribute : FactAttribute
 {
-    public SqlServerFactAttribute()
-    {
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")))
-        {
-            Skip = "Set IXIFLOW_TEST_SQL_CONNECTION_STRING to an isolated SQL Server test database.";
-        }
-    }
 }

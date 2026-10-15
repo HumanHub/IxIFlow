@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Tests.Infrastructure;
 using IxIFlow.Extensions;
 using Dapper;
 using Microsoft.Data.SqlClient;
@@ -155,7 +156,7 @@ public sealed class WorkflowCompletionOutboxTests
     public async Task ExpiredSqlOutboxClaimCanBeRecovered()
     {
         var repository = new SqlWorkflowStateRepository(
-            Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!);
+            SqlServerTestServer.ConnectionString);
         await VerifyExpiredClaimCanBeRecovered(repository);
     }
 
@@ -197,7 +198,7 @@ public sealed class WorkflowCompletionOutboxTests
     [Trait("Category", "SqlIntegration")]
     public async Task TerminalSqlCheckpointPublishesOnAnotherHost()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var services = new ServiceCollection();
@@ -231,7 +232,7 @@ public sealed class WorkflowCompletionOutboxTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlOutboxClaimExcludesASecondHost()
     {
-        var connectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var connectionString = SqlServerTestServer.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var instance = new WorkflowInstance
@@ -267,7 +268,7 @@ public sealed class WorkflowCompletionOutboxTests
     [Trait("Category", "SqlIntegration")]
     public async Task AddingOutboxColumnDoesNotRepublishHistoricalCompletions()
     {
-        var masterConnectionString = Environment.GetEnvironmentVariable("IXIFLOW_TEST_SQL_CONNECTION_STRING")!;
+        var masterConnectionString = SqlServerTestServer.ConnectionString;
         var databaseName = "IxIFlowOutboxMigration_" + Guid.NewGuid().ToString("N");
         var builder = new SqlConnectionStringBuilder(masterConnectionString)
         {
