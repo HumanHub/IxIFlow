@@ -909,6 +909,20 @@ public sealed class ForEachTests
     }
 
     [Fact]
+    public void AnOutputThroughASelectorGivenItsOwnDefaultIsABuildError()
+    {
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("DefaultTarget")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Step<CountActivity>(step => step
+                    .Output(activity => activity.Count).To(ctx =>
+                        ctx.WorkflowData.Lines.FirstOrDefault(_ => false, ctx.Item(line))!.Price)))
+            .Build());
+
+        Assert.Contains("cannot be shown to write workflow data", error.Message);
+    }
+
+    [Fact]
     public void AnOutputThroughAUserDefinedConversionIsABuildError()
     {
         var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("ConvertedTarget")
