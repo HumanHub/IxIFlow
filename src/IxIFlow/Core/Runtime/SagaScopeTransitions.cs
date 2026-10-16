@@ -241,7 +241,12 @@ internal static class SagaScopeTransitions
             return false;
         var saved = state.AcceptedWaits[state.AcceptedWaitCursor];
         if (saved.StepId != stepId)
+        {
+            // The retry took another path; what the earlier attempt accepted from here on belongs to that path.
+            state.AcceptedWaits.RemoveRange(state.AcceptedWaitCursor,
+                state.AcceptedWaits.Count - state.AcceptedWaitCursor);
             return false;
+        }
         state.AcceptedWaitCursor++;
         @event = saved.Event.Read(services);
         return true;

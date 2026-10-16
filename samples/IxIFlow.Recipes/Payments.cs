@@ -123,9 +123,9 @@ public static class PaymentRecipe
 
 /// <summary>
 /// Recipe 8, payment in a saga (spec D-17): the payment request is a saga step, refunded when a later
-/// step fails. Compensation closes the payment's wait, so the provider's callback for that payment is
-/// refused as cancelled. The saga's retry creates a new payment with a new token, which the old token
-/// cannot answer.
+/// step fails. The refund runs whether or not the provider already called back. Compensation closes the
+/// payment's wait, so a later callback for that payment is refused as cancelled. The saga's retry creates
+/// a new payment with a new token, which the old token cannot answer.
 /// </summary>
 public static class SagaPaymentRecipe
 {
