@@ -229,6 +229,8 @@ internal static class SagaScopeTransitions
             StepId = stepId,
             Event = SerializedValue.From(@event)!
         });
+        // A fresh acceptance is past anything this attempt could replay.
+        state.AcceptedWaitCursor = state.AcceptedWaits.Count;
     }
 
     public static bool TryReuseAcceptedWait(ContinuationState continuation, string stepId,

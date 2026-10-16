@@ -437,6 +437,42 @@ public sealed class RequestStepTests
 
     [Fact]
     [Trait("Spec", "D-16")]
+    public async Task ARetryOnAnotherPathKeepsEveryWaitItAcceptsThere()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("DivergingRetriesTwoWaits")
+            .Step<StartActivity>()
+            .Saga(saga => saga
+                .Request<RequestApproval>("approval")
+                .WaitFor<ApprovalDecision>("approval", configure: wait => wait
+                    .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved))
+                .OutcomeOn(ctx => ctx.WorkflowData.Approved, outcomes => outcomes
+                    .Outcome(true, branch => branch.WaitFor<OtherAnswer>("approved-note"))
+                    .DefaultOutcome(branch => branch
+                        .WaitFor<OtherAnswer>("rejected-note")
+                        .WaitFor<OtherAnswer>("rejected-sign")))
+                .Step<FailTwiceActivity>())
+            .OnError<InvalidOperationException>(error => error.CompensateNone().ThenRetry(2))
+            .Build();
+        var started = await engine.RunAsync(definition, new OrderData());
+
+        await engine.ReplyAsync(outbox.Sent[0].Token, new ApprovalDecision { Approved = true });
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approved-note", new OtherAnswer()));
+        // The second attempt takes the other path and accepts two waits there, then fails.
+        await engine.ReplyAsync(outbox.Sent[1].Token, new ApprovalDecision { Approved = false });
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "rejected-note", new OtherAnswer()));
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "rejected-sign", new OtherAnswer()));
+        // The third replays both and completes.
+        var finished = await engine.ReplyAsync(outbox.Sent[2].Token, new ApprovalDecision { Approved = false });
+
+        EventAssert.Consumed(finished);
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
     public void ARequestInASagaNeedsItsWaitForInTheSaga()
     {
         EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<OrderData>("SagaWithoutWait")
