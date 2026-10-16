@@ -19,4 +19,25 @@ public interface IForEachSetup<TWorkflowData>
     /// </summary>
     IForEachSetup<TWorkflowData> Into<TResult>(
         Expression<Func<WorkflowContext<TWorkflowData>, List<ItemResult<TResult>>>> target);
+
+    /// <summary>
+    /// Runs the items as parallel branches, each from a copy of the data at the fork, merged at the join
+    /// (D-14, D-34). With <paramref name="maxConcurrency"/>, at most that many run at once, started in
+    /// item order; the next starts after one completes while the join is still open. A body write that
+    /// more than one item could make, to a property with no combiner, is a build error unless the join is
+    /// <see cref="WaitAny"/>.
+    /// </summary>
+    IForEachSetup<TWorkflowData> Parallel(int? maxConcurrency = null);
+
+    /// <summary>Completes the parallel step when the first item completes; the rest are cancelled or never start.</summary>
+    IForEachSetup<TWorkflowData> WaitAny();
+
+    /// <summary>
+    /// Completes the parallel step when <paramref name="completeWhen"/> holds, evaluated after each item
+    /// completes with the provisional merge of the completed items' data and their results so far, in
+    /// item order, or when every item has completed. The body must end with a result of
+    /// <typeparamref name="TResult"/>.
+    /// </summary>
+    IForEachSetup<TWorkflowData> WaitConditionally<TResult>(
+        Func<TWorkflowData, IReadOnlyList<ItemResult<TResult>>, bool> completeWhen);
 }

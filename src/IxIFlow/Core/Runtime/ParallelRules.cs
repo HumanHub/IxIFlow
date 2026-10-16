@@ -30,8 +30,24 @@ internal static class ParallelRules
         foreach (var dataType in all.Select(step => step.WorkflowDataType).OfType<Type>().Distinct())
             ValidateCombiners(dataType);
         foreach (var step in all)
-            if (step.StepType == WorkflowStepType.Parallel && step.ParallelJoinMode != ParallelJoinMode.WaitAny)
-                Check(step);
+            if (step.ParallelJoinMode != ParallelJoinMode.WaitAny)
+            {
+                if (step.StepType == WorkflowStepType.Parallel)
+                    Check(step);
+                else if (step.StepType == WorkflowStepType.ForEach && step.ForEachParallel)
+                    CheckItems(step);
+            }
+    }
+
+    // Every item of a parallel ForEach runs the same body, so any write it makes, other than the results
+    // the engine stores, could be made by more than one item and needs a combiner (D-34).
+    private static void CheckItems(WorkflowStep forEach)
+    {
+        foreach (var path in Writes(forEach, forEach.ForEachBodySteps).OfType<string>().Distinct())
+            if (!Combined(forEach.WorkflowDataType, path, forEach.ParallelCombiners))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Items of parallel ForEach step '{forEach.Name}' all write '{path}' and it has no combiner; " +
+                    "give the property a combiner, keep per-item values in the results, or join with WaitAny");
     }
 
     private static void Check(WorkflowStep parallel)

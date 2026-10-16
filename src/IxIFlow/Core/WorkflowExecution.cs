@@ -838,6 +838,22 @@ public class WorkflowStep
     [System.Text.Json.Serialization.JsonIgnore]
     public Action<object, IReadOnlyList<(ItemStatus Status, object? Value)>>? ForEachInto { get; set; }
 
+    /// <summary>
+    /// For a <c>ForEach</c> step, true when its items run as parallel branches (D-34); its join is
+    /// <see cref="ParallelJoinMode"/>.
+    /// </summary>
+    public bool ForEachParallel { get; set; }
+
+    /// <summary>For a parallel <c>ForEach</c> step, how many items run at once, or null for all of them.</summary>
+    public int? ForEachMaxConcurrency { get; set; }
+
+    /// <summary>
+    /// For a parallel <c>ForEach</c> step joined conditionally, decides on the provisional merge of the
+    /// completed items' data and their results so far, by index (D-34, spec E-09).
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, IReadOnlyList<(int Index, object? Value)>, bool>? ForEachCompletionCondition { get; set; }
+
     /// <summary>For a <c>ForEach</c> step, the member path its results are stored to, such as <c>WorkflowData.Results</c>.</summary>
     public string? ForEachIntoPath { get; set; }
 
@@ -946,6 +962,9 @@ public class WorkflowStep
             ForEachItems = ForEachItems,
             ForEachInto = ForEachInto,
             ForEachIntoPath = ForEachIntoPath,
+            ForEachParallel = ForEachParallel,
+            ForEachMaxConcurrency = ForEachMaxConcurrency,
+            ForEachCompletionCondition = ForEachCompletionCondition,
             ForEachIntoExpression = ForEachIntoExpression,
             ResultType = ResultType,
             ResultSelector = ResultSelector,

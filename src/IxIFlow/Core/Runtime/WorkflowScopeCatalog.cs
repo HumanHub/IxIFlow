@@ -172,7 +172,10 @@ internal sealed class WorkflowScopeCatalog
                     // A ForEach is sequential until a parallel mode exists; its handle is known by this step.
                     step.ForEachItem == null
                         ? ""
-                        : "sequential:" + WorkflowTypeIdentity.StableName(step.ForEachItem.ItemType),
+                        : (step.ForEachParallel
+                              ? $"parallel:{step.ForEachMaxConcurrency}:{step.ParallelJoinMode}"
+                              : "sequential") + ":" + WorkflowTypeIdentity.StableName(step.ForEachItem.ItemType),
+                    Code(step.ForEachCompletionCondition),
                     Code(step.ForEachItems),
                     WorkflowTypeIdentity.StableName(step.ResultType), Code(step.ResultSelector),
                     Shape(step.ForEachIntoExpression));

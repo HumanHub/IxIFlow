@@ -77,7 +77,9 @@ internal static class ForEachRules
     {
         if (step.ForEachItem == null || step.ForEachItems == null)
             throw Invalid($"ForEach step '{step.Name}' has no item list");
-        if (step.ForEachInto != null)
+        if (!step.ForEachParallel && step.ParallelJoinMode != ParallelJoinMode.WaitAll)
+            throw Invalid($"ForEach step '{step.Name}' has a join, which only a parallel ForEach has");
+        if (ForEachTransitions.StoresResults(step))
         {
             // Every way out of the body gives a result of the stored type.
             foreach (var exit in Exits(step.ForEachBodySteps))

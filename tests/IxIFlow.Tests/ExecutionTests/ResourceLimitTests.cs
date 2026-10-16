@@ -32,13 +32,13 @@ public sealed class ResourceLimitTests
                 .Do(branch => branch.Step<QuickActivity>()))
             .Build();
         string instanceId;
-        using (var limited = Services(store, options => options.MaxActiveBranches = 3))
+        using (var limited = Services(store, options => options.MaxActiveBranches = 2))
         {
-            // The root and three branches make four.
+            // Three branches are one over the limit; the root does not count.
             var stopped = await Client(limited).RunAsync(definition, new LimitData());
 
             Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stopped.Status);
-            Assert.Contains("over the configured limit of 3", stopped.ErrorMessage);
+            Assert.Contains("over the configured limit of 2", stopped.ErrorMessage);
             instanceId = stopped.InstanceId;
             var saved = (await store.GetWorkflowInstanceAsync(instanceId))!;
             var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
@@ -48,7 +48,7 @@ public sealed class ResourceLimitTests
             Assert.Equal(1, Probe(limited).Quick);
         }
 
-        using var raised = Services(store, options => options.MaxActiveBranches = 4);
+        using var raised = Services(store, options => options.MaxActiveBranches = 3);
         await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
         var released = await Client(raised).ReleaseAsync(instanceId);
 
@@ -70,9 +70,10 @@ public sealed class ResourceLimitTests
                     .Do(nested => nested.Step<QuickActivity>()))))
             .Build();
         string instanceId;
-        using (var limited = Services(store, options => options.MaxActiveBranches = 5))
+        using (var limited = Services(store, options => options.MaxActiveBranches = 3))
         {
-            // The outer fork makes three live; the inner one would make six.
+            // The outer fork makes two branches live. The inner one would make four: the gated branch and
+            // three nested ones; the branch that forks them waits on its join and does not count.
             var run = Client(limited).RunAsync(definition, new LimitData());
             await Probe(limited).Started.Task.WaitAsync(Patience);
             await Task.Delay(200);
@@ -86,7 +87,7 @@ public sealed class ResourceLimitTests
             Assert.Equal(1, Probe(limited).Gated);
         }
 
-        using var raised = Services(store, options => options.MaxActiveBranches = 6);
+        using var raised = Services(store, options => options.MaxActiveBranches = 4);
         await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
         Probe(raised).Gate.SetResult();
         var released = await Client(raised).ReleaseAsync(instanceId);

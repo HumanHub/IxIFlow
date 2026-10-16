@@ -133,7 +133,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             if (continuation.Stack.Count == 0)
             {
                 continuation.Status = ContinuationStatus.Completed;
-                CompleteJoin(scopes, checkpoint, continuation);
+                ForEachTransitions.BranchFinished(scopes, checkpoint, continuation, position);
+                CompleteJoin(scopes, checkpoint, continuation, maxActiveBranches);
             }
             else
             {
@@ -253,7 +254,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
 
             case WorkflowStepType.ForEach:
                 ForEachTransitions.Advance(scopes, checkpoint, continuation, position, step, workflowData,
-                    services, maxForEachItems);
+                    services, maxForEachItems, maxActiveBranches);
                 break;
 
             case WorkflowStepType.ForEachResult:
@@ -408,12 +409,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (step.ParallelBranches.Count == 0)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Parallel step '{step.Id}' has no branches");
-        // Branches that finished or are cancelling do not count, so whether a nested fork fits can
-        // depend on how far its siblings have got.
-        var live = checkpoint.Continuations.Count(item => item.Status is not (ContinuationStatus.Completed or
-            ContinuationStatus.Cancelled or ContinuationStatus.Cancelling));
-        if (live + step.ParallelBranches.Count > maxActiveBranches)
-            throw new BranchLimitExceededException(live, step.ParallelBranches.Count, maxActiveBranches);
+        EnsureBranchesFit(checkpoint, step.ParallelBranches.Count, maxActiveBranches);
 
         var join = new ParallelJoinState
         {
@@ -444,10 +440,26 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         }
     }
 
+    /// <summary>
+    /// Throws <see cref="BranchLimitExceededException"/> when starting <paramref name="starting"/> more
+    /// branches would make more than <paramref name="maxActiveBranches"/> live (D-30). Only branches count:
+    /// not the root, not a parent waiting on its join, and not branches that finished or are cancelling, so
+    /// whether a nested fork fits can depend on how far its siblings have got.
+    /// </summary>
+    public static void EnsureBranchesFit(ExecutionCheckpoint checkpoint, int starting, int maxActiveBranches)
+    {
+        var live = checkpoint.Continuations.Count(item => item.ParentJoinId != null &&
+            item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled or
+                ContinuationStatus.Cancelling or ContinuationStatus.Joining));
+        if (live + starting > maxActiveBranches)
+            throw new BranchLimitExceededException(live, starting, maxActiveBranches);
+    }
+
     private static void CompleteJoin(
         WorkflowScopeCatalog scopes,
         ExecutionCheckpoint checkpoint,
-        ContinuationState child)
+        ContinuationState child,
+        int maxActiveBranches)
     {
         if (child.ParentJoinId == null)
             return;
@@ -456,6 +468,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (join.IsCompleting)
             return;
         var children = checkpoint.Continuations.Where(item => join.ChildContinuationIds.Contains(item.Id)).ToList();
+        if (scopes.Step(join.StepId) is { StepType: WorkflowStepType.ForEach } forEach)
+        {
+            CompleteItemJoin(scopes, checkpoint, join, forEach, children, maxActiveBranches);
+            return;
+        }
         var allCompleted = children.All(item => item.Status == ContinuationStatus.Completed);
         var shouldJoin = join.Mode switch
         {
@@ -470,6 +487,58 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         join.IsCompleting = true;
         foreach (var sibling in children.Where(item => item.Status != ContinuationStatus.Completed))
             CancelTree(checkpoint, sibling);
+    }
+
+    // A parallel ForEach decides after each item completes, counting queued items as not completed
+    // (D-34). An open join starts the next queued item; a decision starts none and cancels the running ones.
+    private static void CompleteItemJoin(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ParallelJoinState join, WorkflowStep step, List<ContinuationState> children, int maxActiveBranches)
+    {
+        var state = ForEachTransitions.StateOf(checkpoint, join, step);
+        var allCompleted = (state.Finished?.Count ?? 0) == state.Items.Count;
+        var decided = join.Mode switch
+        {
+            ParallelJoinMode.WaitAll => allCompleted,
+            ParallelJoinMode.WaitAny => true,
+            ParallelJoinMode.WaitConditionally => allCompleted || ItemConditionHolds(scopes, checkpoint, join, step,
+                state, children),
+            _ => throw new ArgumentOutOfRangeException(nameof(join.Mode))
+        };
+        if (!decided)
+        {
+            if (state.Next < state.Items.Count)
+            {
+                EnsureBranchesFit(checkpoint, 1, maxActiveBranches);
+                ForEachTransitions.StartItem(scopes, checkpoint, ParentOf(checkpoint, join), join, step, state);
+            }
+            return;
+        }
+        join.IsCompleting = true;
+        foreach (var sibling in children.Where(item => item.Status != ContinuationStatus.Completed))
+            CancelTree(checkpoint, sibling);
+    }
+
+    private static bool ItemConditionHolds(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ParallelJoinState join, WorkflowStep step, ForEachState state, List<ContinuationState> children)
+    {
+        var condition = step.ForEachCompletionCondition
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Conditional ForEach step '{step.Name}' has no completion condition");
+        object provisional;
+        try
+        {
+            var changes = MergedChanges(scopes, checkpoint, join, children);
+            provisional = BranchData.Copy(checkpoint.DataOf(ParentOf(checkpoint, join)));
+            foreach (var change in changes)
+                BranchData.ApplyTo(provisional, change);
+        }
+        catch (JoinConflictException conflict)
+        {
+            join.ConflictPath = conflict.Path;
+            join.Conflict = conflict.Message;
+            return true;
+        }
+        return condition(provisional, ForEachTransitions.ResultsSoFar(step, state));
     }
 
     public static void CancelTree(ExecutionCheckpoint checkpoint, ContinuationState continuation)
@@ -550,6 +619,18 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         return BranchData.Merge(baseline, completed, overrides);
     }
 
+    // After a join is merged, a parallel step is passed; a parallel ForEach is marked joined, and stores
+    // its results when its frame advances again.
+    private static void Joined(WorkflowScopeCatalog scopes, ParallelJoinState join, ContinuationState parent)
+    {
+        var frame = parent.Stack[^1];
+        if (scopes.Step(join.StepId).StepType == WorkflowStepType.ForEach)
+            (frame.ForEach ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                "A ForEach join finished without its saved list")).Joined = true;
+        else
+            frame.NextStepIndex++;
+    }
+
     private static ContinuationState ParentOf(ExecutionCheckpoint checkpoint, ParallelJoinState join) =>
         checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
 
@@ -616,7 +697,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     if (conflict != null)
                         conflicts.Add((parent, conflict));
                     else if (!join.ResumeParentWithoutAdvance)
-                        parent.Stack[^1].NextStepIndex++;
+                        Joined(scopes, join, parent);
                 }
             }
             else if (parent.CancellationUnwind && !finishingCleanup)
@@ -627,7 +708,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 if (conflict != null)
                     conflicts.Add((parent, conflict));
                 else if (!join.ResumeParentWithoutAdvance)
-                    parent.Stack[^1].NextStepIndex++;
+                    Joined(scopes, join, parent);
             }
         }
         return completed;

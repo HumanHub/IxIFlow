@@ -18,6 +18,45 @@ internal sealed class ForEachSetup<TWorkflowData>(WorkflowStep step) : IForEachS
         return this;
     }
 
+    public IForEachSetup<TWorkflowData> Parallel(int? maxConcurrency = null)
+    {
+        if (maxConcurrency is < 1)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                "A parallel ForEach runs at least one item at a time");
+        step.ForEachParallel = true;
+        step.ForEachMaxConcurrency = maxConcurrency;
+        return this;
+    }
+
+    public IForEachSetup<TWorkflowData> WaitAny()
+    {
+        SetJoin(ParallelJoinMode.WaitAny);
+        return this;
+    }
+
+    public IForEachSetup<TWorkflowData> WaitConditionally<TResult>(
+        Func<TWorkflowData, IReadOnlyList<ItemResult<TResult>>, bool> completeWhen)
+    {
+        ArgumentNullException.ThrowIfNull(completeWhen);
+        SetJoin(ParallelJoinMode.WaitConditionally);
+        if (step.ResultType != null && step.ResultType != typeof(TResult))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"ForEach step '{step.Name}' stores {step.ResultType.Name} results, so its condition reads them");
+        step.ResultType = typeof(TResult);
+        step.ForEachCompletionCondition = (data, results) => completeWhen((TWorkflowData)data,
+            results.Select(result => new ItemResult<TResult>(result.Index, ItemStatus.Completed,
+                result.Value is TResult typed ? typed : default)).ToList());
+        return this;
+    }
+
+    private void SetJoin(ParallelJoinMode mode)
+    {
+        if (step.ParallelJoinMode != ParallelJoinMode.WaitAll)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"ForEach step '{step.Name}' already has a join");
+        step.ParallelJoinMode = mode;
+    }
+
     public IForEachSetup<TWorkflowData> Into<TResult>(
         Expression<Func<WorkflowContext<TWorkflowData>, List<ItemResult<TResult>>>> target)
     {
@@ -32,6 +71,9 @@ internal sealed class ForEachSetup<TWorkflowData>(WorkflowStep step) : IForEachS
         var owner = ReplaceParameterVisitor.Replace(member.Expression!, target.Parameters[0], context);
         var assign = Expression.Lambda<Action<WorkflowContext<TWorkflowData>, List<ItemResult<TResult>>>>(
             Expression.Assign(Expression.Property(owner, property), value), context, value).Compile();
+        if (step.ResultType != null && step.ResultType != typeof(TResult))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"ForEach step '{step.Name}' decides on {step.ResultType.Name} results, so it stores them");
         step.ResultType = typeof(TResult);
         step.ForEachIntoPath = path;
         step.ForEachIntoExpression = Core.Runtime.WorkflowExpressionSignature.Checked(target);
