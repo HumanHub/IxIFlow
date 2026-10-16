@@ -403,7 +403,7 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
         {
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             SourceType = typeof(WorkflowContext<TWorkflowData, TPreviousStepData>),
             TargetType = propertyType,
             Direction = PropertyMappingDirection.Input
@@ -513,7 +513,7 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
         {
             TargetProperty = propertyName,
             TargetAssignmentFunction = targetAssignmentFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(destination),
             TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = propertyType,
             TargetType = typeof(WorkflowContext<TWorkflowData>),

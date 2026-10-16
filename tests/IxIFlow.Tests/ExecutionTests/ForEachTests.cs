@@ -442,14 +442,13 @@ public sealed class ForEachTests
 
         time.Advance(TimeSpan.FromMinutes(11));
         await RecoverOnceAsync(services, time);
+        var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10));
 
-        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstanceAsync(started.InstanceId);
-        Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-        var data = System.Text.Json.JsonSerializer.Deserialize<OrderData>(saved.WorkflowDataJson)!;
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
         Assert.Equal(
             [new ItemResult<int>(0, ItemStatus.Completed, 3), new ItemResult<int>(1, ItemStatus.Completed, -5)],
-            data.Doubled);
+            Data(finished).Doubled);
     }
 
     [Fact]
@@ -671,11 +670,14 @@ public sealed class ForEachTests
         var engine = Engine(services);
         var definition = Workflow.Create<OrderData>("CancelMidList")
             .Step<NoopActivity>()
-            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
-                .WaitFor<LineApproval>("approval", (approval, ctx) => approval.Name == ctx.Item(line).Name)
-                .Step<CountActivity>(step => step
-                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Expensive)
-                    .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Expensive)))
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .WaitFor<LineApproval>("approval", (approval, ctx) => approval.Name == ctx.Item(line).Name)
+                    .Step<CountActivity>(step => step
+                        .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Expensive)
+                        .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Expensive))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
             .Build();
         var started = await engine.RunAsync(definition, Order(3, 5, 7));
         EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approval", new LineApproval { Name = "line-0" }));
@@ -688,6 +690,195 @@ public sealed class ForEachTests
             .GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Cancelled, saved!.Status);
         Assert.Contains("\"Expensive\":1", saved.WorkflowDataJson);
+        Assert.Contains("\"Doubled\":[]", saved.WorkflowDataJson);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-13")]
+    public async Task ATimeoutInsideALeavingTimeoutBranchGivesItsOwnResult()
+    {
+        var time = new FakeTimeProvider();
+        using var services = Services(time: time);
+        var definition = Workflow.Create<OrderData>("TwoTimeouts")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .WaitFor<LineApproval>("approval", configure: wait => wait
+                        .TimeoutAfter(TimeSpan.FromMinutes(10))
+                        .OnTimeout(first => first
+                            .WaitFor<LineApproval>("reminder", configure: reminder => reminder
+                                .TimeoutAfter(TimeSpan.FromMinutes(10))
+                                .OnTimeout(second => second.Result(_ => -2)))
+                            .Result(_ => -1)))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
+            .Build();
+        var engine = Engine(services);
+        var started = await engine.RunAsync(definition, Order(3));
+
+        time.Advance(TimeSpan.FromMinutes(11));
+        await RecoverOnceAsync(services, time);
+        // The host's timer may run the first timeout; the reminder must be open before time moves on.
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while ((await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId, Key: "reminder"))).Count == 0)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The reminder never opened");
+            await Task.Delay(10);
+        }
+        time.Advance(TimeSpan.FromMinutes(11));
+        await RecoverOnceAsync(services, time);
+        var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        Assert.Equal([new ItemResult<int>(0, ItemStatus.Completed, -2)], Data(finished).Doubled);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-13")]
+    public void ATimeoutInsideALeavingTimeoutBranchWithoutAResultIsABuildError()
+    {
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("InnerWithoutResult")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .WaitFor<LineApproval>("approval", configure: wait => wait
+                        .TimeoutAfter(TimeSpan.FromMinutes(10))
+                        .OnTimeout(first => first
+                            .WaitFor<LineApproval>("reminder", configure: reminder => reminder
+                                .TimeoutAfter(TimeSpan.FromMinutes(10))
+                                .OnTimeout(second => second.Step<NoopActivity>()))
+                            .Result(_ => -1)))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
+            .Build());
+
+        Assert.Contains("every timeout branch", error.Message);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-13")]
+    public void ATargetTheRulesCannotNameIsABuildErrorWhileResultsAreStored()
+    {
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("UnnamedTarget")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .Step<ResultsActivity>(step => step
+                        .Output(activity => activity.Results).To(ctx => ctx.WorkflowData.Groups.First().Results))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
+            .Build());
+
+        Assert.Contains("cannot be shown to write workflow data", error.Message);
+    }
+
+    [Fact]
+    public void TheHandleCheckSeesHandlesInInterpretedExpressions()
+    {
+        var line = new ItemScope<OrderLine>("line");
+        System.Linq.Expressions.Expression<Func<WorkflowContext<OrderData>, string>> read = ctx => ctx.Item(line).Name;
+
+        var interpreted = read.Compile(preferInterpretation: true);
+
+        Assert.Same(line, Assert.Single(ItemCaptures.Of(interpreted)));
+    }
+
+    [Fact]
+    public async Task ABranchCleaningUpAfterASiblingFailedStillReadsTheItem()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<OrderData>("CleanupAfterSiblingFailed")
+            .Step<NoopActivity>()
+            .Try(attempt => attempt.ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Parallel(parallel => parallel
+                    .Do(branch => branch.Step<FailOnFiveActivity>(step => step
+                        .Input(activity => activity.Price).From(ctx => ctx.Item(line).Price)))
+                    .Do(branch => branch
+                        .Try(waiting => waiting.WaitFor<LineApproval>("approval"))
+                        .Finally(cleanup => cleanup.Step<NoteActivity>(step => step
+                            .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name)
+                            .Input(activity => activity.Log).From(ctx => ctx.WorkflowData.Log)
+                            .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log)))))))
+            .Catch<InvalidOperationException>(handler => handler.Step<CountActivity>(step => step
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Expensive)
+                .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Expensive)))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, Order(5));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(1, Data(result).Expensive);
+        Assert.Equal("line-0;", Data(result).Log);
+    }
+
+    [Fact]
+    public async Task ABranchCleaningUpOnCancellationStillReadsTheItem()
+    {
+        using var services = Services();
+        var engine = Engine(services);
+        var definition = Workflow.Create<OrderData>("CleanupOnCancel")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Parallel(parallel => parallel
+                    .Do(branch => branch
+                        .Try(waiting => waiting.WaitFor<LineApproval>("approval"))
+                        .Finally(cleanup => cleanup.Step<NoteActivity>(step => step
+                            .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name)
+                            .Input(activity => activity.Log).From(ctx => ctx.WorkflowData.Log)
+                            .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log))))
+                    .Do(branch => branch.WaitFor<LineApproval>("other"))))
+            .Build();
+        var started = await engine.RunAsync(definition, Order(3, 5));
+
+        var cancelled = await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
+        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(started.InstanceId);
+        Assert.Contains("\"Log\":\"line-0;\"", saved!.WorkflowDataJson);
+    }
+
+    [Fact]
+    public void AnOutputThroughACastOfTheItemIsABuildError()
+    {
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("WritesCastItem")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Step<CountActivity>(step => step
+                    .Output(activity => activity.Count).To(ctx => ((IPriced)ctx.Item(line)).Price)))
+            .Build());
+
+        Assert.Contains("read-only", error.Message);
+    }
+
+    [Fact]
+    public void TheFingerprintKnowsWhichHandleAnExpressionMadeElsewhereReads()
+    {
+        static System.Linq.Expressions.Expression<Func<WorkflowContext<OrderData>, List<ItemResult<int>>>> GroupOf(
+            ItemScope<OrderLine> handle) => ctx => ctx.WorkflowData.Groups[ctx.Index(handle)].Results;
+        Assert.NotEqual(new WorkflowScopeCatalog(DefineWith(true)).Fingerprint,
+            new WorkflowScopeCatalog(DefineWith(false)).Fingerprint);
+
+        // The innermost step stores through one of the two enclosing handles of the same type.
+        WorkflowDefinition DefineWith(bool byOuter) => Workflow.Create<OrderData>("TargetFactory")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (outer, first) => outer
+                .ForEach(ctx => ctx.WorkflowData.Lines, (middle, second) => middle
+                    .ForEach(ctx => ctx.WorkflowData.Lines,
+                        (inner, third) => inner.Step<NoopActivity>().Result(ctx => ctx.Index(third)),
+                        setup => setup.Into(GroupOf(byOuter ? first : second)))))
+            .Build();
+    }
+
+    [Fact]
+    public void TheCodeOfABehaviorIncludesTheLambdasItMakes()
+    {
+        Func<int, bool> behavior = limit => new[] { 1, 2, 3 }.Count(value => value > limit) > 1;
+
+        var parts = LambdaCode.Of(behavior.Method).Split('+');
+
+        Assert.Equal(2, parts.Length);
     }
 
     [Fact]
@@ -840,7 +1031,12 @@ public sealed class ForEachTests
         public List<ItemResult<int>> Results { get; set; } = [];
     }
 
-    public sealed class OrderLine
+    public interface IPriced
+    {
+        int Price { get; set; }
+    }
+
+    public sealed class OrderLine : IPriced
     {
         public string Name { get; set; } = "";
         public int Price { get; set; }
