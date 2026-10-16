@@ -311,7 +311,7 @@ internal sealed class InstanceHost(
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
             WorkflowDataType = workflowData.GetType().AssemblyQualifiedName!,
-            WorkflowDataJson = JsonSerializer.Serialize(workflowData),
+            WorkflowDataJson = BranchData.Snapshot(workflowData),
             Status = WorkflowStatus.Running,
             CorrelationId = options.CorrelationId ?? Guid.NewGuid().ToString("N"),
             ParentInstanceId = options.ParentInstanceId,

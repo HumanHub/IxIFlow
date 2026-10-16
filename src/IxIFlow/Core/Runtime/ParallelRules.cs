@@ -28,8 +28,15 @@ internal static class ParallelRules
                                          step is { StepType: WorkflowStepType.ForEach, ForEachParallel: true }).ToList();
         foreach (var dataType in all.Select(step => step.WorkflowDataType).OfType<Type>().Distinct())
             BranchData.Validate(dataType, branches: parallel.Any(step => step.WorkflowDataType == dataType));
-        foreach (var step in parallel.Where(step => step.ParallelJoinMode != ParallelJoinMode.WaitAny))
-            if (step.StepType == WorkflowStepType.Parallel)
+        foreach (var step in parallel)
+            if (step.ParallelJoinMode == ParallelJoinMode.WaitAny)
+            {
+                // One branch is merged, so branches may write the same data, but every write must reach it.
+                var bodies = step.StepType == WorkflowStepType.Parallel ? step.ParallelBranches : [step.ForEachBodySteps];
+                foreach (var body in bodies)
+                    _ = Writes(step, body).ToList();
+            }
+            else if (step.StepType == WorkflowStepType.Parallel)
                 Check(step);
             else
                 CheckItems(step);

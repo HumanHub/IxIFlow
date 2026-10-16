@@ -152,19 +152,34 @@ internal static class ForEachTransitions
     }
 
     /// <summary>
-    /// True when <paramref name="branch"/>, at the end of <paramref name="finished"/>, its last frame, is an
-    /// item of a parallel ForEach whose join is open with items still queued: completing it may start the
-    /// next one.
+    /// Starts queued items of every open parallel ForEach join with room under its cap, in item order
+    /// (D-34): admission is a transition of its own, after the completion that made room has been decided.
+    /// When the next item would exceed <paramref name="maxActiveBranches"/>, throws
+    /// <see cref="BranchLimitExceededException"/> having started nothing more, and the item starts after a
+    /// release. Returns true when an item started.
     /// </summary>
-    public static bool AdmitsAfter(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        ContinuationState branch, ScopePosition finished)
+    public static bool Admit(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, int maxActiveBranches)
     {
-        if (finished.ForEachIndex == null || branch.ParentJoinId == null ||
-            checkpoint.Joins.SingleOrDefault(item => item.Id == branch.ParentJoinId) is not { IsCompleting: false } join ||
-            scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
-            return false;
-        var state = StateOf(checkpoint, join, step);
-        return state.Next < state.Items.Count;
+        var admitted = false;
+        foreach (var join in checkpoint.Joins.Where(item => !item.IsCompleting).ToList())
+        {
+            if (scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
+                continue;
+            var state = StateOf(checkpoint, join, step);
+            var running = checkpoint.Continuations.Count(item => item.ParentJoinId == join.Id &&
+                item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled));
+            var cap = step.ForEachMaxConcurrency ?? state.Items.Count;
+            string? snapshot = null;
+            for (; running < cap && state.Next < state.Items.Count; running++)
+            {
+                ContinuationTransitions.EnsureBranchesFit(checkpoint, 1, maxActiveBranches);
+                var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+                StartItem(scopes, checkpoint, parent, join, step, state,
+                    snapshot ??= BranchData.Snapshot(checkpoint.DataOf(parent)));
+                admitted = true;
+            }
+        }
+        return admitted;
     }
 
     /// <summary>The saved list of the parallel ForEach a join belongs to, on its parent's frame.</summary>

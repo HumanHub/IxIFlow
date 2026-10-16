@@ -109,8 +109,7 @@ internal static class ExecutionCheckpointWriter
             checkpoint.RecordBranchChanges();
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson
-                : JsonSerializer.Serialize(workflowData ?? throw new ArgumentNullException(nameof(workflowData)),
-                    workflowData.GetType());
+                : BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData)));
             var stateJson = JsonSerializer.Serialize(checkpoint);
             var snapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, now);
             instance.WorkflowDataJson = dataJson;

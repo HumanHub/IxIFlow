@@ -186,6 +186,34 @@ public sealed class ResourceLimitTests
     }
 
     [Fact]
+    [Trait("Spec", "E-12")]
+    public async Task AnItemThatDecidesItsJoinCompletesUnderALowerLimit()
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        var definition = Workflow.Create<LimitData>("FirstOfTwoBesideAWait")
+            .Step<QuickActivity>()
+            .Parallel(outer => outer
+                .Do(sibling => sibling.WaitFor<Signal>("sibling"))
+                .Do(list => list.ForEach(_ => new[] { 1, 2 },
+                    (body, _) => body.WaitFor<Signal>("item").Step<QuickActivity>(),
+                    setup => setup.Parallel(maxConcurrency: 1).WaitAny())))
+            .Build();
+        string instanceId;
+        using (var roomy = Services(store, options => options.MaxActiveBranches = 10))
+            instanceId = (await Client(roomy).RunAsync(definition, new LimitData())).InstanceId;
+
+        // The first item's completion decides the join, so it starts no other item and needs no room.
+        using var lowered = Services(store, options => options.MaxActiveBranches = 1);
+        await lowered.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        Assert.Equal(WorkflowExecutionStatus.Suspended,
+            (await Client(lowered).ResumeAsync(instanceId, "item", new Signal())).Status);
+        var finished = await Client(lowered).ResumeAsync(instanceId, "sibling", new Signal());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        Assert.Equal(1, Probe(lowered).Quick);
+    }
+
+    [Fact]
     public async Task AFreedActivityPermitGoesToTheBranchThatWaitedLongest()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(),
