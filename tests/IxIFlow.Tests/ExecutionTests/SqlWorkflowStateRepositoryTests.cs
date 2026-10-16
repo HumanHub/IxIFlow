@@ -44,6 +44,46 @@ public class SqlWorkflowStateRepositoryTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "A-08")]
+    public async Task ACommitIsStoredAsItCameAndReadsTakeTheRevisionAndRunnableTimeFromTheirColumns()
+    {
+        var connectionString = SqlServerTestServer.ConnectionString;
+        var instanceId = Guid.NewGuid().ToString("N");
+        var repository = new SqlWorkflowStateRepository(connectionString);
+        try
+        {
+            var instance = new WorkflowInstance
+            {
+                InstanceId = instanceId, WorkflowName = "Columns", Status = WorkflowStatus.Suspended,
+                ExecutionStateJson = "{\"Waits\":[]}", Revision = 0, RunnableAtUtc = DateTime.UtcNow.AddYears(5)
+            };
+            var commit = CheckpointCommit.Create(instance, 0, 0);
+            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
+
+            await using (var connection = new Microsoft.Data.SqlClient.SqlConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using var read = new Microsoft.Data.SqlClient.SqlCommand(
+                    "SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId", connection);
+                read.Parameters.AddWithValue("@InstanceId", instanceId);
+                Assert.Equal(commit.Payload, (string?)await read.ExecuteScalarAsync());
+            }
+            // The payload says revision 0 and a runnable time years away; the columns say what the store set.
+            var stored = (await repository.GetWorkflowInstanceAsync(instanceId))!;
+            Assert.Equal(1, stored.Revision);
+            Assert.Null(stored.RunnableAtUtc);
+            Assert.Equal(1, Assert.Single(await repository.GetWorkflowInstancesByNameAsync("Columns"),
+                candidate => candidate.InstanceId == instanceId).Revision);
+            Assert.Equal("{\"Waits\":[]}", stored.ExecutionStateJson);
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
     public async Task SuspendedInstance_AppliesOneDeliveryOnceAcrossRepositories()
     {
         var connectionString = SqlServerTestServer.ConnectionString;
