@@ -93,6 +93,10 @@ public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
     internal ItemValues Items { get; set; } = ItemValues.None;
     public object? CompensationPreviousStepData { get; set; }
     public object? CompensationPreviousChainData { get; set; }
+
+    /// <summary>For a request's compensation, the answer the request received, and whether one came (D-36).</summary>
+    public object? CompensationReply { get; set; }
+    public bool CompensationAnswered { get; set; }
     public IDictionary<string, object>? StepMetadata { get; set; } = null; // Step-level metadata from ExecutionState
 }
 
@@ -247,7 +251,8 @@ public class ActivityExecutor : IActivityExecutor
                 request.WorkflowData,
                 request.PreviousStepData, request.CatchFault, mappingResult,
                 request.IsCompensationActivity, request.CompensationPreviousStepData,
-                request.CompensationPreviousChainData, request.Items);
+                request.CompensationPreviousChainData, request.Items, request.CompensationReply,
+                request.CompensationAnswered);
 
         return new PreparedActivity(activity, context,
             () => ApplyTypedOutputMappingsAsync(activity, request.OutputMappings,
@@ -361,6 +366,19 @@ public class ActivityExecutor : IActivityExecutor
         return singleGenericContext;
     }
 
+    // A request's compensation that reads the request's answer (D-36).
+    private static object RequestCompensationContextOf(Type contextType, object? workflowData, object? currentStep,
+        object? reply, bool answered)
+    {
+        var context = Activator.CreateInstance(contextType)!;
+        contextType.GetProperty("WorkflowData")!.SetValue(context, workflowData);
+        contextType.GetProperty("CurrentStep")!.SetValue(context, currentStep);
+        contextType.GetProperty("Reply")!.SetValue(context,
+            reply != null && contextType.GetGenericArguments()[2].IsInstanceOfType(reply) ? reply : null);
+        contextType.GetProperty("Answered")!.SetValue(context, answered);
+        return context;
+    }
+
     public object CreateCatchEvaluationContext<TWorkflowData, TPreviousStepData>(
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
@@ -430,7 +448,9 @@ public class ActivityExecutor : IActivityExecutor
         bool isCompensationActivity = false,
         object? compensationPreviousStep = null,
         object? compensationPreviousChain = null,
-        ItemValues? items = null)
+        ItemValues? items = null,
+        object? compensationReply = null,
+        bool compensationAnswered = false)
     {
         _logger.LogTrace("Applying typed input mappings - Activity: {ActivityType}, Mappings: {Count}, TWorkflowData: {WorkflowDataType}, TPreviousStepData: {PreviousStepDataType}, CatchFault: {CatchFault}",
             activity.GetType().Name, inputMappings.Count, typeof(TWorkflowData).Name, typeof(TPreviousStepData).Name, catchFault?.GetType().Name ?? "null");
@@ -477,6 +497,10 @@ public class ActivityExecutor : IActivityExecutor
                                 evaluationContext = compensationPreviousChain
                                     ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                                         $"Compensation input '{mapping.TargetProperty}' has no previous compensation result");
+                            else if (mapping.SourceType.IsGenericType &&
+                                     mapping.SourceType.GetGenericTypeDefinition() == typeof(RequestCompensationContext<,,>))
+                                evaluationContext = RequestCompensationContextOf(mapping.SourceType, workflowData,
+                                    previousStepData, compensationReply, compensationAnswered);
                             if (!mapping.SourceType.IsInstanceOfType(evaluationContext))
                             {
                                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,

@@ -244,3 +244,24 @@ public class CompensationContext<TWorkflowData, TCurrentStepData> : WorkflowCont
     /// </summary>
     public int CompensationOrder { get; set; }
 }
+
+/// <summary>
+/// The context of a saga request's compensation that reads the request's answer (D-36).
+/// </summary>
+/// <typeparam name="TWorkflowData">The type of workflow data</typeparam>
+/// <typeparam name="TCurrentStepData">The request activity being compensated</typeparam>
+/// <typeparam name="TReply">The answer the request is answered with</typeparam>
+public class RequestCompensationContext<TWorkflowData, TCurrentStepData, TReply>
+    : CompensationContext<TWorkflowData, TCurrentStepData>
+    where TCurrentStepData : class
+    where TReply : class
+{
+    /// <summary>
+    /// The answer the request received: the one its <c>WaitFor</c> took, or one that arrived before the
+    /// <c>WaitFor</c> was reached. Null when none came.
+    /// </summary>
+    public TReply? Reply { get; set; }
+
+    /// <summary>Whether the request received an answer.</summary>
+    public bool Answered { get; set; }
+}

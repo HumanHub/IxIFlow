@@ -83,6 +83,8 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
             IsCompensationActivity = step.StepMetadata.ContainsKey("IsCompensationActivity"),
             CompensationPreviousStepData = compensationInputs?.PreviousStep,
             CompensationPreviousChainData = compensationInputs?.PreviousCompensation,
+            CompensationReply = compensationInputs?.Reply,
+            CompensationAnswered = compensationInputs?.Answered ?? false,
             InputMappings = step.InputMappings,
             OutputMappings = step.OutputMappings,
             Step = step,

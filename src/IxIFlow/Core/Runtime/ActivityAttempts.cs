@@ -401,8 +401,8 @@ internal sealed class ActivityAttempts(
                 // before applying mappings, which can fail after an external effect.
                 try
                 {
-                    SagaScopeTransitions.CompleteForwardActivity(scopes, activity.Continuation,
-                        activity.Step, output, services);
+                    SagaScopeTransitions.CompleteForwardActivity(scopes, checkpoint, activity.Continuation,
+                        activity.Step, output, services, activity.Continuation.PendingActivity?.Id);
                 }
                 catch (Exception error)
                 {

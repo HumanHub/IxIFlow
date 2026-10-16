@@ -12,8 +12,10 @@ internal static class WorkflowValueBinding
         if (step.CompiledCondition == null)
             return true;
 
+        // An answer that arrives before its WaitFor is reached, or while its saga compensates, is checked
+        // without a previous step of the declared type, which exists only once the WaitFor is reached.
         var typedPrevious = step.StepMetadata.ContainsKey("IsSagaStep") &&
-            step.PreviousStepDataType != null && previous != null;
+            step.PreviousStepDataType?.IsInstanceOfType(previous) == true;
         var contextType = typedPrevious
             ? typeof(ResumeEventContext<,,>).MakeGenericType(workflowData.GetType(),
                 step.ResumeEventType!, step.PreviousStepDataType!)

@@ -282,7 +282,7 @@ public sealed class RequestStepTests
                 .Step<FailOnceActivity>()
                 .WaitFor<ApprovalDecision>("approval", configure: wait => wait
                     .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved)))
-            .OnError<InvalidOperationException>(error => error.CompensateNone().ThenRetry(1))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
             .Build();
 
         var started = await engine.RunAsync(definition, new OrderData { Amount = 10 });
@@ -314,7 +314,7 @@ public sealed class RequestStepTests
                 .WaitFor<ApprovalDecision>("approval", configure: wait => wait
                     .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved))
                 .Step<FailOnceActivity>())
-            .OnError<InvalidOperationException>(error => error.CompensateNone().ThenRetry(1))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
             .Build();
         await engine.RunAsync(definition, new OrderData { Amount = 10 });
         var first = Assert.Single(outbox.Sent).Token;
@@ -347,7 +347,8 @@ public sealed class RequestStepTests
                     .Outcome(true, branch => branch.Step<StartActivity>())
                     .DefaultOutcome(branch => branch.Step<StartActivity>()))
                 .WaitFor<ApprovalDecision>("approval"))
-            .OnError<InvalidOperationException>(error => error.CompensateNone().ThenTerminate())
+            // Keeping the request would be refused at build: its answer would be lost with the saga (D-36).
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenTerminate())
             .Build();
 
         var started = await engine.RunAsync(definition, new OrderData());
@@ -374,7 +375,7 @@ public sealed class RequestStepTests
                     .Outcome(true, branch => branch.WaitFor<OtherAnswer>("approved-note"))
                     .DefaultOutcome(branch => branch.WaitFor<OtherAnswer>("rejected-note")))
                 .Step<FailTwiceActivity>())
-            .OnError<InvalidOperationException>(error => error.CompensateNone().ThenRetry(2))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(2))
             .Build();
         var started = await engine.RunAsync(definition, new OrderData());
 
@@ -496,7 +497,7 @@ public sealed class RequestStepTests
                         .WaitFor<OtherAnswer>("rejected-note")
                         .WaitFor<OtherAnswer>("rejected-sign")))
                 .Step<FailTwiceActivity>())
-            .OnError<InvalidOperationException>(error => error.CompensateNone().ThenRetry(2))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(2))
             .Build();
         var started = await engine.RunAsync(definition, new OrderData());
 

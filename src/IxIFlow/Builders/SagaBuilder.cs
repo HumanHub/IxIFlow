@@ -303,6 +303,8 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
         return this;
     }
 
+    // Preferred over the answer overload when a lambda fits both, as on the interface.
+    [System.Runtime.CompilerServices.OverloadResolutionPriority(1)]
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
         TPreviousChainActivity>(
         Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
@@ -331,6 +333,25 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
         // Transfer to WorkflowStep metadata for WorkflowEngine
         _workflowStep.StepMetadata["CompensationActivities"] = _sagaStepInfo.CompensationActivities;
 
+        return this;
+    }
+
+    public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
+        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure)
+        where TCompensationActivity : IAsyncActivity
+        where TReply : class
+    {
+        var compensationInfo = new CompensationActivityInfo
+        {
+            ActivityType = typeof(TCompensationActivity),
+            InputMappings = [],
+            OutputMappings = [],
+            ReplyType = typeof(TReply)
+        };
+        configure(new RequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>(
+            compensationInfo));
+        _sagaStepInfo.CompensationActivities.Add(compensationInfo);
+        _workflowStep.StepMetadata["CompensationActivities"] = _sagaStepInfo.CompensationActivities;
         return this;
     }
 }
@@ -417,6 +438,8 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
         return _setupBuilder.CompensateWith(configure);
     }
 
+    // Preferred over the answer overload when a lambda fits both, as on the interface.
+    [System.Runtime.CompilerServices.OverloadResolutionPriority(1)]
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
         CompensateWith<TCompensationActivity, TPreviousChainActivity>(
             Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
@@ -425,6 +448,12 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
     {
         return _setupBuilder.CompensateWith(configure);
     }
+
+    public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
+        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure)
+        where TCompensationActivity : IAsyncActivity
+        where TReply : class =>
+        _setupBuilder.CompensateWith<TCompensationActivity, TReply>(configure);
 
     private string GetPropertyName<T, TProp>(Expression<Func<T, TProp>> expression)
     {
@@ -528,6 +557,8 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
         return _setupBuilder.CompensateWith(configure);
     }
 
+    // Preferred over the answer overload when a lambda fits both, as on the interface.
+    [System.Runtime.CompilerServices.OverloadResolutionPriority(1)]
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
         CompensateWith<TCompensationActivity, TPreviousChainActivity>(
             Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
@@ -536,6 +567,12 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
     {
         return _setupBuilder.CompensateWith(configure);
     }
+
+    public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
+        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure)
+        where TCompensationActivity : IAsyncActivity
+        where TReply : class =>
+        _setupBuilder.CompensateWith<TCompensationActivity, TReply>(configure);
 
     private string GetPropertyName<T, TProp>(Expression<Func<T, TProp>> expression)
     {

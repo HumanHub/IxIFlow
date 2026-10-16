@@ -74,17 +74,23 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 continuation.Stack[^1].NextStepIndex++;
                 continue;
             }
-            continuation.Stack.Add(new ScopePosition
-            {
-                ScopeId = scopes.TimeoutScope(step),
-                EntryPrevious = continuation.Previous,
-                RuntimeEntryPrevious = continuation.RuntimePrevious,
-                RestorePreviousOnExit = true,
-                ExitParentScopeOnExit = true
-            });
+            if (wait.IsReply)
+                SagaScopeTransitions.NoteTimeout(continuation, wait.InvocationId);
+            EnterTimeoutPath(scopes, continuation, step);
         }
         return due.Length != 0;
     }
+
+    private static void EnterTimeoutPath(WorkflowScopeCatalog scopes, ContinuationState continuation,
+        WorkflowStep step) =>
+        continuation.Stack.Add(new ScopePosition
+        {
+            ScopeId = scopes.TimeoutScope(step),
+            EntryPrevious = continuation.Previous,
+            RuntimeEntryPrevious = continuation.RuntimePrevious,
+            RestorePreviousOnExit = true,
+            ExitParentScopeOnExit = true
+        });
 
     /// <summary>
     /// Moves a continuation past its next control-flow step. A parallel step that would make more
@@ -224,7 +230,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 break;
 
             case WorkflowStepType.Saga:
-                SagaScopeTransitions.Enter(scopes, step, position, continuation, services, StoreNow(checkpoint));
+                SagaScopeTransitions.Enter(scopes, checkpoint, step, position, continuation, services, StoreNow(checkpoint));
                 break;
 
             case WorkflowStepType.Loop:
@@ -321,8 +327,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
 
     // A request's WaitFor takes an answer that arrived early at once; otherwise it waits on the wait its
     // request opened in the same scope occurrence, until its own timeout from the commit that records
-    // this (D-33, D-35). A saga retry sends the request again, so an answer is never replayed from an
-    // earlier attempt.
+    // this (D-33, D-35). A saga retry that kept the request gives its WaitFor the answer it took before;
+    // one that runs the request again sends it with a new wait (D-36).
     private void AwaitReply(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, WorkflowStep step)
     {
@@ -337,6 +343,23 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 StepId = stepId, Event = answer.Event, EventId = answer.EventId, WaitId = answer.WaitId
             };
             return;
+        }
+        if (SagaScopeTransitions.KeptRequest(scopes, continuation, step) is { } kept)
+        {
+            if (kept.Reply is { } reply)
+            {
+                continuation.AcceptedWait = new AcceptedWaitState
+                {
+                    StepId = stepId, Event = reply.Event, EventId = reply.EventId, WaitId = reply.WaitId
+                };
+                return;
+            }
+            // Its answer timed out in an earlier attempt: the timeout path runs again.
+            if (kept.ReplyTimedOut)
+            {
+                EnterTimeoutPath(scopes, continuation, step);
+                return;
+            }
         }
         var wait = checkpoint.Waits.FirstOrDefault(item =>
                 item.IsReply && item.StepId == stepId && item.ScopeActivationId == activation)
@@ -534,11 +557,21 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 !SagaScopeTransitions.IsInsideCompensation(continuation))
                 checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id && wait.IsReply,
                     WaitCloseReason.Cancelled);
+            // A compensation awaiting resolution finishes, and its saga then cancels instead of retrying.
+            if (SagaScopeTransitions.IsInsideCompensation(continuation))
+                SagaScopeTransitions.PreserveCompensation(continuation);
             return;
         }
         if (TryScopeTransitions.IsInsideFinally(continuation) ||
             SagaScopeTransitions.IsInsideCompensation(continuation))
         {
+            // A retry handler waiting for an event stops waiting: no retry follows a cancellation.
+            if (SagaScopeTransitions.AbandonRetryHandler(continuation))
+            {
+                checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id, WaitCloseReason.Cancelled);
+                continuation.AcceptedWait = null;
+                continuation.Status = ContinuationStatus.Active;
+            }
             TryScopeTransitions.PreserveExistingFinally(continuation);
             SagaScopeTransitions.PreserveCompensation(continuation);
             return;
@@ -741,8 +774,15 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 return true;
             var cleanupBoundary = continuation.Stack.FindIndex(frame =>
                 frame.TryState?.Phase == TryPhase.Finally);
+            // A retry handler failing while its instance is cancelled still undoes the kept steps first.
+            var retryHandler = SagaScopeTransitions.RetryHandlerIndex(scopes, continuation);
+            if (retryHandler > cleanupBoundary)
+            {
+                SagaScopeTransitions.GiveUpAfterHandlerFailure(continuation, retryHandler, error);
+                return true;
+            }
             if (cleanupBoundary >= 0 &&
-                CaptureScopeFailure(scopes, continuation, error, cleanupBoundary))
+                CaptureScopeFailure(scopes, checkpoint, continuation, error, cleanupBoundary))
                 return true;
             checkpoint.UnhandledError ??= SerializedException.From(error);
             checkpoint.RuntimeUnhandledError ??= error;
@@ -754,7 +794,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         while (true)
         {
             if (SagaScopeTransitions.SkipFailedCompensation(scopes, continuation, error) ||
-                CaptureScopeFailure(scopes, continuation, error))
+                CaptureScopeFailure(scopes, checkpoint, continuation, error))
                 return true;
             TryScopeTransitions.AbortFailedFinally(continuation);
             if (continuation.ParentJoinId == null)
@@ -786,18 +826,27 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         }
     }
 
-    private static bool CaptureScopeFailure(WorkflowScopeCatalog scopes,
+    private static bool CaptureScopeFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, Exception error, int minimumHandlerIndex = -1)
     {
         var tryIndex = TryScopeTransitions.HandlerIndex(scopes, continuation, error);
         var sagaIndex = SagaScopeTransitions.HandlerIndex(continuation);
+        // A retry handler whose own steps fail ends its saga; the steps kept for the retry are undone first.
+        var retryIndex = SagaScopeTransitions.RetryHandlerIndex(scopes, continuation);
         if (tryIndex <= minimumHandlerIndex)
             tryIndex = -1;
         if (sagaIndex <= minimumHandlerIndex)
             sagaIndex = -1;
+        if (retryIndex <= minimumHandlerIndex)
+            retryIndex = -1;
+        if (retryIndex > tryIndex && retryIndex > sagaIndex)
+        {
+            SagaScopeTransitions.GiveUpAfterHandlerFailure(continuation, retryIndex, error);
+            return true;
+        }
         if (sagaIndex > tryIndex)
         {
-            SagaScopeTransitions.Capture(scopes, continuation, sagaIndex, error);
+            SagaScopeTransitions.Capture(scopes, checkpoint, continuation, sagaIndex, error);
             return true;
         }
         return tryIndex >= 0 && TryScopeTransitions.Capture(scopes, continuation, error);

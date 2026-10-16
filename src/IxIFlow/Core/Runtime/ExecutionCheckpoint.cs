@@ -167,14 +167,20 @@ internal sealed class ExecutionCheckpoint
     /// iteration or branch finished, failed or was cancelled before the request's <c>WaitFor</c> took the
     /// answer (D-33).
     /// </summary>
+    /// A request a saga retry keeps stays open while the saga compensates, until the retry restores it (D-36).
     public void CloseEndedRequests()
     {
-        var live = Continuations
+        var running = Continuations
             .Where(item => item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled))
-            .SelectMany(item => item.Stack.Select(position => position.ActivationId))
+            .ToArray();
+        var live = running.SelectMany(item => item.Stack.Select(position => position.ActivationId))
             .ToHashSet(StringComparer.Ordinal);
-        RemoveWaits(wait => wait.IsReply && !live.Contains(wait.ScopeActivationId ?? ""), WaitCloseReason.Cancelled);
-        BoundReplies.RemoveAll(reply => !live.Contains(reply.ScopeActivationId));
+        var kept = running.SelectMany(item => item.Stack)
+            .SelectMany(position => position.SagaState?.KeptWaitIds ?? [])
+            .ToHashSet(StringComparer.Ordinal);
+        RemoveWaits(wait => wait.IsReply && !live.Contains(wait.ScopeActivationId ?? "") && !kept.Contains(wait.Id),
+            WaitCloseReason.Cancelled);
+        BoundReplies.RemoveAll(reply => !live.Contains(reply.ScopeActivationId) && !kept.Contains(reply.WaitId));
     }
 
     /// <summary>Removes the waits that match and records why each one closed, for the next commit (D-33).</summary>
@@ -481,6 +487,20 @@ internal sealed class SagaScopeState
     public bool IsCancellationCleanup { get; set; }
     public SerializedValue? PreviousCompensation { get; set; }
 
+    /// <summary>The saga's frames, each recorded once by activation, so a retry can restore a restart point (D-36).</summary>
+    public Dictionary<string, SagaFrameRecord> Frames { get; set; } = [];
+
+    /// <summary>Where a retry starts again, with the <c>Previous</c> that step saw; none starts at the saga's first step.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SagaRestartPoint? RestartAt { get; set; }
+
+    /// <summary>The reply waits and kept answers of requests a retry keeps, live until the retry restores them.</summary>
+    public List<string> KeptWaitIds { get; set; } = [];
+
+    /// <summary>The failure of a retry handler's own steps, which ends the saga once the kept steps are undone.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SerializedException? HandlerError { get; set; }
+
     [JsonIgnore]
     public Exception? RuntimeError { get; set; }
 
@@ -501,6 +521,9 @@ internal sealed class SagaAcceptedWait
 {
     public string StepId { get; set; } = "";
     public SerializedValue Event { get; set; } = null!;
+
+    /// <summary>How many saga steps had completed when the wait accepted its event.</summary>
+    public int Completed { get; set; }
 }
 
 internal sealed class SagaCompletedStep
@@ -508,6 +531,57 @@ internal sealed class SagaCompletedStep
     public string StepId { get; set; } = "";
     public SerializedValue? Output { get; set; }
     public SerializedValue? Previous { get; set; }
+
+    /// <summary>The frame the step ran in and its index there: the step's restart point (D-36).</summary>
+    public string FrameId { get; set; } = "";
+    public int StepIndex { get; set; }
+
+    /// <summary>For a request, its invocation, whose reply wait and answer carry it.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? InvocationId { get; set; }
+
+    /// <summary>For a request, the answer it received, taken by its <c>WaitFor</c> or kept for it.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SagaReply? Reply { get; set; }
+
+    /// <summary>For a request, whether its answer's wait timed out.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ReplyTimedOut { get; set; }
+}
+
+/// <summary>A request's answer, as its compensation and a retried <c>WaitFor</c> read it.</summary>
+internal sealed class SagaReply
+{
+    public SerializedValue Event { get; set; } = new();
+    public string EventId { get; set; } = "";
+    public string WaitId { get; set; } = "";
+}
+
+/// <summary>A saga frame as it was entered: enough to push it again at a restart point.</summary>
+internal sealed class SagaFrameRecord
+{
+    public string ScopeId { get; set; } = "";
+
+    /// <summary>The frame it was pushed from, and that frame's step index then; none for the saga body.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentFrameId { get; set; }
+    public int IndexInParent { get; set; }
+
+    public SerializedValue? EntryPrevious { get; set; }
+    public bool RestorePreviousOnExit { get; set; }
+    public bool ExitParentScopeOnExit { get; set; }
+}
+
+/// <summary>A step position in a saga's frames, and the <c>Previous</c> the step saw.</summary>
+internal sealed class SagaRestartPoint
+{
+    public string FrameId { get; set; } = "";
+    public int StepIndex { get; set; }
+    public SerializedValue? Previous { get; set; }
+
+    /// <summary>For the step that failed, its ID: a wait it accepted before its outputs failed is replayed.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? StepId { get; set; }
 }
 
 internal sealed class ParallelJoinState

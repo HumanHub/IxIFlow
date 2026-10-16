@@ -1,3 +1,4 @@
+using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Recipes;
 using IxIFlow.Tests.Infrastructure;
@@ -46,6 +47,50 @@ public sealed class SagaRecipeScenarios
         Assert.Equal(WorkflowExecutionStatus.Success, paid.Status);
         var payment = Assert.IsType<Payment>(paid.WorkflowData);
         Assert.Equal(("paid", "pay-2"), (payment.PaymentStatus, payment.PaymentReference));
+    }
+
+    [Theory]
+    [Trait("Spec", "A-11")]
+    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    public async Task ARetryThatKeepsThePaymentTakesItsCallbackWithoutPayingAgain(string profile)
+    {
+        var payments = new Payments();
+        var stock = new Stock(failures: 1);
+        await using var cluster = await ConformanceCluster.CreateAsync(profile, services =>
+        {
+            services.AddWaitRecipes();
+            services.AddSingleton<IPaymentProvider>(payments);
+            services.AddSingleton<IPaymentRefunds>(payments);
+            services.AddSingleton<IStock>(stock);
+        });
+        var engine = cluster.AddHost();
+        // As recipe 8, but the retry keeps the payment: nothing completed after it is undone (D-36).
+        var definition = Workflow.Create<Payment>("KeptPaymentInASaga")
+            .Step<ValidateOrder>()
+            .Saga(saga => saga
+                .Request<CreatePayment>("payment", step => step
+                    .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
+                    .Output(activity => activity.Reference).To(ctx => ctx.WorkflowData.PaymentReference)
+                    .CompensateWith<RefundPayment>(refund => refund
+                        .Input(activity => activity.Reference).From(ctx => ctx.CurrentStep.Reference)))
+                .Step<ReserveStock>(step => step
+                    .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId))
+                .WaitFor<PaymentReceived>("payment", (received, _) => received.Status != "pending", wait => wait
+                    .Output(received => received.Status).To(ctx => ctx.WorkflowData.PaymentStatus)))
+            .OnError<StockUnavailable>(error => error.CompensateNone().ThenRetry(1))
+            .Build();
+
+        var started = await engine.RunAsync(definition, new Payment { OrderId = "order-8b", Amount = 40 });
+
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        var token = Assert.Single(payments.Created);
+        Assert.Empty(payments.Refunded);
+        var paid = await engine.ReplyAsync(token, new PaymentReceived { Status = "paid" });
+
+        EventAssert.Consumed(paid);
+        Assert.Equal(WorkflowExecutionStatus.Success, paid.Status);
+        var payment = Assert.IsType<Payment>(paid.WorkflowData);
+        Assert.Equal(("paid", "pay-1"), (payment.PaymentStatus, payment.PaymentReference));
     }
 
     private sealed class Payments : IPaymentProvider, IPaymentRefunds
