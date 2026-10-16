@@ -51,6 +51,71 @@ public sealed class CombinerTests
     }
 
     [Fact]
+    public void SetItemsAreComparedAsJsonBecauseEachBranchHasItsOwnCopies()
+    {
+        // Every branch's set holds its own copies of the items at the fork, equal but not the same objects.
+        var original = new HashSet<Item> { new() { Name = "a" } };
+        var merged = new Union<Item>().Combine(original,
+        [
+            [new Item { Name = "a" }, new Item { Name = "b" }],
+            [new Item { Name = "a" }, new Item { Name = "c" }],
+            [new Item { Name = "c" }]
+        ]);
+
+        // The third branch removed "a"; "c", added twice, is added once.
+        Assert.Equal(["b", "c"], merged.Select(item => item.Name).Order());
+    }
+
+    [Fact]
+    public void ObjectsAreEqualWhateverTheOrderOfTheirProperties()
+    {
+        Dictionary<string, int> Ordered(params string[] keys) => keys.ToDictionary(key => key, key => key.Length);
+
+        var appended = new Append<Dictionary<string, int>>().Combine([Ordered("x", "yy")],
+            [[Ordered("yy", "x"), Ordered("zzz")]]);
+        var united = new Union<string, Dictionary<string, int>>().Combine([],
+            [new() { ["k"] = Ordered("x", "yy") }, new() { ["k"] = Ordered("yy", "x") }]);
+
+        Assert.Equal(2, appended.Count);
+        Assert.Equal(2, Assert.Single(united).Value.Count);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-05")]
+    public void AStepsChoiceIsKeptForItsPropertyNotForOneWithTheSameDottedName()
+    {
+        // 'A.B', a property's JSON name, is not the property B inside A.
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Dotted>("DottedNames")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Combine<int, Sum<int>>(data => data.A.B)
+                .Do(first => first.Step<SetScore>(step => step
+                    .Input(activity => activity.Score).From(_ => 1)
+                    .Output(activity => activity.Score).To(ctx => ctx.WorkflowData.Flat)))
+                .Do(second => second.Step<SetScore>(step => step
+                    .Input(activity => activity.Score).From(_ => 2)
+                    .Output(activity => activity.Score).To(ctx => ctx.WorkflowData.Flat))))
+            .Build());
+
+        Assert.Contains("both write 'A.B' and it has no combiner", error.Message);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-05")]
+    public void AStepsChoiceMustBeACombinerOfOneTypeWhenTheWorkflowIsBuilt()
+    {
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Scores>("TwoContracts")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Combine<int, TwoWays>(data => data.Score)
+                .Do(only => only.Step<Noop>()))
+            .Build());
+
+        Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
+        Assert.Contains("must implement ICombiner<T> once", error.Message);
+    }
+
+    [Fact]
     [Trait("Spec", "E-05")]
     public async Task AParallelStepChoosesACombinerForAProperty()
     {
@@ -126,6 +191,30 @@ public sealed class CombinerTests
 
         [Combine<Append<string>>]
         public List<string> Names { get; set; } = [];
+    }
+
+    public sealed class Item
+    {
+        public string Name { get; set; } = "";
+    }
+
+    public sealed class Dotted
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("A.B")]
+        public int Flat { get; set; }
+
+        public Inner A { get; set; } = new();
+    }
+
+    public sealed class Inner
+    {
+        public int B { get; set; }
+    }
+
+    public sealed class TwoWays : ICombiner<int>, ICombiner<long>
+    {
+        public int Combine(int original, IReadOnlyList<int> branchValues) => branchValues[0];
+        public long Combine(long original, IReadOnlyList<long> branchValues) => branchValues[0];
     }
 
     public sealed class Noop : IAsyncActivity

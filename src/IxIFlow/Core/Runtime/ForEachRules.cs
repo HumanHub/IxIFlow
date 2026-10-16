@@ -79,6 +79,8 @@ internal static class ForEachRules
             throw Invalid($"ForEach step '{step.Name}' has no item list");
         if (!step.ForEachParallel && step.ParallelJoinMode != ParallelJoinMode.WaitAll)
             throw Invalid($"ForEach step '{step.Name}' has a join, which only a parallel ForEach has");
+        if (!step.ForEachParallel && step.ParallelCombiners.Count > 0)
+            throw Invalid($"ForEach step '{step.Name}' chooses a combiner, which only a parallel ForEach's join uses");
         if (ForEachTransitions.StoresResults(step))
         {
             // Every way out of the body gives a result of the stored type.

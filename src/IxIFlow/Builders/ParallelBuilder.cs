@@ -39,18 +39,7 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
         System.Linq.Expressions.Expression<Func<TWorkflowData, TValue>> property)
         where TCombiner : ICombiner<TValue>, new()
     {
-        ArgumentNullException.ThrowIfNull(property);
-        var path = Core.Runtime.MemberPath.Of(property);
-        if (path == null || path.Contains("[]", StringComparison.Ordinal))
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                $"A combiner is chosen for a property of the workflow data, reached through members only: {property}");
-        var propertyType = path.Split('.').Aggregate(typeof(TWorkflowData), (type, name) =>
-            type.GetProperty(name)?.PropertyType ?? type);
-        if (propertyType != typeof(TValue))
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                $"The combiner '{typeof(TCombiner).Name}' merges {typeof(TValue).Name} values, but '{path}' is " +
-                $"{propertyType.Name}");
-        _step.ParallelCombiners[Core.Runtime.BranchData.JsonPath(typeof(TWorkflowData), path)] = typeof(TCombiner);
+        Core.Runtime.BranchData.Choose(_step, property, typeof(TWorkflowData), typeof(TValue), typeof(TCombiner));
         return this;
     }
 

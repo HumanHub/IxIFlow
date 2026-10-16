@@ -40,4 +40,12 @@ public interface IForEachSetup<TWorkflowData>
     /// </summary>
     IForEachSetup<TWorkflowData> WaitConditionally<TResult>(
         Func<TWorkflowData, IReadOnlyList<ItemResult<TResult>>, bool> completeWhen);
+
+    /// <summary>
+    /// Merges the items' changes to <paramref name="property"/>, and to everything inside it, with
+    /// <typeparamref name="TCombiner"/> at the parallel step's join, instead of the combiner the data type
+    /// declares for it, if any (spec E-05). Only a parallel <c>ForEach</c> has a join to merge in.
+    /// </summary>
+    IForEachSetup<TWorkflowData> Combine<TValue, TCombiner>(Expression<Func<TWorkflowData, TValue>> property)
+        where TCombiner : ICombiner<TValue>, new();
 }

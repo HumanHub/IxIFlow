@@ -102,7 +102,7 @@ public sealed class ResourceLimitTests
     public async Task ACancellationWhileStoppingAtTheLimitCancelsTheInstance()
     {
         var store = new InMemoryWorkflowStateRepository();
-        using var services = Services(store, options => options.MaxActiveBranches = 5);
+        using var services = Services(store, options => options.MaxActiveBranches = 3);
         var definition = Workflow.Create<LimitData>("CancelledAtTheLimit")
             .Step<QuickActivity>()
             .Parallel(parallel => parallel
@@ -121,11 +121,68 @@ public sealed class ResourceLimitTests
         Probe(services).Gate.SetResult();
         var result = await run.WaitAsync(Patience);
 
-        // The fork that hit the limit is never run, so the stop no longer applies.
+        // The fork that hit the limit is never run, so the stop no longer applies: the gated branch and
+        // three nested ones are one over the limit, and no nested branch ran.
         Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.Equal(2, Probe(services).Quick);
         var saved = (await store.GetWorkflowInstanceAsync(instanceId))!;
         Assert.Equal(WorkflowStatus.Cancelled, saved.Status);
         Assert.Null(ExecutionCheckpoint.StopOf(saved));
+    }
+
+    [Fact]
+    public async Task ABranchThatForksDoesNotCountAgainstItsOwnFork()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), options => options.MaxActiveBranches = 1);
+        var definition = Workflow.Create<LimitData>("OneLeafAtATime")
+            .Step<QuickActivity>()
+            .Parallel(outer => outer.Do(branch => branch
+                .Parallel(inner => inner.Do(nested => nested.Step<QuickActivity>()))))
+            .Build();
+
+        // The outer branch waits on its own join once it forks, so one leaf branch is live at a time.
+        var result = await Client(services).RunAsync(definition, new LimitData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(2, Probe(services).Quick);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-12")]
+    public async Task AnItemThatCannotAdmitTheNextUnderALowerLimitCompletesAfterARelease()
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        var definition = Workflow.Create<LimitData>("CappedBesideAWait")
+            .Step<QuickActivity>()
+            .Parallel(outer => outer
+                .Do(sibling => sibling.WaitFor<Signal>("sibling"))
+                .Do(list => list.ForEach(_ => new[] { 1, 2 },
+                    (body, _) => body.WaitFor<Signal>("item").Step<QuickActivity>(),
+                    setup => setup.Parallel(maxConcurrency: 1))))
+            .Build();
+        string instanceId;
+        using (var roomy = Services(store, options => options.MaxActiveBranches = 10))
+            instanceId = (await Client(roomy).RunAsync(definition, new LimitData())).InstanceId;
+
+        // An operator lowers the limit: the first item cannot complete, as completing it starts the second
+        // beside the waiting sibling.
+        using (var lowered = Services(store, options => options.MaxActiveBranches = 1))
+        {
+            await lowered.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            var stopped = await Client(lowered).ResumeAsync(instanceId, "item", new Signal());
+            Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stopped.Status);
+        }
+
+        using var raised = Services(store, options => options.MaxActiveBranches = 10);
+        await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, (await Client(raised).ReleaseAsync(instanceId)).Status);
+        Assert.Equal(WorkflowExecutionStatus.Suspended,
+            (await Client(raised).ResumeAsync(instanceId, "item", new Signal())).Status);
+        var finished = await Client(raised).ResumeAsync(instanceId, "sibling", new Signal());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        // The first item's activity ran before the stop and is not run again.
+        Assert.Equal(1, Probe(raised).Quick);
     }
 
     [Fact]
@@ -272,6 +329,8 @@ public sealed class ResourceLimitTests
     private static LimitProbe Probe(IServiceProvider services) => services.GetRequiredService<LimitProbe>();
 
     public sealed class LimitData;
+
+    public sealed class Signal;
 
     public sealed class LimitProbe
     {

@@ -144,9 +144,7 @@ public sealed class ParallelDataTests
         var one = new Shape { Owner = new Person { Name = "bob", Age = 30 }, Scores = { ["a"] = 1, ["b"] = 2 }, Tags = ["x"] };
         var two = new Shape { Owner = new Person { Name = "ann", Age = 31 }, Scores = { ["a"] = 5 }, Tags = ["x", "y"] };
 
-        var merged = fork;
-        foreach (var change in BranchData.Merge(fork, [BranchData.Changes(fork, one), BranchData.Changes(fork, two)]))
-            BranchData.ApplyTo(merged, change);
+        var merged = MergeInto(fork, one, two);
 
         Assert.Equal(("bob", 31), (merged.Owner.Name, merged.Owner.Age));
         Assert.Equal(new Dictionary<string, int> { ["a"] = 5, ["b"] = 2 }, merged.Scores);
@@ -163,11 +161,18 @@ public sealed class ParallelDataTests
         var addedTag = new Shape { Owner = new Person { Name = "ann" }, Tags = ["x"] };
         var otherTag = new Shape { Owner = new Person { Name = "ann" }, Tags = ["y"] };
 
-        Assert.Equal("Owner", Assert.Throws<JoinConflictException>(() => BranchData.Merge(fork,
-            [BranchData.Changes(fork, replaced), BranchData.Changes(fork, renamed)])).Path);
+        Assert.Equal("Owner", Assert.Throws<JoinConflictException>(() => MergeInto(fork, replaced, renamed)).Path);
         // A list is one value, so two branches changing it conflict.
-        Assert.Equal("Tags", Assert.Throws<JoinConflictException>(() => BranchData.Merge(fork,
-            [BranchData.Changes(fork, addedTag), BranchData.Changes(fork, otherTag)])).Path);
+        Assert.Equal("Tags", Assert.Throws<JoinConflictException>(() => MergeInto(fork, addedTag, otherTag)).Path);
+    }
+
+    // Merges branch copies, in order, into the fork's own object, as a join does.
+    internal static T MergeInto<T>(T fork, params T[] branches) where T : class
+    {
+        var merge = BranchData.Merge(fork, branches
+            .Select(branch => new MergingBranch(BranchData.Changes(fork, branch), () => branch)).ToList());
+        BranchData.Apply(fork, merge);
+        return fork;
     }
 
     [Fact]
@@ -222,6 +227,42 @@ public sealed class ParallelDataTests
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         // The cleanup's own join merged into its branch's copy, so the step after it read both values.
         Assert.Equal(["ab"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-08")]
+    public async Task JoinsNestedDeeperInsideCleanupRunAndMergeWhileASiblingsFailureUnwinds()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Data>("DeepCleanupJoin")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Do(failing => failing.Step<Fail>())
+                .Do(cleaning => cleaning
+                    .Try(body => body.WaitFor<Go>("never"))
+                    .Finally(cleanup => cleanup
+                        .Parallel(outer => outer
+                            .Do(deep => deep
+                                .Parallel(inner => inner
+                                    .Do(first => first.Step<Copy>(step => step
+                                        .Input(activity => activity.Value).From(_ => "a")
+                                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.First)))
+                                    .Do(second => second.Step<Copy>(step => step
+                                        .Input(activity => activity.Value).From(_ => "b")
+                                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Second))))
+                                .Step<Record>(step => step
+                                    .Input(activity => activity.Value)
+                                    .From(ctx => ctx.WorkflowData.First + ctx.WorkflowData.Second)))
+                            .Do(other => other.Step<Record>(step => step
+                                .Input(activity => activity.Value).From(_ => "other")))))))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        // A branch forked inside the cleanup, two joins down, is part of it: its join merged, and the
+        // step after that join ran.
+        Assert.Equal(["ab", "other"], services.GetRequiredService<Seen>().Values.Order());
     }
 
     [Fact]

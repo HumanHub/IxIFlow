@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace IxIFlow.Core;
 
@@ -99,7 +100,7 @@ public sealed class Union<TKey, TValue> : ICombiner<Dictionary<TKey, TValue>> wh
     {
         original ??= [];
         var result = new Dictionary<TKey, TValue>(original);
-        var decided = new Dictionary<TKey, (bool Removed, string Json)>();
+        var decided = new Dictionary<TKey, (bool Removed, JsonNode? Json)>();
         foreach (var branch in branchValues)
         {
             var changes = branch.Where(pair => !original.TryGetValue(pair.Key, out var before) ||
@@ -109,8 +110,9 @@ public sealed class Union<TKey, TValue> : ICombiner<Dictionary<TKey, TValue>> wh
                     .Select(key => (Key: key, Removed: true, Value: default(TValue)!)));
             foreach (var (key, removed, value) in changes)
             {
-                var json = removed ? "" : CombinerJson.Of(value);
-                if (decided.TryGetValue(key, out var earlier) && (earlier.Removed != removed || earlier.Json != json))
+                var json = removed ? null : CombinerJson.Of(value);
+                if (decided.TryGetValue(key, out var earlier) &&
+                    (earlier.Removed != removed || !JsonNode.DeepEquals(earlier.Json, json)))
                     throw new InvalidOperationException($"Two branches changed the key '{key}' differently");
                 decided[key] = (removed, json);
                 if (removed)
@@ -125,27 +127,39 @@ public sealed class Union<TKey, TValue> : ICombiner<Dictionary<TKey, TValue>> wh
 
 /// <summary>
 /// Merges sets (spec E-06): the set at the fork without what any branch removed, with what any branch
-/// added. Items are compared by the set's own comparer.
+/// added. Items are compared as JSON, because each branch's set is its own copy: an item a branch kept is
+/// equal to the one at the fork, not the same object. The result uses the set's own comparer.
 /// </summary>
 public sealed class Union<T> : ICombiner<HashSet<T>>
 {
     public HashSet<T> Combine(HashSet<T> original, IReadOnlyList<HashSet<T>> branchValues)
     {
         original ??= [];
-        var result = new HashSet<T>(original, original.Comparer);
+        var at = original.Select(item => (Item: item, Json: CombinerJson.Of(item))).ToList();
+        var kept = at.Where(item => branchValues.All(branch => branch.Any(other => CombinerJson.Same(item.Item, other))))
+            .Select(item => item.Item);
+        var result = new HashSet<T>(kept, original.Comparer);
+        var added = new List<JsonNode?>();
         foreach (var branch in branchValues)
-            result.ExceptWith(original.Where(item => !branch.Contains(item)));
-        foreach (var branch in branchValues)
-            result.UnionWith(branch.Where(item => !original.Contains(item)));
+            foreach (var item in branch)
+            {
+                var json = CombinerJson.Of(item);
+                if (at.Any(old => JsonNode.DeepEquals(old.Json, json)) ||
+                    added.Any(other => JsonNode.DeepEquals(other, json)))
+                    continue;
+                added.Add(json);
+                result.Add(item);
+            }
         return result;
     }
 }
 
 internal static class CombinerJson
 {
-    public static string Of<T>(T value) => JsonSerializer.Serialize(value);
+    public static JsonNode? Of<T>(T value) => JsonSerializer.SerializeToNode(value);
 
-    public static bool Same<T>(T one, T other) => Of(one) == Of(other);
+    /// <summary>True when two values have the same JSON, whatever the order of an object's properties.</summary>
+    public static bool Same<T>(T one, T other) => JsonNode.DeepEquals(Of(one), Of(other));
 }
 
 /// <summary>

@@ -113,6 +113,7 @@ public sealed class CommitBudgetTests
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         // 2N + 2 for the ForEach and the workflow, and two for the activity before it.
         AssertBudget(store.Commits, store.MaxBytes, maxCommits: 2 * 3 + 2 + 2, maxBytes: 4900);
+        Assert.True(store.TotalBytes <= 28000, $"{store.TotalBytes} bytes written in all; the ceiling is 28000");
     }
 
     [Fact]

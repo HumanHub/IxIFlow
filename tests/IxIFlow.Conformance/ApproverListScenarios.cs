@@ -89,7 +89,7 @@ public sealed class ApproverListScenarios
     [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
     public async Task OneFailedRequestCancelsTheOthersAndStoresNoDecisions(string profile)
     {
-        var mailer = new Mailer { Failing = "nobody" };
+        var mailer = new Mailer { Failing = "nobody", RoundSize = 3 };
         await using var cluster = await ClusterAsync(profile, mailer);
         var engine = cluster.AddHost();
 
@@ -99,6 +99,8 @@ public sealed class ApproverListScenarios
 
         var round = Assert.IsType<ApprovalRound>(finished.WorkflowData);
         Assert.Equal(("failed", 0), (round.Outcome, round.Decisions.Count));
+        // The failing request was sent last, so both others were waiting for an answer.
+        Assert.Equal(["ann", "cid"], mailer.Names.Order());
         foreach (var name in mailer.Names)
             EventAssert.Rejected(await engine.ReplyAsync(mailer.TokenOf(name), new ApprovalDecision { Approved = true }),
                 EventRejection.WaitCancelled);
@@ -165,7 +167,10 @@ public sealed class ApproverListScenarios
     {
         private readonly List<ApprovalRequest> _sent = [];
 
+        /// <summary>The approver whose request fails, once every other request of the round was sent.</summary>
         public string? Failing { get; init; }
+
+        public int RoundSize { get; init; }
 
         public IReadOnlyList<string> Names
         {
@@ -184,13 +189,15 @@ public sealed class ApproverListScenarios
                 await Task.Delay(10);
         }
 
-        public Task SendAsync(ApprovalRequest request, CancellationToken cancellationToken)
+        public async Task SendAsync(ApprovalRequest request, CancellationToken cancellationToken)
         {
             if (request.Approver == Failing)
+            {
+                await WaitForAsync(RoundSize - 1).WaitAsync(Patience, cancellationToken);
                 throw new InvalidOperationException($"No address for '{request.Approver}'");
+            }
             lock (_sent)
                 _sent.Add(request);
-            return Task.CompletedTask;
         }
     }
 }

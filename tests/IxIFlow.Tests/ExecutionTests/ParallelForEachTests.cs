@@ -213,6 +213,235 @@ public sealed class ParallelForEachTests
         Assert.Equal(instanceId, finished.InstanceId);
     }
 
+    // Recipe 20 again, with the host dying in the commit that holds an item's completion and the next
+    // item's admission: the next host completes the same item and admits the next one once.
+    [Fact]
+    [Trait("Spec", "D-17")]
+    public async Task AHostThatDiesBetweenACompletionAndTheNextAdmissionLeavesBothToTheNext()
+    {
+        var store = new FaultInjectingRepository();
+        var outbox = new Outbox();
+        var definition = CappedApprovals("DiesAtAdmission");
+        string instanceId;
+        using (var first = Services(store, outbox))
+        {
+            instanceId = (await Engine(first).RunAsync(definition,
+                new Approvals { Approvers = ["ann", "bob", "cid"] })).InstanceId;
+            store.FailCommit = instance => instance.ExecutionStateJson.Contains("\"Finished\":[1]");
+            await IgnoreFailureAsync(Engine(first).ReplyAsync(outbox.TokenOf("bob"), new Answer { Approved = true }));
+            Assert.True(store.FailedCommits > 0);
+        }
+        store.FailCommit = _ => false;
+
+        using var second = Services(store, outbox);
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, (await Engine(second).RecoverAsync(instanceId)).Status);
+        await Engine(second).ReplyAsync(outbox.TokenOf("ann"), new Answer { Approved = true });
+        var finished = await Engine(second).ReplyAsync(outbox.LastTokenOf("cid"), new Answer { Approved = false });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        Assert.Equal(["ann", "bob", "cid"], outbox.Names.Distinct());
+        Assert.Equal([true, true, false], Assert.IsType<Approvals>(finished.WorkflowData).Answers.Select(item => item.Value));
+    }
+
+    // Recipe 20: a join decided before the host died is not decided again by the next host, even where
+    // the condition would now say otherwise. The losing item's cleanup runs after the decision is saved.
+    [Fact]
+    [Trait("Spec", "D-17")]
+    public async Task AJoinDecidedBeforeTheHostDiedIsNotReconsidered()
+    {
+        var store = new FaultInjectingRepository();
+        var outbox = new Outbox();
+        var definition = Workflow.Create<Approvals>("DecidedThenDied")
+            .Step<Noop>()
+            .ForEach(ctx => ctx.WorkflowData.Approvers,
+                (body, approver) => body
+                    .Try(attempt => attempt
+                        .Request<Ask>("approval", step => step
+                            .Input(activity => activity.Name).From(ctx => ctx.Item(approver)))
+                        .WaitFor<Answer>("approval"))
+                    .Finally(cleanup => cleanup.Step<Cleanup>())
+                    .Result(_ => true),
+                setup => setup.Parallel()
+                    .WaitConditionally<bool>((_, results) => results.Count(item => item.Value) >= Source.Needed)
+                    .Into(ctx => ctx.WorkflowData.Answers))
+            .Build();
+        Source.Needed = 2;
+        string instanceId;
+        using (var first = Services(store, outbox))
+        {
+            instanceId = (await Engine(first).RunAsync(definition,
+                new Approvals { Approvers = ["ann", "bob", "cid"] })).InstanceId;
+            await Engine(first).ReplyAsync(outbox.TokenOf("ann"), new Answer { Approved = true });
+            // The host dies in the first commit after the one that saved the decision.
+            var decided = false;
+            store.FailCommit = instance =>
+            {
+                if (decided)
+                    return true;
+                decided = instance.ExecutionStateJson.Contains("\"IsCompleting\":true");
+                return false;
+            };
+            await IgnoreFailureAsync(Engine(first).ReplyAsync(outbox.TokenOf("bob"), new Answer { Approved = true }));
+            Assert.True(decided);
+        }
+        store.FailCommit = _ => false;
+        Source.Needed = 3;
+
+        using var second = Services(store, outbox);
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        var finished = await Engine(second).RecoverAsync(instanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        Assert.Equal([ItemStatus.Completed, ItemStatus.Completed, ItemStatus.Cancelled],
+            Assert.IsType<Approvals>(finished.WorkflowData).Answers.Select(item => item.Status));
+        EventAssert.Rejected(await Engine(second).ReplyAsync(outbox.TokenOf("cid"), new Answer { Approved = true }),
+            EventRejection.WaitCancelled);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-05")]
+    public async Task AParallelForEachChoosesACombinerForAProperty()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Approvals>("CountedItems")
+            .Step<Noop>()
+            .ForEach(ctx => ctx.WorkflowData.Approvers,
+                (body, _) => body.Step<AddOne>(step => step
+                    .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Total)
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Total)),
+                setup => setup.Parallel().Combine<int, Sum<int>>(data => data.Total))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new Approvals { Approvers = ["ann", "bob", "cid"] });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(3, Assert.IsType<Approvals>(result.WorkflowData).Total);
+        // A sequential ForEach has no join to merge in.
+        Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Approvals>("SequentialChoice")
+            .Step<Noop>()
+            .ForEach(ctx => ctx.WorkflowData.Approvers, (body, _) => body.Step<Noop>(),
+                setup => setup.Combine<int, Sum<int>>(data => data.Total))
+            .Build());
+    }
+
+    [Fact]
+    public async Task ParallelForEachesNestInsideEachOtherAParallelBranchAndASequentialForEach()
+    {
+        using var services = Services();
+        var nested = Workflow.Create<Approvals>("NestedFanOut")
+            .Step<Noop>()
+            .ForEach(ctx => ctx.WorkflowData.Approvers,
+                (outer, approver) => outer
+                    .ForEach(_ => new[] { 1, 2 },
+                        (inner, round) => inner.Step<Sign>(step => step
+                            .Input(activity => activity.Name).From(ctx => ctx.Item(approver) + ctx.Item(round))
+                            .Input(activity => activity.Signatures).From(ctx => ctx.WorkflowData.Signatures)
+                            .Output(activity => activity.Signatures).To(ctx => ctx.WorkflowData.Signatures)),
+                        setup => setup.Parallel())
+                    .Result(ctx => ctx.WorkflowData.Signatures.Count),
+                setup => setup.Parallel().Into(ctx => ctx.WorkflowData.Results))
+            .Build();
+        var inBranch = Workflow.Create<Approvals>("FanOutInABranch")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Do(list => list.ForEach(ctx => ctx.WorkflowData.Approvers,
+                    (body, approver) => body.Step<Sign>(step => step
+                        .Input(activity => activity.Name).From(ctx => ctx.Item(approver))
+                        .Input(activity => activity.Signatures).From(ctx => ctx.WorkflowData.Signatures)
+                        .Output(activity => activity.Signatures).To(ctx => ctx.WorkflowData.Signatures)),
+                    setup => setup.Parallel(maxConcurrency: 1)))
+                .Do(other => other.Step<Sign>(step => step
+                    .Input(activity => activity.Name).From(_ => "other")
+                    .Output(activity => activity.Name).To(ctx => ctx.WorkflowData.Last))))
+            .Build();
+        var inSequence = Workflow.Create<Approvals>("FanOutPerRound")
+            .Step<Noop>()
+            .ForEach(_ => new[] { "x", "y" },
+                (rounds, round) => rounds.ForEach(ctx => ctx.WorkflowData.Approvers,
+                    (body, approver) => body.Step<Sign>(step => step
+                        .Input(activity => activity.Name).From(ctx => ctx.Item(round) + ctx.Item(approver))
+                        .Input(activity => activity.Signatures).From(ctx => ctx.WorkflowData.Signatures)
+                        .Output(activity => activity.Signatures).To(ctx => ctx.WorkflowData.Signatures)),
+                    setup => setup.Parallel()))
+            .Build();
+
+        var nestedData = Data(await Engine(services).RunAsync(nested, new Approvals { Approvers = ["ann", "bob"] }));
+        var branchData = Data(await Engine(services).RunAsync(inBranch, new Approvals { Approvers = ["ann", "bob"] }));
+        var sequenceData = Data(await Engine(services).RunAsync(inSequence, new Approvals { Approvers = ["ann", "bob"] }));
+
+        // Each outer item merged its own inner items, and saw only its own.
+        Assert.Equal(["ann1", "ann2", "bob1", "bob2"], nestedData.Signatures);
+        Assert.Equal([2, 2], nestedData.Results.Select(result => result.Value));
+        Assert.Equal(["ann", "bob"], branchData.Signatures);
+        Assert.Equal("other", branchData.Last);
+        // Each round starts from the data the previous round's join left.
+        Assert.Equal(["xann", "xbob", "yann", "ybob"], sequenceData.Signatures);
+    }
+
+    [Fact]
+    public async Task OneAtATimeStillGivesEveryItemItsOwnCopy()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Approvals>("OneAtATime")
+            .Step<Noop>()
+            .ForEach(ctx => ctx.WorkflowData.Approvers,
+                (body, approver) => body
+                    .Step<Sign>(step => step
+                        .Input(activity => activity.Name).From(ctx => ctx.Item(approver))
+                        .Input(activity => activity.Signatures).From(ctx => ctx.WorkflowData.Signatures)
+                        .Output(activity => activity.Signatures).To(ctx => ctx.WorkflowData.Signatures))
+                    .Result(ctx => ctx.WorkflowData.Signatures.Count),
+                setup => setup.Parallel(maxConcurrency: 1).Into(ctx => ctx.WorkflowData.Results))
+            .Build();
+
+        var data = Data(await Engine(services).RunAsync(definition, new Approvals { Approvers = ["ann", "bob", "cid"] }));
+
+        // Unlike a sequential ForEach, the third item did not see the first two signatures.
+        Assert.Equal([1, 1, 1], data.Results.Select(result => result.Value));
+        Assert.Equal(["ann", "bob", "cid"], data.Signatures);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-09")]
+    public async Task AConditionalJoinWhoseItemsConflictFailsAtOnceIntoTheCatch()
+    {
+        using var services = Services();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<Approvals>("ConflictingVotes")
+            .Step<Noop>()
+            .Try(attempt => attempt.ForEach(ctx => ctx.WorkflowData.Approvers,
+                (body, approver) => body
+                    .Step<Sign>(step => step
+                        .Input(activity => activity.Name).From(ctx => ctx.Item(approver))
+                        .Output(activity => activity.Name).To(ctx => ctx.WorkflowData.Votes["final"].By))
+                    .Request<Ask>("approval", step => step
+                        .Input(activity => activity.Name).From(ctx => ctx.Item(approver)))
+                    .WaitFor<Answer>("approval")
+                    .Result(ctx => ctx.PreviousStep.Approved),
+                setup => setup.Parallel()
+                    .WaitConditionally<bool>((_, results) => results.Count >= 3)
+                    .Into(ctx => ctx.WorkflowData.Answers)))
+            .Catch<JoinConflictException>(handler => handler.Step<Sign>(step => step
+                .Input(activity => activity.Name).From(_ => "conflict")
+                .Output(activity => activity.Name).To(ctx => ctx.WorkflowData.Last)))
+            .Build();
+        var started = await Engine(services).RunAsync(definition,
+            new Approvals { Approvers = ["ann", "bob", "cid"], Votes = { ["final"] = new Vote() } });
+
+        await Engine(services).ReplyAsync(outbox.TokenOf("ann"), new Answer { Approved = true });
+        // The second item's vote conflicts with the first's, so the join cannot hold and decides now.
+        var finished = await Engine(services).ReplyAsync(outbox.TokenOf("bob"), new Answer { Approved = true });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        var data = Data(finished);
+        Assert.Equal(("conflict", ""), (data.Last, data.Votes["final"].By));
+        Assert.Empty(data.Answers);
+        EventAssert.Rejected(await Engine(services).ReplyAsync(outbox.TokenOf("cid"), new Answer { Approved = true }),
+            EventRejection.WaitCancelled);
+        Assert.Equal(started.InstanceId, finished.InstanceId);
+    }
+
     [Fact]
     public void JoinOptionsNeedParallelAndItemsMayNotAllWriteOnePropertyWithoutACombiner()
     {
@@ -261,13 +490,41 @@ public sealed class ParallelForEachTests
         return services.BuildServiceProvider();
     }
 
-    /// <summary>A list read from outside the workflow data, changed between hosts by one test.</summary>
+    /// <summary>A list and a threshold read from outside the workflow data, changed between hosts by tests.</summary>
     private static class Source
     {
         public static List<string> Approvers { get; set; } = [];
+        public static int Needed { get; set; }
     }
 
     private static IWorkflowClient Engine(IServiceProvider services) => services.GetRequiredService<IWorkflowClient>();
+
+    private static Approvals Data(WorkflowExecutionResult result) => Assert.IsType<Approvals>(result.WorkflowData);
+
+    private static WorkflowDefinition CappedApprovals(string name) =>
+        Workflow.Create<Approvals>(name)
+            .Step<Noop>()
+            .ForEach(ctx => ctx.WorkflowData.Approvers,
+                (body, approver) => body
+                    .Request<Ask>("approval", step => step
+                        .Input(activity => activity.Name).From(ctx => ctx.Item(approver)))
+                    .WaitFor<Answer>("approval")
+                    .Result(ctx => ctx.PreviousStep.Approved),
+                setup => setup.Parallel(maxConcurrency: 2).Into(ctx => ctx.WorkflowData.Answers))
+            .Build();
+
+    // A host that dies in a commit fails the call that drove it.
+    private static async Task IgnoreFailureAsync(Task call)
+    {
+        try
+        {
+            await call;
+        }
+        catch (Exception)
+        {
+            // The run's next host takes over from the last commit.
+        }
+    }
 
     public sealed class Approvals
     {
@@ -277,8 +534,15 @@ public sealed class ParallelForEachTests
         public List<string> Signatures { get; set; } = [];
 
         public string Last { get; set; } = "";
+        public int Total { get; set; }
+        public Dictionary<string, Vote> Votes { get; set; } = [];
         public List<ItemResult<int>> Results { get; set; } = [];
         public List<ItemResult<bool>> Answers { get; set; } = [];
+    }
+
+    public sealed class Vote
+    {
+        public string By { get; set; } = "";
     }
 
     public sealed class Answer
@@ -299,6 +563,13 @@ public sealed class ParallelForEachTests
         {
             lock (_sent)
                 return _sent.Single(item => item.Name == name).Token;
+        }
+
+        /// <summary>The token of the latest request to <paramref name="name"/>, which a recovery may repeat.</summary>
+        public string LastTokenOf(string name)
+        {
+            lock (_sent)
+                return _sent.Last(item => item.Name == name).Token;
         }
 
         public void Add(string name, string token)
@@ -337,6 +608,30 @@ public sealed class ParallelForEachTests
 
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             Name == "bob" ? throw new InvalidOperationException("bob failed") : Task.CompletedTask;
+    }
+
+    /// <summary>Cleanup that is safe to run again when a host died before its outcome was saved.</summary>
+    public sealed class Cleanup : IAsyncActivity, IRecoverableActivity<bool>
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public bool CaptureRecoveryState(IActivityContext context) => true;
+
+        public Task<ActivityRecoveryResult<bool>> RecoverAsync(bool state, IActivityContext context,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<ActivityRecoveryResult<bool>>(new ActivityRecoveryResult<bool>.Execute());
+    }
+
+    public sealed class AddOne : IAsyncActivity
+    {
+        public int Value { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Value++;
+            return Task.CompletedTask;
+        }
     }
 
     public sealed class Noop : IAsyncActivity
