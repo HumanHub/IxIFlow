@@ -665,7 +665,7 @@ public sealed class SagaHandlerTests
         var run = engine.RunAsync(definition, new ShopData(), new WorkflowOptions { InstanceId = instanceId });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // The instance is cancelled while the handler's activity runs; the activity then returns.
+        // The instance is cancelled while the handler's activity runs, which stops it.
         await engine.CancelAsync(instanceId, new CancellationReason { ReasonCode = "operator" });
         gate.Release.TrySetResult();
         await run;
@@ -675,6 +675,46 @@ public sealed class SagaHandlerTests
         // No retry follows, so the handler's further steps and its wait are cancelled and the kept packing undone.
         Assert.Equal(WorkflowExecutionStatus.Cancelled, finished.Status);
         Assert.Equal(["PackOrder", "ReserveStock", "ShipOrder", "undo ReserveStock", "undo PackOrder"], journal.Entries);
+    }
+
+    [Fact]
+    [Trait("Spec", "A-11")]
+    public async Task ARetryHandlersActivityFailingAfterACancellationLeavesTheInstanceCancelled()
+    {
+        using var services = Services();
+        var journal = services.GetRequiredService<Journal>();
+        var gate = services.GetRequiredService<HandlerGate>();
+        gate.Armed = true;
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var definition = Workflow.Create<ShopData>("HandlerFailsAfterCancel")
+            .Step<ValidateOrder>()
+            .Saga(saga => saga
+                .Step<PackOrder>(step => step.CompensateWith<UnpackOrder>())
+                .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
+                .Step<ShipOrder>())
+            .OnError<ShippingFailed>(handler => handler.Step<StubbornHandler>()
+                .CompensateUpTo<ReserveStock>().ThenRetry(3))
+            .Build();
+        var run = engine.RunAsync(definition, new ShopData(), new WorkflowOptions { InstanceId = instanceId });
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The handler's activity ignores the cancellation and fails once let go: like a forward activity's, its
+        // failure gives way to the cancellation (D-36).
+        await engine.CancelAsync(instanceId, new CancellationReason { ReasonCode = "operator" });
+        var repository = services.GetRequiredService<IWorkflowStateRepository>();
+        using (var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            while ((await repository.GetWorkflowInstanceAsync(instanceId))?.ExecutionStateJson
+                   .Contains("\"CancellationUnwind\":true") != true)
+                await Task.Delay(20, patience.Token);
+        gate.Release.TrySetResult();
+        await run;
+        var finished = await engine.AwaitAsync(instanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, finished.Status);
+        Assert.Equal(["PackOrder", "ReserveStock", "ShipOrder", "undo ReserveStock", "StubbornHandler", "undo PackOrder"],
+            journal.Entries);
     }
 
     [Fact]
@@ -1325,7 +1365,7 @@ public sealed class SagaHandlerTests
         foreach (var activity in new[]
                  {
                      typeof(ReserveStock), typeof(ReleaseStock), typeof(BrokenRelease), typeof(PackOrder),
-                     typeof(UnpackOrder), typeof(ShipOrder), typeof(HoldOrder), typeof(HoldHandler), typeof(NotifyCustomer),
+                     typeof(UnpackOrder), typeof(ShipOrder), typeof(HoldOrder), typeof(HoldHandler), typeof(StubbornHandler), typeof(NotifyCustomer),
                      typeof(InsureOrder), typeof(UninsureOrder), typeof(LabelOrder), typeof(UnlabelOrder),
                      typeof(CreatePayment), typeof(RefundPayment), typeof(UndoPayment)
                  })
@@ -1533,6 +1573,18 @@ public sealed class SagaHandlerTests
         {
             journal.Add("undo LabelOrder");
             return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Holds until released, whatever its token says, then fails.</summary>
+    public sealed class StubbornHandler(HandlerGate gate, Journal journal) : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            gate.Entered.TrySetResult();
+            await gate.Release.Task;
+            journal.Add(nameof(StubbornHandler));
+            throw new InvalidOperationException("the handler failed after all");
         }
     }
 
