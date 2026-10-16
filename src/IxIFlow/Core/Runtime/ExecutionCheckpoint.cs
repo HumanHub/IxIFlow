@@ -85,17 +85,15 @@ internal sealed class ExecutionCheckpoint
 
     /// <summary>
     /// Takes the deadlines the store stamped from a page it read (D-35). A wait the store has no deadline
-    /// for has none yet: it is not committed, or not armed.
+    /// for has none yet: it is not committed, or not armed. A page without deadlines reports none.
     /// </summary>
     public void ReadDeadlines(InboxPage page)
     {
-        if (page.Deadlines == null)
-            return;
+        var deadlines = page.Deadlines ?? new Dictionary<string, DateTime>();
         foreach (var wait in Waits.Where(wait => wait.TableKind is not (null or WaitKind.Child)))
-            wait.DeadlineUtc = page.Deadlines.TryGetValue(wait.Id, out var deadline) ? deadline : null;
+            wait.DeadlineUtc = deadlines.TryGetValue(wait.Id, out var deadline) ? deadline : null;
         if (ExecutionTimerId != null)
-            ExecutionDeadlineUtc = page.Deadlines.TryGetValue(ExecutionTimerId, out var execution)
-                ? execution : null;
+            ExecutionDeadlineUtc = deadlines.TryGetValue(ExecutionTimerId, out var execution) ? execution : null;
     }
 
     /// <summary>

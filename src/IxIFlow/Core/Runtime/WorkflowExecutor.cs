@@ -230,10 +230,10 @@ internal sealed class WorkflowExecutor
                 if (_transitions.MayBeDue(checkpoint))
                     continue;
                 // Retry times are the store's, as the run last read its clock, so a host whose clock
-                // differs retries when the one that scheduled the retry would have (D-35).
+                // differs retries when the one that scheduled the retry would have (D-35). A retry that
+                // fell due since the branches were advanced wakes the run at once.
                 var nextRetry = checkpoint.Continuations
-                    .Where(item => item.Status == ContinuationStatus.Active &&
-                                   item.RetryAfterUtc > checkpoint.Clock.ToStore(Now))
+                    .Where(item => item.Status == ContinuationStatus.Active && item.RetryAfterUtc != null)
                     .Min(item => item.RetryAfterUtc) is { } retryTime
                     ? checkpoint.Clock.ToLocal(retryTime) : (DateTime?)null;
                 if (inFlight.Count == 0 &&

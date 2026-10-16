@@ -307,13 +307,20 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
         // The instance row is locked first, in the same order as a commit, so the waits read below are
-        // exactly those committed before this event arrives. The event is received at the time read
-        // under that lock, which orders it against every read of the inbox (D-35).
-        var instance = await connection.QuerySingleOrDefaultAsync<InboxRow>("""
-            SELECT Status, InboxSequence, SYSUTCDATETIME() AS Now
-            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
-            WHERE InstanceId = @InstanceId
-            """, new { workflowEvent.InstanceId }, transaction);
+        // exactly those committed before this event arrives. The event is received at the time read once
+        // that lock is held, which orders it against every read of the inbox (D-35); a statement reads
+        // its time when it starts, so the time is read by the statement after the lock.
+        InboxRow? instance;
+        DateTime lockedAt;
+        using (var locked = await connection.QueryMultipleAsync("""
+            SELECT Status, InboxSequence FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
+            WHERE InstanceId = @InstanceId;
+            SELECT SYSUTCDATETIME();
+            """, new { workflowEvent.InstanceId }, transaction))
+        {
+            instance = await locked.ReadSingleOrDefaultAsync<InboxRow>();
+            lockedAt = await locked.ReadSingleAsync<DateTime>();
+        }
         // A known event ID answers the same way whatever happened to the instance since.
         var existing = await connection.QuerySingleOrDefaultAsync<EventHashRow>("""
             SELECT Sequence, PayloadHash FROM dbo.IxIFlowWorkflowEvents
@@ -340,7 +347,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         }
         // The named wait, or the open wait that could take the event: one that is not past its deadline
         // comes first, as WorkflowStoreRules.Candidates orders them.
-        var now = DateTime.SpecifyKind(instance.Now, DateTimeKind.Utc);
+        var now = DateTime.SpecifyKind(lockedAt, DateTimeKind.Utc);
         var waits = (await connection.QueryAsync<WaitRow>($"""
             SELECT TOP (1) {WaitColumns} FROM dbo.IxIFlowWorkflowWaits
             WHERE InstanceId = @InstanceId AND (@TargetWaitId IS NOT NULL AND WaitId = @TargetWaitId
@@ -397,8 +404,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         Page page;
         using (var results = await connection.QueryMultipleAsync($"""
             DECLARE @Through BIGINT = 0, @Now DATETIME2 = SYSUTCDATETIME();
-            SELECT @Through = InboxSequence, @Now = SYSUTCDATETIME()
+            SELECT @Through = InboxSequence
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK) WHERE InstanceId = @InstanceId;
+            SET @Now = SYSUTCDATETIME();
             SELECT @Through AS Through, @Now AS Now;
             SELECT TOP (@Limit) {EventColumns}
             FROM dbo.IxIFlowWorkflowEvents
@@ -510,7 +518,6 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         public string Status { get; set; } = "";
         public long InboxSequence { get; set; }
-        public DateTime Now { get; set; }
     }
 
     private sealed class EventHashRow
@@ -643,15 +650,20 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
-        // One store time for the whole commit, read with the instance row's lock: its deadlines, its
-        // runnable time and its records (D-35).
-        var current = await connection.QuerySingleOrDefaultAsync<CommitState>("""
-            SELECT Revision, CancellationJson, CancellationAcknowledged, InboxSequence, SYSUTCDATETIME() AS Now
+        // One store time for the whole commit, read once the instance row's lock is held: its deadlines,
+        // its runnable time and its records (D-35).
+        CommitState? current;
+        DateTime now;
+        using (var locked = await connection.QueryMultipleAsync("""
+            SELECT Revision, CancellationJson, CancellationAcknowledged, InboxSequence
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
-            WHERE InstanceId = @InstanceId
-            """, new { commit.InstanceId }, transaction);
-        var now = DateTime.SpecifyKind(current?.Now ?? await connection.ExecuteScalarAsync<DateTime>(
-            "SELECT SYSUTCDATETIME()", transaction: transaction), DateTimeKind.Utc);
+            WHERE InstanceId = @InstanceId;
+            SELECT SYSUTCDATETIME();
+            """, new { commit.InstanceId }, transaction))
+        {
+            current = await locked.ReadSingleOrDefaultAsync<CommitState>();
+            now = DateTime.SpecifyKind(await locked.ReadSingleAsync<DateTime>(), DateTimeKind.Utc);
+        }
         var currentRevision = current?.Revision ?? 0;
         var receipt = await connection.QuerySingleOrDefaultAsync<CommitReceipt>("""
             SELECT ExpectedRevision, Revision, PayloadHash FROM dbo.IxIFlowWorkflowCommits
@@ -928,7 +940,6 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         public string? CancellationJson { get; set; }
         public bool CancellationAcknowledged { get; set; }
         public long InboxSequence { get; set; }
-        public DateTime Now { get; set; }
     }
 
     private sealed class LeaseRecord
