@@ -202,6 +202,8 @@ public sealed class RequestStepTests
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         while ((await repository.GetWaitAsync(started.InstanceId, waitId))!.IsOpen)
             await Task.Delay(20);
+        // The timeout's own pass may still be running; the reply is sent once the instance is idle again.
+        await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Idle).WaitAsync(TimeSpan.FromSeconds(10));
 
         var late = await engine.ReplyAsync(token, new ApprovalDecision { Approved = true });
 

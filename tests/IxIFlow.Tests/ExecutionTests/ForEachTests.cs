@@ -796,8 +796,13 @@ public sealed class ForEachTests
                         .Input(activity => activity.Price).From(ctx => ctx.Item(line).Price)))
                     .Do(branch => branch
                         .Try(waiting => waiting.WaitFor<LineApproval>("approval"))
-                        .Finally(cleanup => cleanup.Step<RecordNoteActivity>(step => step
-                            .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name)))))))
+                        .Finally(cleanup => cleanup
+                            .Step<RecordNoteActivity>(step => step
+                                .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name))
+                            .Step<NoteActivity>(step => step
+                                .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name)
+                                .Input(activity => activity.Log).From(ctx => ctx.WorkflowData.Log)
+                                .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log)))))))
             .Catch<InvalidOperationException>(handler => handler.Step<CountActivity>(step => step
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Expensive)
                 .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Expensive)))
@@ -823,8 +828,13 @@ public sealed class ForEachTests
                 .Parallel(parallel => parallel
                     .Do(branch => branch
                         .Try(waiting => waiting.WaitFor<LineApproval>("approval"))
-                        .Finally(cleanup => cleanup.Step<RecordNoteActivity>(step => step
-                            .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name))))
+                        .Finally(cleanup => cleanup
+                            .Step<RecordNoteActivity>(step => step
+                                .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name))
+                            .Step<NoteActivity>(step => step
+                                .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name)
+                                .Input(activity => activity.Log).From(ctx => ctx.WorkflowData.Log)
+                                .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log))))
                     .Do(branch => branch.WaitFor<LineApproval>("other"))))
             .Build();
         var started = await engine.RunAsync(definition, Order(3, 5));

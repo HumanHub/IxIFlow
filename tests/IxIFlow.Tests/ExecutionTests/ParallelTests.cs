@@ -272,8 +272,8 @@ namespace IxIFlow.Tests.ExecutionTests
             Assert.Equal(7, ((SummedCounterData)finished.WorkflowData!).Counter);
         }
 
-        // A conflict the build cannot see fails the parallel step, where a Catch can handle it, and
-        // leaves the data as it was at the fork (spec E-04).
+        // A conflict the build cannot see, here activity code changing its branch's copy directly, fails
+        // the parallel step, where a Catch can handle it, and leaves the data as it was at the fork (spec E-04).
         [Fact]
         [Trait("Spec", "E-04")]
         [Trait("Spec", "E-07")]
@@ -283,14 +283,8 @@ namespace IxIFlow.Tests.ExecutionTests
                 .Create<SharedDataTestData>("ConflictingBranches")
                 .Step<InitializeCounterActivity>()
                 .Try(attempt => attempt.Parallel(parallel => parallel
-                    .Do(branch => branch
-                        .Step<IncrementCounterActivity>(setup => setup
-                            .Input(act => act.Counter).From(ctx => ctx.WorkflowData.Counter)
-                            .Output(act => act.Result).To(ctx => ctx.WorkflowData.Self().Counter)))
-                    .Do(branch => branch
-                        .Step<IncrementCounterActivity>(setup => setup
-                            .Input(act => act.Counter).From(ctx => ctx.WorkflowData.Counter)
-                            .Output(act => act.Result).To(ctx => ctx.WorkflowData.Self().Counter)))))
+                    .Do(branch => branch.Step<BumpCounterInPlaceActivity>())
+                    .Do(branch => branch.Step<BumpCounterInPlaceActivity>())))
                 .Catch<JoinConflictException>(handler => handler
                     .Step<IncrementCounterActivity>(setup => setup
                         .Input(act => act.Counter).From(_ => 41)
@@ -334,9 +328,16 @@ namespace IxIFlow.Tests.ExecutionTests
     {
         public int Counter { get; set; }
         public int Caught { get; set; }
+    }
 
-        // A target the build rules cannot name, so only the join sees the conflict.
-        public SharedDataTestData Self() => this;
+    /// <summary>Changes its branch's copy of the data in place, which no output mapping shows.</summary>
+    public class BumpCounterInPlaceActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            ((SharedDataTestData)context.WorkflowData).Counter++;
+            return Task.CompletedTask;
+        }
     }
 
     public class SummedCounterData

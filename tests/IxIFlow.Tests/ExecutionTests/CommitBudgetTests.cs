@@ -65,6 +65,35 @@ public sealed class CommitBudgetTests
         AssertBudget(commits, bytes, maxCommits: 12, maxBytes: 4700);
     }
 
+    // Branches that write save their changes in every commit until the join (D-14, spec E-01).
+    [Fact]
+    [Trait("Spec", "E-01")]
+    public async Task ParallelBranchesThatWrite()
+    {
+        var definition = Workflow.Create<WritingData>("BudgetParallelWrites")
+            .Step<WorkActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch.Step<NoteActivity>(step => step
+                    .Input(activity => activity.Note).From(_ => "first branch")
+                    .Output(activity => activity.Note).To(ctx => ctx.WorkflowData.First)))
+                .Do(branch => branch.Step<NoteActivity>(step => step
+                    .Input(activity => activity.Note).From(_ => "second branch")
+                    .Output(activity => activity.Note).To(ctx => ctx.WorkflowData.Second)))
+                .Do(branch => branch.Step<NoteActivity>(step => step
+                    .Input(activity => activity.Note).From(_ => "third branch")
+                    .Output(activity => activity.Note).To(ctx => ctx.WorkflowData.Third))))
+            .Step<WorkActivity>()
+            .Build();
+
+        var store = new MeasuringStore();
+        using var services = Services(store);
+        var result = await Engine(services).RunAsync(definition, new WritingData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        AssertBudget(store.Commits, store.MaxBytes, maxCommits: 12, maxBytes: 5200);
+        Assert.True(store.TotalBytes <= 30000, $"{store.TotalBytes} bytes written in all; the ceiling is 30000");
+    }
+
     [Fact]
     public async Task CaughtFailure()
     {
@@ -197,8 +226,11 @@ public sealed class CommitBudgetTests
         private int _commits;
         private long _maxBytes;
 
+        private long _totalBytes;
+
         public int Commits => Volatile.Read(ref _commits);
         public long MaxBytes => Interlocked.Read(ref _maxBytes);
+        public long TotalBytes => Interlocked.Read(ref _totalBytes);
 
         public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
@@ -207,6 +239,7 @@ public sealed class CommitBudgetTests
             {
                 Interlocked.Increment(ref _commits);
                 var bytes = ExecutionCheckpointWriter.CheckpointBytes(commit.ReadInstance());
+                Interlocked.Add(ref _totalBytes, bytes);
                 long seen;
                 while (bytes > (seen = Interlocked.Read(ref _maxBytes)) &&
                        Interlocked.CompareExchange(ref _maxBytes, bytes, seen) != seen)
@@ -220,6 +253,21 @@ public sealed class CommitBudgetTests
     public sealed class BudgetData
     {
         public int Count { get; set; }
+    }
+
+    public sealed class WritingData
+    {
+        public string First { get; set; } = "";
+        public string Second { get; set; } = "";
+        public string Third { get; set; } = "";
+    }
+
+    public sealed class NoteActivity : IAsyncActivity
+    {
+        public string Note { get; set; } = "";
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 
     public sealed class Approval;

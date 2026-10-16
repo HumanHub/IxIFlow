@@ -140,7 +140,8 @@ internal sealed class WorkflowScopeCatalog
     private string ComputeFingerprint(WorkflowDefinition definition)
     {
         // Combiners declared on the data type decide how joins merge, so they are part of it (spec E-05).
-        var signature = "combiners:" + ParallelRules.CombinerSignature(definition.WorkflowDataType) + "\n" +
+        var combiners = ParallelRules.CombinerSignature(definition.WorkflowDataType);
+        var signature = (combiners.Length == 0 ? "" : "combiners:" + combiners + "\n") +
             string.Join("\n", _steps.OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .Select(pair =>
             {
