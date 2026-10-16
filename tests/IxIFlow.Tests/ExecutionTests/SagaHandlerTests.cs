@@ -645,7 +645,7 @@ public sealed class SagaHandlerTests
 
     [Fact]
     [Trait("Spec", "A-11")]
-    public async Task CancellingWhileARetryHandlerRunsUndoesTheKeptStepsWhenItFails()
+    public async Task CancellingWhileARetryHandlerRunsCancelsItsStepsAndUndoesTheKeptSteps()
     {
         using var services = Services();
         var journal = services.GetRequiredService<Journal>();
@@ -653,30 +653,142 @@ public sealed class SagaHandlerTests
         gate.Armed = true;
         var engine = services.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
-        var definition = Workflow.Create<ShopData>("HandlerFailsWhileCancelled")
+        var definition = Workflow.Create<ShopData>("HandlerCancelledWhileRunning")
             .Step<ValidateOrder>()
             .Saga(saga => saga
                 .Step<PackOrder>(step => step.CompensateWith<UnpackOrder>())
                 .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
                 .Step<ShipOrder>())
             .OnError<ShippingFailed>(handler => handler.Step<HoldHandler>().Step<NotifyCustomer>()
-                .CompensateUpTo<ReserveStock>().ThenRetry(3))
+                .WaitFor<Approval>("retry").CompensateUpTo<ReserveStock>().ThenRetry(3))
             .Build();
         var run = engine.RunAsync(definition, new ShopData(), new WorkflowOptions { InstanceId = instanceId });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // The instance is cancelled while the handler runs; the handler then fails.
+        // The instance is cancelled while the handler's activity runs; the activity then returns.
         await engine.CancelAsync(instanceId, new CancellationReason { ReasonCode = "operator" });
         gate.Release.TrySetResult();
         await run;
         var finished = await engine.AwaitAsync(instanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(10));
 
-        Assert.Equal(["PackOrder", "ReserveStock", "ShipOrder", "undo ReserveStock", "NotifyCustomer", "undo PackOrder"],
-            journal.Entries);
-        // The handler's failure during the cancellation is reported, as a failed undo during one is.
+        // No retry follows, so the handler's further steps and its wait are cancelled and the kept packing undone.
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, finished.Status);
+        Assert.Equal(["PackOrder", "ReserveStock", "ShipOrder", "undo ReserveStock", "undo PackOrder"], journal.Entries);
+    }
+
+    [Fact]
+    [Trait("Spec", "A-11")]
+    public async Task CancellingARetryHandlersNestedSagaUndoesItBeforeTheKeptSteps()
+    {
+        using var services = Services();
+        var journal = services.GetRequiredService<Journal>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var definition = Workflow.Create<ShopData>("NestedSagaInHandler")
+            .Step<ValidateOrder>()
+            .Saga(saga => saga
+                .Step<PackOrder>(step => step.CompensateWith<UnpackOrder>())
+                .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
+                .Step<ShipOrder>())
+            .OnError<ShippingFailed>(handler => handler
+                .WaitFor<Approval>("retry", configure: wait => wait
+                    .TimeoutAfter(TimeSpan.FromMilliseconds(100))
+                    .OnTimeout(path => path.Saga(inner => inner
+                        .Step<InsureOrder>(step => step.CompensateWith<UninsureOrder>())
+                        .WaitFor<Approval>("insured"))))
+                .CompensateUpTo<ReserveStock>().ThenRetry(2))
+            .Build();
+        var started = await engine.RunAsync(definition, new ShopData());
+        while (!journal.Entries.Contains(nameof(InsureOrder)) ||
+               (await engine.GetOpenWaitsAsync(new WaitQuery { InstanceId = started.InstanceId }))
+               .All(wait => wait.Key != "insured"))
+            await Task.Delay(20);
+
+        await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
+        var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, finished.Status);
+        Assert.Equal(["PackOrder", "ReserveStock", "ShipOrder", "undo ReserveStock", "InsureOrder", "undo InsureOrder",
+            "undo PackOrder"], journal.Entries);
+    }
+
+    [Fact]
+    [Trait("Spec", "A-11")]
+    public async Task CancellingARetryHandlersChildCancelsTheChildBeforeTheKeptStepsAreUndone()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var journal = new Journal();
+        using var services = Services(repository, journal);
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+            Workflow.Create<ShopData>("CarrierClaim").Step<ValidateOrder>().WaitFor<Approval>("settled").Build());
+        var definition = Workflow.Create<ShopData>("ChildInHandler")
+            .Step<ValidateOrder>()
+            .Saga(saga => saga
+                .Step<PackOrder>(step => step.CompensateWith<UnpackOrder>())
+                .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
+                .Step<ShipOrder>())
+            .OnError<ShippingFailed>(handler => handler
+                .WaitFor<Approval>("retry", configure: wait => wait
+                    .TimeoutAfter(TimeSpan.FromMilliseconds(100))
+                    .OnTimeout(path => path.Invoke<ShopData>("CarrierClaim", 1)))
+                .CompensateUpTo<ReserveStock>().ThenRetry(2))
+            .Build();
+        var started = await engine.RunAsync(definition, new ShopData());
+        WorkflowInstance? child = null;
+        while (child == null || (await engine.GetOpenWaitsAsync(new WaitQuery { InstanceId = child.InstanceId }))
+               .All(wait => wait.Key != "settled"))
+        {
+            await Task.Delay(20);
+            child = (await repository.GetChildInstancesAsync(started.InstanceId)).SingleOrDefault();
+        }
+
+        await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
+        var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The handler's child is asked to cancel and its end awaited; then the kept packing is undone.
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, finished.Status);
+        Assert.Equal(WorkflowStatus.Cancelled, (await repository.GetWorkflowInstanceAsync(child.InstanceId))!.Status);
+        Assert.Equal(["PackOrder", "ReserveStock", "ShipOrder", "undo ReserveStock", "undo PackOrder"], journal.Entries);
+    }
+
+    [Fact]
+    [Trait("Spec", "A-11")]
+    public async Task ANestedHandlerFailingInsideARetryHandlerUndoesTheOuterKeptSteps()
+    {
+        using var services = Services();
+        var journal = services.GetRequiredService<Journal>();
+        journal.ShippingFailures = 2;
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var definition = Workflow.Create<ShopData>("NestedHandlerFails")
+            .Step<ValidateOrder>()
+            .Saga(saga => saga
+                .Step<PackOrder>(step => step.CompensateWith<UnpackOrder>())
+                .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
+                .Step<ShipOrder>())
+            .OnError<ShippingFailed>(handler => handler
+                .WaitFor<Approval>("retry", configure: wait => wait
+                    .TimeoutAfter(TimeSpan.FromMilliseconds(100))
+                    .OnTimeout(path => path
+                        .Saga(inner => inner
+                            .Step<InsureOrder>(step => step.CompensateWith<UninsureOrder>())
+                            .Step<ShipOrder>())
+                        .OnError<ShippingFailed>(innerHandler => innerHandler.Step<NotifyCustomer>()
+                            .Compensate().ThenContinue())))
+                .CompensateUpTo<ReserveStock>().ThenRetry(2))
+            .Build();
+        var started = await engine.RunAsync(definition, new ShopData());
+
+        var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The inner handler's failure ends the outer retry handler, which undoes the packing it kept.
         Assert.Equal(WorkflowExecutionStatus.Faulted, finished.Status);
         Assert.Contains("the error handler failed", finished.ErrorMessage);
+        Assert.Equal(["PackOrder", "ReserveStock", "ShipOrder", "undo ReserveStock", "InsureOrder", "ShipOrder",
+            "undo InsureOrder", "NotifyCustomer", "undo PackOrder"], journal.Entries);
     }
 
     [Fact]
@@ -834,6 +946,38 @@ public sealed class SagaHandlerTests
 
     [Fact]
     [Trait("Spec", "A-11")]
+    public async Task AnApprovalTakenInAPlainWaitsTimeoutPathIsKeptWhileTheRetryWaitsAgain()
+    {
+        using var services = Services();
+        var journal = services.GetRequiredService<Journal>();
+        journal.ShippingFailures = 1;
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var definition = Workflow.Create<ShopData>("ManualAfterPlainTimeout")
+            .Step<ValidateOrder>()
+            .Saga(saga => saga
+                .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
+                .WaitFor<Approval>("pickup", configure: wait => wait
+                    .TimeoutAfter(TimeSpan.FromMilliseconds(200))
+                    .OnTimeout(path => path.WaitFor<Approval>("manual").Step<ShipOrder>())))
+            .OnError<ShippingFailed>(handler => handler.CompensateNone().ThenRetry(1))
+            .Build();
+        var started = await engine.RunAsync(definition, new ShopData());
+        while ((await engine.GetOpenWaitsAsync(new WaitQuery { InstanceId = started.InstanceId }))
+               .All(wait => wait.Key != "manual"))
+            await Task.Delay(20);
+
+        // Shipping fails; the retry waits for the pickup again, which times out again, and the manual approval
+        // already given is replayed rather than asked for.
+        await engine.ResumeAsync(started.InstanceId, "manual", new Approval());
+        var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        Assert.Equal(["ReserveStock", "ShipOrder", "ShipOrder"], journal.Entries);
+    }
+
+    [Fact]
+    [Trait("Spec", "A-11")]
     public async Task ARequestsCompensationReadsItsAnswerOnAnotherHost()
     {
         var repository = new InMemoryWorkflowStateRepository();
@@ -880,6 +1024,12 @@ public sealed class SagaHandlerTests
                 {
                     setup.CompensateWith<ReleaseStock, PackOrder>(_ => { });
                     ((SagaActivitySetupBuilder<ShopData, ReserveStock, PackOrder>)setup)
+                        .CompensateWith<ReleaseStock, PackOrder>(_ => { });
+                    ((SagaActivitySetupInputBuilder<ShopData, ReserveStock, string, PackOrder>)setup
+                            .Input(activity => activity.Reservation))
+                        .CompensateWith<ReleaseStock, PackOrder>(_ => { });
+                    ((SagaActivitySetupOutputBuilder<ShopData, ReserveStock, string, PackOrder>)setup
+                            .Output(activity => activity.Reservation))
                         .CompensateWith<ReleaseStock, PackOrder>(_ => { });
                 }))
             .Build();
@@ -991,6 +1141,8 @@ public sealed class SagaHandlerTests
         await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
         var engine = second.GetRequiredService<IWorkflowClient>();
         await Task.Delay(TimeSpan.FromSeconds(2.5));
+        // The retry has not run yet: the first host left before it was due.
+        Assert.Equal(1, journal.Entries.Count(entry => entry == nameof(ReserveStock)));
         Assert.Equal(WorkflowExecutionStatus.Suspended, (await engine.RecoverAsync(instanceId)).Status);
         var result = await engine.ReplyAsync(Assert.Single(journal.Tokens), new PaymentReceived { Status = "paid" });
 
@@ -1135,7 +1287,7 @@ public sealed class SagaHandlerTests
                  {
                      typeof(ReserveStock), typeof(ReleaseStock), typeof(BrokenRelease), typeof(PackOrder),
                      typeof(UnpackOrder), typeof(ShipOrder), typeof(HoldOrder), typeof(HoldHandler), typeof(NotifyCustomer),
-                     typeof(InsureOrder), typeof(LabelOrder), typeof(UnlabelOrder),
+                     typeof(InsureOrder), typeof(UninsureOrder), typeof(LabelOrder), typeof(UnlabelOrder),
                      typeof(CreatePayment), typeof(RefundPayment), typeof(UndoPayment)
                  })
             services.AddTransient(activity);
@@ -1314,6 +1466,15 @@ public sealed class SagaHandlerTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             journal.Add(nameof(InsureOrder));
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class UninsureOrder(Journal journal) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            journal.Add("undo InsureOrder");
             return Task.CompletedTask;
         }
     }

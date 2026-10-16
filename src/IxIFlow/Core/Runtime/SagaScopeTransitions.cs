@@ -302,6 +302,10 @@ internal static class SagaScopeTransitions
             state.AcceptedWaitCursor >= state.AcceptedWaits.Count)
             return false;
         var saved = state.AcceptedWaits[state.AcceptedWaitCursor];
+        // A wait accepted in this wait's own timeout path stays: should the wait time out again, the path
+        // replays it.
+        if (saved.StepId.StartsWith(stepId + "/", StringComparison.Ordinal))
+            return false;
         if (saved.StepId != stepId)
         {
             // The retry took another path; what the earlier attempt accepted from here on belongs to that path.
@@ -491,8 +495,43 @@ internal static class SagaScopeTransitions
         return true;
     }
 
+    /// <summary>
+    /// Whether the continuation runs a saga's cleanup: its compensations, or the steps of a handler that does not
+    /// retry. A retry handler's own steps are not cleanup: no retry follows a cancellation, so they are cancelled
+    /// like the forward pass, and the saga then undoes what it kept (D-36).
+    /// </summary>
     public static bool IsInsideCompensation(ContinuationState continuation) =>
-        continuation.Stack.Any(frame => frame.SagaState?.Phase == SagaPhase.Compensating);
+        continuation.Stack.Any(frame => frame.SagaState is { Phase: SagaPhase.Compensating } state &&
+                                        !RunsRetryHandler(state));
+
+    private static bool RunsRetryHandler(SagaScopeState state) =>
+        state is { ErrorAction: SagaContinuationAction.Retry, ErrorHandlerStarted: true, HandlerError: null,
+            IsCancellationCleanup: false } &&
+        state.CompensationCursor < state.CompensationFloor;
+
+    /// <summary>
+    /// Cancellation unwinding reaches a saga whose retry handler's steps were running: the handler's frames go,
+    /// no retry follows, and the saga undoes the steps it kept before the cancellation goes on (D-36).
+    /// </summary>
+    public static bool CancelRetryHandler(WorkflowScopeCatalog scopes, ContinuationState continuation, int index)
+    {
+        var owner = continuation.Stack[index];
+        if (owner.SagaState is not
+            { Phase: SagaPhase.Compensating, ErrorAction: SagaContinuationAction.Retry, ErrorHandlerStarted: true } state ||
+            state.ErrorHandlerIndex < 0 || index + 1 >= continuation.Stack.Count)
+            return false;
+        var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
+        var body = continuation.Stack[index + 1];
+        if (body.ScopeId != scopes.CatchBodyScope(saga.CatchBlocks[state.ErrorHandlerIndex]))
+            return false;
+        continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+        continuation.Previous = body.EntryPrevious;
+        continuation.RuntimePrevious = body.RuntimeEntryPrevious;
+        state.IsCancellationCleanup = true;
+        GiveUp(state);
+        continuation.Status = ContinuationStatus.Active;
+        return true;
+    }
 
     /// <summary>
     /// A cancellation reaching a saga that compensates finishes the compensation and then cancels; a saga
@@ -515,19 +554,18 @@ internal static class SagaScopeTransitions
     /// </summary>
     public static int RetryHandlerIndex(WorkflowScopeCatalog scopes, ContinuationState continuation)
     {
+        // A nested saga's handler that does not retry passes its failure on, so the search goes past it.
         for (var index = continuation.Stack.Count - 2; index >= 0; index--)
         {
             var owner = continuation.Stack[index];
-            if (owner.SagaState is not { Phase: SagaPhase.Compensating, ErrorHandlerStarted: true } state)
-                continue;
-            if (state.ErrorAction != SagaContinuationAction.Retry || state.HandlerError != null ||
+            if (owner.SagaState is not { Phase: SagaPhase.Compensating, ErrorHandlerStarted: true } state ||
+                state.ErrorAction != SagaContinuationAction.Retry || state.HandlerError != null ||
                 state.ErrorHandlerIndex < 0)
-                return -1;
+                continue;
             var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
-            return continuation.Stack[index + 1].ScopeId ==
-                   scopes.CatchBodyScope(saga.CatchBlocks[state.ErrorHandlerIndex])
-                ? index
-                : -1;
+            if (continuation.Stack[index + 1].ScopeId ==
+                scopes.CatchBodyScope(saga.CatchBlocks[state.ErrorHandlerIndex]))
+                return index;
         }
         return -1;
     }
@@ -559,31 +597,6 @@ internal static class SagaScopeTransitions
                      .SelectMany(state => state?.CompletedSteps ?? []))
             if (completed.InvocationId == invocationId)
                 completed.ReplyTimedOut = true;
-    }
-
-    /// <summary>
-    /// On cancellation, abandons a retry handler that waits for an event, since no retry will follow: its frames
-    /// go, so the saga goes on to undo the steps it kept (D-36). An activity of the handler still running, or
-    /// awaiting resolution, finishes first.
-    /// </summary>
-    public static bool AbandonRetryHandler(ContinuationState continuation)
-    {
-        if (continuation.Status != ContinuationStatus.Waiting)
-            return false;
-        for (var index = continuation.Stack.Count - 2; index >= 0; index--)
-        {
-            if (continuation.Stack[index].SagaState is not { Phase: SagaPhase.Compensating } state)
-                continue;
-            if (state is not { ErrorAction: SagaContinuationAction.Retry, ErrorHandlerStarted: true, HandlerError: null } ||
-                state.CompensationCursor >= state.CompensationFloor)
-                return false;
-            var body = continuation.Stack[index + 1];
-            continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
-            continuation.Previous = body.EntryPrevious;
-            continuation.RuntimePrevious = body.RuntimeEntryPrevious;
-            return true;
-        }
-        return false;
     }
 
     private static void GiveUp(SagaScopeState state)

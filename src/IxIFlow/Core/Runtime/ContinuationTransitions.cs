@@ -565,13 +565,6 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (TryScopeTransitions.IsInsideFinally(continuation) ||
             SagaScopeTransitions.IsInsideCompensation(continuation))
         {
-            // A retry handler waiting for an event stops waiting: no retry follows a cancellation.
-            if (SagaScopeTransitions.AbandonRetryHandler(continuation))
-            {
-                checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id, WaitCloseReason.Cancelled);
-                continuation.AcceptedWait = null;
-                continuation.Status = ContinuationStatus.Active;
-            }
             TryScopeTransitions.PreserveExistingFinally(continuation);
             SagaScopeTransitions.PreserveCompensation(continuation);
             return;
