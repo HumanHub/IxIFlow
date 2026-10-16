@@ -3,10 +3,11 @@ using System.Text.Json;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// Runs a sequential <c>ForEach</c> (D-34). When the step starts, the list is read once and saved, in
-/// item order, on the frame the step belongs to; each item then runs the body in a frame of its own, a
-/// new scope activation, one after another. The results are stored when the last item completes, and
-/// the saved list is dropped with the step.
+/// Runs a <c>ForEach</c> (D-34). When the step starts, the list is read once and saved, in item order, on
+/// the frame the step belongs to. Sequentially, each item runs the body in a frame of its own, a new scope
+/// activation, one after another. In parallel, each item runs as a branch of a join, from a copy of the
+/// data at the fork, at most <c>maxConcurrency</c> at a time; the join merges the completed items' data
+/// (D-14). The results are stored when the step completes, and the saved list is dropped with the step.
 /// </summary>
 internal static class ForEachTransitions
 {
@@ -17,7 +18,7 @@ internal static class ForEachTransitions
     /// </summary>
     public static void Advance(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, ScopePosition position, WorkflowStep step, object workflowData,
-        IServiceProvider services, int maxItems)
+        IServiceProvider services, int maxItems, int maxActiveBranches = int.MaxValue)
     {
         var handle = step.ForEachItem ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
             $"ForEach step '{step.Name}' has no item handle");
@@ -37,8 +38,18 @@ internal static class ForEachTransitions
             state = position.ForEach = new ForEachState
             {
                 Items = items,
-                Results = step.ForEachInto != null ? [] : null
+                Results = !StoresResults(step) ? null
+                    : step.ForEachParallel ? Enumerable.Repeat<string?>(null, items.Count).ToList() : [],
+                Finished = step.ForEachParallel ? [] : null
             };
+        }
+        if (step.ForEachParallel)
+        {
+            if (state.Joined || state.Items.Count == 0)
+                FinishParallel(scopes, checkpoint, continuation, position, step, state, workflowData, services);
+            else
+                Fork(scopes, checkpoint, continuation, step, state, maxActiveBranches);
+            return;
         }
         if (state.Next < state.Items.Count)
         {
@@ -66,9 +77,107 @@ internal static class ForEachTransitions
         position.NextStepIndex++;
     }
 
+    /// <summary>True when the step keeps its items' results: to store them, or to decide its join on them.</summary>
+    public static bool StoresResults(WorkflowStep step) =>
+        step.ForEachInto != null || step.ForEachCompletionCondition != null;
+
+    // Starts the first items of a parallel ForEach as branches of a new join; the step's frame waits.
+    private static void Fork(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, ContinuationState parent,
+        WorkflowStep step, ForEachState state, int maxActiveBranches)
+    {
+        var batch = Math.Min(state.Items.Count, step.ForEachMaxConcurrency ?? state.Items.Count);
+        ContinuationTransitions.EnsureBranchesFit(checkpoint, batch, maxActiveBranches);
+        var join = new ParallelJoinState
+        {
+            StepId = scopes.Id(step),
+            ParentContinuationId = parent.Id,
+            Mode = step.ParallelJoinMode
+        };
+        checkpoint.Joins.Add(join);
+        parent.Status = ContinuationStatus.Joining;
+        for (var started = 0; started < batch; started++)
+            StartItem(scopes, checkpoint, parent, join, step, state);
+    }
+
+    /// <summary>
+    /// Starts the next item of a parallel ForEach as a branch of its join, from a copy of the parent's
+    /// data, which is the data at the fork while the parent waits (D-34).
+    /// </summary>
+    public static void StartItem(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState parent, ParallelJoinState join, WorkflowStep step, ForEachState state)
+    {
+        var index = state.Next++;
+        var inherited = Inherited(scopes, parent) ?? [];
+        inherited.Add(new InheritedItem { StepId = scopes.Id(step), Index = index, Item = state.Items[index] });
+        var child = new ContinuationState
+        {
+            ParentJoinId = join.Id,
+            Data = BranchData.Copy(checkpoint.DataOf(parent)),
+            InheritedItems = inherited,
+            Previous = parent.RuntimePrevious != null ? SerializedValue.From(parent.RuntimePrevious) : parent.Previous,
+            Stack = [new ScopePosition { ScopeId = scopes.ForEachScope(step), ForEachIndex = index }]
+        };
+        join.ChildContinuationIds.Add(child.Id);
+        checkpoint.Continuations.Add(child);
+    }
+
+    /// <summary>
+    /// Records, when an item's branch of a parallel ForEach completes, that it completed and its result,
+    /// by index, on the step's frame.
+    /// </summary>
+    public static void BranchFinished(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState branch, ScopePosition finished)
+    {
+        if (finished.ForEachIndex is not { } index || branch.ParentJoinId == null ||
+            checkpoint.Joins.SingleOrDefault(item => item.Id == branch.ParentJoinId) is not { } join ||
+            scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
+            return;
+        var state = StateOf(checkpoint, join, step);
+        state.Finished ??= [];
+        if (!state.Finished.Contains(index))
+            state.Finished.Add(index);
+        if (state.Results != null)
+            state.Results[index] = finished.ForEachResult ?? throw NoResult(step);
+    }
+
+    /// <summary>The saved list of the parallel ForEach a join belongs to, on its parent's frame.</summary>
+    public static ForEachState StateOf(ExecutionCheckpoint checkpoint, ParallelJoinState join, WorkflowStep step)
+    {
+        var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+        return parent.Stack[^1].ForEach ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+            $"ForEach step '{step.Name}' has a join but no saved list");
+    }
+
+    /// <summary>The completed items' results so far, by index, for a conditional join.</summary>
+    public static List<(int Index, object? Value)> ResultsSoFar(WorkflowStep step, ForEachState state) =>
+        (state.Finished ?? []).Order()
+        .Select(index => (index, state.Results?[index] is { } json ? Deserialize(json, step.ResultType!, "result") : null))
+        .ToList();
+
+    // Stores the results once the join is done: completed items with their values, started items that
+    // did not complete as cancelled, and items never started as not started.
+    private static void FinishParallel(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, ScopePosition position, WorkflowStep step, ForEachState state,
+        object workflowData, IServiceProvider services)
+    {
+        if (step.ForEachInto != null)
+        {
+            var finished = state.Finished ?? [];
+            step.ForEachInto(Context(scopes, checkpoint, continuation, step, workflowData, services),
+                Enumerable.Range(0, state.Items.Count).Select(index =>
+                        finished.Contains(index)
+                            ? (ItemStatus.Completed, Deserialize(state.Results?[index] ?? throw NoResult(step),
+                                step.ResultType!, "result"))
+                            : (index < state.Next ? ItemStatus.Cancelled : ItemStatus.NotStarted, (object?)null))
+                    .ToList());
+        }
+        position.ForEach = null;
+        position.NextStepIndex++;
+    }
+
     /// <summary>
     /// Records the value a body's result step gives on its item's frame: the frame the step ends, or the
-    /// one below the timeout branch it ends. The value is kept only when the <c>ForEach</c> stores results.
+    /// one below the timeout branch it ends. The value is kept only when the <c>ForEach</c> keeps results.
     /// </summary>
     public static void TakeResult(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, ScopePosition position, WorkflowStep step, object workflowData,
@@ -76,11 +185,14 @@ internal static class ForEachTransitions
     {
         var value = step.ResultSelector!(Context(scopes, checkpoint, continuation, step, workflowData, services));
         var frame = continuation.Stack.FindLastIndex(item => item.ForEachIndex != null);
-        if (frame < 1)
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                $"ForEach result step '{step.Name}' runs outside an item's frame");
-        var owner = continuation.Stack[frame - 1];
-        if (scopes.Steps(owner.ScopeId)[owner.NextStepIndex].ForEachInto != null)
+        // An item of a parallel ForEach is its branch's first frame; the step it belongs to is the join's.
+        var owner = frame >= 1
+            ? scopes.Steps(continuation.Stack[frame - 1].ScopeId)[continuation.Stack[frame - 1].NextStepIndex]
+            : frame == 0 && continuation.ParentJoinId != null
+                ? scopes.Step(checkpoint.Joins.Single(join => join.Id == continuation.ParentJoinId).StepId)
+                : throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    $"ForEach result step '{step.Name}' runs outside an item's frame");
+        if (StoresResults(owner))
             continuation.Stack[frame].ForEachResult = RoundTrip(value, step.ResultType!, "result");
         position.NextStepIndex++;
     }

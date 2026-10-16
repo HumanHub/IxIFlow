@@ -409,6 +409,14 @@ internal sealed class ForEachState
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<string?>? Results { get; set; }
+
+    /// <summary>In parallel, the items whose branches completed, in completion order.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<int>? Finished { get; set; }
+
+    /// <summary>In parallel, set when the join is done and merged; the step then stores its results.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Joined { get; set; }
 }
 
 internal enum TryPhase
