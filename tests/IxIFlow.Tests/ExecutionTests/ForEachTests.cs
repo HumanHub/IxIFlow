@@ -765,7 +765,7 @@ public sealed class ForEachTests
             .ForEach(ctx => ctx.WorkflowData.Lines,
                 (body, line) => body
                     .Step<ResultsActivity>(step => step
-                        .Output(activity => activity.Results).To(ctx => ctx.WorkflowData.Groups.First().Results))
+                        .Output(activity => activity.Results).To(ctx => ctx.WorkflowData.FirstGroup().Results))
                     .Result(ctx => ctx.Item(line).Price),
                 setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
             .Build());
@@ -869,6 +869,43 @@ public sealed class ForEachTests
                         (inner, third) => inner.Step<NoopActivity>().Result(ctx => ctx.Index(third)),
                         setup => setup.Into(GroupOf(byOuter ? first : second)))))
             .Build();
+    }
+
+    [Fact]
+    public async Task AnOutputCanWriteAnElementPickedBySelectorOrCast()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<OrderData>("PickedElement")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Step<PriceLineActivity>(step => step
+                    .Input(activity => activity.Price).From(ctx => ctx.Item(line).Price)
+                    .Output(activity => activity.Total).To(ctx =>
+                        ctx.WorkflowData.Rows.ElementAt(ctx.Index(line)).Value))
+                .Step<PriceLineActivity>(step => step
+                    .Input(activity => activity.Price).From(ctx => ctx.Item(line).Price)
+                    .Output(activity => activity.Total).To(ctx => (ctx.WorkflowData as OrderData)!.Total)))
+            .Build();
+        var data = Order(3, 5);
+        data.Rows = [new Row(), new Row()];
+
+        var result = await Engine(services).RunAsync(definition, data);
+
+        Assert.Equal([3, 5], Data(result).Rows.Select(row => row.Value));
+        Assert.Equal(5, Data(result).Total);
+    }
+
+    [Fact]
+    public void AnOutputThroughAnyOtherMethodIsABuildErrorEvenWithoutResults()
+    {
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("MethodTarget")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Step<PriceLineActivity>(step => step
+                    .Output(activity => activity.Total).To(ctx => ctx.WorkflowData.FirstRow().Value)))
+            .Build());
+
+        Assert.Contains("cannot be shown to write workflow data", error.Message);
     }
 
     [Fact]
@@ -1044,6 +1081,10 @@ public sealed class ForEachTests
         public Report Report { get; set; } = new();
 
         public static explicit operator Report(OrderData data) => data.Report;
+
+        public Row FirstRow() => Rows[0];
+
+        public Group FirstGroup() => Groups[0];
     }
 
     public sealed class Row
