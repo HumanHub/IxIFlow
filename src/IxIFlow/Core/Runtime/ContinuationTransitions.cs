@@ -519,7 +519,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         object provisional;
         try
         {
-            provisional = Merged(checkpoint, join, children);
+            provisional = Merged(scopes, checkpoint, join, children);
         }
         catch (JoinConflictException conflict)
         {
@@ -531,16 +531,17 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     }
 
     // The parent's data with the changes of the completed branches, in declaration order.
-    private static object Merged(ExecutionCheckpoint checkpoint, ParallelJoinState join,
-        IEnumerable<ContinuationState> children)
+    private static object Merged(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ParallelJoinState join, IEnumerable<ContinuationState> children)
     {
         var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
         var baseline = checkpoint.DataOf(parent);
+        var overrides = scopes.Step(join.StepId).ParallelCombiners;
         var completed = children.Where(item => item.Status == ContinuationStatus.Completed)
             .OrderBy(item => join.ChildContinuationIds.IndexOf(item.Id))
-            .Select(item => (IReadOnlyList<DataChange>)BranchData.Changes(baseline, checkpoint.DataOf(item)))
+            .Select(item => (IReadOnlyList<DataChange>)BranchData.Changes(baseline, checkpoint.DataOf(item), overrides))
             .ToList();
-        return BranchData.Merge(baseline, completed);
+        return BranchData.Merge(baseline, completed, overrides);
     }
 
     /// <summary>
@@ -549,7 +550,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     /// conflict leaves the parent at the parallel step and is listed in <paramref name="conflicts"/>, to be
     /// raised there; one that ends through a failure or a cancellation merges nothing.
     /// </summary>
-    public static bool FinishCompletingJoins(ExecutionCheckpoint checkpoint,
+    public static bool FinishCompletingJoins(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         List<(ContinuationState Parent, JoinConflictException Conflict)> conflicts)
     {
         var completed = false;
@@ -588,7 +589,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 {
                     if (join.Conflict != null)
                         throw new JoinConflictException(join.ConflictPath ?? "", join.Conflict);
-                    checkpoint.SetData(parent, Merged(checkpoint, join, children));
+                    checkpoint.SetData(parent, Merged(scopes, checkpoint, join, children));
                     parent.Stack[^1].NextStepIndex++;
                 }
                 catch (JoinConflictException conflict)

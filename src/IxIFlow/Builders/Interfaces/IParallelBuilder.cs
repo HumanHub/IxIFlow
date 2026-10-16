@@ -21,6 +21,14 @@ public interface IParallelBuilder<TWorkflowData, TPreviousStepData>
     /// Adds a parallel branch to execute
     /// </summary>
     /// <param name="configure">Configuration for the parallel branch</param>
+    /// <summary>
+    /// Merges the branches' changes to <paramref name="property"/> with <typeparamref name="TCombiner"/> at
+    /// this step's join, instead of the combiner the data type declares for it, if any (spec E-05).
+    /// </summary>
+    IParallelBuilder<TWorkflowData, TPreviousStepData> Combine<TValue, TCombiner>(
+        System.Linq.Expressions.Expression<Func<TWorkflowData, TValue>> property)
+        where TCombiner : Core.ICombiner<TValue>, new();
+
     IParallelBuilder<TWorkflowData, TPreviousStepData> Do(
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure);
 }

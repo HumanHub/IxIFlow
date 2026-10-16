@@ -166,6 +166,8 @@ internal sealed class WorkflowScopeCatalog
                     string.Join(';', step.OutputMappings.Select(MappingSignature)),
                     step.RequestName, WorkflowTypeIdentity.StableName(step.ReplyType), step.ReplyToRequest,
                     Code(step.RequestSubject),
+                    string.Join(';', step.ParallelCombiners.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                        .Select(pair => pair.Key + "=" + WorkflowTypeIdentity.StableName(pair.Value))),
                     // A ForEach is sequential until a parallel mode exists; its handle is known by this step.
                     step.ForEachItem == null
                         ? ""

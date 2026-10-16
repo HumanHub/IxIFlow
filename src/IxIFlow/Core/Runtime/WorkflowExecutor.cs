@@ -119,7 +119,7 @@ internal sealed class WorkflowExecutor
                 }
 
                 var conflicts = new List<(ContinuationState Parent, JoinConflictException Conflict)>();
-                uncommitted.NoteIf(ContinuationTransitions.FinishCompletingJoins(checkpoint, conflicts), instance);
+                uncommitted.NoteIf(ContinuationTransitions.FinishCompletingJoins(scopes, checkpoint, conflicts), instance);
                 // A join whose branches conflict fails at its parallel step, where a Catch can handle it.
                 foreach (var (parent, conflict) in conflicts)
                 {

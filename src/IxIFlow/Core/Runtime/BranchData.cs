@@ -33,11 +33,15 @@ internal static class BranchData
     public static object Copy(object data) =>
         JsonSerializer.Deserialize(JsonSerializer.Serialize(data, data.GetType()), data.GetType())!;
 
-    /// <summary>The changes that turn <paramref name="baseline"/> into <paramref name="branch"/>.</summary>
-    public static List<DataChange> Changes(object baseline, object branch)
+    /// <summary>
+    /// The changes that turn <paramref name="baseline"/> into <paramref name="branch"/>. A property with a
+    /// combiner, on the data type or in <paramref name="overrides"/>, is compared whole.
+    /// </summary>
+    public static List<DataChange> Changes(object baseline, object branch,
+        IReadOnlyDictionary<string, Type>? overrides = null)
     {
         var changes = new List<DataChange>();
-        Compare(Node(baseline), Node(branch), baseline.GetType(), [], changes);
+        Compare(Node(baseline), Node(branch), baseline.GetType(), overrides, [], changes);
         return changes;
     }
 
@@ -54,7 +58,8 @@ internal static class BranchData
     /// <paramref name="baseline"/> with every branch's changes, given in branch declaration order, or a
     /// <see cref="JoinConflictException"/> when two branches changed the same data without a combiner.
     /// </summary>
-    public static object Merge(object baseline, IReadOnlyList<IReadOnlyList<DataChange>> branches)
+    public static object Merge(object baseline, IReadOnlyList<IReadOnlyList<DataChange>> branches,
+        IReadOnlyDictionary<string, Type>? overrides = null)
     {
         var type = baseline.GetType();
         var node = Node(baseline);
@@ -79,7 +84,7 @@ internal static class BranchData
         foreach (var (key, list) in byPath)
         {
             var path = list[0].Change.Path;
-            var combiner = CombinerAt(type, path);
+            var combiner = CombinerAt(type, path, overrides);
             if (list.Count == 1 && combiner == null)
             {
                 node = Apply(node, list[0].Change);
@@ -89,11 +94,17 @@ internal static class BranchData
                 throw Conflict(path, $"Parallel branches changed '{Display(path)}' and it has no combiner");
             if (list.Any(item => item.Change.Removed))
                 throw Conflict(path, $"A parallel branch removed '{Display(path)}', which has a combiner");
-            node = Apply(node, new DataChange
+            string combined;
+            try
             {
-                Path = path,
-                Value = Combine(combiner, ValueAt(node, path), list.Select(item => item.Change.Value!).ToList())
-            });
+                combined = Combine(combiner, ValueAt(node, path), list.Select(item => item.Change.Value!).ToList());
+            }
+            catch (TargetInvocationException error) when (error.InnerException != null)
+            {
+                throw Conflict(path, $"The combiner of '{Display(path)}' could not merge the branches: " +
+                                     error.InnerException.Message);
+            }
+            node = Apply(node, new DataChange { Path = path, Value = combined });
         }
         return node.Deserialize(type)!;
     }
@@ -115,11 +126,11 @@ internal static class BranchData
     private static JsonNode Node(object data) =>
         JsonSerializer.SerializeToNode(data, data.GetType()) ?? new JsonObject();
 
-    private static void Compare(JsonNode? before, JsonNode? after, Type? type, List<string> path,
-        List<DataChange> changes)
+    private static void Compare(JsonNode? before, JsonNode? after, Type? type,
+        IReadOnlyDictionary<string, Type>? overrides, List<string> path, List<DataChange> changes)
     {
         if (before is JsonObject beforeObject && after is JsonObject afterObject && type != null &&
-            (path.Count == 0 || CombinerAt(type, path) == null))
+            (path.Count == 0 || CombinerAt(type, path, overrides) == null))
         {
             foreach (var (name, value) in afterObject)
             {
@@ -127,7 +138,7 @@ internal static class BranchData
                 if (!beforeObject.TryGetPropertyValue(name, out var old))
                     changes.Add(new DataChange { Path = child, Value = value?.ToJsonString() ?? "null" });
                 else
-                    Compare(old, value, type, child, changes);
+                    Compare(old, value, type, overrides, child, changes);
             }
             foreach (var (name, _) in beforeObject)
                 if (!afterObject.ContainsKey(name))
@@ -182,9 +193,15 @@ internal static class BranchData
         return JsonSerializer.Serialize(result, valueType);
     }
 
-    /// <summary>The combiner declared on the property at <paramref name="path"/> of <paramref name="type"/>, if any.</summary>
-    public static Type? CombinerAt(Type type, IReadOnlyList<string> path)
+    /// <summary>
+    /// The combiner for the property at <paramref name="path"/> of <paramref name="type"/>: the parallel
+    /// step's override for that path, or the one declared on the property, if any.
+    /// </summary>
+    public static Type? CombinerAt(Type type, IReadOnlyList<string> path,
+        IReadOnlyDictionary<string, Type>? overrides = null)
     {
+        if (overrides != null && overrides.TryGetValue(string.Join('.', path), out var chosen))
+            return chosen;
         var current = type;
         PropertyInfo? property = null;
         foreach (var segment in path)
@@ -201,6 +218,22 @@ internal static class BranchData
             current = property.PropertyType;
         }
         return property?.GetCustomAttribute<CombineAttribute>()?.CombinerType;
+    }
+
+    /// <summary>The JSON path of a property chain given by CLR names, such as <c>Order.Total</c>.</summary>
+    public static string JsonPath(Type type, string clrPath)
+    {
+        var names = new List<string>();
+        var current = type;
+        foreach (var name in clrPath.Split('.'))
+        {
+            var property = current.GetProperty(name, BindingFlags.Instance | BindingFlags.Public)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"'{type.Name}' has no property path '{clrPath}'");
+            names.Add(property.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? property.Name);
+            current = property.PropertyType;
+        }
+        return string.Join('.', names);
     }
 
     private static PropertyInfo? PropertyNamed(Type type, string jsonName) =>
