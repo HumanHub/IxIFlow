@@ -32,7 +32,7 @@ public class SuspensionErrorHandler<TEvent> : IErrorHandler
 /// </summary>
 public class RetryErrorHandler : IErrorHandler
 {
-    public RetryPolicy RetryPolicy { get; set; }
+    public required RetryPolicy RetryPolicy { get; set; }
     public RetryTarget RetryTarget { get; set; } = RetryTarget.FailedStep;
     public CompensationErrorHandler? PreExecute { get; set; }
 }

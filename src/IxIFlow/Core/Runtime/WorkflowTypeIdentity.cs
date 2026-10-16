@@ -36,7 +36,8 @@ public static class WorkflowTypeIdentity
             return loaded;
         try
         {
-            return Assembly.Load(new AssemblyName(requested.Name));
+            return Assembly.Load(new AssemblyName(requested.Name
+                ?? throw new ArgumentException($"Assembly name '{requested}' has no simple name")));
         }
         catch (FileNotFoundException)
         {

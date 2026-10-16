@@ -684,11 +684,6 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}, {typeof(TPreviousStepData).Name}>, got {context.GetType().Name}");
         };
 
-        // Store configuration in step metadata
-        _outcomeStep.StepMetadata["PropertySelector"] = selectorWrapper;
-        _outcomeStep.StepMetadata["OutcomeBranches"] = _outcomeBranches;
-        _outcomeStep.StepMetadata["DefaultBranch"] = _defaultBranch;
-        _outcomeStep.StepMetadata["PropertyType"] = typeof(TProperty);
         _outcomeStep.OutcomeSelector = selectorWrapper;
         _outcomeStep.OutcomeBranches =
             _defaultBranch == null ? [.. _outcomeBranches] : [.. _outcomeBranches, _defaultBranch];

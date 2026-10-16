@@ -266,7 +266,7 @@ public class ExpressionEvaluator : IExpressionEvaluator
 
         // Create the property access expression
         var propertyAccess = Expression.Property(
-            ReplaceParameterVisitor.Replace(memberExpression.Expression, getterExpression.Parameters[0],
+            ReplaceParameterVisitor.Replace(memberExpression.Expression!, getterExpression.Parameters[0],
                 contextParameter),
             propertyInfo
         );

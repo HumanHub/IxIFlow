@@ -81,8 +81,7 @@ internal sealed class FaultProjection
     {
         if (_faultType == typeof(EmptyFault))
             return new EmptyFault();
-        var savedFault = error.Fault;
-        if (savedFault?.Type == _faultType.AssemblyQualifiedName &&
+        if (error.Fault is { } savedFault && savedFault.Type == _faultType.AssemblyQualifiedName &&
             error.FaultCatchType == _exceptionType.AssemblyQualifiedName)
             return JsonSerializer.Deserialize(savedFault.Json, _faultType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
