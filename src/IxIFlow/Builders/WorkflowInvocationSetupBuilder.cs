@@ -15,6 +15,13 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(Workflo
 {
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
 
+    /// <inheritdoc/>
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> CancelWithParent(bool cancel)
+    {
+        _step.CancelWithParent = cancel;
+        return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(_step);
+    }
+
     /// <summary>
     ///     Configures an input property mapping for the invoked workflow
     /// </summary>
@@ -44,6 +51,17 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPrevio
     where TPreviousStepData : class
 {
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
+
+    /// <inheritdoc/>
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> CancelWithParent(bool cancel)
+    {
+        _step.CancelWithParent = cancel;
+        return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(_step);
+    }
+
+    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>
+        IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.CancelWithParent(bool cancel) =>
+        CancelWithParent(cancel);
 
     /// <summary>
     ///     Configures an input property mapping with previous step access
@@ -88,6 +106,13 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
 
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
+
+    /// <inheritdoc/>
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> CancelWithParent(bool cancel)
+    {
+        _step.CancelWithParent = cancel;
+        return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(_step);
+    }
 
     /// <summary>
     ///     Specifies the source expression for this input mapping
@@ -164,6 +189,17 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
 
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
+
+    /// <inheritdoc/>
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> CancelWithParent(bool cancel)
+    {
+        _step.CancelWithParent = cancel;
+        return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(_step);
+    }
+
+    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>
+        IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.CancelWithParent(bool cancel) =>
+        CancelWithParent(cancel);
 
     /// <summary>
     ///     Specifies the source expression for this input mapping with previous step access
@@ -260,6 +296,13 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
         propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
 
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
+
+    /// <inheritdoc/>
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> CancelWithParent(bool cancel)
+    {
+        _step.CancelWithParent = cancel;
+        return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(_step);
+    }
 
     /// <summary>
     ///     Specifies the destination expression for this output mapping

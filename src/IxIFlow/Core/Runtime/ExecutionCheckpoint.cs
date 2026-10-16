@@ -627,6 +627,13 @@ internal sealed class WaitState
     public string? ChildWorkflowId { get; set; }
 
     /// <summary>
+    /// For a child's wait, set when the invocation says <c>CancelWithParent(false)</c>: cancelling the branch, or
+    /// failing the parent, closes the wait and leaves the child running (D-09).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Detached { get; set; }
+
+    /// <summary>
     /// True for the answer to a request: opened when the request's activity starts, answered only by
     /// its token, and taken by the request's <c>WaitFor</c> (D-33).
     /// </summary>

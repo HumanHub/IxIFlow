@@ -849,6 +849,71 @@ public sealed class StructuredChildWaitTests
         Assert.True(Assert.IsType<ParentData>(finished.WorkflowData).FinallyRan);
     }
 
+    [Fact]
+    [Trait("Spec", "D-09")]
+    public async Task ACancelledParentLeavesADetachedChildRunning()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("DetachedChild"));
+        var parent = Workflow.Create<ParentData>("ParentOfDetached")
+            .Step<NoopActivity>()
+            .Invoke<ChildData>("DetachedChild", 1, step => step.CancelWithParent(false))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(parent, new ParentData());
+        var childId = await ChildIdAsync(services, started.InstanceId);
+        await ChildWaitingAsync(services, childId, "approval");
+
+        await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
+        var cancelled = await FinishedAsync(engine, started.InstanceId);
+
+        // The parent stops waiting at once; the child is not asked to cancel and finishes on its own.
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
+        Assert.Null(await repository.GetCancellationRequestAsync(childId));
+        Assert.Equal(WorkflowStatus.Suspended, (await repository.GetWorkflowInstanceAsync(childId))!.Status);
+        Assert.Equal(WorkflowExecutionStatus.Success, (await engine.ResumeAsync(childId, "approval", new Approval())).Status);
+        Assert.Equal(WorkflowStatus.Cancelled, (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-09")]
+    public async Task AFailingParentLeavesADetachedChildRunning()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("OutlivingChild"));
+        var parent = Workflow.Create<ParentData>("FailingParentOfDetached")
+            .Step<NoopActivity>()
+            .Parallel(parallel => parallel
+                .Do(first => first.Invoke<ChildData>("OutlivingChild", 1, step => step.CancelWithParent(false)))
+                .Do(second => second.WaitFor<Approval>("fail").Step<ThrowChildActivity>()))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(parent, new ParentData());
+        var childId = Assert.Single(await repository.GetChildInstancesAsync(started.InstanceId)).InstanceId;
+        await ChildWaitingAsync(services, childId, "approval");
+
+        var failed = await engine.ResumeAsync(started.InstanceId, "fail", new Approval());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, failed.Status);
+        Assert.Null(await repository.GetCancellationRequestAsync(childId));
+        Assert.Equal(WorkflowStatus.Suspended, (await repository.GetWorkflowInstanceAsync(childId))!.Status);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-09")]
+    public void WhetherAChildIsCancelledWithItsParentIsPartOfTheDefinition()
+    {
+        WorkflowDefinition Parent(bool cancel) => Workflow.Create<ParentData>("ParentFingerprint")
+            .Step<NoopActivity>()
+            .Invoke<ChildData>("AnyChild", 1, step => step.CancelWithParent(cancel))
+            .Build();
+
+        Assert.NotEqual(new Core.Runtime.WorkflowScopeCatalog(Parent(true)).Fingerprint,
+            new Core.Runtime.WorkflowScopeCatalog(Parent(false)).Fingerprint);
+    }
+
     // A child that waits for one approval and records it.
     private static WorkflowDefinition ApprovingChild(string name, string key = "approval") =>
         Workflow.Create<ChildData>(name)

@@ -152,7 +152,7 @@ internal sealed class WorkflowScopeCatalog
                     WorkflowTypeIdentity.StableName(step.PreviousStepDataType),
                     WorkflowTypeIdentity.StableName(step.ActivityType),
                     WorkflowTypeIdentity.StableName(step.WorkflowType),
-                    step.WorkflowName, step.WorkflowVersion,
+                    step.WorkflowName, step.WorkflowVersion, step.CancelWithParent,
                     WorkflowTypeIdentity.StableName(step.ResumeEventType), waitKey,
                     step.WaitTimeout?.Ticks, step.DelayDuration?.Ticks, step.ParallelJoinMode,
                     step.LoopType, WorkflowTypeIdentity.StableName(step.ExceptionType),

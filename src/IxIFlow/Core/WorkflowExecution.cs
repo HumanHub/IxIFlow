@@ -914,6 +914,12 @@ public class WorkflowStep
     public string? ReplyToRequest { get; set; }
 
     /// <summary>
+    /// For a child workflow invocation: whether cancelling the invoking branch, or failing the parent, cancels the
+    /// child and waits for it to end (the default), or leaves it running on its own (D-09).
+    /// </summary>
+    public bool CancelWithParent { get; set; } = true;
+
+    /// <summary>
     ///     Step execution order
     /// </summary>
     public int Order { get; set; }
@@ -937,6 +943,7 @@ public class WorkflowStep
             WorkflowType = WorkflowType,
             WorkflowName = WorkflowName,
             WorkflowVersion = WorkflowVersion,
+            CancelWithParent = CancelWithParent,
             InputMappings = InputMappings.Select(m => m.Clone()).ToList(),
             OutputMappings = OutputMappings.Select(m => m.Clone()).ToList(),
             CompiledCondition = CompiledCondition,
