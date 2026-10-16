@@ -853,8 +853,9 @@ public class EngineContractRegressionTests
         var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
         var started = await engine.RunAsync(definition, new RegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
-        Assert.Equal(2, saved!.ExecutionSnapshot!.Pointers.Count(pointer => pointer.Status == "Waiting"));
+        Assert.NotNull(await repository.GetWorkflowInstanceAsync(started.InstanceId));
+        Assert.Equal(2, (await engine.GetSnapshotAsync(started.InstanceId))!.Pointers
+            .Count(pointer => pointer.Status == "Waiting"));
 
         var first = await engine.ResumeAsync(started.InstanceId, "first",
             new RegressionApprovalEvent { Approved = true });

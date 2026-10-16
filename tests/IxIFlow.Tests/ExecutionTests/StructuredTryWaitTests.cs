@@ -175,9 +175,8 @@ public class StructuredTryWaitTests
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("boom", Data(result).Error);
         Assert.Equal(1, Data(result).Finally);
-        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstanceAsync(result.InstanceId);
-        Assert.DoesNotContain(saved!.ExecutionSnapshot!.Pointers, pointer => pointer.Status == "Waiting");
+        var snapshot = await services.GetRequiredService<IWorkflowClient>().GetSnapshotAsync(result.InstanceId);
+        Assert.DoesNotContain(snapshot!.Pointers, pointer => pointer.Status == "Waiting");
     }
 
     [Fact]

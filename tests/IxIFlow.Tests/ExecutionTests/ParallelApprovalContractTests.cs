@@ -53,8 +53,8 @@ public class ParallelApprovalContractTests
         Assert.True(started.Status == WorkflowExecutionStatus.Suspended, started.ErrorMessage);
         Assert.Equal(1, (await Saved(services, started)).FinanceStarted);
         Assert.Equal(1, (await Saved(services, started)).LegalStarted);
-        Assert.Equal(2, (await repository.GetWorkflowInstanceAsync(started.InstanceId))!
-            .ExecutionSnapshot!.Pointers.Count(pointer => pointer.Status == "Waiting"));
+        Assert.Equal(2, (await engine.GetSnapshotAsync(started.InstanceId))!
+            .Pointers.Count(pointer => pointer.Status == "Waiting"));
 
         var firstReply = await engine.ResumeAsync(started.InstanceId, first,
             Reply(first, approved: true));
@@ -217,8 +217,8 @@ public class ParallelApprovalContractTests
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, unmatched.Status);
         EventAssert.Rejected(unmatched, EventRejection.NotMatched);
-        var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
-        Assert.Equal(2, saved!.ExecutionSnapshot!.Pointers.Count(pointer => pointer.Status == "Waiting"));
+        Assert.Equal(2, (await engine.GetSnapshotAsync(started.InstanceId))!.Pointers
+            .Count(pointer => pointer.Status == "Waiting"));
 
         await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true));
         var completed = await engine.ResumeAsync(started.InstanceId, "legal",
@@ -375,8 +375,9 @@ public class ParallelApprovalContractTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(WorkflowStatus.Failed, saved!.Status);
-        Assert.Equal(WorkflowStatus.Failed, saved.ExecutionSnapshot!.Status);
-        Assert.DoesNotContain(saved.ExecutionSnapshot.Pointers, pointer => pointer.Status == "Waiting");
+        var snapshot = (await engine.GetSnapshotAsync(result.InstanceId))!;
+        Assert.Equal(WorkflowStatus.Failed, snapshot.Status);
+        Assert.DoesNotContain(snapshot.Pointers, pointer => pointer.Status == "Waiting");
     }
 
     [Fact]
