@@ -157,7 +157,7 @@ public sealed class WorkflowCompletionOutboxTests
     public async Task ExpiredSqlOutboxClaimCanBeRecovered()
     {
         var repository = new SqlWorkflowStateRepository(
-            SqlServerTestServer.ConnectionString);
+            SqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString);
         await VerifyExpiredClaimCanBeRecovered(repository);
     }
 
@@ -199,7 +199,7 @@ public sealed class WorkflowCompletionOutboxTests
     [Trait("Category", "SqlIntegration")]
     public async Task TerminalSqlCheckpointPublishesOnAnotherHost()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var services = new ServiceCollection();
@@ -234,7 +234,7 @@ public sealed class WorkflowCompletionOutboxTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlOutboxClaimExcludesASecondHost()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var instance = new WorkflowInstance
@@ -270,7 +270,7 @@ public sealed class WorkflowCompletionOutboxTests
     [Trait("Category", "SqlIntegration")]
     public async Task AddingOutboxColumnDoesNotRepublishHistoricalCompletions()
     {
-        var masterConnectionString = SqlServerTestServer.ConnectionString;
+        var masterConnectionString = SqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString;
         var databaseName = "IxIFlowOutboxMigration_" + Guid.NewGuid().ToString("N");
         var builder = new SqlConnectionStringBuilder(masterConnectionString)
         {

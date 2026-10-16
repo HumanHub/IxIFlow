@@ -342,7 +342,7 @@ public sealed class LocalHostTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "B-10")]
     public Task SqlStoreReadsCancellationRequestsInOneCall() =>
-        VerifyBatchCancellationReads(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyBatchCancellationReads(new SqlWorkflowStateRepository(SqlTestDatabase<LocalHostTests>.ConnectionString));
 
     private static async Task VerifyBatchCancellationReads(IWorkflowStateRepository repository)
     {
