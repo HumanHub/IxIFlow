@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
@@ -303,21 +305,8 @@ internal sealed class WorkflowExecutor
         }
         catch (ExecutionOwnershipLostException)
         {
-            foreach (var activity in inFlight.Values)
-                activity.Cancellation.Cancel();
-            try
-            {
-                await Task.WhenAll(inFlight.Values.Select(item => item.Task));
-            }
-            catch
-            {
-                // The former owner cannot commit these activity outcomes.
-            }
-            finally
-            {
-                foreach (var activity in inFlight.Values)
-                    activity.Cancellation.Dispose();
-            }
+            // The former owner cannot commit these activity outcomes.
+            await AbandonInFlightAsync(inFlight);
             return Busy(instance.InstanceId);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -327,28 +316,11 @@ internal sealed class WorkflowExecutor
             try
             {
                 await Task.WhenAll(inFlight.Values.Select(item => item.Task));
-                var scopes = new WorkflowScopeCatalog(definition);
-                foreach (var activity in inFlight.Values.ToArray())
-                {
-                    if (activity.Task.Result is { Kind: ActivityRunKind.Threw,
-                            Error: OperationCanceledException })
-                        continue;
-                    try
-                    {
-                        await _attempts.SettleAsync(scopes, checkpoint, activity, inFlight, workflowData, instance, host);
-                    }
-                    catch (Exception error) when (!WorkflowEngineException.IsEngineFailure(error))
-                    {
-                        if (!_transitions.CaptureFailure(scopes, checkpoint, activity.Continuation,
-                                error, !activity.ActivityReturned))
-                        {
-                            checkpoint.UnhandledError = SerializedException.From(error);
-                            checkpoint.RuntimeUnhandledError = error;
-                            activity.Continuation.Status = ContinuationStatus.Completed;
-                        }
-                    }
-                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
-                }
+                await SettleCancelledRunAsync(definition, instance, checkpoint, workflowData, host, inFlight);
+            }
+            catch (CheckpointLimitExceededException)
+            {
+                // The instance keeps its last checkpoint; recovery stops it at the limit.
             }
             finally
             {
@@ -356,46 +328,26 @@ internal sealed class WorkflowExecutor
                     activity.Cancellation.Dispose();
             }
             throw;
+        }
+        catch (CheckpointLimitExceededException limit)
+        {
+            // Activity outcomes after the last checkpoint are not kept; recovery re-derives them.
+            await AbandonInFlightAsync(inFlight);
+            return await StopAtLimitAsync(definition, instance, workflowData, host, limit);
         }
         catch (WorkflowEngineException ex) when (WorkflowEngineException.IsEngineFailure(ex) && ex.IsInterruption)
         {
             // The last committed checkpoint stays recoverable; nothing is written here.
             ex.At(instance.InstanceId);
-            foreach (var activity in inFlight.Values)
-                activity.Cancellation.Cancel();
-            try
-            {
-                await Task.WhenAll(inFlight.Values.Select(item => item.Task));
-            }
-            catch
-            {
-                // Activity outcomes are ignored after the checkpoint write failed.
-            }
-            finally
-            {
-                foreach (var activity in inFlight.Values)
-                    activity.Cancellation.Dispose();
-            }
+            // Activity outcomes are ignored after the checkpoint write failed.
+            await AbandonInFlightAsync(inFlight);
 
             throw;
         }
         catch (Exception ex)
         {
-            foreach (var activity in inFlight.Values)
-                activity.Cancellation.Cancel();
-            try
-            {
-                await Task.WhenAll(inFlight.Values.Select(item => item.Task));
-            }
-            catch
-            {
-                // The original execution error is reported below.
-            }
-            finally
-            {
-                foreach (var activity in inFlight.Values)
-                    activity.Cancellation.Dispose();
-            }
+            // The original execution error is reported below.
+            await AbandonInFlightAsync(inFlight);
             if (WorkflowEngineException.IsEngineFailure(ex))
                 ((WorkflowEngineException)ex).At(instance.InstanceId);
 
@@ -425,14 +377,17 @@ internal sealed class WorkflowExecutor
                 {
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
                 }
-                catch (ExecutionCheckpointWriter.CheckpointDataException)
+                catch (Exception error) when (error is ExecutionCheckpointWriter.CheckpointDataException or
+                                                  CheckpointLimitExceededException)
                 {
-                    // A terminal failure cannot resume. Retain the last committed data
-                    // and the execution history even if live state cannot be serialized.
+                    // A terminal failure cannot resume. Retain the last committed data and the
+                    // execution history even if live state cannot be serialized or is over the limit.
                     checkpoint.Continuations.Clear();
                     checkpoint.UnhandledError = null;
+                    // The failure record is the last committed data without continuations; it is
+                    // not held to the limit, so a failure is never lost.
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
-                        preserveSavedWorkflowData: true);
+                        preserveSavedWorkflowData: true, enforceLimit: false);
                 }
             }
             return new WorkflowExecutionResult
@@ -598,6 +553,80 @@ internal sealed class WorkflowExecutor
     {
         if (WorkflowEngineException.IsEngineFailure(error))
             ((WorkflowEngineException)error).At(instance.InstanceId, stepId, pending?.Attempts.LastOrDefault()?.Id);
+    }
+
+    // The caller cancelled the run: activities that finished are settled and saved before it stops.
+    private async Task SettleCancelledRunAsync(WorkflowDefinition definition, WorkflowInstance instance,
+        ExecutionCheckpoint checkpoint, object workflowData, IExecutionHost host,
+        Dictionary<string, RunningActivity> inFlight)
+    {
+        var scopes = new WorkflowScopeCatalog(definition);
+        foreach (var activity in inFlight.Values.ToArray())
+        {
+            if (activity.Task.Result is { Kind: ActivityRunKind.Threw,
+                    Error: OperationCanceledException })
+                continue;
+            try
+            {
+                await _attempts.SettleAsync(scopes, checkpoint, activity, inFlight, workflowData, instance, host);
+            }
+            catch (Exception error) when (!WorkflowEngineException.IsEngineFailure(error))
+            {
+                if (!_transitions.CaptureFailure(scopes, checkpoint, activity.Continuation,
+                        error, !activity.ActivityReturned))
+                {
+                    checkpoint.UnhandledError = SerializedException.From(error);
+                    checkpoint.RuntimeUnhandledError = error;
+                    activity.Continuation.Status = ContinuationStatus.Completed;
+                }
+            }
+            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+        }
+    }
+
+    private static async Task AbandonInFlightAsync(Dictionary<string, RunningActivity> inFlight)
+    {
+        foreach (var activity in inFlight.Values)
+            activity.Cancellation.Cancel();
+        try
+        {
+            await Task.WhenAll(inFlight.Values.Select(item => item.Task));
+        }
+        catch
+        {
+            // The caller decides what the run reports; these outcomes are not committed.
+        }
+        finally
+        {
+            foreach (var activity in inFlight.Values)
+                activity.Cancellation.Dispose();
+        }
+    }
+
+    // A checkpoint over the limit is never saved. The instance keeps its last checkpoint and
+    // stops at NeedsResolution until an operator raises the limit and recovers it, or cancels it (D-28).
+    private async Task<WorkflowExecutionResult> StopAtLimitAsync(WorkflowDefinition definition,
+        WorkflowInstance instance, object workflowData, IExecutionHost host, CheckpointLimitExceededException limit)
+    {
+        var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+        checkpoint.ResourceStop = new ResourceStopState { Reason = limit.Message, StoppedAtUtc = Now };
+        instance.Status = WorkflowStatus.NeedsResolution;
+        instance.LastError = limit.Message;
+        instance.SuspensionInfo = null;
+        instance.CompletedAt = null;
+        // The stop saves the last committed checkpoint plus a small marker, so it is not held to the
+        // limit; otherwise a checkpoint just under the limit could never stop.
+        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData,
+            new WorkflowScopeCatalog(definition), Now, preserveSavedWorkflowData: true, enforceLimit: false);
+        return new WorkflowExecutionResult
+        {
+            InstanceId = instance.InstanceId,
+            Status = WorkflowExecutionStatus.NeedsResolution,
+            WorkflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, workflowData.GetType()),
+            TraceEntries = instance.ExecutionHistory.ToList(),
+            ErrorMessage = limit.Message,
+            ExecutionTime = Now - instance.StartedAt!.Value
+        };
     }
 
     public static WorkflowExecutionResult Busy(string instanceId) => new()

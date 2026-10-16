@@ -6,7 +6,7 @@ namespace IxIFlow.Tests.Infrastructure;
 /// An in-memory store that fails chosen reads or commits on demand, to test how the engine
 /// treats infrastructure failures.
 /// </summary>
-public sealed class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox
+public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox
 {
     private readonly InMemoryWorkflowStateRepository _inner = new();
     private int _failedReads;
@@ -29,11 +29,11 @@ public sealed class FaultInjectingRepository : IWorkflowStateRepository, IWorkfl
         throw new IOException($"Injected read failure for '{instanceId}'");
     }
 
-    public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
-        WorkflowInstance instance, long expectedRevision, string commitId)
+    public virtual Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
+        var instance = commit.ReadInstance();
         if (!FailCommit(instance))
-            return _inner.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
+            return _inner.CommitWorkflowInstanceAsync(commit);
         Interlocked.Increment(ref _failedCommits);
         throw new IOException($"Injected commit failure for '{instance.InstanceId}'");
     }
@@ -44,7 +44,7 @@ public sealed class FaultInjectingRepository : IWorkflowStateRepository, IWorkfl
         _inner.GetCancellationRequestAsync(instanceId);
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
         _inner.GetWorkflowsRequiringRecoveryAsync();
-    public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+    public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
     public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         _inner.RenewExecutionLeaseAsync(instanceId, token, duration);

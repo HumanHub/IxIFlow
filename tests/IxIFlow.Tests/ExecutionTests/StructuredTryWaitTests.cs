@@ -1475,7 +1475,7 @@ public class StructuredTryWaitTests
         continuation.Status = ContinuationStatus.Active;
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = System.Text.Json.JsonSerializer.Serialize(checkpoint);
-        await repository.CommitWorkflowInstanceAsync(saved, saved.Revision, Guid.NewGuid().ToString("N"));
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, 0, saved.Revision, Guid.NewGuid().ToString("N")));
 
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
@@ -1553,7 +1553,7 @@ public class StructuredTryWaitTests
             _inner.GetCancellationRequestAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
             _inner.GetWorkflowsRequiringRecoveryAsync();
-        public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+        public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
@@ -1561,12 +1561,12 @@ public class StructuredTryWaitTests
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
         private int _commits;
 
-        public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
-            WorkflowInstance instance, long expectedRevision, string commitId)
+        public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
+            var instance = commit.ReadInstance();
             if (Interlocked.Increment(ref _commits) > 80)
                 throw new InvalidOperationException("Parallel cleanup exceeded the checkpoint budget");
-            return _inner.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
+            return _inner.CommitWorkflowInstanceAsync(commit);
         }
 
         public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>

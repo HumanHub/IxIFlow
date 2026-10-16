@@ -29,6 +29,7 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<WorkflowRecoveryService>();
         services.AddSingleton(InProcessInstanceGate.Shared);
         services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(ExecutionLimits.Default);
         
         // Workflow state and persistence
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
@@ -61,6 +62,9 @@ public static class ServiceCollectionExtensions
 
         // Add core services
         services.AddIxIFlow();
+        if (options.MaxCheckpointBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
+        services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits(options.MaxCheckpointBytes)));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -333,4 +337,11 @@ public class IxIFlowOptions
     /// Custom workflow tracer implementation
     /// </summary>
     public Type? UseCustomTracer { get; set; }
+
+    /// <summary>
+    /// The largest checkpoint, in bytes of workflow data and execution state, that an instance may
+    /// save. A run that would exceed it stops at NeedsResolution with its last checkpoint; raise the
+    /// limit and recover the instance to continue.
+    /// </summary>
+    public long MaxCheckpointBytes { get; set; } = ExecutionLimits.DefaultMaxCheckpointBytes;
 }

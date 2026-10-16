@@ -633,7 +633,7 @@ public sealed class ActivityRecoveryTests
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var committed = await repository.CommitWorkflowInstanceAsync(
-            saved, saved.Revision, Guid.NewGuid().ToString("N"));
+            CheckpointCommit.Create(saved, 0, saved.Revision, Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
 
         var recovered = await engine.RecoverWorkflowAsync(started.InstanceId);
@@ -878,7 +878,7 @@ public sealed class ActivityRecoveryTests
             _inner.GetCancellationRequestAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
             _inner.GetWorkflowsRequiringRecoveryAsync();
-        public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+        public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
@@ -890,9 +890,9 @@ public sealed class ActivityRecoveryTests
         public int FailCompletionAfterApply { get; set; }
         public int FailFailureCommits { get; set; }
 
-        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
-            WorkflowInstance instance, long expectedRevision, string commitId)
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
+            var instance = commit.ReadInstance();
             if (FailNextCommits-- > 0)
             {
                 throw new IOException("Checkpoint unavailable");
@@ -905,7 +905,7 @@ public sealed class ActivityRecoveryTests
                 TraceEntryType.ActivityCompleted;
             if (completed && FailCompletionBeforeApply-- > 0)
                 throw new IOException("Completion commit unavailable");
-            var result = await _inner.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
+            var result = await _inner.CommitWorkflowInstanceAsync(commit);
             if (started && FailStartAfterApply-- > 0)
                 throw new IOException("Start acknowledgment lost");
             if (completed && FailCompletionAfterApply-- > 0)

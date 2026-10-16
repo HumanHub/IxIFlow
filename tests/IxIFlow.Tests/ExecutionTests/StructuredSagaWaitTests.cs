@@ -1654,7 +1654,7 @@ public class StructuredSagaWaitTests
             _inner.GetCancellationRequestAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
             _inner.GetWorkflowsRequiringRecoveryAsync();
-        public Task<bool> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+        public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
@@ -1662,12 +1662,12 @@ public class StructuredSagaWaitTests
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
         private int _lostAcknowledgments = 3;
 
-        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
-            WorkflowInstance instance, long expectedRevision, string commitId)
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
+            var instance = commit.ReadInstance();
             var handlerStarted = instance.ExecutionHistory.LastOrDefault() is
             { EntryType: TraceEntryType.ActivityStarted, ActivityName: nameof(RecoverableHandlerActivity) };
-            var result = await _inner.CommitWorkflowInstanceAsync(instance, expectedRevision, commitId);
+            var result = await _inner.CommitWorkflowInstanceAsync(commit);
             if (handlerStarted && _lostAcknowledgments-- > 0)
                 throw new IOException("Handler start acknowledgment lost");
             return result;
