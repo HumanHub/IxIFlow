@@ -378,8 +378,11 @@ public sealed class StructuredChildWaitTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var first = await engine.ResumeAsync(started.InstanceId, "finance", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
-        Assert.True(Assert.IsType<ParentData>(first.WorkflowData).ChildApproved);
-        Assert.False(Assert.IsType<ParentData>(first.WorkflowData).LegalApproved);
+        // The finance branch has committed its child's output; the parent's data gets it at the join (D-14).
+        var halfway = await BranchProgress.ViewAsync<ParentData>(
+            services.GetRequiredService<IWorkflowStateRepository>(), started.InstanceId);
+        Assert.True(halfway.ChildApproved);
+        Assert.False(halfway.LegalApproved);
         var second = await engine.ResumeAsync(started.InstanceId, "legal", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
         Assert.True(Assert.IsType<ParentData>(second.WorkflowData).LegalApproved);

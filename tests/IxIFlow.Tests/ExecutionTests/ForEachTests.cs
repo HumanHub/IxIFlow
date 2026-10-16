@@ -796,10 +796,8 @@ public sealed class ForEachTests
                         .Input(activity => activity.Price).From(ctx => ctx.Item(line).Price)))
                     .Do(branch => branch
                         .Try(waiting => waiting.WaitFor<LineApproval>("approval"))
-                        .Finally(cleanup => cleanup.Step<NoteActivity>(step => step
-                            .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name)
-                            .Input(activity => activity.Log).From(ctx => ctx.WorkflowData.Log)
-                            .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log)))))))
+                        .Finally(cleanup => cleanup.Step<RecordNoteActivity>(step => step
+                            .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name)))))))
             .Catch<InvalidOperationException>(handler => handler.Step<CountActivity>(step => step
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Expensive)
                 .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Expensive)))
@@ -809,7 +807,9 @@ public sealed class ForEachTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(1, Data(result).Expensive);
-        Assert.Equal("line-0;", Data(result).Log);
+        // The cleanup read its item; a failed join merges nothing, so the data has no trace of it (D-14).
+        Assert.Equal(["line-0"], services.GetRequiredService<Notes>().Recorded);
+        Assert.Equal("", Data(result).Log);
     }
 
     [Fact]
@@ -823,10 +823,8 @@ public sealed class ForEachTests
                 .Parallel(parallel => parallel
                     .Do(branch => branch
                         .Try(waiting => waiting.WaitFor<LineApproval>("approval"))
-                        .Finally(cleanup => cleanup.Step<NoteActivity>(step => step
-                            .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name)
-                            .Input(activity => activity.Log).From(ctx => ctx.WorkflowData.Log)
-                            .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log))))
+                        .Finally(cleanup => cleanup.Step<RecordNoteActivity>(step => step
+                            .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name))))
                     .Do(branch => branch.WaitFor<LineApproval>("other"))))
             .Build();
         var started = await engine.RunAsync(definition, Order(3, 5));
@@ -836,7 +834,8 @@ public sealed class ForEachTests
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(started.InstanceId);
-        Assert.Contains("\"Log\":\"line-0;\"", saved!.WorkflowDataJson);
+        Assert.Equal(["line-0"], services.GetRequiredService<Notes>().Recorded);
+        Assert.Contains("\"Log\":\"\"", saved!.WorkflowDataJson);
     }
 
     [Fact]
@@ -1059,6 +1058,8 @@ public sealed class ForEachTests
             services.AddIxIFlow();
         services.AddSingleton<Outbox>();
         services.AddTransient<AskActivity>();
+        services.AddSingleton<Notes>();
+        services.AddTransient<RecordNoteActivity>();
         return services.BuildServiceProvider();
     }
 
@@ -1225,6 +1226,34 @@ public sealed class ForEachTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Log += Note + ";";
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>The notes cleanup steps recorded, kept outside the workflow data.</summary>
+    public sealed class Notes
+    {
+        private readonly List<string> _recorded = [];
+
+        public IReadOnlyList<string> Recorded
+        {
+            get { lock (_recorded) return _recorded.ToArray(); }
+        }
+
+        public void Add(string note)
+        {
+            lock (_recorded)
+                _recorded.Add(note);
+        }
+    }
+
+    public sealed class RecordNoteActivity(Notes notes) : IAsyncActivity
+    {
+        public string Note { get; set; } = "";
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            notes.Add(Note);
             return Task.CompletedTask;
         }
     }

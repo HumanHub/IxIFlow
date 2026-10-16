@@ -460,6 +460,8 @@ internal sealed class ActivityAttempts(
         WorkflowInstance instance,
         IExecutionHost host)
     {
+        // The branch's copy may have changed while its activity ran; it is recorded at the next commit.
+        activity.Continuation.DataChanged = activity.Continuation.ParentJoinId != null;
         try
         {
             var outcome = await activity.Task;

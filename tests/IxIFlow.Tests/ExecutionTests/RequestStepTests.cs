@@ -408,7 +408,7 @@ public sealed class RequestStepTests
             .Build();
         // The host dies as it saves the step after the request, which then awaits an operator while the
         // other branch waits.
-        store.FailCommit = instance => instance.WorkflowDataJson.Contains("\"Lines\":7");
+        store.FailCommit = instance => instance.ExecutionStateJson.Contains("\"Path\":[\"Lines\"],\"Value\":\"7\"");
         using (var first = HostOn(store, outbox))
             await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new OrderData(), new WorkflowOptions { InstanceId = instanceId }));
@@ -442,7 +442,7 @@ public sealed class RequestStepTests
                     .WaitFor<ApprovalDecision>("approval"))
                 .Do(branch => branch.WaitFor<OtherAnswer>("go").Step<GatedActivity>()))
             .Build();
-        store.FailCommit = instance => instance.WorkflowDataJson.Contains("\"Lines\":7");
+        store.FailCommit = instance => instance.ExecutionStateJson.Contains("\"Path\":[\"Lines\"],\"Value\":\"7\"");
         using (var first = HostOn(store, outbox, gate))
             await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new OrderData(), new WorkflowOptions { InstanceId = instanceId }));

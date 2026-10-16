@@ -118,7 +118,17 @@ internal sealed class WorkflowExecutor
                     continue;
                 }
 
-                uncommitted.NoteIf(ContinuationTransitions.FinishCompletingJoins(checkpoint), instance);
+                var conflicts = new List<(ContinuationState Parent, JoinConflictException Conflict)>();
+                uncommitted.NoteIf(ContinuationTransitions.FinishCompletingJoins(checkpoint, conflicts), instance);
+                // A join whose branches conflict fails at its parallel step, where a Catch can handle it.
+                foreach (var (parent, conflict) in conflicts)
+                {
+                    var parallel = NextStep(scopes, parent);
+                    if (parallel != null)
+                        AttachStep(conflict, instance, scopes.Id(parallel), null);
+                    if (!_transitions.CaptureFailure(scopes, checkpoint, parent, conflict))
+                        throw conflict;
+                }
 
                 // Advance every runnable branch to its next asynchronous boundary.
                 // This lets a sibling start even when another activity is awaiting it.

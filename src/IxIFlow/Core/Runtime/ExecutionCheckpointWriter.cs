@@ -106,6 +106,7 @@ internal static class ExecutionCheckpointWriter
         try
         {
             ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
+            checkpoint.RecordBranchChanges();
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson
                 : JsonSerializer.Serialize(workflowData ?? throw new ArgumentNullException(nameof(workflowData)),
