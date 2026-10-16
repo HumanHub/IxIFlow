@@ -1,13 +1,14 @@
 namespace IxIFlow.Core.Runtime;
 
-internal sealed record CompensationInputs(object? PreviousStep, object? PreviousCompensation);
+internal sealed record CompensationInputs(object? PreviousStep, object? PreviousCompensation, object? Reply,
+    bool Answered);
 
 /// <summary>
 /// Tracks committed saga activities and drives their compensations in reverse order.
 /// </summary>
 internal static class SagaScopeTransitions
 {
-    public static void Enter(WorkflowScopeCatalog scopes, WorkflowStep step,
+    public static void Enter(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, WorkflowStep step,
         ScopePosition owner, ContinuationState continuation, IServiceProvider services, DateTime now)
     {
         var state = owner.SagaState ??= new SagaScopeState();
@@ -39,6 +40,23 @@ internal static class SagaScopeTransitions
                 return;
             }
 
+            // Steps kept for a retry are only its restart point: a saga that cannot retry after all undoes
+            // them too before it ends (D-36).
+            if (state.ErrorAction == SagaContinuationAction.Retry && state.CompensationFloor > 0 &&
+                (state.CompensationErrors.Count > 0 || state.IsCancellationCleanup ||
+                 state.RetryCount >= state.MaximumRetries))
+            {
+                GiveUp(state);
+                return;
+            }
+            // A retry handler whose own steps failed cannot retry: the saga ends as terminated.
+            if (state.HandlerError is { } handlerError)
+            {
+                owner.SagaState = null;
+                owner.NextStepIndex++;
+                throw Terminated($"the error handler failed: {handlerError.Message}", handlerError.ForPropagation());
+            }
+
             var mayContinue = state.ErrorAction == SagaContinuationAction.Continue &&
                 (state.CompensationErrors.Count == 0 || state.IgnoreCompensationErrors);
             var error = state.IsCancellationCleanup || mayContinue ? null : state.GetTerminalError();
@@ -67,15 +85,7 @@ internal static class SagaScopeTransitions
                         : null;
                     continuation.RetryAfterUtc = RetrySchedule.NextAttemptUtc(
                         retryConfiguration?.RetryPolicy, state.RetryCount, now);
-                    state.AcceptedWaitCursor = 0;
-                    state.CompletedSteps.Clear();
-                    state.CompensationErrors.Clear();
-                    state.Error = null;
-                    state.RuntimeError = null;
-                    state.Phase = SagaPhase.Forward;
-                    state.CompensationCursor = -1;
-                    state.CompensationFloor = 0;
-                    Enter(scopes, step, owner, continuation, services, now);
+                    Restart(scopes, checkpoint, step, owner, continuation, services, now);
                     return;
                 }
             }
@@ -110,19 +120,65 @@ internal static class SagaScopeTransitions
     private static SagaTerminatedException Terminated(string reason, Exception? error) =>
         error == null ? new SagaTerminatedException(reason) : new SagaTerminatedException(reason, error);
 
-    public static void CompleteForwardActivity(WorkflowScopeCatalog scopes,
-        ContinuationState continuation, WorkflowStep activity, object? output,
-        IServiceProvider services)
+    /// <summary>
+    /// Records a forward activity that returned, where it ran, and for a request its invocation and any answer
+    /// already kept for it (D-36).
+    /// </summary>
+    public static void CompleteForwardActivity(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, WorkflowStep activity, object? output, IServiceProvider services,
+        string? invocationId)
     {
         var owner = ForwardOwner(scopes, continuation, activity);
         if (owner == null)
             return;
-        owner.SagaState!.CompletedSteps.Add(new SagaCompletedStep
+        var state = owner.SagaState!;
+        RecordFrames(scopes, continuation, continuation.Stack.IndexOf(owner), state);
+        var position = continuation.Stack[^1];
+        var request = activity.RequestName != null ? invocationId : null;
+        var kept = request == null ? null : checkpoint.BoundReplies.FirstOrDefault(reply => reply.InvocationId == request);
+        state.CompletedSteps.Add(new SagaCompletedStep
         {
             StepId = scopes.Id(activity),
             Output = SerializedValue.From(output),
-            Previous = SerializedValue.From(continuation.GetPrevious(services))
+            Previous = SerializedValue.From(continuation.GetPrevious(services)),
+            FrameId = position.ActivationId,
+            StepIndex = position.NextStepIndex,
+            InvocationId = request,
+            Reply = kept == null ? null : new SagaReply { Event = kept.Event, EventId = kept.EventId, WaitId = kept.WaitId }
         });
+    }
+
+    /// <summary>
+    /// Records an answer a saga request received, kept for its <c>WaitFor</c> or taken by it, so the request's
+    /// compensation can read it and a retry that kept the request can give it to the <c>WaitFor</c> again.
+    /// </summary>
+    public static void NoteReply(ContinuationState continuation, string? invocationId, SerializedValue reply,
+        string eventId, string waitId)
+    {
+        if (invocationId == null)
+            return;
+        foreach (var completed in continuation.Stack.Select(frame => frame.SagaState)
+                     .SelectMany(state => state?.CompletedSteps ?? []))
+            if (completed.InvocationId == invocationId)
+                completed.Reply = new SagaReply { Event = reply, EventId = eventId, WaitId = waitId };
+    }
+
+    /// <summary>
+    /// The request's record when the retried pass reaches its <c>WaitFor</c>: for a request the retry kept, with
+    /// the answer it took in an earlier attempt or its timeout; for one that ran again, a record with neither.
+    /// </summary>
+    public static SagaCompletedStep? KeptRequest(WorkflowScopeCatalog scopes, ContinuationState continuation, WorkflowStep wait)
+    {
+        var state = ForwardState(continuation);
+        if (state == null)
+            return null;
+        var position = continuation.Stack[^1];
+        var request = scopes.Steps(position.ScopeId).Take(position.NextStepIndex)
+            .LastOrDefault(step => step.RequestName == wait.ReplyToRequest);
+        if (request == null)
+            return null;
+        var requestId = scopes.Id(request);
+        return state.CompletedSteps.LastOrDefault(completed => completed.StepId == requestId);
     }
 
     public static void CompleteCompensationActivity(WorkflowScopeCatalog scopes,
@@ -224,12 +280,16 @@ internal static class SagaScopeTransitions
         var state = ForwardState(continuation);
         if (state == null)
             return;
+        // A fresh acceptance is past anything this attempt could replay: what earlier attempts accepted from
+        // here on belonged to a path this one left.
+        state.AcceptedWaits.RemoveRange(state.AcceptedWaitCursor,
+            state.AcceptedWaits.Count - state.AcceptedWaitCursor);
         state.AcceptedWaits.Add(new SagaAcceptedWait
         {
             StepId = stepId,
-            Event = SerializedValue.From(@event)!
+            Event = SerializedValue.From(@event)!,
+            Completed = state.CompletedSteps.Count
         });
-        // A fresh acceptance is past anything this attempt could replay.
         state.AcceptedWaitCursor = state.AcceptedWaits.Count;
     }
 
@@ -250,6 +310,8 @@ internal static class SagaScopeTransitions
             return false;
         }
         state.AcceptedWaitCursor++;
+        // Replayed, it belongs where this attempt reached it, for any later restart.
+        saved.Completed = state.CompletedSteps.Count;
         @event = saved.Event.Read(services);
         return true;
     }
@@ -274,7 +336,8 @@ internal static class SagaScopeTransitions
             return null;
         continuation.SetPrevious(completed.Output?.Read(services));
         return new CompensationInputs(completed.Previous?.Read(services),
-            state.PreviousCompensation?.Read(services));
+            state.PreviousCompensation?.Read(services), completed.Reply?.Event.Read(services),
+            completed.Reply != null);
     }
 
     public static bool Exit(WorkflowScopeCatalog scopes, ScopePosition owner,
@@ -309,8 +372,8 @@ internal static class SagaScopeTransitions
         return -1;
     }
 
-    public static void Capture(WorkflowScopeCatalog scopes, ContinuationState continuation,
-        int index, Exception error)
+    public static void Capture(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, int index, Exception error)
     {
         var owner = continuation.Stack[index];
         var state = owner.SagaState!;
@@ -348,18 +411,57 @@ internal static class SagaScopeTransitions
         state.ErrorAction = configuration?.ContinuationAction;
         state.IgnoreCompensationErrors = configuration?.IgnoreCompensationErrors ?? false;
         state.MaximumRetries = configuration?.RetryPolicy?.MaximumAttempts ?? 0;
-        state.CompensationFloor = 0;
-        if (configuration?.CompensationStrategy == CompensationStrategy.None)
-            state.CompensationFloor = state.CompletedSteps.Count;
-        else if (configuration?.CompensationStrategy == CompensationStrategy.CompensateUpTo &&
-                 configuration.CompensationTargetType != null)
+        // Where the failing step is, and the Previous it saw, read before its frames go.
+        var innermost = RecordFrames(scopes, continuation, index, state);
+        var at = continuation.Stack[innermost];
+        var failedAt = new SagaRestartPoint
         {
-            var target = state.CompletedSteps.FindLastIndex(completed =>
-                scopes.Step(completed.StepId).ActivityType ==
-                configuration.CompensationTargetType);
+            FrameId = at.ActivationId,
+            StepIndex = at.NextStepIndex,
+            StepId = scopes.Steps(at.ScopeId).ElementAtOrDefault(at.NextStepIndex) is { } failing
+                ? scopes.Id(failing)
+                : null,
+            Previous = innermost == continuation.Stack.Count - 1
+                ? Saved(continuation.RuntimePrevious, continuation.Previous)
+                : Saved(continuation.Stack[innermost + 1].RuntimeEntryPrevious,
+                    continuation.Stack[innermost + 1].EntryPrevious)
+        };
+        // A step whose activity returned but whose outputs failed has acted: it is undone, and a retry runs it
+        // again (D-36).
+        var count = state.CompletedSteps.Count;
+        var failingCompleted = count > 0 && state.CompletedSteps[^1].FrameId == failedAt.FrameId &&
+                               state.CompletedSteps[^1].StepIndex == failedAt.StepIndex;
+        var strategy = configuration?.CompensationStrategy ?? CompensationStrategy.CompensateAll;
+        state.CompensationFloor = 0;
+        if (strategy == CompensationStrategy.None)
+            state.CompensationFloor = failingCompleted ? count - 1 : count;
+        var target = -1;
+        if (strategy == CompensationStrategy.CompensateUpTo && configuration!.CompensationTargetType != null)
+        {
+            target = state.CompletedSteps.FindIndex(completed =>
+                scopes.Step(completed.StepId).ActivityType == configuration.CompensationTargetType);
             if (target >= 0)
                 state.CompensationFloor = target;
         }
+        // A retry that is not to come keeps nothing; one that is keeps its requests' waits and answers open.
+        // It resumes at the first step undone, T itself when T completed, even as the saga's first step: the
+        // saga's start would choose its outcome branches again from data the undo changed.
+        var retrying = state.ErrorAction == SagaContinuationAction.Retry && state.RetryCount < state.MaximumRetries;
+        if (state.ErrorAction == SagaContinuationAction.Retry && !retrying)
+            state.CompensationFloor = 0;
+        state.RestartAt = !retrying ? null
+            : strategy == CompensationStrategy.None
+                ? state.CompensationFloor < count ? PointOf(state.CompletedSteps[state.CompensationFloor]) : failedAt
+            : target >= 0 ? PointOf(state.CompletedSteps[target])
+            : null;
+        state.KeptWaitIds.Clear();
+        if (retrying)
+            foreach (var request in state.CompletedSteps.Take(state.CompensationFloor)
+                         .Select(completed => completed.InvocationId).OfType<string>())
+                state.KeptWaitIds.AddRange(checkpoint.Waits.Where(wait => wait.IsReply && wait.InvocationId == request)
+                    .Select(wait => wait.Id)
+                    .Concat(checkpoint.BoundReplies.Where(reply => reply.InvocationId == request)
+                        .Select(reply => reply.WaitId)));
         var forward = continuation.Stack[index + 1];
         continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
         continuation.Previous = forward.EntryPrevious;
@@ -392,13 +494,227 @@ internal static class SagaScopeTransitions
     public static bool IsInsideCompensation(ContinuationState continuation) =>
         continuation.Stack.Any(frame => frame.SagaState?.Phase == SagaPhase.Compensating);
 
+    /// <summary>
+    /// A cancellation reaching a saga that compensates finishes the compensation and then cancels; a saga
+    /// compensating for a retry undoes the steps it kept for it too (D-36).
+    /// </summary>
     public static void PreserveCompensation(ContinuationState continuation)
     {
-        var state = continuation.Stack.Select(frame => frame.SagaState)
-            .FirstOrDefault(item => item?.Phase == SagaPhase.Compensating);
-        if (state != null)
-            state.IsCancellationCleanup = true;
+        foreach (var state in continuation.Stack.Select(frame => frame.SagaState)
+                     .Where(item => item?.Phase == SagaPhase.Compensating))
+        {
+            state!.IsCancellationCleanup = true;
+            if (state.ErrorAction == SagaContinuationAction.Retry)
+                GiveUp(state);
+        }
     }
+
+    /// <summary>
+    /// The frame index of a saga whose retry handler's own steps are running; a failure there ends the saga as
+    /// terminated, once the steps kept for the retry are undone (D-36).
+    /// </summary>
+    public static int RetryHandlerIndex(WorkflowScopeCatalog scopes, ContinuationState continuation)
+    {
+        for (var index = continuation.Stack.Count - 2; index >= 0; index--)
+        {
+            var owner = continuation.Stack[index];
+            if (owner.SagaState is not { Phase: SagaPhase.Compensating, ErrorHandlerStarted: true } state)
+                continue;
+            if (state.ErrorAction != SagaContinuationAction.Retry || state.HandlerError != null ||
+                state.ErrorHandlerIndex < 0)
+                return -1;
+            var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
+            return continuation.Stack[index + 1].ScopeId ==
+                   scopes.CatchBodyScope(saga.CatchBlocks[state.ErrorHandlerIndex])
+                ? index
+                : -1;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// Ends a retry handler whose own steps failed: its frames go, the kept steps are undone, and then the saga
+    /// raises <see cref="SagaTerminatedException"/> with the handler's failure.
+    /// </summary>
+    public static void GiveUpAfterHandlerFailure(ContinuationState continuation, int index, Exception error)
+    {
+        var state = continuation.Stack[index].SagaState!;
+        var body = continuation.Stack[index + 1];
+        continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+        continuation.Previous = body.EntryPrevious;
+        continuation.RuntimePrevious = body.RuntimeEntryPrevious;
+        state.HandlerError = SerializedException.From(error);
+        GiveUp(state);
+    }
+
+    /// <summary>
+    /// Records that a saga request's answer timed out, so a retry that keeps the request takes its
+    /// <c>WaitFor</c>'s timeout path again instead of waiting on a closed wait.
+    /// </summary>
+    public static void NoteTimeout(ContinuationState continuation, string? invocationId)
+    {
+        if (invocationId == null)
+            return;
+        foreach (var completed in continuation.Stack.Select(frame => frame.SagaState)
+                     .SelectMany(state => state?.CompletedSteps ?? []))
+            if (completed.InvocationId == invocationId)
+                completed.ReplyTimedOut = true;
+    }
+
+    /// <summary>
+    /// On cancellation, abandons a retry handler that waits for an event, since no retry will follow: its frames
+    /// go, so the saga goes on to undo the steps it kept (D-36). An activity of the handler still running, or
+    /// awaiting resolution, finishes first.
+    /// </summary>
+    public static bool AbandonRetryHandler(ContinuationState continuation)
+    {
+        if (continuation.Status != ContinuationStatus.Waiting)
+            return false;
+        for (var index = continuation.Stack.Count - 2; index >= 0; index--)
+        {
+            if (continuation.Stack[index].SagaState is not { Phase: SagaPhase.Compensating } state)
+                continue;
+            if (state is not { ErrorAction: SagaContinuationAction.Retry, ErrorHandlerStarted: true, HandlerError: null } ||
+                state.CompensationCursor >= state.CompensationFloor)
+                return false;
+            var body = continuation.Stack[index + 1];
+            continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+            continuation.Previous = body.EntryPrevious;
+            continuation.RuntimePrevious = body.RuntimeEntryPrevious;
+            return true;
+        }
+        return false;
+    }
+
+    private static void GiveUp(SagaScopeState state)
+    {
+        state.CompensationFloor = 0;
+        state.KeptWaitIds.Clear();
+        state.RestartAt = null;
+    }
+
+    // Starts the saga again where its undo stopped (D-36): the kept steps stay, their frames are pushed again
+    // with new activations, so requests that run again get new invocations, and the kept requests' waits and
+    // answers move to the restored frames. With no restart point it starts at the saga's first step.
+    private static void Restart(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, WorkflowStep step,
+        ScopePosition owner, ContinuationState continuation, IServiceProvider services, DateTime now)
+    {
+        var state = owner.SagaState!;
+        var point = state.RestartAt;
+        var kept = point == null ? 0 : state.CompensationFloor;
+        state.CompletedSteps.RemoveRange(kept, state.CompletedSteps.Count - kept);
+        // Waits accepted after the restart point are replayed as the retried pass reaches them.
+        // So are those the restarted step itself accepted: one whose outputs then failed, and those in a
+        // timeout path it took.
+        var replayFrom = state.AcceptedWaits.FindIndex(accepted => accepted.Completed > kept ||
+            accepted.Completed == kept && point?.StepId is { } restarted &&
+            (accepted.StepId == restarted || accepted.StepId.StartsWith(restarted + "/", StringComparison.Ordinal)));
+        state.AcceptedWaitCursor = point == null ? 0 : replayFrom < 0 ? state.AcceptedWaits.Count : replayFrom;
+        state.CompensationErrors.Clear();
+        state.Error = null;
+        state.RuntimeError = null;
+        state.Phase = SagaPhase.Forward;
+        state.CompensationCursor = -1;
+        state.CompensationFloor = 0;
+        state.RestartAt = null;
+        if (point == null)
+        {
+            state.Frames.Clear();
+            state.KeptWaitIds.Clear();
+            Enter(scopes, checkpoint, step, owner, continuation, services, now);
+            return;
+        }
+        var chain = new List<(string Id, SagaFrameRecord Record)>();
+        for (string? id = point.FrameId; id != null; id = state.Frames[id].ParentFrameId)
+            chain.Insert(0, (id, state.Frames[id]));
+        var renamed = new Dictionary<string, string>(StringComparer.Ordinal);
+        for (var depth = 0; depth < chain.Count; depth++)
+        {
+            var record = chain[depth].Record;
+            var frame = new ScopePosition
+            {
+                ScopeId = record.ScopeId,
+                NextStepIndex = depth + 1 < chain.Count ? chain[depth + 1].Record.IndexInParent : point.StepIndex,
+                EntryPrevious = record.EntryPrevious,
+                RestorePreviousOnExit = record.RestorePreviousOnExit,
+                ExitParentScopeOnExit = record.ExitParentScopeOnExit
+            };
+            renamed[chain[depth].Id] = frame.ActivationId;
+            continuation.Stack.Add(frame);
+        }
+        foreach (var wait in checkpoint.Waits.Where(wait => state.KeptWaitIds.Contains(wait.Id)))
+            if (wait.ScopeActivationId != null && renamed.TryGetValue(wait.ScopeActivationId, out var to))
+                wait.ScopeActivationId = to;
+        foreach (var reply in checkpoint.BoundReplies.Where(reply => state.KeptWaitIds.Contains(reply.WaitId)))
+            if (renamed.TryGetValue(reply.ScopeActivationId, out var to))
+                reply.ScopeActivationId = to;
+        state.KeptWaitIds.Clear();
+        // The restored frames take the place of those they restore, for the kept steps and any later restart;
+        // records nothing can restart from any more go.
+        foreach (var (from, to) in renamed)
+        {
+            state.Frames[to] = state.Frames[from];
+            state.Frames.Remove(from);
+        }
+        foreach (var record in state.Frames.Values)
+            if (record.ParentFrameId != null && renamed.TryGetValue(record.ParentFrameId, out var parent))
+                record.ParentFrameId = parent;
+        foreach (var completed in state.CompletedSteps)
+            if (renamed.TryGetValue(completed.FrameId, out var frameId))
+                completed.FrameId = frameId;
+        var reachable = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var start in state.CompletedSteps.Select(completed => completed.FrameId).Concat(renamed.Values))
+            for (string? id = start; id != null && reachable.Add(id); id = state.Frames.GetValueOrDefault(id)?.ParentFrameId)
+            {
+            }
+        foreach (var unreachable in state.Frames.Keys.Where(id => !reachable.Contains(id)).ToArray())
+            state.Frames.Remove(unreachable);
+        continuation.Previous = point.Previous;
+        continuation.RuntimePrevious = null;
+    }
+
+    // Records the saga's own frames above its owner, the body and the outcome branches within it, once each,
+    // and returns the index of the innermost; frames above it, such as a WaitFor's timeout path, are not the
+    // saga's, so a failure there restarts at the step that holds them.
+    private static int RecordFrames(WorkflowScopeCatalog scopes, ContinuationState continuation, int ownerIndex,
+        SagaScopeState state)
+    {
+        var innermost = ownerIndex + 1;
+        for (var index = ownerIndex + 1; index < continuation.Stack.Count; index++)
+        {
+            var frame = continuation.Stack[index];
+            var parent = index > ownerIndex + 1 ? continuation.Stack[index - 1] : null;
+            if (parent != null &&
+                scopes.Steps(parent.ScopeId).ElementAtOrDefault(parent.NextStepIndex) is not
+                    { StepType: WorkflowStepType.Conditional, OutcomeSelector: not null })
+                break;
+            if (parent != null && !scopes.Steps(parent.ScopeId)[parent.NextStepIndex].StepMetadata
+                    .ContainsKey("IsSagaStep"))
+                break;
+            innermost = index;
+            if (!state.Frames.ContainsKey(frame.ActivationId))
+                state.Frames.Add(frame.ActivationId, new SagaFrameRecord
+            {
+                ScopeId = frame.ScopeId,
+                ParentFrameId = parent?.ActivationId,
+                IndexInParent = parent?.NextStepIndex ?? 0,
+                EntryPrevious = Saved(frame.RuntimeEntryPrevious, frame.EntryPrevious),
+                RestorePreviousOnExit = frame.RestorePreviousOnExit,
+                ExitParentScopeOnExit = frame.ExitParentScopeOnExit
+            });
+        }
+        return innermost;
+    }
+
+    private static SagaRestartPoint PointOf(SagaCompletedStep completed) => new()
+    {
+        FrameId = completed.FrameId,
+        StepIndex = completed.StepIndex,
+        Previous = completed.Previous
+    };
+
+    private static SerializedValue? Saved(object? runtime, SerializedValue? saved) =>
+        runtime != null ? SerializedValue.From(runtime) : saved;
 
     public static bool BeginCancellation(ContinuationState continuation, int index)
     {

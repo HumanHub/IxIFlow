@@ -22,15 +22,20 @@ public sealed class SagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>(
         where TActivity : IAsyncActivity =>
         ContinueWith(CompensationStrategy.CompensateUpTo, typeof(TActivity));
 
+    // The undo is recorded on its own, so a handler with no Then... keeps it; a Then... recorded after it
+    // carries it on.
     private ISagaContinuationBuilder<TWorkflowData, TPreviousStepData> ContinueWith(
-        CompensationStrategy strategy, Type? target = null) =>
-        new SagaContinuationBuilder<TWorkflowData, TPreviousStepData>(steps, sagaSteps,
-            errorHandlers, new CompensationErrorHandler
-            {
-                Strategy = strategy,
-                CompensationTargetType = target,
-                SagaSteps = sagaSteps
-            });
+        CompensationStrategy strategy, Type? target = null)
+    {
+        var undo = new CompensationErrorHandler
+        {
+            Strategy = strategy,
+            CompensationTargetType = target,
+            SagaSteps = sagaSteps
+        };
+        errorHandlers.Add(new ErrorHandler { ExceptionType = typeof(Exception), Handler = undo });
+        return new SagaContinuationBuilder<TWorkflowData, TPreviousStepData>(steps, sagaSteps, errorHandlers, undo);
+    }
 
     public ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData> Step<TActivity>()
         where TActivity : class, IAsyncActivity

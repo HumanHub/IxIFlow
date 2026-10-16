@@ -40,7 +40,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = Core.Runtime.ParallelRules.Checked(Core.Runtime.ForEachRules.Paired(RequestPairing.Paired(_steps)))
+            Steps = Core.Runtime.ParallelRules.Checked(Core.Runtime.ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(_steps))))
         };
     }
 
@@ -568,7 +568,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = Core.Runtime.ParallelRules.Checked(Core.Runtime.ForEachRules.Paired(RequestPairing.Paired(_steps)))
+            Steps = Core.Runtime.ParallelRules.Checked(Core.Runtime.ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(_steps))))
         };
     }
 
@@ -617,12 +617,19 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
                 ContinuationAction = SagaContinuationAction.Retry,
                 RetryPolicy = retry.RetryPolicy
             },
+            // An undo with no Then... keeps its choice; the original error is raised again after it (D-36).
+            CompensationErrorHandler undo => new SagaErrorConfiguration
+            {
+                CompensationStrategy = undo.Strategy,
+                CompensationTargetType = undo.CompensationTargetType,
+                RetryPolicy = null
+            },
             _ => null
         };
         if (policy != null)
             handlerBlock.StepMetadata["SagaErrorConfig"] = policy;
-        else if (handlerBlock.SequenceSteps.Any(step =>
-                     step.StepMetadata.ContainsKey("WaitKey")))
+        if (policy?.ContinuationAction == null && handlerBlock.SequenceSteps.Any(step =>
+                step.StepMetadata.ContainsKey("WaitKey")))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 "A saga error handler with WaitFor must end with ThenContinue, ThenRetry, or ThenTerminate");
         sagaStep.CatchBlocks.Add(handlerBlock);

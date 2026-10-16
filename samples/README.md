@@ -14,7 +14,7 @@ The Site project contains matching Vue designers under `src/activities/demo` and
 | --- | --- |
 | `OneApproverRecipe` | A request with a reply token, a subject the answer must match, a timeout path, and a second click refused as already answered |
 | `PaymentRecipe` | Requesting now and waiting later: a provider callback that arrives during the fraud check is kept, "pending" is refused while the wait stays open, and a callback received before the deadline beats it |
-| `SagaPaymentRecipe` | A request inside a saga: a later failure refunds the payment and closes its wait, so a later callback is refused as cancelled (one that arrived before the failure is dropped), and the saga's retry pays again with a new token |
+| `SagaPaymentRecipe` | A request inside a saga: a later failure refunds the payment and closes its wait, so a later callback is refused as cancelled (one that arrived before the failure is not taken by the wait, and its token is then refused as already answered), and the saga's retry pays again with a new token |
 | `AnyApproverRecipe` | Any one of several approvers: a rejection keeps waiting, the first approval wins, and the other approver's late click is refused as cancelled |
 | `EveryApproverRecipe` | Every approver must answer, in any order |
 | `ApprovalPerLineRecipe` | An approval per loop iteration: an earlier line's token can never approve a later line |
