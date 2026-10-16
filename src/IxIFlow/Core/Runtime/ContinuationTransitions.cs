@@ -576,11 +576,14 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var child = checkpoint.Waits.FirstOrDefault(wait =>
             wait.ContinuationId == continuation.Id && wait.TableKind == WaitKind.Child && !wait.Detached);
         // A child the invocation detached runs on: its wait closes with the others, and the invocation is
-        // abandoned, so the branch unwinds at once (D-09).
+        // abandoned, so the branch unwinds at once (D-09). One whose start is not committed yet never starts.
         if (checkpoint.Waits.FirstOrDefault(wait => wait.ContinuationId == continuation.Id && wait.Detached) is
-                { } detached &&
-            continuation.PendingActivity?.ChildWorkflowId == detached.ChildWorkflowId)
-            continuation.PendingActivity = null;
+            { } detached)
+        {
+            checkpoint.ChildStarts.RemoveAll(start => start.ChildInstanceId == detached.ChildWorkflowId);
+            if (continuation.PendingActivity?.ChildWorkflowId == detached.ChildWorkflowId)
+                continuation.PendingActivity = null;
+        }
         var childFinished = child == null && continuation.AcceptedWait != null &&
                             continuation.PendingActivity?.ChildWorkflowId != null;
         checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id && wait != child,

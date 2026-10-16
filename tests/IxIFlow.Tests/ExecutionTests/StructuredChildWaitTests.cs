@@ -903,6 +903,42 @@ public sealed class StructuredChildWaitTests
 
     [Fact]
     [Trait("Spec", "D-09")]
+    public async Task ADetachedChildCancelledBeforeItsStartIsSavedNeverStarts()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("NeverStarted"));
+        // The other branch wins the join in the same pass, before the child's start is committed.
+        var parent = Workflow.Create<ParentData>("ParentWonBeforeStart")
+            .Step<NoopActivity>()
+            .Parallel(parallel => parallel.WaitAny()
+                .Do(first => first.Invoke<ChildData>("NeverStarted", 1, step => step.CancelWithParent(false)))
+                .Do(_ => { }))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+    }
+
+    [Fact]
+    [Trait("Spec", "D-09")]
+    public void AParentThatFailsAsksOnlyItsAttachedChildrenToCancel()
+    {
+        // A failure that ends the instance at once, such as an engine failure, reaches the children it still
+        // waits for without cancelling their branches first.
+        var checkpoint = new Core.Runtime.ExecutionCheckpoint();
+        checkpoint.Waits.Add(new Core.Runtime.WaitState { ChildWorkflowId = "attached", EventType = "child" });
+        checkpoint.Waits.Add(new Core.Runtime.WaitState { ChildWorkflowId = "detached", EventType = "child", Detached = true });
+
+        Core.Runtime.ContinuationTransitions.AbandonChildren(checkpoint);
+
+        Assert.Equal(["attached"], checkpoint.ChildCancellations.Select(cancellation => cancellation.ChildInstanceId));
+    }
+
+    [Fact]
+    [Trait("Spec", "D-09")]
     public void WhetherAChildIsCancelledWithItsParentIsPartOfTheDefinition()
     {
         WorkflowDefinition Parent(bool cancel) => Workflow.Create<ParentData>("ParentFingerprint")
