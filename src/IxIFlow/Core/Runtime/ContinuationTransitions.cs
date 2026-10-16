@@ -93,10 +93,10 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         WorkflowScopeCatalog scopes,
         ExecutionCheckpoint checkpoint,
         ContinuationState continuation,
-        object workflowData,
         int maxActiveBranches = int.MaxValue,
         int maxForEachItems = int.MaxValue)
     {
+        var workflowData = checkpoint.DataOf(continuation);
         if (continuation.AcceptedWait is { } accepted)
         {
             var acceptedPosition = continuation.Stack[^1];
