@@ -25,7 +25,7 @@ public sealed class StoreClockTests
 
     // One SQL Server store for these tests, so its schema is checked once.
     private static readonly Lazy<SqlWorkflowStateRepository> SqlStore =
-        new(() => new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        new(() => new SqlWorkflowStateRepository(SqlTestDatabase<StoreClockTests>.ConnectionString));
 
     [Theory]
     [InlineData(5)]
@@ -481,7 +481,7 @@ public sealed class StoreClockTests
                 new OpenedWait("approval", WaitKind.Event, "approval", "Approval", TimeSpan.FromHours(1)));
 
             // Another transaction holds the instance row while a read and an append wait for it.
-            await using var holder = new SqlConnection(SqlServerTestServer.ConnectionString);
+            await using var holder = new SqlConnection(SqlTestDatabase<StoreClockTests>.ConnectionString);
             await holder.OpenAsync();
             await using var transaction = holder.BeginTransaction();
             await using (var lockRow = new SqlCommand(

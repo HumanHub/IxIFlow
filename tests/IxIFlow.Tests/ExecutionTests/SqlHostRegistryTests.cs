@@ -14,7 +14,7 @@ public sealed class SqlHostRegistryTests
     [Trait("Category", "SqlIntegration")]
     public async Task FreshDatabaseSupportsHostRegistrationAndMetrics()
     {
-        var masterConnectionString = SqlServerTestServer.ConnectionString;
+        var masterConnectionString = SqlTestDatabase<SqlHostRegistryTests>.ConnectionString;
         var databaseName = "IxIFlowHostRegistry_" + Guid.NewGuid().ToString("N");
         var databaseConnectionString = new SqlConnectionStringBuilder(masterConnectionString)
         {
@@ -56,7 +56,7 @@ public sealed class SqlHostRegistryTests
     [Trait("Category", "SqlIntegration")]
     public async Task MetricsPruningKeepsRecentSamples()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlHostRegistryTests>.ConnectionString;
         var registry = new SqlHostRegistry(connectionString);
         var hostId = Guid.NewGuid().ToString("N");
         await registry.RegisterHostAsync(hostId, "http://localhost:8080", new HostCapabilities());
@@ -121,7 +121,7 @@ public sealed class SqlHostRegistryTests
     [Trait("Category", "SqlIntegration")]
     public async Task RequiredHostTagsMatchWholeTags()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlHostRegistryTests>.ConnectionString;
         var registry = new SqlHostRegistry(connectionString);
         var matchingId = Guid.NewGuid().ToString("N");
         var substringId = Guid.NewGuid().ToString("N");
@@ -149,7 +149,7 @@ public sealed class SqlHostRegistryTests
     [Trait("Category", "SqlIntegration")]
     public async Task UnhealthyHostIsNotRoutable()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlHostRegistryTests>.ConnectionString;
         var registry = new SqlHostRegistry(connectionString);
         var hostId = Guid.NewGuid().ToString("N");
         await registry.RegisterHostAsync(hostId, "http://localhost:8080", new HostCapabilities());
