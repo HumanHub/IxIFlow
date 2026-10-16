@@ -18,26 +18,26 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var json = await connection.QuerySingleOrDefaultAsync<string>("""
-            SELECT StateJson FROM dbo.IxIFlowWorkflowInstances
+        var row = await connection.QuerySingleOrDefaultAsync<StoredRow>("""
+            SELECT StateJson, RunnableAtUtc, Revision FROM dbo.IxIFlowWorkflowInstances
             WHERE InstanceId = @InstanceId
               AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
               AND CompletionPublished = 0
             """, new { InstanceId = instanceId });
-        return json == null ? null : Deserialize(json);
+        return row?.Read();
     }
 
     public async Task<IEnumerable<WorkflowInstance>> GetUnpublishedCompletionsAsync()
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<string>("""
-            SELECT TOP (100) StateJson FROM dbo.IxIFlowWorkflowInstances
+        var rows = await connection.QueryAsync<StoredRow>("""
+            SELECT TOP (100) StateJson, RunnableAtUtc, Revision FROM dbo.IxIFlowWorkflowInstances
             WHERE Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
               AND CompletionPublished = 0
             ORDER BY InstanceId
             """);
-        return rows.Select(Deserialize).ToArray();
+        return rows.Select(row => row.Read()).ToArray();
     }
 
     public async Task<IEnumerable<WorkflowInstance>> ClaimUnpublishedCompletionsAsync(
@@ -48,7 +48,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             throw new ArgumentOutOfRangeException(nameof(duration));
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<string>("""
+        var rows = await connection.QueryAsync<StoredRow>("""
             ;WITH pending AS (
                 SELECT TOP (100) InstanceId
                 FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, READPAST, ROWLOCK)
@@ -61,12 +61,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             UPDATE instance
             SET CompletionClaimToken = @Token,
                 CompletionClaimUntil = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME())
-            OUTPUT inserted.StateJson
+            OUTPUT inserted.StateJson, inserted.RunnableAtUtc, inserted.Revision
             FROM dbo.IxIFlowWorkflowInstances AS instance
             INNER JOIN pending ON pending.InstanceId = instance.InstanceId;
             """, new { InstanceId = instanceId, Token = token,
                 Milliseconds = (int)Math.Ceiling(duration.TotalMilliseconds) });
-        return rows.Select(Deserialize).ToArray();
+        return rows.Select(row => row.Read()).ToArray();
     }
 
     public async Task<bool> MarkCompletionPublishedAsync(string instanceId, long revision, string token)
@@ -612,14 +612,10 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
         ArgumentNullException.ThrowIfNull(commit);
-        var snapshot = commit.ReadInstance();
-        snapshot.Revision = checked(commit.ExpectedRevision + 1);
-        var json = JsonSerializer.Serialize(snapshot);
-
         await EnsureSchemaAsync();
         try
         {
-            return await CommitAsync(commit, snapshot, json);
+            return await CommitAsync(commit);
         }
         catch (SqlException error) when (error.Number is DeadlockVictim or LockTimeout)
         {
@@ -631,9 +627,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     private const int DeadlockVictim = 1205;
     private const int LockTimeout = 1222;
 
-    private async Task<WorkflowCommitResult> CommitAsync(CheckpointCommit commit, WorkflowInstance snapshot,
-        string json)
+    // The payload is stored as the commit carries it; the revision and runnable time live in their columns
+    // and are set on the instance when it is read.
+    private async Task<WorkflowCommitResult> CommitAsync(CheckpointCommit commit)
     {
+        var snapshot = commit.Instance;
+        var revision = checked(commit.ExpectedRevision + 1);
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
         // A child's terminal commit appends to its parent's inbox. Rows are locked parent first, as a
@@ -694,7 +693,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision);
         }
         if (currentRevision != commit.ExpectedRevision ||
-            (current?.CancellationJson != null && snapshot.CancellationReason == null &&
+            (current?.CancellationJson != null && !snapshot.AcknowledgesCancellation &&
              snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut))
         {
             await transaction.CommitAsync();
@@ -747,7 +746,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await ApplyWaitChangesAsync(connection, transaction, commit, current?.InboxSequence ?? 0, now);
         // An idle instance is next due at the earliest deadline of its open waits (D-31, D-35).
         var runnableNow = (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
-            WorkflowStoreRules.UnwindsNow(snapshot, unacknowledged);
+            WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.AcknowledgesCancellation, unacknowledged);
         var earliestDeadline = !runnableNow && !commit.Stopped &&
                                snapshot.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution
             ? await connection.ExecuteScalarAsync<DateTime?>("""
@@ -755,7 +754,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 WHERE InstanceId = @InstanceId AND CloseReason IS NULL
                 """, new { commit.InstanceId }, transaction)
             : null;
-        snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit, runnableNow, now,
+        var runnableAt = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit, runnableNow, now,
             earliestDeadline);
         await connection.ExecuteAsync("""
             MERGE dbo.IxIFlowWorkflowInstances AS target
@@ -780,10 +779,10 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             snapshot.InstanceId, snapshot.WorkflowName, snapshot.CorrelationId,
             Status = snapshot.Status.ToString(),
             commit.InboxReadThrough,
-            StateJson = json, snapshot.Revision,
+            StateJson = commit.Payload, Revision = revision,
             commit.ExpectedRevision, commit.CommitId, PayloadHash = commit.ContentHash,
-            AcknowledgesCancellation = snapshot.CancellationReason != null
-        }, ("RunnableAtUtc", snapshot.RunnableAtUtc)), transaction);
+            snapshot.AcknowledgesCancellation
+        }, ("RunnableAtUtc", runnableAt)), transaction);
         // The lease row is written only when something changes, so most commits touch only their
         // instance row; a write to a missing lease row would take range locks other claims need.
         // An idle owner that has not read every arrival keeps the lease and reads them.
@@ -873,7 +872,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 madeRunnable.Add(completion.ParentInstanceId);
         }
         await transaction.CommitAsync();
-        return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
+        return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,
             ReadReason(current?.CancellationJson), parked, unread, madeRunnable);
     }
 
@@ -1010,7 +1009,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var row = await connection.QuerySingleOrDefaultAsync<StoredRow>(
-            "SELECT StateJson, RunnableAtUtc FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId",
+            "SELECT StateJson, RunnableAtUtc, Revision FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId",
             new { InstanceId = instanceId });
         return row == null ? null : row.Read();
     }
@@ -1082,21 +1081,24 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var rows = await connection.QueryAsync<StoredRow>(
-            $"SELECT StateJson, RunnableAtUtc FROM dbo.IxIFlowWorkflowInstances WHERE {predicate}",
+            $"SELECT StateJson, RunnableAtUtc, Revision FROM dbo.IxIFlowWorkflowInstances WHERE {predicate}",
             new { Value = value });
         return rows.Select(row => row.Read()).ToArray();
     }
 
-    // The runnable time is kept in its column, which the store may change without rewriting the state.
+    // The runnable time and the revision are kept in their columns: the store changes the runnable time
+    // without rewriting the state, and a commit stores its payload as it came, without its new revision.
     private sealed class StoredRow
     {
         public string StateJson { get; set; } = "";
         public DateTime? RunnableAtUtc { get; set; }
+        public long Revision { get; set; }
 
         public WorkflowInstance Read()
         {
             var instance = Deserialize(StateJson);
             instance.RunnableAtUtc = RunnableAtUtc;
+            instance.Revision = Revision;
             return instance;
         }
     }

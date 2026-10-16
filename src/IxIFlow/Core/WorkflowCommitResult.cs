@@ -70,14 +70,15 @@ public sealed record ExecutionLeaseGrant(long Epoch, int CrashCount);
 /// </summary>
 public sealed class CheckpointCommit
 {
-    private CheckpointCommit(string instanceId, string payload, long epoch, string commitId,
+    private CheckpointCommit(CommittedInstance instance, string payload, long epoch, string commitId,
         long expectedRevision, bool clearsCrashCount, bool parks, IReadOnlyList<EventSettlement> settlements,
         long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
         ParentNotice? parentNotice)
     {
-        InstanceId = instanceId;
+        Instance = instance;
+        InstanceId = instance.InstanceId;
         Payload = payload;
         Epoch = epoch;
         CommitId = commitId;
@@ -110,8 +111,14 @@ public sealed class CheckpointCommit
 
     public string InstanceId { get; }
 
-    /// <summary>The instance as JSON, to be stored at <see cref="ExpectedRevision"/> + 1.</summary>
+    /// <summary>
+    /// The instance as JSON, to be stored at <see cref="ExpectedRevision"/> + 1. Its revision and runnable time are
+    /// the store's to set; a store keeps them beside it rather than rewriting it.
+    /// </summary>
     public string Payload { get; }
+
+    /// <summary>What a store reads from the instance to apply the commit, so it need not parse the payload.</summary>
+    public CommittedInstance Instance { get; }
 
     /// <summary>The execution epoch granted with the owner's lease; zero when the instance was never leased.</summary>
     public long Epoch { get; }
@@ -299,7 +306,7 @@ public sealed class CheckpointCommit
                 instance.ParentWaitId != parentNotice.ParentWaitId)
                 throw new ArgumentException("Only a child's terminal commit notifies its own parent", nameof(parentNotice));
         }
-        return new CheckpointCommit(instance.InstanceId, JsonSerializer.Serialize(instance), epoch, commitId,
+        return new CheckpointCommit(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance), epoch, commitId,
             expectedRevision, clearsCrashCount, parks, Array.AsReadOnly(settled), inboxReadThrough,
             Array.AsReadOnly(opened), Array.AsReadOnly(armed), Array.AsReadOnly(closed), wakeAfter, stopped,
             Array.AsReadOnly(started), Array.AsReadOnly(cancelled), parentNotice);
@@ -311,8 +318,20 @@ public sealed class CheckpointCommit
             throw new ArgumentOutOfRangeException(parameter, "Durations are between zero and 100 years");
     }
 
-    /// <summary>A fresh copy of the committed instance.</summary>
-    public WorkflowInstance ReadInstance() =>
-        JsonSerializer.Deserialize<WorkflowInstance>(Payload)
-        ?? throw new InvalidOperationException("A checkpoint payload could not be read");
+    /// <summary>A fresh copy of the committed instance, at its new revision.</summary>
+    public WorkflowInstance ReadInstance()
+    {
+        var instance = JsonSerializer.Deserialize<WorkflowInstance>(Payload)
+                       ?? throw new InvalidOperationException("A checkpoint payload could not be read");
+        instance.Revision = checked(ExpectedRevision + 1);
+        return instance;
+    }
+}
+
+/// <summary>The fields of a committed instance a store applies the commit by (D-03).</summary>
+public sealed record CommittedInstance(string InstanceId, string WorkflowName, string CorrelationId,
+    WorkflowStatus Status, bool AcknowledgesCancellation)
+{
+    public static CommittedInstance Of(WorkflowInstance instance) => new(instance.InstanceId, instance.WorkflowName,
+        instance.CorrelationId, instance.Status, instance.CancellationReason != null);
 }
