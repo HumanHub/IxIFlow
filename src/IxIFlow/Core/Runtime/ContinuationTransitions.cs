@@ -378,7 +378,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     /// child's, the child's start for the next commit, and a wait only the child's completion answers.
     /// </summary>
     public void AwaitChild(ExecutionCheckpoint checkpoint, ContinuationState continuation, string stepId,
-        ChildStart start)
+        ChildStart start, bool detached = false)
     {
         checkpoint.ChildStarts.Add(start);
         checkpoint.Waits.Add(new WaitState
@@ -388,7 +388,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             ContinuationId = continuation.Id,
             StepId = stepId,
             EventType = ChildCompleted.EventType,
-            ChildWorkflowId = start.ChildInstanceId
+            ChildWorkflowId = start.ChildInstanceId,
+            Detached = detached
         });
         continuation.Status = ContinuationStatus.Waiting;
     }
@@ -535,7 +536,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     /// </summary>
     public static void AbandonChildren(ExecutionCheckpoint checkpoint)
     {
-        foreach (var wait in checkpoint.Waits.Where(wait => wait.TableKind == WaitKind.Child))
+        foreach (var wait in checkpoint.Waits.Where(wait => wait.TableKind == WaitKind.Child && !wait.Detached))
             if (checkpoint.ChildStarts.All(start => start.ChildInstanceId != wait.ChildWorkflowId))
                 checkpoint.ChildCancellations.Add(new ChildCancellation(wait.ChildWorkflowId!, ParentCancelled, wait.Id));
         checkpoint.ChildStarts.Clear();
@@ -573,7 +574,13 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         // the child has finished, so a child that needs an operator holds its parent (D-09).
         // One whose child has finished takes the completion, and then unwinds.
         var child = checkpoint.Waits.FirstOrDefault(wait =>
-            wait.ContinuationId == continuation.Id && wait.TableKind == WaitKind.Child);
+            wait.ContinuationId == continuation.Id && wait.TableKind == WaitKind.Child && !wait.Detached);
+        // A child the invocation detached runs on: its wait closes with the others, and the invocation is
+        // abandoned, so the branch unwinds at once (D-09).
+        if (checkpoint.Waits.FirstOrDefault(wait => wait.ContinuationId == continuation.Id && wait.Detached) is
+                { } detached &&
+            continuation.PendingActivity?.ChildWorkflowId == detached.ChildWorkflowId)
+            continuation.PendingActivity = null;
         var childFinished = child == null && continuation.AcceptedWait != null &&
                             continuation.PendingActivity?.ChildWorkflowId != null;
         checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id && wait != child,

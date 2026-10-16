@@ -326,7 +326,7 @@ internal sealed class ActivityAttempts(
         }
         continuation.PendingActivity = pending;
         Attempt(instance, continuation, step, pending, "InvokeWorkflow");
-        transitions.AwaitChild(checkpoint, continuation, scopes.Id(step), start);
+        transitions.AwaitChild(checkpoint, continuation, scopes.Id(step), start, detached: !step.CancelWithParent);
         return null;
     }
 
