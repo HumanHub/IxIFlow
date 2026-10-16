@@ -137,6 +137,8 @@ public sealed class AddressedWaitTests
         // The host's timer closes the first wait; the other branch keeps the instance waiting.
         while ((await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId, Key: "approval"))).Count > 0)
             await Task.Delay(20);
+        // The timeout's own pass may still be running; the reply is sent once the instance is idle again.
+        await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Idle).WaitAsync(TimeSpan.FromSeconds(10));
 
         var late = await engine.ReplyAsync(expired.Token, new Approval { Approved = true });
 

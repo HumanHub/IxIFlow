@@ -126,18 +126,6 @@ internal sealed class ExecutionCheckpoint
             continuation.DataChanges ?? []);
     }
 
-    /// <summary>Replaces the data <paramref name="continuation"/> reads and writes, as a join's merge does.</summary>
-    public void SetData(ContinuationState continuation, object data)
-    {
-        if (continuation.ParentJoinId == null)
-        {
-            RootData = data;
-            return;
-        }
-        continuation.Data = data;
-        continuation.DataChanged = true;
-    }
-
     /// <summary>The continuation a branch was forked from.</summary>
     public ContinuationState ForkParent(ContinuationState branch)
     {
@@ -152,12 +140,18 @@ internal sealed class ExecutionCheckpoint
     /// </summary>
     public void RecordBranchChanges()
     {
-        foreach (var branch in Continuations.Where(item => item.ParentJoinId != null && item.DataChanged &&
-                                                           item.Data != null))
+        // Branches of one fork share their baseline, which is serialized once.
+        foreach (var fork in Continuations.Where(item => item.ParentJoinId != null && item.DataChanged &&
+                                                         item.Data != null).GroupBy(ForkParent))
         {
-            var changes = BranchData.Changes(DataOf(ForkParent(branch)), branch.Data!);
-            branch.DataChanges = changes.Count == 0 ? null : changes;
-            branch.DataChanged = false;
+            var baseline = DataOf(fork.Key);
+            var baselineNode = BranchData.Node(baseline);
+            foreach (var branch in fork)
+            {
+                var changes = BranchData.Changes(baselineNode, branch.Data!, baseline.GetType());
+                branch.DataChanges = changes.Count == 0 ? null : changes;
+                branch.DataChanged = false;
+            }
         }
     }
 

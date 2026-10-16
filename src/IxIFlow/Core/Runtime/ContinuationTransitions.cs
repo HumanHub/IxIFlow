@@ -424,17 +424,19 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         checkpoint.Joins.Add(join);
         parent.Status = ContinuationStatus.Joining;
 
-        // Each branch works on its own copy of the data as it is at the fork (D-14).
+        // Each branch works on its own copy of the data, and of the previous step's value, as they are at
+        // the fork (D-14).
         var forkData = checkpoint.DataOf(parent);
+        var forkJson = System.Text.Json.JsonSerializer.Serialize(forkData, forkData.GetType());
+        var previous = parent.RuntimePrevious != null ? SerializedValue.From(parent.RuntimePrevious) : parent.Previous;
         for (var index = 0; index < step.ParallelBranches.Count; index++)
         {
             var child = new ContinuationState
             {
                 ParentJoinId = join.Id,
-                Data = BranchData.Copy(forkData),
+                Data = BranchData.Copy(forkJson, forkData.GetType()),
                 InheritedItems = ForEachTransitions.Inherited(scopes, parent),
-                Previous = parent.Previous,
-                RuntimePrevious = parent.RuntimePrevious,
+                Previous = previous,
                 Stack = [new ScopePosition { ScopeId = scopes.BranchScope(step, index) }]
             };
             join.ChildContinuationIds.Add(child.Id);
@@ -519,7 +521,10 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         object provisional;
         try
         {
-            provisional = Merged(scopes, checkpoint, join, children);
+            var changes = MergedChanges(scopes, checkpoint, join, children);
+            provisional = BranchData.Copy(checkpoint.DataOf(ParentOf(checkpoint, join)));
+            foreach (var change in changes)
+                BranchData.ApplyTo(provisional, change);
         }
         catch (JoinConflictException conflict)
         {
@@ -531,17 +536,32 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     }
 
     // The parent's data with the changes of the completed branches, in declaration order.
-    private static object Merged(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+    private static List<DataChange> MergedChanges(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ParallelJoinState join, IEnumerable<ContinuationState> children)
     {
-        var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
-        var baseline = checkpoint.DataOf(parent);
+        var baseline = checkpoint.DataOf(ParentOf(checkpoint, join));
+        var baselineNode = BranchData.Node(baseline);
         var overrides = scopes.Step(join.StepId).ParallelCombiners;
         var completed = children.Where(item => item.Status == ContinuationStatus.Completed)
             .OrderBy(item => join.ChildContinuationIds.IndexOf(item.Id))
-            .Select(item => (IReadOnlyList<DataChange>)BranchData.Changes(baseline, checkpoint.DataOf(item), overrides))
+            .Select(item => (IReadOnlyList<DataChange>)BranchData.Changes(baselineNode, checkpoint.DataOf(item),
+                baseline.GetType(), overrides))
             .ToList();
         return BranchData.Merge(baseline, completed, overrides);
+    }
+
+    private static ContinuationState ParentOf(ExecutionCheckpoint checkpoint, ParallelJoinState join) =>
+        checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+
+    // Applies a join's merge to the parent's own data object, in place.
+    private static void ApplyMerge(ExecutionCheckpoint checkpoint, ContinuationState parent,
+        IReadOnlyList<DataChange> changes)
+    {
+        var data = checkpoint.DataOf(parent);
+        foreach (var change in changes)
+            BranchData.ApplyTo(data, change);
+        if (parent.ParentJoinId != null && changes.Count > 0)
+            parent.DataChanged = true;
     }
 
     /// <summary>
@@ -556,46 +576,58 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var completed = false;
         foreach (var join in checkpoint.Joins.Where(item => item.IsCompleting).ToList())
         {
-            var children = checkpoint.Continuations.Where(item => join.ChildContinuationIds.Contains(item.Id));
+            var children = checkpoint.Continuations.Where(item => join.ChildContinuationIds.Contains(item.Id)).ToList();
             if (!children.All(item => item.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled))
                 continue;
-            var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
-            // A branch's copy is rebuilt through its join, so every copy is loaded before the join goes.
-            foreach (var child in children)
-                checkpoint.DataOf(child);
+            var parent = ParentOf(checkpoint, join);
+            var finishingCleanup = TryScopeTransitions.IsInsideFinally(parent) ||
+                SagaScopeTransitions.IsInsideCompensation(parent);
+            // A join that ends through its own failure, or whose parent is unwinding outside cleanup, merges
+            // nothing; a join inside cleanup merges into its branch's copy even while a failure unwinds.
+            var merges = !join.ResumeParentWithoutAdvance &&
+                         (checkpoint.UnhandledError == null ? !parent.CancellationUnwind || finishingCleanup
+                             : finishingCleanup);
+            List<DataChange>? merged = null;
+            JoinConflictException? conflict = null;
+            if (merges)
+            {
+                try
+                {
+                    // Branch copies are rebuilt through the join, so the merge is made before it goes.
+                    merged = join.Conflict != null
+                        ? throw new JoinConflictException(join.ConflictPath ?? "", join.Conflict)
+                        : MergedChanges(scopes, checkpoint, join, children);
+                }
+                catch (JoinConflictException error)
+                {
+                    conflict = error;
+                }
+            }
             checkpoint.Joins.Remove(join);
             completed = true;
+            if (merged != null)
+                ApplyMerge(checkpoint, parent, merged);
             if (checkpoint.UnhandledError != null)
             {
-                var finishingCleanup = TryScopeTransitions.IsInsideFinally(parent) ||
-                    SagaScopeTransitions.IsInsideCompensation(parent);
                 CancelTree(checkpoint, parent);
                 if (finishingCleanup)
                 {
-                    if (!join.ResumeParentWithoutAdvance)
-                        parent.Stack[^1].NextStepIndex++;
                     parent.Status = ContinuationStatus.Active;
+                    if (conflict != null)
+                        conflicts.Add((parent, conflict));
+                    else if (!join.ResumeParentWithoutAdvance)
+                        parent.Stack[^1].NextStepIndex++;
                 }
             }
-            else if (parent.CancellationUnwind && !TryScopeTransitions.IsInsideFinally(parent) &&
-                     !SagaScopeTransitions.IsInsideCompensation(parent))
+            else if (parent.CancellationUnwind && !finishingCleanup)
                 parent.Status = ContinuationStatus.Cancelling;
             else
             {
                 parent.Status = ContinuationStatus.Active;
-                if (join.ResumeParentWithoutAdvance)
-                    continue;
-                try
-                {
-                    if (join.Conflict != null)
-                        throw new JoinConflictException(join.ConflictPath ?? "", join.Conflict);
-                    checkpoint.SetData(parent, Merged(scopes, checkpoint, join, children));
-                    parent.Stack[^1].NextStepIndex++;
-                }
-                catch (JoinConflictException conflict)
-                {
+                if (conflict != null)
                     conflicts.Add((parent, conflict));
-                }
+                else if (!join.ResumeParentWithoutAdvance)
+                    parent.Stack[^1].NextStepIndex++;
             }
         }
         return completed;

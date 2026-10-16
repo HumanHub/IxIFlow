@@ -191,9 +191,8 @@ public class StructuredSagaWaitTests
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
                     .WaitFor<Approval>("loser")))
                 .Do(branch => branch.WaitFor<Approval>("winner")))
-            .Step<CompleteActivity>(setup => setup
-                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Compensated)
-                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))
+            .Step<CountReleasesActivity>(setup => setup
+                .Output(activity => activity.Released).To(ctx => ctx.WorkflowData.Completed))
             .Build();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(definition, new SagaData());
@@ -204,8 +203,9 @@ public class StructuredSagaWaitTests
         var result = await engine.ResumeAsync(started.InstanceId, "winner", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        // The losing saga was compensated with what it reserved before the next step ran; its data
-        // changes, the reservation and the compensation's output, were discarded with it (D-14).
+        // The losing saga was compensated with what it reserved, and the next step saw that release when
+        // it ran; the loser's data changes, the reservation and the compensation's output, were discarded
+        // with it (D-14).
         Assert.Equal([1], services.GetRequiredService<ReleaseLog>().Released);
         Assert.Equal((0, 0, 1), (Data(result).Reserved, Data(result).Compensated, Data(result).Completed));
     }
@@ -1442,6 +1442,7 @@ public class StructuredSagaWaitTests
         services.AddSingleton(repository);
         services.AddSingleton<ReleaseLog>();
         services.AddTransient<LoggedReleaseActivity>();
+        services.AddTransient<CountReleasesActivity>();
         return services.BuildServiceProvider();
     }
 
@@ -1578,6 +1579,18 @@ public class StructuredSagaWaitTests
         {
             Result = Count;
             log.Add(Count);
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Reports how many releases the log holds when it runs.</summary>
+    public sealed class CountReleasesActivity(ReleaseLog log) : IAsyncActivity
+    {
+        public int Released { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Released = log.Released.Count;
             return Task.CompletedTask;
         }
     }
