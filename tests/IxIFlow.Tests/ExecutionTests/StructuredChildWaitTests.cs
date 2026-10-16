@@ -874,6 +874,9 @@ public sealed class StructuredChildWaitTests
         Assert.Equal(WorkflowStatus.Suspended, (await repository.GetWorkflowInstanceAsync(childId))!.Status);
         Assert.Equal(WorkflowExecutionStatus.Success, (await engine.ResumeAsync(childId, "approval", new Approval())).Status);
         Assert.Equal(WorkflowStatus.Cancelled, (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+        // Its completion reaches the parent's closed wait and is refused.
+        var notice = await ((IWorkflowInbox)repository).GetEventAsync(started.InstanceId, $"child-completed-{childId}");
+        Assert.Equal((EventOutcome.Rejected, EventRejection.WaitCancelled), (notice!.Outcome, notice.Rejection));
     }
 
     [Fact]
