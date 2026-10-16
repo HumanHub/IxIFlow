@@ -597,15 +597,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             ON target.InstanceId = source.InstanceId
             WHEN MATCHED AND target.Revision = 0 THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
-                CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
-                SuspensionId = @SuspensionId,
+                CorrelationId = @CorrelationId,
                 RunnableAtUtc = CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END,
                 StateJson = @StateJson
             WHEN NOT MATCHED THEN INSERT
-                (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt,
-                 SuspensionId, RunnableAtUtc, StateJson)
+                (InstanceId, WorkflowName, Status, CorrelationId, RunnableAtUtc, StateJson)
                 VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
-                        @SuspensionExpiresAt, @SuspensionId,
                         CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END, @StateJson);
             IF @@ROWCOUNT = 0
                 THROW 51000, 'Revisioned instances require an atomic commit', 1;
@@ -615,8 +612,6 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             instance.WorkflowName,
             Status = instance.Status.ToString(),
             instance.CorrelationId,
-            SuspensionExpiresAt = instance.SuspensionInfo?.ExpiresAt,
-            SuspensionId = instance.SuspensionInfo?.SuspensionId,
             instance.RunnableAtUtc,
             RunnableNow = WorkflowStoreRules.IsRunnableNow(instance, false),
             StateJson = JsonSerializer.Serialize(instance)
@@ -762,26 +757,22 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             ON target.InstanceId = source.InstanceId
             WHEN MATCHED THEN UPDATE SET
                 WorkflowName = @WorkflowName, Status = @Status,
-                CorrelationId = @CorrelationId, SuspensionExpiresAt = @SuspensionExpiresAt,
-                SuspensionId = @SuspensionId,
+                CorrelationId = @CorrelationId,
                 RunnableAtUtc = @RunnableAtUtc,
                 InboxReadThrough = COALESCE(@InboxReadThrough, target.InboxReadThrough),
                 StateJson = @StateJson, Revision = @Revision,
                 CancellationAcknowledged = CASE WHEN @AcknowledgesCancellation = 1 AND
                     target.CancellationJson IS NOT NULL THEN 1 ELSE target.CancellationAcknowledged END
             WHEN NOT MATCHED THEN INSERT
-                (InstanceId, WorkflowName, Status, CorrelationId, SuspensionExpiresAt,
-                 SuspensionId, RunnableAtUtc, StateJson, Revision)
-                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
-                        @SuspensionExpiresAt, @SuspensionId, @RunnableAtUtc, @StateJson, @Revision);
+                (InstanceId, WorkflowName, Status, CorrelationId, RunnableAtUtc, StateJson, Revision)
+                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @RunnableAtUtc, @StateJson,
+                        @Revision);
             INSERT INTO dbo.IxIFlowWorkflowCommits (InstanceId, CommitId, ExpectedRevision, Revision, PayloadHash)
             VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
             """, WithTimes(new
         {
             snapshot.InstanceId, snapshot.WorkflowName, snapshot.CorrelationId,
             Status = snapshot.Status.ToString(),
-            SuspensionExpiresAt = snapshot.SuspensionInfo?.ExpiresAt,
-            SuspensionId = snapshot.SuspensionInfo?.SuspensionId,
             commit.InboxReadThrough,
             StateJson = json, snapshot.Revision,
             commit.ExpectedRevision, commit.CommitId, PayloadHash = commit.ContentHash,
@@ -1068,9 +1059,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                         WorkflowName NVARCHAR(200) NOT NULL,
                         Status NVARCHAR(50) NOT NULL,
                         CorrelationId NVARCHAR(100) NULL,
-                        SuspensionExpiresAt DATETIME2 NULL,
                         RunnableAtUtc DATETIME2 NULL,
-                        SuspensionId NVARCHAR(100) NULL,
                         StateJson NVARCHAR(MAX) NOT NULL,
                         CancellationJson NVARCHAR(MAX) NULL,
                         CancellationAcknowledged BIT NOT NULL DEFAULT 0,
@@ -1080,14 +1069,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                         Revision BIGINT NOT NULL DEFAULT 0
                     );
                     CREATE INDEX IX_IxIFlowWorkflowInstances_Status
-                        ON dbo.IxIFlowWorkflowInstances (Status, SuspensionExpiresAt);
+                        ON dbo.IxIFlowWorkflowInstances (Status);
                     CREATE INDEX IX_IxIFlowWorkflowInstances_WorkflowName
                         ON dbo.IxIFlowWorkflowInstances (WorkflowName);
                     CREATE INDEX IX_IxIFlowWorkflowInstances_CorrelationId
                         ON dbo.IxIFlowWorkflowInstances (CorrelationId);
                 END
-                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'SuspensionId') IS NULL
-                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD SuspensionId NVARCHAR(100) NULL;
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'InboxSequence') IS NULL
                     ALTER TABLE dbo.IxIFlowWorkflowInstances
                         ADD InboxSequence BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_InboxSequence DEFAULT 0;
@@ -1216,17 +1203,6 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                                 OR (Status IN (''Suspended'', ''NeedsResolution'')
                                     AND CancellationJson IS NOT NULL AND CancellationAcknowledged = 0)');
                 END
-                """, transaction: transaction);
-            await connection.ExecuteAsync("""
-                UPDATE dbo.IxIFlowWorkflowInstances
-                SET SuspensionId = COALESCE(
-                    NULLIF(JSON_VALUE(StateJson, '$.SuspensionInfo.SuspensionId'), ''),
-                    CONVERT(NVARCHAR(36), NEWID()))
-                WHERE Revision = 0 AND Status = 'Suspended' AND SuspensionId IS NULL;
-                UPDATE dbo.IxIFlowWorkflowInstances
-                SET StateJson = JSON_MODIFY(StateJson, '$.SuspensionInfo.SuspensionId', SuspensionId)
-                WHERE Revision = 0 AND Status = 'Suspended' AND SuspensionId IS NOT NULL
-                    AND JSON_VALUE(StateJson, '$.SuspensionInfo.SuspensionId') IS NULL;
                 """, transaction: transaction);
             await transaction.CommitAsync();
             _schemaReady = true;

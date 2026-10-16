@@ -340,11 +340,6 @@ public class WorkflowInstance
     public List<ExecutionTraceEntry> ExecutionHistory { get; set; } = new();
 
     /// <summary>
-    ///     Current suspension information (if suspended)
-    /// </summary>
-    public SuspensionInfo? SuspensionInfo { get; set; }
-
-    /// <summary>
     ///     Structured execution snapshot for resume, replay, and debugging
     /// </summary>
     public WorkflowExecutionSnapshot? ExecutionSnapshot { get; set; }
@@ -467,47 +462,6 @@ public class ExecutionFrame
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Dictionary<string, object?> RuntimeValues { get; set; } = new();
-}
-
-/// <summary>
-///     Information about workflow suspension
-/// </summary>
-public class SuspensionInfo
-{
-    /// <summary>
-    ///     Identifies this particular wait, including repeated waits at the same step.
-    /// </summary>
-    public string SuspensionId { get; set; } = Guid.NewGuid().ToString("N");
-
-    /// <summary>
-    ///     When the workflow was suspended
-    /// </summary>
-    public DateTime SuspendedAt { get; set; }
-
-    /// <summary>
-    ///     Reason for suspension
-    /// </summary>
-    public string SuspendReason { get; set; } = "";
-
-    /// <summary>
-    ///     Type of event expected for resumption
-    /// </summary>
-    public string ResumeEventType { get; set; } = "";
-
-    /// <summary>
-    ///     Serialized resume condition
-    /// </summary>
-    public string ResumeConditionJson { get; set; } = "";
-
-    /// <summary>
-    ///     When the suspension expires (if applicable)
-    /// </summary>
-    public DateTime? ExpiresAt { get; set; }
-
-    /// <summary>
-    ///     Additional suspension metadata
-    /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
 }
 
 /// <summary>

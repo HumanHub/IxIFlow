@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.ExecutionTests.Models;
 using IxIFlow.Tests.Infrastructure;
@@ -603,10 +604,10 @@ public class SuspendResumeExecutionTests
         Assert.True(workflowData.ProcessOrderCompleted);
         Assert.False(workflowData.CompleteOrderCompleted);
 
-        // Verify suspension info is set
-        Assert.NotNull(instance.SuspensionInfo);
-        Assert.Equal("Waiting for approval with timeout", instance.SuspensionInfo.SuspendReason);
-        Assert.Equal(typeof(ApprovalEvent).AssemblyQualifiedName, instance.SuspensionInfo.ResumeEventType);
+        // The open wait records what it waits for
+        var wait = Assert.Single(await _stateRepository.GetOpenWaitsAsync(new WaitQuery(InstanceId: result.InstanceId)));
+        Assert.Equal("Waiting for approval with timeout", wait.Key);
+        Assert.Equal(WorkflowTypeIdentity.StableName(typeof(ApprovalEvent)), wait.EventType);
     }
 
     [Fact]

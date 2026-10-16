@@ -378,14 +378,6 @@ internal sealed class WorkflowExecutor
                     "Execution stopped without a runnable continuation or wait");
             }
 
-            instance.SuspensionInfo = checkpoint.Waits.Count == 1
-                ? new SuspensionInfo
-                {
-                    SuspendReason = checkpoint.Waits[0].Key,
-                    ResumeEventType = checkpoint.Waits[0].EventType,
-                    SuspendedAt = checkpoint.Waits[0].RegisteredAtUtc
-                }
-                : null;
             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
 
             return new WorkflowExecutionResult
@@ -468,7 +460,6 @@ internal sealed class WorkflowExecutor
             if (!cancelled)
                 checkpoint.UnhandledError ??= SerializedException.From(ex);
             instance.Status = cancelled ? WorkflowStatus.Cancelled : WorkflowStatus.Failed;
-            instance.SuspensionInfo = null;
             checkpoint.RemoveWaits(_ => true, WaitCloseReason.InstanceFinished);
             checkpoint.Joins.Clear();
             foreach (var continuation in checkpoint.Continuations.Where(item =>
@@ -799,7 +790,6 @@ internal sealed class WorkflowExecutor
         };
         instance.Status = WorkflowStatus.NeedsResolution;
         instance.LastError = limit.Message;
-        instance.SuspensionInfo = null;
         instance.CompletedAt = null;
         // The stop saves the last committed checkpoint plus a small marker, so it is not held to the
         // limit; otherwise a checkpoint just under the limit could never stop.
@@ -843,7 +833,6 @@ internal sealed class WorkflowExecutor
         instance.Status = WorkflowStatus.NeedsResolution;
         instance.LastError = reason;
         instance.LastErrorStackTrace = null;
-        instance.SuspensionInfo = null;
         await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
         return new WorkflowExecutionResult
         {
