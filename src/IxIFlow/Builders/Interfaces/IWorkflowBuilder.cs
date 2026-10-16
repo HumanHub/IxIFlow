@@ -23,6 +23,19 @@ public interface IWorkflowBuilder<TWorkflowData>
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
+    /// Runs a request activity (<see cref="IRequestActivity{TReply}"/>) whose answer the workflow takes
+    /// with <c>WaitFor&lt;TReply&gt;(name)</c> later in the same body (D-33). The answer's wait opens
+    /// before the activity runs, and the activity sends <see cref="IActivityContext.Reply"/> with the
+    /// request. An answer that arrives before the <c>WaitFor</c> is kept for it. A
+    /// <paramref name="subject"/> says what the request is about; an answer must carry the same one.
+    /// </summary>
+    IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
+        string name,
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null,
+        Func<WorkflowContext<TWorkflowData>, string>? subject = null)
+        where TActivity : class, IAsyncActivity;
+
+    /// <summary>
     /// Builds and returns the workflow definition
     /// </summary>
     /// <returns>The constructed workflow definition</returns>
@@ -48,6 +61,19 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
         Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
+        where TActivity : class, IAsyncActivity;
+
+    /// <summary>
+    /// Runs a request activity (<see cref="IRequestActivity{TReply}"/>) whose answer the workflow takes
+    /// with <c>WaitFor&lt;TReply&gt;(name)</c> later in the same body (D-33). The answer's wait opens
+    /// before the activity runs, and the activity sends <see cref="IActivityContext.Reply"/> with the
+    /// request. An answer that arrives before the <c>WaitFor</c> is kept for it. A
+    /// <paramref name="subject"/> says what the request is about; an answer must carry the same one.
+    /// </summary>
+    IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
+        string name,
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>

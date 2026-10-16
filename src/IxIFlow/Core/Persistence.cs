@@ -8,7 +8,100 @@ namespace IxIFlow.Core;
 /// <summary>
 ///     Repository interface for workflow state persistence
 /// </summary>
-public interface IWorkflowStateRepository
+/// <summary>An instance a host may claim now, and the time it became runnable.</summary>
+public sealed record RunnableInstance(string InstanceId, DateTime RunnableAtUtc);
+
+/// <summary>Rules every state store applies when it saves an instance.</summary>
+public static class WorkflowStoreRules
+{
+    /// <summary>
+    /// True when a saved instance is runnable from the moment it is saved, whatever time it carries
+    /// (C-01): an idle save that leaves a cancellation request unacknowledged, so the request is
+    /// unwound, and a running instance saved without a time, so it can be claimed as soon as its
+    /// owner's lease ends. Stores stamp these with their own clock.
+    /// </summary>
+    public static bool IsRunnableNow(WorkflowInstance instance, bool unacknowledgedCancellation) =>
+        UnwindsNow(instance, unacknowledgedCancellation) ||
+        (instance.RunnableAtUtc == null && instance.Status == WorkflowStatus.Running);
+
+    /// <summary>True when an idle save leaves a cancellation request unacknowledged, so the instance must unwind now.</summary>
+    public static bool UnwindsNow(WorkflowInstance instance, bool unacknowledgedCancellation) =>
+        unacknowledgedCancellation && instance.CancellationReason == null &&
+        instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
+
+    /// <summary>
+    /// When an instance saved without a commit becomes runnable, with <paramref name="now"/> as the
+    /// store's clock. Such a save carries its own time; a commit never does (D-35).
+    /// </summary>
+    public static DateTime? RunnableAt(WorkflowInstance instance, bool unacknowledgedCancellation, DateTime now) =>
+        IsRunnableNow(instance, unacknowledgedCancellation) ? now : instance.RunnableAtUtc;
+
+    /// <summary>
+    /// When a committed instance becomes runnable, in the store's clock (D-31, D-35): now when
+    /// <paramref name="runnableNow"/>; never while stopped for an operator; at the end of a park, or now,
+    /// while it runs; and while it is idle, at the earliest deadline of its open waits or after the
+    /// commit's <see cref="CheckpointCommit.WakeAfter"/>, whichever comes first.
+    /// </summary>
+    public static DateTime? CommittedRunnableAt(WorkflowStatus status, CheckpointCommit commit, bool runnableNow,
+        DateTime now, DateTime? earliestDeadline)
+    {
+        if (runnableNow)
+            return now;
+        if (commit.Stopped)
+            return null;
+        return status switch
+        {
+            WorkflowStatus.Running => commit.Parks ? now + commit.WakeAfter!.Value : now,
+            WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution =>
+                new[] { earliestDeadline, now + commit.WakeAfter }.Min(),
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// The wait an untargeted event should be judged against among <paramref name="openWaits"/>, at the
+    /// store's time <paramref name="now"/>: any that could still take it comes before one past its deadline.
+    /// </summary>
+    public static IEnumerable<StoredWait> Candidates(WorkflowEvent workflowEvent, IEnumerable<StoredWait> openWaits,
+        DateTime now) =>
+        openWaits.Where(wait => wait.Kind == WaitKind.Child ||
+                                (wait.Kind == WaitKind.Event && (workflowEvent.Key == null ||
+                                 string.Equals(wait.Key, workflowEvent.Key, StringComparison.Ordinal))))
+            .OrderBy(wait => wait.Kind != WaitKind.Child && wait.DeadlineUtc <= now);
+
+    /// <summary>Why the waits still open when an instance finishes are closed (D-33).</summary>
+    public static WaitCloseReason FinalWaitCloseReason(WorkflowStatus status) =>
+        status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut
+            ? WaitCloseReason.Cancelled
+            : WaitCloseReason.InstanceFinished;
+
+    /// <summary>
+    /// Why an event that arrives at the store's time <paramref name="now"/> is refused before anyone reads
+    /// it, or null when it is kept for the owner (D-33, D-35). <paramref name="target"/> is the wait the
+    /// event names, if it names one; otherwise <paramref name="candidates"/> are the open waits it could
+    /// reach, as <see cref="Candidates"/> orders them. Any other event needs an open event wait with its
+    /// key (any key when it has none), or a child wait the child may still match. An event that arrives
+    /// when its deadline, or every candidate's, has passed is refused as timed out.
+    /// </summary>
+    public static EventRejection? RejectOnArrival(WorkflowEvent workflowEvent, StoredWait? target,
+        IEnumerable<StoredWait> candidates, DateTime now)
+    {
+        if (workflowEvent.TargetWaitId != null)
+            return target is null or { Kind: WaitKind.Delay or WaitKind.Execution } ? EventRejection.UnknownWait
+                : !target.IsOpen ? target.Rejection
+                : target.DeadlineUtc <= now ? EventRejection.WaitTimedOut
+                : null;
+        return candidates.FirstOrDefault() switch
+        {
+            null => EventRejection.NoOpenWait,
+            { Kind: WaitKind.Child } => null,
+            { DeadlineUtc: { } deadline } when deadline <= now => EventRejection.WaitTimedOut,
+            _ => null
+        };
+    }
+}
+
+public interface IWorkflowStateRepository : IWorkflowInbox
 {
     /// <summary>
     /// Records a cancellation request outside the revisioned checkpoint so a remote
@@ -21,10 +114,40 @@ public interface IWorkflowStateRepository
     Task<CancellationReason?> GetCancellationRequestAsync(string instanceId);
 
     /// <summary>
-    /// Lists running instances without a live owner and suspended instances whose
-    /// durable cancellation request still needs to be unwound.
+    /// Reads the durable cancellation requests of several instances at once; instances without a
+    /// request are left out. A host watches all its running instances with one call per interval.
+    /// This fallback reads each instance separately, a few at a time, and leaves out instances whose
+    /// read failed; it fails only when every read fails. Stores should override it with one query.
     /// </summary>
-    Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync();
+    async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        IReadOnlyCollection<string> instanceIds)
+    {
+        var requests = new System.Collections.Concurrent.ConcurrentDictionary<string, CancellationReason>(
+            StringComparer.Ordinal);
+        var failures = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+        await Parallel.ForEachAsync(instanceIds.Distinct(StringComparer.Ordinal),
+            new ParallelOptions { MaxDegreeOfParallelism = 16 }, async (instanceId, _) =>
+            {
+                try
+                {
+                    if (await GetCancellationRequestAsync(instanceId) is { } reason)
+                        requests[instanceId] = reason;
+                }
+                catch (Exception error)
+                {
+                    failures.Add(error);
+                }
+            });
+        if (instanceIds.Count > 0 && failures.Count == instanceIds.Distinct(StringComparer.Ordinal).Count())
+            throw new AggregateException("No cancellation request could be read", failures);
+        return requests;
+    }
+
+    /// <summary>
+    /// Lists up to <paramref name="limit"/> instances a host may claim now: their runnable time has
+    /// passed and nobody holds their lease. The earliest come first (C-01, C-05).
+    /// </summary>
+    Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit);
 
     /// <summary>
     /// Atomically saves the commit's payload at its expected revision + 1. Revision zero also
@@ -38,11 +161,13 @@ public interface IWorkflowStateRepository
     Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit);
 
     /// <summary>
-    /// Acquires an absent or expired execution lease for one instance and returns its execution
-    /// epoch, which is greater than every epoch granted for the instance before. Returns null
-    /// while another owner holds the lease.
+    /// Acquires an absent or expired execution lease for one instance. The grant's epoch is greater
+    /// than every epoch granted for the instance before. When the previous lease expired without
+    /// being released while the instance was <see cref="WorkflowStatus.Running"/>, its owner lost the
+    /// instance with work in flight, and the grant's crash count is one higher, in the same atomic
+    /// step. Returns null while another owner holds the lease.
     /// </summary>
-    Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+    Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration);
 
     /// <summary>Extends a lease held by the same execution token.</summary>
@@ -103,7 +228,7 @@ public interface IWorkflowCompletionOutbox
 /// <summary>
 ///     In-memory implementation of workflow state repository
 /// </summary>
-public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox
+public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox, IWorkflowInbox
 {
     private readonly TimeProvider _time;
 
@@ -120,10 +245,17 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
 
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
-    private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] PayloadHash, long Revision)> _commits = new();
-    // A lease record outlives its lease, so a later owner always gets a higher epoch.
-    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch)> _leases = new();
+    private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] ContentHash, long Revision)> _commits = new();
+    // A lease record outlives its lease, so a later owner always gets a higher epoch. It also keeps
+    // the instance's crash count. A released lease expires at DateTime.MinValue.
+    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch, int CrashCount)> _leases =
+        new();
     private readonly Dictionary<string, CancellationReason> _cancellations = new();
+    private readonly Dictionary<(string InstanceId, string EventId), (StoredWorkflowEvent Event, byte[] Hash)> _events = new();
+    private readonly Dictionary<string, long> _inboxSequence = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _inboxReadThrough = new(StringComparer.Ordinal);
+    // Each instance's waits by wait ID, so appends and reads touch only that instance's waits.
+    private readonly Dictionary<string, Dictionary<string, StoredWait>> _waits = new(StringComparer.Ordinal);
     private readonly HashSet<string> _acknowledgedCancellations = new();
     private readonly HashSet<string> _publishedCompletions = new();
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _completionClaims = new();
@@ -218,6 +350,10 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                     JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!);
                 _acknowledgedCancellations.Remove(instanceId);
             }
+            // A request still to be taken up makes the instance runnable now, in the same step (C-01);
+            // repeating one already unwound changes nothing.
+            if (!_acknowledgedCancellations.Contains(instanceId))
+                instance.RunnableAtUtc = Now;
             return Task.FromResult(true);
         }
     }
@@ -233,27 +369,41 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         }
     }
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync()
+    public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        IReadOnlyCollection<string> instanceIds)
     {
+        ArgumentNullException.ThrowIfNull(instanceIds);
         lock (_claimLock)
         {
-            var now = Now;
-            var instances = _instances.Values
-                .Where(instance =>
-                    (instance.Status == WorkflowStatus.Running &&
-                     (!_leases.TryGetValue(instance.InstanceId, out var lease) || lease.ExpiresAtUtc <= now)) ||
-                    (instance.Status == WorkflowStatus.Suspended &&
-                     _cancellations.ContainsKey(instance.InstanceId) &&
-                     !_acknowledgedCancellations.Contains(instance.InstanceId)) ||
-                    (instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution &&
-                     instance.NextDueAtUtc <= now))
-                .Select(SnapshotStructured)
-                .ToArray();
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
+            IReadOnlyDictionary<string, CancellationReason> requests = instanceIds
+                .Where(_cancellations.ContainsKey)
+                .Distinct(StringComparer.Ordinal)
+                .ToDictionary(instanceId => instanceId, instanceId =>
+                    JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(_cancellations[instanceId]))!,
+                    StringComparer.Ordinal);
+            return Task.FromResult(requests);
         }
     }
 
-    public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(limit);
+        lock (_claimLock)
+        {
+            var now = Now;
+            var runnable = _instances.Values
+                .Where(instance => instance.RunnableAtUtc <= now &&
+                    !(_leases.TryGetValue(instance.InstanceId, out var lease) && lease.ExpiresAtUtc > now))
+                .OrderBy(instance => instance.RunnableAtUtc)
+                .ThenBy(instance => instance.InstanceId, StringComparer.Ordinal)
+                .Take(limit)
+                .Select(instance => new RunnableInstance(instance.InstanceId, instance.RunnableAtUtc!.Value))
+                .ToArray();
+            return Task.FromResult<IReadOnlyList<RunnableInstance>>(runnable);
+        }
+    }
+
+    public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration)
     {
         ValidateLeaseArguments(instanceId, token, duration);
@@ -262,10 +412,13 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             var now = Now;
             var exists = _leases.TryGetValue(instanceId, out var lease);
             if (exists && lease.ExpiresAtUtc > now)
-                return Task.FromResult<long?>(null);
-            var epoch = (exists ? lease.Epoch : 0) + 1;
-            _leases[instanceId] = (token, now.Add(duration), epoch);
-            return Task.FromResult<long?>(epoch);
+                return Task.FromResult<ExecutionLeaseGrant?>(null);
+            var crashed = exists && lease.ExpiresAtUtc != DateTime.MinValue &&
+                _instances.TryGetValue(instanceId, out var instance) && instance.Status == WorkflowStatus.Running;
+            var grant = new ExecutionLeaseGrant((exists ? lease.Epoch : 0) + 1,
+                (exists ? lease.CrashCount : 0) + (crashed ? 1 : 0));
+            _leases[instanceId] = (token, now.Add(duration), grant.Epoch, grant.CrashCount);
+            return Task.FromResult<ExecutionLeaseGrant?>(grant);
         }
     }
 
@@ -291,7 +444,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         {
             if (_instances.TryGetValue(instanceId, out var instance) &&
                 instance.Status == WorkflowStatus.Suspended)
-                instance.NextDueAtUtc = Now;
+                instance.RunnableAtUtc = Now;
         }
         return Task.CompletedTask;
     }
@@ -323,31 +476,241 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             if (_commits.TryGetValue(key, out var receipt))
             {
                 if (receipt.ExpectedRevision != commit.ExpectedRevision ||
-                    !receipt.PayloadHash.SequenceEqual(commit.PayloadHash))
+                    !receipt.ContentHash.SequenceEqual(commit.ContentHash))
                     throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
-                // A terminal commit released the lease; only a running owner must still hold it.
-                if (snapshot.Status == WorkflowStatus.Running && !owns)
+                // A terminal or parking commit released the lease; only a running owner must still hold it.
+                if (snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks)
                     return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision));
+                // The same commit gets the same answer, including arrivals it has not read.
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
+                    PendingCancellation(commit.InstanceId), commit.Parks && !owns, Unread(commit)));
             }
 
             if (!owns)
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+            // An event this commit settles must still be pending.
+            if (commit.Settlements.Any(settlement =>
+                    !_events.TryGetValue((commit.InstanceId, settlement.EventId), out var pending) ||
+                    pending.Event.Outcome != EventOutcome.Pending))
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, revision));
             if (revision != commit.ExpectedRevision ||
                 ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or
                     WorkflowStatus.TimedOut) &&
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+            // One store time for the whole commit: its deadlines, its runnable time and its records (D-35).
+            var now = Now;
+            var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
+                !_acknowledgedCancellations.Contains(commit.InstanceId);
+            // A run that has not read every arrival neither parks nor goes idle out of reach.
+            var unread = Unread(commit);
+            var parked = commit.Parks && !unacknowledged && !unread;
+            foreach (var settlement in commit.Settlements)
+            {
+                var settled = _events[(commit.InstanceId, settlement.EventId)];
+                _events[(commit.InstanceId, settlement.EventId)] = (settled.Event with
+                {
+                    Outcome = settlement.Outcome, WaitId = settlement.WaitId, Rejection = settlement.Rejection
+                }, settled.Hash);
+            }
+            if (commit.InboxReadThrough is { } read)
+                _inboxReadThrough[commit.InstanceId] = read;
+            // A wait opens at the inbox's current sequence and gets its deadline from this commit's time;
+            // opening or arming it again keeps its first record.
+            var waits = WaitsOf(commit.InstanceId);
+            foreach (var opened in commit.OpenedWaits)
+                waits.TryAdd(opened.WaitId, new StoredWait(commit.InstanceId, opened.WaitId,
+                    opened.Kind, opened.Key, opened.EventType, now + opened.Timeout,
+                    _inboxSequence.GetValueOrDefault(commit.InstanceId), now));
+            foreach (var armed in commit.ArmedWaits)
+                if (waits.TryGetValue(armed.WaitId, out var wait) && wait is { IsOpen: true, DeadlineUtc: null })
+                    waits[armed.WaitId] = wait with { DeadlineUtc = now + armed.Timeout };
+            foreach (var closed in commit.ClosedWaits)
+                CloseWait(commit.InstanceId, closed.WaitId, closed.Reason, now);
+            snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit,
+                (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
+                WorkflowStoreRules.UnwindsNow(snapshot, unacknowledged),
+                now, OpenWaits(commit.InstanceId).Min(open => open.DeadlineUtc));
+            // A finished instance takes no more events; those still pending are closed, and so are its waits.
+            if (snapshot.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
+                WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
+            {
+                foreach (var open in _events.Where(item => item.Key.InstanceId == commit.InstanceId &&
+                                                           item.Value.Event.Outcome == EventOutcome.Pending)
+                             .Select(item => item.Key).ToArray())
+                    _events[open] = (_events[open].Event with { Outcome = EventOutcome.Closed }, _events[open].Hash);
+                var reason = WorkflowStoreRules.FinalWaitCloseReason(snapshot.Status);
+                foreach (var open in OpenWaits(commit.InstanceId).Select(wait => wait.WaitId).ToArray())
+                    CloseWait(commit.InstanceId, open, reason, now);
+            }
+            // An idle owner that has not read every arrival keeps the lease and reads them.
+            var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
             _instances[commit.InstanceId] = snapshot;
-            _commits.Add(key, (commit.ExpectedRevision, commit.PayloadHash, snapshot.Revision));
+            _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (snapshot.CancellationReason != null && _cancellations.ContainsKey(commit.InstanceId))
                 _acknowledgedCancellations.Add(commit.InstanceId);
-            if (snapshot.Status != WorkflowStatus.Running && _leases.TryGetValue(commit.InstanceId, out var lease))
-                _leases[commit.InstanceId] = lease with { ExpiresAtUtc = DateTime.MinValue };
-            return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision));
+            if (_leases.TryGetValue(commit.InstanceId, out var lease))
+                _leases[commit.InstanceId] = lease with
+                {
+                    ExpiresAtUtc = (snapshot.Status == WorkflowStatus.Running && !parked) || keepsLease
+                        ? lease.ExpiresAtUtc : DateTime.MinValue,
+                    CrashCount = commit.ClearsCrashCount ? 0 : lease.CrashCount
+                };
+            return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
+                PendingCancellation(commit.InstanceId), parked, unread));
         }
     }
+
+    // Caller holds _claimLock.
+    private bool Unread(CheckpointCommit commit) =>
+        commit.InboxReadThrough is { } readThrough &&
+        _inboxSequence.GetValueOrDefault(commit.InstanceId) > readThrough;
+
+    public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent)
+    {
+        ArgumentNullException.ThrowIfNull(workflowEvent);
+        workflowEvent.Validate();
+        var hash = workflowEvent.ContentHash();
+        lock (_claimLock)
+        {
+            // A known event ID answers the same way whatever happened to the instance since.
+            if (_events.TryGetValue((workflowEvent.InstanceId, workflowEvent.EventId), out var existing))
+                return Task.FromResult(existing.Hash.SequenceEqual(hash)
+                    ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Event.Sequence)
+                    : new EventAppendResult(EventAppendStatus.Conflict));
+            if (!_instances.TryGetValue(workflowEvent.InstanceId, out var instance))
+                return Task.FromResult(new EventAppendResult(EventAppendStatus.NotFound));
+            var finished = instance.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
+                WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut;
+            // A finished instance takes no events; one sent to a wait is told why that wait closed.
+            if (finished && workflowEvent.TargetWaitId == null)
+                return Task.FromResult(new EventAppendResult(EventAppendStatus.Closed));
+            var now = Now;
+            var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent,
+                workflowEvent.TargetWaitId == null ? null
+                    : WaitsOf(workflowEvent.InstanceId).GetValueOrDefault(workflowEvent.TargetWaitId),
+                WorkflowStoreRules.Candidates(workflowEvent, OpenWaits(workflowEvent.InstanceId), now), now)
+                ?? (finished ? EventRejection.InstanceFinished : null);
+            // A refused event is recorded so a resend is recognized, but takes no place in the inbox.
+            if (rejection != null)
+            {
+                _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, 0, now) with
+                {
+                    Outcome = EventOutcome.Rejected, Rejection = rejection
+                }, hash);
+                return Task.FromResult(new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection));
+            }
+            var sequence = _inboxSequence.GetValueOrDefault(workflowEvent.InstanceId) + 1;
+            _inboxSequence[workflowEvent.InstanceId] = sequence;
+            _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, sequence, now), hash);
+            // A stopped instance waits for its operator; the event is consumed after the release.
+            var madeRunnable = instance.Status is WorkflowStatus.Running or WorkflowStatus.Suspended;
+            if (madeRunnable)
+                instance.RunnableAtUtc = now;
+            return Task.FromResult(new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable));
+        }
+    }
+
+    private static StoredWorkflowEvent Stored(WorkflowEvent workflowEvent, long sequence, DateTime now) =>
+        new(workflowEvent.InstanceId, workflowEvent.EventId, sequence, workflowEvent.EventType, workflowEvent.Key,
+            workflowEvent.TargetWaitId, workflowEvent.PayloadJson, now, EventOutcome.Pending,
+            Subject: workflowEvent.Subject);
+
+    // Caller holds _claimLock.
+    private IEnumerable<StoredWait> OpenWaits(string instanceId) =>
+        _waits.TryGetValue(instanceId, out var waits) ? waits.Values.Where(wait => wait.IsOpen) : [];
+
+    // Caller holds _claimLock.
+    private Dictionary<string, StoredWait> WaitsOf(string instanceId)
+    {
+        if (!_waits.TryGetValue(instanceId, out var waits))
+            _waits[instanceId] = waits = new Dictionary<string, StoredWait>(StringComparer.Ordinal);
+        return waits;
+    }
+
+    // Caller holds _claimLock.
+    private void CloseWait(string instanceId, string waitId, WaitCloseReason reason, DateTime now)
+    {
+        var waits = WaitsOf(instanceId);
+        if (waits.TryGetValue(waitId, out var wait) && wait.IsOpen)
+            waits[waitId] = wait with { CloseReason = reason, ClosedAtUtc = now };
+    }
+
+    public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentOutOfRangeException.ThrowIfNegative(limit);
+        lock (_claimLock)
+        {
+            var through = _inboxSequence.GetValueOrDefault(instanceId);
+            var events = _events.Values
+                .Select(item => item.Event)
+                .Where(item => item.InstanceId == instanceId && item.Outcome == EventOutcome.Pending &&
+                               item.Sequence > afterSequence && item.Sequence <= through)
+                .OrderBy(item => item.Sequence)
+                .Take(limit)
+                .ToArray();
+            var open = OpenWaits(instanceId).ToArray();
+            return Task.FromResult(InboxPage.Of(events, limit, afterSequence, through,
+                open.ToDictionary(wait => wait.WaitId, wait => wait.OpenedSequence, StringComparer.Ordinal),
+                open.Where(wait => wait.DeadlineUtc != null)
+                    .ToDictionary(wait => wait.WaitId, wait => wait.DeadlineUtc!.Value, StringComparer.Ordinal),
+                Now));
+        }
+    }
+
+    public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId)
+    {
+        lock (_claimLock)
+            return Task.FromResult(_events.TryGetValue((instanceId, eventId), out var stored)
+                ? stored.Event : null);
+    }
+
+    public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds)
+    {
+        ArgumentNullException.ThrowIfNull(instanceIds);
+        lock (_claimLock)
+            return Task.FromResult<IReadOnlyDictionary<string, long>>(instanceIds
+                .Where(_instances.ContainsKey)
+                .Distinct(StringComparer.Ordinal)
+                .ToDictionary(id => id, id => _inboxSequence.GetValueOrDefault(id), StringComparer.Ordinal));
+    }
+
+    public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId)
+    {
+        lock (_claimLock)
+            return Task.FromResult(_waits.TryGetValue(instanceId, out var waits)
+                ? waits.GetValueOrDefault(waitId) : null);
+    }
+
+    public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(query.Limit);
+        lock (_claimLock)
+            return Task.FromResult<IReadOnlyList<StoredWait>>((query.InstanceId == null
+                    ? _waits.Values.SelectMany(waits => waits.Values)
+                    : OpenWaits(query.InstanceId))
+                .Where(wait => wait.IsOpen &&
+                               (query.InstanceId == null || wait.InstanceId == query.InstanceId) &&
+                               (query.Key == null || wait.Key == query.Key) &&
+                               (query.EventType == null || wait.EventType == query.EventType) &&
+                               (query.Kind == null
+                                   ? wait.Kind is not (WaitKind.Delay or WaitKind.Execution)
+                                   : wait.Kind == query.Kind) &&
+                               (query.AfterWaitId == null ||
+                                string.CompareOrdinal(wait.WaitId, query.AfterWaitId) > 0))
+                .OrderBy(wait => wait.WaitId, StringComparer.Ordinal)
+                .Take(query.Limit)
+                .ToArray());
+    }
+
+    // Caller holds _claimLock.
+    private CancellationReason? PendingCancellation(string instanceId) =>
+        _cancellations.TryGetValue(instanceId, out var reason)
+            ? JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))
+            : null;
 
     // A leased commit needs the instance's current, active lease. An unleased commit (epoch zero)
     // is accepted only while nobody holds the lease; the revision check still orders it.
@@ -367,7 +730,9 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             if (instance.Revision != 0 ||
                 (_instances.TryGetValue(instance.InstanceId, out var stored) && stored.Revision != 0))
                 throw new InvalidOperationException("Revisioned instances require an atomic commit");
-            _instances[instance.InstanceId] = SnapshotStructured(instance);
+            var saved = SnapshotStructured(instance);
+            saved.RunnableAtUtc = WorkflowStoreRules.RunnableAt(saved, false, Now);
+            _instances[instance.InstanceId] = saved;
         }
         return Task.CompletedTask;
     }
@@ -401,12 +766,17 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         lock (_claimLock)
         {
             _instances.TryRemove(instanceId, out _);
-            // The lease record stays so a recreated instance never reuses an epoch.
+            // The lease record stays so a recreated instance never reuses an epoch; its crashes go.
             if (_leases.TryGetValue(instanceId, out var lease))
-                _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue };
+                _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue, CrashCount = 0 };
             _cancellations.Remove(instanceId);
             _acknowledgedCancellations.Remove(instanceId);
             _publishedCompletions.Remove(instanceId);
+            foreach (var key in _events.Keys.Where(key => key.InstanceId == instanceId).ToArray())
+                _events.Remove(key);
+            _inboxSequence.Remove(instanceId);
+            _inboxReadThrough.Remove(instanceId);
+            _waits.Remove(instanceId);
             foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
                 _commits.Remove(key);
         }

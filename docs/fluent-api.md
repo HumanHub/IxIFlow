@@ -111,9 +111,9 @@ var definition = Workflow.Create<OrderData>("Approval")
         .Input(activity => activity.Approved).From(ctx => ctx.PreviousStep.Approved))
     .Build();
 
-var started = await engine.ExecuteWorkflowAsync(definition, orderData);
+var started = await client.RunAsync(definition, orderData);
 // After started.Status is Suspended:
-var resumed = await engine.ResumeWorkflowAsync(
+var resumed = await client.ResumeAsync(
     started.InstanceId, "manager-approval", approvalEvent);
 ```
 
@@ -133,10 +133,19 @@ Register child definitions and activity code on any host that may execute or res
 
 ## Execute
 
-`IWorkflowEngine.ExecuteWorkflowAsync` accepts a definition and a data object. It returns `WorkflowExecutionResult` with `Status`, `InstanceId`, `WorkflowData`, `ErrorMessage`, and `TraceEntries`. `IsSuccess` is true when `Status` is `Success`.
+`IWorkflowClient.RunAsync` accepts a definition and a data object. It returns `WorkflowExecutionResult` with `Status`, `InstanceId`, `WorkflowData`, `ErrorMessage`, and `TraceEntries`. `IsSuccess` is true when `Status` is `Success`.
 
 ```csharp
-var result = await engine.ExecuteWorkflowAsync(definition, orderData);
+var result = await client.RunAsync(definition, orderData);
 if (!result.IsSuccess)
     Console.WriteLine($"{result.Status}: {result.ErrorMessage}");
 ```
+
+`RunAsync` returns when the instance is idle: completed, failed, suspended at a wait, or stopped for resolution. To start an instance without waiting, call `StartAsync`; it returns the instance ID once the start is saved. `AwaitAsync(instanceId)` waits until the instance is idle, and `AwaitAsync(instanceId, WorkflowAwaitCondition.Finished)` until it completes, fails, is cancelled or times out.
+
+```csharp
+var instanceId = await client.StartAsync(definition, orderData);
+var finished = await client.AwaitAsync(instanceId, WorkflowAwaitCondition.Finished);
+```
+
+Every call runs on the application's workflow host. At most `IxIFlowOptions.Slots` instances run at once (64 by default); further work waits for a slot, and work for an instance that is already running waits behind it. When the application stops, the host starts no new steps, lets running activities finish and saves them, and cancels anything still running after `IxIFlowOptions.DrainTimeout` (20 seconds by default). Saved instances continue when the application starts again.

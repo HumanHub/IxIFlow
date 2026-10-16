@@ -22,11 +22,20 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddIxIFlow(this IServiceCollection services)
     {
         // Core workflow services
-        services.AddScoped<IWorkflowEngine, WorkflowEngine>();
+        services.TryAddSingleton(HostSettings.Default);
+        services.AddSingleton<LocalWorkflowHost>();
+        // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
+        services.AddSingleton<CancellationWatch>();
+        services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
+        services.AddScoped<DirectInstanceClient>();
+        services.AddScoped<RunControl>();
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
         services.AddScoped<IWorkflowInvoker, WorkflowInvoker>();
         services.AddScoped<InstanceHost>();
         services.AddHostedService<WorkflowRecoveryService>();
+        // Registered after the scanner so it stops first: hosted services stop in reverse order,
+        // and the host drains the work the scanner admitted.
+        services.AddHostedService(provider => provider.GetRequiredService<LocalWorkflowHost>());
         services.AddSingleton(InProcessInstanceGate.Shared);
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(ExecutionLimits.Default);
@@ -38,14 +47,8 @@ public static class ServiceCollectionExtensions
         // Workflow tracing and monitoring
         services.AddScoped<IWorkflowTracer, WorkflowTracer>();
         
-        // Event management
-        services.AddScoped<IEventCorrelator, EventCorrelator>();
-        
         // Expression evaluation
         services.AddScoped<IExpressionEvaluator, ExpressionEvaluator>();
-        
-        // Suspension management
-        services.AddScoped<ISuspensionManager, SuspensionManager>();
         return services;
     }
 
@@ -64,7 +67,30 @@ public static class ServiceCollectionExtensions
         services.AddIxIFlow();
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
-        services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits(options.MaxCheckpointBytes)));
+        if (options.MaxCrashes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The crash limit must be positive");
+        if (options.MaxActiveBranches <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The branch limit must be positive");
+        if (options.MaxActivitiesPerRun <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The activity limit must be positive");
+        if (options.ParkRetriesLongerThan < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The park threshold cannot be negative");
+        if (options.PollInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The poll interval must be positive");
+        services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits
+        {
+            MaxCheckpointBytes = options.MaxCheckpointBytes,
+            MaxCrashes = options.MaxCrashes,
+            MaxActiveBranches = options.MaxActiveBranches,
+            MaxActivitiesPerRun = options.MaxActivitiesPerRun,
+            ParkRetriesLongerThan = options.ParkRetriesLongerThan
+        }));
+        if (options.Slots <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The slot count must be positive");
+        if (options.DrainTimeout < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The drain timeout cannot be negative");
+        services.Replace(ServiceDescriptor.Singleton(
+            new HostSettings(options.Slots, options.DrainTimeout, options.PollInterval)));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -341,7 +367,55 @@ public class IxIFlowOptions
     /// <summary>
     /// The largest checkpoint, in bytes of workflow data and execution state, that an instance may
     /// save. A run that would exceed it stops at NeedsResolution with its last checkpoint; raise the
-    /// limit and recover the instance to continue.
+    /// limit and release the instance to continue.
     /// </summary>
     public long MaxCheckpointBytes { get; set; } = ExecutionLimits.DefaultMaxCheckpointBytes;
+
+    /// <summary>
+    /// How many owners in a row may lose an instance while it runs, by crashing or losing their
+    /// lease, before the instance is quarantined at NeedsResolution. No host runs a quarantined
+    /// instance until an operator releases it. Progress resets the count.
+    /// </summary>
+    public int MaxCrashes { get; set; } = ExecutionLimits.DefaultMaxCrashes;
+
+    /// <summary>
+    /// How many continuations of one instance may be live at once: the root, every parallel branch,
+    /// and every parent waiting at its join. A parallel step that would exceed it stops the instance
+    /// at NeedsResolution before forking, after its running activities finish; raise the limit and
+    /// release the instance to continue.
+    /// </summary>
+    public int MaxActiveBranches { get; set; } = ExecutionLimits.DefaultMaxActiveBranches;
+
+    /// <summary>
+    /// How many activities one run of an instance has in flight at once. Further activities wait
+    /// for one to finish; other branches keep advancing. It bounds each run, not the host: the host's
+    /// concurrency is set by <see cref="Slots"/>. Branches that wait on each other's activities need
+    /// enough room to run together.
+    /// </summary>
+    public int MaxActivitiesPerRun { get; set; } = ExecutionLimits.DefaultMaxActivitiesPerRun;
+
+    /// <summary>
+    /// A run with nothing else to do whose next retry is further away than this gives its slot back
+    /// and the host resumes it on time; a shorter backoff is waited out in the slot. Callers waiting
+    /// for the run keep waiting either way.
+    /// </summary>
+    public TimeSpan ParkRetriesLongerThan { get; set; } = ExecutionLimits.DefaultParkRetriesLongerThan;
+
+    /// <summary>
+    /// How often the host looks in the store for instances that are due and that nobody owns, such
+    /// as work left by another host. Its own timers fire without waiting for the poll.
+    /// </summary>
+    public TimeSpan PollInterval { get; set; } = HostSettings.DefaultPollInterval;
+
+    /// <summary>
+    /// How many instances this host runs at once. A run holds its slot until the instance is idle,
+    /// including while it sleeps on a retry delay or a deadline in the same run.
+    /// </summary>
+    public int Slots { get; set; } = HostSettings.DefaultSlots;
+
+    /// <summary>
+    /// How long a stopping host lets running instances reach their next commit before cancelling
+    /// them. Keep it below the application's shutdown timeout.
+    /// </summary>
+    public TimeSpan DrainTimeout { get; set; } = HostSettings.DefaultDrainTimeout;
 }

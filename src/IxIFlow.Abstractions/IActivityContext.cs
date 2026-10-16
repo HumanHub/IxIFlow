@@ -86,4 +86,10 @@ public interface IActivityContext
     ///     Step-level metadata (e.g., retry attempts, engine context)
     /// </summary>
     IDictionary<string, object> Metadata { get; }
+
+    /// <summary>
+    /// For a request activity (<see cref="IRequestActivity{TReply}"/>), where its answer goes; null for
+    /// any other activity. A retry of the same step gets the same address.
+    /// </summary>
+    ReplyAddress? Reply { get; }
 }

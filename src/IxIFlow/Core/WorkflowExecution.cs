@@ -274,8 +274,12 @@ public class WorkflowInstance
     /// </summary>
     public DateTime? CompletedAt { get; set; }
 
-    /// <summary>Earliest persisted deadline that can wake an idle instance.</summary>
-    public DateTime? NextDueAtUtc { get; set; }
+    /// <summary>
+    /// The earliest time a host should claim and run the instance (C-01): the commit time while it
+    /// runs, its earliest deadline or check while it waits, now when a cancellation request or a
+    /// finished child needs it. Null when only an outside event or an operator can move it.
+    /// </summary>
+    public DateTime? RunnableAtUtc { get; set; }
 
     /// <summary>
     ///     Current step number being executed
@@ -334,11 +338,6 @@ public class WorkflowInstance
     ///     Execution history entries
     /// </summary>
     public List<ExecutionTraceEntry> ExecutionHistory { get; set; } = new();
-
-    /// <summary>
-    ///     Current suspension information (if suspended)
-    /// </summary>
-    public SuspensionInfo? SuspensionInfo { get; set; }
 
     /// <summary>
     ///     Structured execution snapshot for resume, replay, and debugging
@@ -463,47 +462,6 @@ public class ExecutionFrame
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Dictionary<string, object?> RuntimeValues { get; set; } = new();
-}
-
-/// <summary>
-///     Information about workflow suspension
-/// </summary>
-public class SuspensionInfo
-{
-    /// <summary>
-    ///     Identifies this particular wait, including repeated waits at the same step.
-    /// </summary>
-    public string SuspensionId { get; set; } = Guid.NewGuid().ToString("N");
-
-    /// <summary>
-    ///     When the workflow was suspended
-    /// </summary>
-    public DateTime SuspendedAt { get; set; }
-
-    /// <summary>
-    ///     Reason for suspension
-    /// </summary>
-    public string SuspendReason { get; set; } = "";
-
-    /// <summary>
-    ///     Type of event expected for resumption
-    /// </summary>
-    public string ResumeEventType { get; set; } = "";
-
-    /// <summary>
-    ///     Serialized resume condition
-    /// </summary>
-    public string ResumeConditionJson { get; set; } = "";
-
-    /// <summary>
-    ///     When the suspension expires (if applicable)
-    /// </summary>
-    public DateTime? ExpiresAt { get; set; }
-
-    /// <summary>
-    ///     Additional suspension metadata
-    /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
 }
 
 /// <summary>
@@ -878,6 +836,22 @@ public class WorkflowStep
     /// </summary>
     public Type? ResumeEventType { get; set; }
 
+    /// <summary>For a request step, the name its <c>WaitFor</c> uses (D-33).</summary>
+    public string? RequestName { get; set; }
+
+    /// <summary>For a request step, the answer type its activity declares with <c>IRequestActivity&lt;TReply&gt;</c>.</summary>
+    public Type? ReplyType { get; set; }
+
+    /// <summary>
+    /// For a request step, what the request is about, computed from the workflow context when its
+    /// inputs are captured. A reply must carry the same subject.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, string>? RequestSubject { get; set; }
+
+    /// <summary>For a <c>WaitFor</c> that takes a request's answer, the request's name.</summary>
+    public string? ReplyToRequest { get; set; }
+
     /// <summary>
     ///     Step execution order
     /// </summary>
@@ -932,6 +906,10 @@ public class WorkflowStep
             ExceptionType = ExceptionType,
             FaultType = FaultType,
             ResumeEventType = ResumeEventType,
+            RequestName = RequestName,
+            ReplyType = ReplyType,
+            RequestSubject = RequestSubject,
+            ReplyToRequest = ReplyToRequest,
             Order = Order,
             StepMetadata = new Dictionary<string, object>(StepMetadata)
         };

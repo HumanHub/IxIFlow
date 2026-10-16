@@ -5,7 +5,7 @@ namespace IxIFlow.Core.Runtime;
 /// <see cref="WorkflowErrorKind.Infrastructure"/> engine failure, so it interrupts the
 /// instance instead of being handled as a workflow failure.
 /// </summary>
-internal sealed class GuardedStateRepository : IWorkflowStateRepository
+internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkflowInbox
 {
     private readonly IWorkflowStateRepository _store;
 
@@ -22,14 +22,46 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetCancellationRequestAsync(instanceId),
             $"Reading the cancellation request of workflow instance '{instanceId}'");
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
-        Guard(_store.GetWorkflowsRequiringRecoveryAsync, "Listing workflow instances that need recovery");
+    public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        IReadOnlyCollection<string> instanceIds) =>
+        Guard(() => _store.GetCancellationRequestsAsync(instanceIds),
+            $"Reading the cancellation requests of {instanceIds.Count} workflow instances");
+
+    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
+        Guard(() => _store.GetRunnableInstancesAsync(limit), "Listing runnable workflow instances");
+
+    private IWorkflowInbox Inbox => _store as IWorkflowInbox
+        ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+            "The workflow state store has no inbox");
+
+    public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+        Guard(() => Inbox.AppendEventAsync(workflowEvent),
+            $"Storing event '{workflowEvent.EventId}' for workflow instance '{workflowEvent.InstanceId}'");
+
+    public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
+        Guard(() => Inbox.GetPendingEventsAsync(instanceId, afterSequence, limit),
+            $"Reading the inbox of workflow instance '{instanceId}'");
+
+    public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+        Guard(() => Inbox.GetEventAsync(instanceId, eventId),
+            $"Reading event '{eventId}' of workflow instance '{instanceId}'");
+
+    public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+        Guard(() => Inbox.GetWaitAsync(instanceId, waitId),
+            $"Reading wait '{waitId}' of workflow instance '{instanceId}'");
+
+    public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+        Guard(() => Inbox.GetOpenWaitsAsync(query), "Listing open workflow waits");
+
+    public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds) =>
+        Guard(() => Inbox.GetInboxSequencesAsync(instanceIds), "Reading workflow inbox sequences");
 
     public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit) =>
         Guard(() => _store.CommitWorkflowInstanceAsync(commit),
             $"Saving workflow instance '{commit.InstanceId}'");
 
-    public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+    public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+        TimeSpan duration) =>
         Guard(() => _store.TryAcquireExecutionLeaseAsync(instanceId, token, duration),
             $"Acquiring the execution lease of workflow instance '{instanceId}'");
 

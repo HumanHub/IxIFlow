@@ -27,8 +27,8 @@ public class StructuredLoopWaitTests
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Count)))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new LoopData(),
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LoopData(),
                 new WorkflowOptions { PersistState = false });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -36,20 +36,21 @@ public class StructuredLoopWaitTests
     }
 
     [Fact]
+    [Trait("Spec", "D-01")]
     public async Task WhileDo_WaitsOnEachIterationAndDoesNotRepeatCompletedWork()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(WhileWorkflow(), new LoopData { Target = 2 });
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(WhileWorkflow(), new LoopData { Target = 2 });
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Equal(0, Data(started).Count);
 
-        var first = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new LoopApproval());
+        var first = await engine.ResumeAsync(started.InstanceId, "approval", new LoopApproval());
         Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
         Assert.Equal(1, Data(first).Count);
 
-        var second = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new LoopApproval());
+        var second = await engine.ResumeAsync(started.InstanceId, "approval", new LoopApproval());
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
         Assert.Equal(2, Data(second).Count);
     }
@@ -58,8 +59,8 @@ public class StructuredLoopWaitTests
     public async Task WhileDo_FalseConditionSkipsTheWait()
     {
         using var services = CreateServices();
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(WhileWorkflow(), new LoopData { Target = 0 });
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(WhileWorkflow(), new LoopData { Target = 0 });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(0, Data(result).Count);
@@ -69,11 +70,11 @@ public class StructuredLoopWaitTests
     public async Task DoWhile_WaitsOnceBeforeCheckingTheCondition()
     {
         using var services = CreateServices();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(DoWhileWorkflow(), new LoopData { Target = 0 });
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(DoWhileWorkflow(), new LoopData { Target = 0 });
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new LoopApproval());
+        var completed = await engine.ResumeAsync(started.InstanceId, "approval", new LoopApproval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, Data(completed).Count);
     }
@@ -85,9 +86,9 @@ public class StructuredLoopWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var engine = firstProvider.GetRequiredService<IWorkflowEngine>();
-            var started = await engine.ExecuteWorkflowAsync(WhileWorkflow(), new LoopData { Target = 2 });
-            var first = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new LoopApproval());
+            var engine = firstProvider.GetRequiredService<IWorkflowClient>();
+            var started = await engine.RunAsync(WhileWorkflow(), new LoopData { Target = 2 });
+            var first = await engine.ResumeAsync(started.InstanceId, "approval", new LoopApproval());
             Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
             Assert.Equal(1, Data(first).Count);
             instanceId = started.InstanceId;
@@ -96,8 +97,8 @@ public class StructuredLoopWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(WhileWorkflow());
-        var completed = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "approval", new LoopApproval());
+        var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "approval", new LoopApproval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(2, Data(completed).Count);

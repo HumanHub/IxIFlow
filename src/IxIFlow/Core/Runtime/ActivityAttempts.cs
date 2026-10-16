@@ -83,6 +83,9 @@ internal sealed class ActivityAttempts(
                             .SetValue(prepared.Activity, value?.Read(services));
                 }
             }
+            if (step.RequestName != null)
+                prepared.SetReply(ReplyAddressFor(scopes, checkpoint, continuation, step, instance, pending,
+                    workflowData));
         }
         catch (Exception error) when (!isRecovery && !WorkflowEngineException.IsEngineFailure(error))
         {
@@ -134,7 +137,9 @@ internal sealed class ActivityAttempts(
         }
         if (instance.TracingEnabled)
             instance.ExecutionHistory.Add(startTrace);
-        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+        // Claiming the attempt is not progress: an activity that kills its owner keeps counting.
+        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
+            clearsCrashCount: false);
 
         var skipCancelledRecovery = isRecovery && continuation.CancellationUnwind &&
             !TryScopeTransitions.IsInsideFinally(continuation) &&
@@ -201,6 +206,39 @@ internal sealed class ActivityAttempts(
         {
             return ActivityRunResult.Threw(error);
         }
+    }
+
+    // A request's answer gets its wait before the activity runs, so no answer can come too early for it
+    // (D-33). A retry of the step keeps the wait and its token, even once the answer has arrived.
+    private ReplyAddress ReplyAddressFor(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, WorkflowStep step, WorkflowInstance instance,
+        ActivityInvocationState pending, object workflowData)
+    {
+        if (checkpoint.Waits.FirstOrDefault(wait => wait.IsReply && wait.InvocationId == pending.Id) is { } open)
+            return new ReplyAddress(ReplyToken.Create(instance.InstanceId, open.Id, open.Subject));
+        if (checkpoint.BoundReplies.FirstOrDefault(reply => reply.InvocationId == pending.Id) is { } answered)
+            return new ReplyAddress(ReplyToken.Create(instance.InstanceId, answered.WaitId, answered.Subject));
+        var position = continuation.Stack[^1];
+        var waitFor = scopes.Steps(position.ScopeId).Skip(position.NextStepIndex + 1)
+            .First(candidate => candidate.ReplyToRequest == step.RequestName);
+        var subject = step.RequestSubject is { } describe
+            ? ReplyToken.Digest(describe(WorkflowValueBinding.EvaluationContext(workflowData,
+                step.PreviousStepDataType, continuation.GetPrevious(services))))
+            : null;
+        var wait = new WaitState
+        {
+            RegisteredAtUtc = Now,
+            ContinuationId = continuation.Id,
+            StepId = scopes.Id(waitFor),
+            Key = step.RequestName!,
+            EventType = step.ReplyType!.AssemblyQualifiedName!,
+            IsReply = true,
+            InvocationId = pending.Id,
+            ScopeActivationId = position.ActivationId,
+            Subject = subject
+        };
+        checkpoint.Waits.Add(wait);
+        return new ReplyAddress(ReplyToken.Create(instance.InstanceId, wait.Id, subject));
     }
 
     private static string NewInvocationId(WorkflowInstance instance,
@@ -296,7 +334,9 @@ internal sealed class ActivityAttempts(
         }
         if (instance.TracingEnabled)
             instance.ExecutionHistory.Add(startTrace);
-        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+        // Claiming the child invocation is not progress, like an activity start.
+        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
+            clearsCrashCount: false);
 
         if (ContinuationTransitions.ShouldCancelInvokedChild(continuation) &&
             pending.Resolution == null &&
@@ -348,14 +388,26 @@ internal sealed class ActivityAttempts(
         else
         {
             var accepted = continuation.AcceptedWait;
-            if (accepted?.StepId == scopes.Id(step) && pending.ChildWorkflowId != null)
+            if (accepted?.StepId == scopes.Id(step) && pending.ChildWorkflowId != null && !accepted.Forwarded)
             {
+                // The child decides the event under the same ID, so a forward repeated after a crash is
+                // a duplicate there; the parent settles its copy with the child's answer.
                 var childResult = await ResumeChildWaitAsync(host, pending.ChildWorkflowId,
                     accepted, cancellation.Token);
-                accepted.EventAccepted = childResult.EventAccepted;
-                if (childResult.EventAccepted && accepted.DeliveryHash != null)
-                    checkpoint.AcceptedDeliveries.TryAdd(accepted.DeliveryId!,
-                        accepted.DeliveryHash);
+                // A child that has not decided yet, such as one another host runs, leaves the parent's
+                // copy pending; a later pass forwards it again and the child answers the duplicate.
+                if (childResult.Event?.Outcome is EventOutcome.Consumed or EventOutcome.Rejected or EventOutcome.Closed)
+                {
+                    accepted.Forwarded = true;
+                    checkpoint.Inbox.Settle(childResult.Event.Outcome switch
+                    {
+                        EventOutcome.Rejected => new EventSettlement(accepted.EventId, EventOutcome.Rejected,
+                            Rejection: childResult.Event.Rejection ?? EventRejection.NotMatched),
+                        EventOutcome.Closed => new EventSettlement(accepted.EventId, EventOutcome.Rejected,
+                            Rejection: EventRejection.InstanceFinished),
+                        _ => new EventSettlement(accepted.EventId, EventOutcome.Consumed, accepted.WaitId)
+                    });
+                }
             }
             task = ObserveInvocationAsync(host.InvokeChildAsync(step, definition, instance,
                 sourceData, continuation.GetPrevious(services), pending.Id, cancellation.Token));
@@ -369,7 +421,7 @@ internal sealed class ActivityAttempts(
     {
         var @event = accepted.Event.Read(services)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A child resume event cannot be null");
-        return host.ResumeChildAsync(childInstanceId, accepted.Key, @event, accepted.DeliveryId!,
+        return host.ResumeChildAsync(childInstanceId, accepted.Key, @event, accepted.EventId,
             cancellationToken);
     }
 

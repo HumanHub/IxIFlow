@@ -10,7 +10,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class SequenceTests
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly IWorkflowEngine _workflowEngine;
+    private readonly IWorkflowClient _workflowEngine;
 
     public SequenceTests()
     {
@@ -20,7 +20,7 @@ public class SequenceTests
         services.AddIxIFlow();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
     }
 
     [Fact]
@@ -67,7 +67,7 @@ public class SequenceTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -136,7 +136,7 @@ public class SequenceTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -209,7 +209,7 @@ public class SequenceTests
         };
 
         // Act
-        var highValueResult = await _workflowEngine.ExecuteWorkflowAsync(definition, highValueData);
+        var highValueResult = await _workflowEngine.RunAsync(definition, highValueData);
 
         // Assert
         Assert.True(highValueResult.IsSuccess);
@@ -231,7 +231,7 @@ public class SequenceTests
         };
 
         // Act
-        var lowValueResult = await _workflowEngine.ExecuteWorkflowAsync(definition, lowValueData);
+        var lowValueResult = await _workflowEngine.RunAsync(definition, lowValueData);
 
         // Assert
         Assert.True(lowValueResult.IsSuccess);

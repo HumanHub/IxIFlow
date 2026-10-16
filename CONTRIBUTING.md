@@ -6,7 +6,7 @@ Thanks for your interest in contributing to IxIFlow! We welcome contributions fr
 
 ### Prerequisites
 
-- .NET 8.0 or later
+- .NET 10 SDK (the current LTS release; every project targets net10.0)
 - Visual Studio 2022, VS Code, or JetBrains Rider
 - Git
 

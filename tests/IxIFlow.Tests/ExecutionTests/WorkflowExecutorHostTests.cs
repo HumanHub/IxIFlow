@@ -146,12 +146,14 @@ public sealed class WorkflowExecutorHostTests
         public Func<bool> CancellationWhen { get; init; } = () => false;
 
         public bool PersistsState => true;
+        public CancellationToken Drain => CancellationToken.None;
         public long Epoch => 1;
-        public long MaxCheckpointBytes => long.MaxValue;
+        public ExecutionLimits Limits { get; } = new() { MaxCheckpointBytes = long.MaxValue };
         public bool ChildStartIsCheckpointed => true;
+        public bool CanPark => false;
         public Task? OwnershipLoss => null;
         public Task<CancellationReason>? CancellationSignal => null;
-        public CancellationReason? ObservedCancellation => null;
+        public CancellationReason? ObservedCancellation { get; private set; }
 
         public void ThrowIfOwnershipLost()
         {
@@ -164,13 +166,14 @@ public sealed class WorkflowExecutorHostTests
                     Error: new InvalidOperationException("Another owner committed")));
             _commits.Add(commit.ReadInstance().Status);
             probe.Commits = _commits.Count;
-            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, _commits.Count));
+            // Like a store, the commit reply reports a pending cancellation request.
+            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, _commits.Count,
+                PendingCancellation: CancellationWhen()
+                    ? new CancellationReason { ReasonCode = "host-cancelled" }
+                    : null));
         }
 
-        public Task<CancellationReason?> ReadCancellationRequestAsync() =>
-            Task.FromResult(CancellationWhen()
-                ? new CancellationReason { ReasonCode = "host-cancelled" }
-                : null);
+        public void ObserveCancellation(CancellationReason reason) => ObservedCancellation ??= reason;
 
         public Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step,
             WorkflowDefinition definition, WorkflowInstance instance, object workflowData, object? previous,
@@ -192,8 +195,17 @@ public sealed class WorkflowExecutorHostTests
             throw new NotSupportedException("No child is cancelled in this test");
 
         public Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key, object @event,
-            string deliveryId, CancellationToken cancellationToken) =>
+            string eventId, CancellationToken cancellationToken) =>
             throw new NotSupportedException("No child is resumed in this test");
+
+        public long ObservedInboxSequence => 0;
+        public Task? InboxChanged => null;
+
+        // No event is sent in these tests: the inbox is always empty.
+        public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) =>
+            Task.FromResult(new InboxPage([], afterSequence, new Dictionary<string, long>()));
+
+        public Task<StoredWait?> ReadWaitAsync(string waitId) => Task.FromResult<StoredWait?>(null);
     }
 
     public sealed class ExecutorProbe

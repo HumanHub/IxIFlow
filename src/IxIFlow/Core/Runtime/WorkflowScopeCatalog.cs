@@ -13,6 +13,7 @@ internal sealed class WorkflowScopeCatalog
     {
         AddScope("root", definition.Steps);
         ValidateSupportedSteps();
+        RequestPairing.Pair(definition.Steps);
         Fingerprint = ComputeFingerprint();
     }
 
@@ -152,7 +153,9 @@ internal sealed class WorkflowScopeCatalog
                     string.Join(';', step.OutcomeBranches.Select(OutcomeBranchSignature)),
                     ErrorPolicySignature(step),
                     string.Join(';', step.InputMappings.Select(MappingSignature)),
-                    string.Join(';', step.OutputMappings.Select(MappingSignature)));
+                    string.Join(';', step.OutputMappings.Select(MappingSignature)),
+                    step.RequestName, WorkflowTypeIdentity.StableName(step.ReplyType), step.ReplyToRequest,
+                    WorkflowCodeSignature.Of(step.RequestSubject));
             }));
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature));
         return Convert.ToHexString(bytes);

@@ -49,15 +49,15 @@ public sealed class WorkflowRegistrationTests
         using (var first = CreateProvider())
         {
             var definition = first.GetWorkflowDefinition<NamedWorkflow>();
-            var started = await first.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new RegistrationData());
+            var started = await first.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new RegistrationData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
 
         using var second = CreateProvider();
-        var resumed = await second.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "approval", new RegistrationEvent());
+        var resumed = await second.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "approval", new RegistrationEvent());
 
         Assert.True(resumed.Status == WorkflowExecutionStatus.Success, resumed.ErrorMessage);
     }
@@ -69,8 +69,8 @@ public sealed class WorkflowRegistrationTests
         services.RegisterWorkflow<NamedWorkflow>("Customer approval");
         using var provider = services.BuildServiceProvider();
         var definition = provider.GetWorkflowDefinition<NamedWorkflow>();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new RegistrationData());
+        var engine = provider.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new RegistrationData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var registry = provider.GetRequiredService<IWorkflowVersionRegistry>();
@@ -81,16 +81,16 @@ public sealed class WorkflowRegistrationTests
         Assert.Equal(definition.Id, deactivated.Id);
         Assert.Equal(definition.Steps.Count, deactivated.Steps.Count);
 
-        var existingStart = await engine.ExecuteWorkflowAsync(definition,
+        var existingStart = await engine.RunAsync(definition,
             new RegistrationData(), new WorkflowOptions { InstanceId = started.InstanceId });
         Assert.Equal(WorkflowExecutionStatus.Suspended, existingStart.Status);
 
-        var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+        var resumed = await engine.ResumeAsync(started.InstanceId, "approval",
             new RegistrationEvent());
         Assert.True(resumed.Status == WorkflowExecutionStatus.Success, resumed.ErrorMessage);
 
         await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable, () =>
-            engine.ExecuteWorkflowAsync(definition, new RegistrationData()));
+            engine.RunAsync(definition, new RegistrationData()));
     }
 
     [Theory]
@@ -129,14 +129,14 @@ public sealed class WorkflowRegistrationTests
         string instanceId;
         using (var first = CreateProvider())
         {
-            var started = await first.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(parent, new ParentData());
+            var started = await first.GetRequiredService<IWorkflowClient>()
+                .RunAsync(parent, new ParentData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
             if (!restartBeforeResume)
             {
-                var resumedWithoutRestart = await first.GetRequiredService<IWorkflowEngine>()
-                    .ResumeWorkflowAsync(instanceId, "approval", new RegistrationEvent());
+                var resumedWithoutRestart = await first.GetRequiredService<IWorkflowClient>()
+                    .ResumeAsync(instanceId, "approval", new RegistrationEvent());
                 AssertCompleted(resumedWithoutRestart);
             }
         }
@@ -146,8 +146,8 @@ public sealed class WorkflowRegistrationTests
             using var second = CreateProvider();
             await second.GetRequiredService<IWorkflowVersionRegistry>()
                 .RegisterWorkflowAsync(parent);
-            var resumed = await second.GetRequiredService<IWorkflowEngine>()
-                .ResumeWorkflowAsync(instanceId, "approval", new RegistrationEvent());
+            var resumed = await second.GetRequiredService<IWorkflowClient>()
+                .ResumeAsync(instanceId, "approval", new RegistrationEvent());
             AssertCompleted(resumed);
         }
 
@@ -182,11 +182,11 @@ public sealed class WorkflowRegistrationTests
             .Invoke<NamedWorkflow, RegistrationData>(step => step
                 .Output(data => data.Completed).To(ctx => ctx.WorkflowData.ChildCompleted))
             .Build();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
 
-        var started = await engine.ExecuteWorkflowAsync(parent, new ParentData());
+        var started = await engine.RunAsync(parent, new ParentData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+        var resumed = await engine.ResumeAsync(started.InstanceId, "approval",
             new RegistrationEvent());
         AssertCompleted(resumed);
         var repository = provider.GetRequiredService<IWorkflowStateRepository>();

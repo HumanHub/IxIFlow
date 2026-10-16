@@ -4,6 +4,7 @@ using IxIFlow.Tests.Infrastructure;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "durability")]
+[Trait("Spec", "J-06")]
 public class SqlWorkflowStateRepositoryTests
 {
     [SqlServerFact]
@@ -19,20 +20,20 @@ public class SqlWorkflowStateRepositoryTests
             {
                 InstanceId = instanceId,
                 Status = WorkflowStatus.Suspended,
-                NextDueAtUtc = DateTime.UtcNow.AddMinutes(1)
+                RunnableAtUtc = DateTime.UtcNow.AddMinutes(1)
             };
             await repository.SaveWorkflowInstanceAsync(instance);
-            Assert.DoesNotContain(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
                 candidate => candidate.InstanceId == instanceId);
 
-            instance.NextDueAtUtc = DateTime.UtcNow.AddMinutes(-1);
+            instance.RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1);
             await repository.SaveWorkflowInstanceAsync(instance);
-            Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 candidate => candidate.InstanceId == instanceId);
 
             instance.Status = WorkflowStatus.NeedsResolution;
             await repository.SaveWorkflowInstanceAsync(instance);
-            Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
+            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 candidate => candidate.InstanceId == instanceId);
         }
         finally
@@ -76,7 +77,6 @@ public class SqlWorkflowStateRepositoryTests
                 Status = WorkflowStatus.Suspended,
                 CorrelationId = "correlation-1",
                 WorkflowDataJson = "{\"Value\":42}",
-                SuspensionInfo = new SuspensionInfo { SuspendReason = "approval" },
                 ExecutionSnapshot = new WorkflowExecutionSnapshot
                 {
                     InstanceId = instanceId,
@@ -90,7 +90,6 @@ public class SqlWorkflowStateRepositoryTests
             Assert.NotNull(restored);
             Assert.Equal(WorkflowStatus.Suspended, restored.Status);
             Assert.Equal("{\"Value\":42}", restored.WorkflowDataJson);
-            Assert.Equal("approval", restored.SuspensionInfo?.SuspendReason);
             Assert.Equal("try-1", Assert.Single(restored.ExecutionSnapshot!.Frames).StepId);
             Assert.Contains(await secondRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended),
                 candidate => candidate.InstanceId == instanceId);

@@ -8,6 +8,7 @@ namespace IxIFlow.Tests;
 /// tests/feature-baseline.json. Lowering a minimum is a deliberate change to that file.
 /// </summary>
 [Trait("Feature", Guard)]
+[Trait("Spec", "J-07")]
 public sealed class FeatureBaselineGuardTests
 {
     private const string Guard = "guard";

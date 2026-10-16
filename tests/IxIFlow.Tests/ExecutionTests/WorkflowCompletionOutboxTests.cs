@@ -49,8 +49,8 @@ public sealed class WorkflowCompletionOutboxTests
         var definition = Workflow.Create<CompletionData>("OutboxMemory")
             .Step<CompletedActivity>()
             .Build();
-        var result = await host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new CompletionData());
+        var result = await host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new CompletionData());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var bus = new CompletionBus();
         using var recovery = new WorkflowCompletionOutboxService(
@@ -79,8 +79,8 @@ public sealed class WorkflowCompletionOutboxTests
         var definition = Workflow.Create<CompletionData>("OutboxRetry")
             .Step<CompletedActivity>()
             .Build();
-        var result = await host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new CompletionData());
+        var result = await host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new CompletionData());
         var bus = new CompletionBus { FailNextPublish = true };
         var publisher = new WorkflowCompletionPublisher(repository, bus, "recovery-host");
 
@@ -211,8 +211,8 @@ public sealed class WorkflowCompletionOutboxTests
         var definition = Workflow.Create<CompletionData>("OutboxSql")
             .Step<CompletedActivity>()
             .Build();
-        var result = await host.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new CompletionData());
+        var result = await host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new CompletionData());
         try
         {
             var bus = new CompletionBus();

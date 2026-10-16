@@ -8,23 +8,35 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
 {
     private DateTime Now => time.GetUtcNow().UtcDateTime;
 
-    // A deadline that passes after the root finishes has nothing left to interrupt.
-    public bool HasDueDeadline(ExecutionCheckpoint checkpoint) =>
-        (!checkpoint.CancellationRequested && !RootFinished(checkpoint) &&
-         checkpoint.ExecutionDeadlineUtc <= Now) ||
-        checkpoint.Waits.Any(wait => wait.DeadlineUtc <= Now);
+    /// <summary>
+    /// True when a deadline may be due by the store's clock as the run last read it, or a child is due
+    /// for a check by the host's own: the run reads the inbox, and the store says which are due (D-35).
+    /// A deadline that passes after the root finishes has nothing left to interrupt.
+    /// </summary>
+    public bool MayBeDue(ExecutionCheckpoint checkpoint) => checkpoint.NextDeadlineLocal() <= Now;
+
+    /// <summary>
+    /// A cancellation request the host observed and the run has not applied yet; while one is pending,
+    /// the run applies it before it takes events or deadlines.
+    /// </summary>
+    public static bool CancellationPending(ExecutionCheckpoint checkpoint, IExecutionHost host) =>
+        !checkpoint.CancellationRequested && host.ObservedCancellation != null &&
+        checkpoint.Continuations[0].Status != ContinuationStatus.Completed;
+
+    // The store's time as the run last read its clock. A deadline the run sets is an estimate until it
+    // reads the one the store stamped; a retry time stays the run's estimate (D-35).
+    private DateTime StoreNow(ExecutionCheckpoint checkpoint) => checkpoint.Clock.ToStore(Now);
 
     public static bool RootFinished(ExecutionCheckpoint checkpoint) =>
         checkpoint.Continuations[0].Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled;
 
+    /// <summary>Ends the run at its execution deadline when the store found it due at the run's last read.</summary>
     public bool ProcessExecutionDeadline(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint)
     {
-        if (checkpoint.CancellationRequested || checkpoint.TimedOut ||
-            checkpoint.ExecutionDeadlineUtc > Now ||
-            checkpoint.ExecutionDeadlineUtc == null ||
-            RootFinished(checkpoint))
+        if (!checkpoint.ExecutionTimerOpen || !checkpoint.Inbox.IsDue(checkpoint.ExecutionTimerId!))
             return false;
+        checkpoint.Inbox.Closed(checkpoint.ExecutionTimerId!, WaitCloseReason.TimedOut);
         checkpoint.TimedOut = true;
         checkpoint.CancellationRequested = true;
         instance.CancellationReason = new CancellationReason
@@ -37,11 +49,14 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         return true;
     }
 
-    public bool ProcessDueWaits(ExecutionCheckpoint checkpoint,
-        WorkflowScopeCatalog scopes)
+    /// <summary>
+    /// Times out the waits the store found due when the run last read its inbox. That read covered every
+    /// event received before their deadlines, and the run decided those first (D-33, D-35).
+    /// </summary>
+    public bool ProcessDueWaits(ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes)
     {
         var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId == null &&
-            wait.DeadlineUtc <= Now).ToArray();
+            checkpoint.Inbox.IsDue(wait.Id)).ToArray();
         foreach (var wait in due)
         {
             var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
@@ -50,7 +65,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 step.StepType != WorkflowStepType.Delay && step.TimeoutSteps.Count == 0)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "A due wait has no active timeout branch");
-            checkpoint.Waits.Remove(wait);
+            checkpoint.RemoveWaits(item => item == wait, WaitCloseReason.TimedOut);
             continuation.Status = ContinuationStatus.Active;
             if (step.StepType == WorkflowStepType.Delay)
             {
@@ -69,11 +84,17 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         return due.Length != 0;
     }
 
+    /// <summary>
+    /// Moves a continuation past its next control-flow step. A parallel step that would make more
+    /// than <paramref name="maxActiveBranches"/> continuations live throws
+    /// <see cref="BranchLimitExceededException"/> before anything changes.
+    /// </summary>
     public void Advance(
         WorkflowScopeCatalog scopes,
         ExecutionCheckpoint checkpoint,
         ContinuationState continuation,
-        object workflowData)
+        object workflowData,
+        int maxActiveBranches = int.MaxValue)
     {
         if (continuation.AcceptedWait is { } accepted)
         {
@@ -86,7 +107,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             var @event = accepted.Event.Read(services)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "The accepted event could not be restored");
-            SagaScopeTransitions.RecordAcceptedWait(continuation, accepted.StepId, @event);
+            // A saga retry asks again, so a request's answer is not kept for replay.
+            if (acceptedStep.ReplyToRequest == null)
+                SagaScopeTransitions.RecordAcceptedWait(continuation, accepted.StepId, @event);
             WorkflowValueBinding.ApplyEventOutputs(acceptedStep, @event, workflowData);
             continuation.SetPrevious(@event);
             acceptedPosition.NextStepIndex++;
@@ -181,7 +204,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 break;
 
             case WorkflowStepType.Parallel:
-                Fork(scopes, step, checkpoint, continuation);
+                Fork(scopes, step, checkpoint, continuation, maxActiveBranches);
                 break;
 
             case WorkflowStepType.TryCatch:
@@ -189,7 +212,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 break;
 
             case WorkflowStepType.Saga:
-                SagaScopeTransitions.Enter(scopes, step, position, continuation, services, Now);
+                SagaScopeTransitions.Enter(scopes, step, position, continuation, services, StoreNow(checkpoint));
                 break;
 
             case WorkflowStepType.Loop:
@@ -218,6 +241,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 });
                 break;
 
+            case WorkflowStepType.SuspendResume when step.ReplyToRequest != null:
+                TryScopeTransitions.EnsureCanWait(checkpoint, continuation);
+                AwaitReply(scopes, checkpoint, continuation, step);
+                break;
+
             case WorkflowStepType.SuspendResume when step.StepMetadata.TryGetValue("WaitKey", out var keyValue):
                 TryScopeTransitions.EnsureCanWait(checkpoint, continuation);
                 if (SagaScopeTransitions.TryReuseAcceptedWait(continuation, scopes.Id(step),
@@ -237,8 +265,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     ContinuationId = continuation.Id,
                     StepId = scopes.Id(step),
                     Key = key,
-                    DeadlineUtc = step.WaitTimeout is { } timeout
-                        ? Now.Add(timeout) : null,
+                    Timeout = step.WaitTimeout,
+                    DeadlineUtc = StoreNow(checkpoint) + step.WaitTimeout,
                     EventType = step.ResumeEventType?.AssemblyQualifiedName
                         ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                             $"Wait step '{step.Id}' has no event type")
@@ -254,7 +282,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     ContinuationId = continuation.Id,
                     StepId = scopes.Id(step),
                     Key = "delay",
-                    DeadlineUtc = Now.Add(step.DelayDuration!.Value)
+                    Timeout = step.DelayDuration!.Value,
+                    DeadlineUtc = StoreNow(checkpoint) + step.DelayDuration!.Value
                 });
                 continuation.Status = ContinuationStatus.Waiting;
                 break;
@@ -264,6 +293,37 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     $"Structured execution does not yet support {step.StepType}");
         }
 
+    }
+
+    // A request's WaitFor takes an answer that arrived early at once; otherwise it waits on the wait its
+    // request opened in the same scope occurrence, until its own timeout from the commit that records
+    // this (D-33, D-35). A saga retry sends the request again, so an answer is never replayed from an
+    // earlier attempt.
+    private void AwaitReply(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, WorkflowStep step)
+    {
+        var stepId = scopes.Id(step);
+        var activation = continuation.Stack[^1].ActivationId;
+        if (checkpoint.BoundReplies.FirstOrDefault(reply =>
+                reply.StepId == stepId && reply.ScopeActivationId == activation) is { } answer)
+        {
+            checkpoint.BoundReplies.Remove(answer);
+            continuation.AcceptedWait = new AcceptedWaitState
+            {
+                StepId = stepId, Event = answer.Event, EventId = answer.EventId, WaitId = answer.WaitId
+            };
+            return;
+        }
+        var wait = checkpoint.Waits.FirstOrDefault(item =>
+                item.IsReply && item.StepId == stepId && item.ScopeActivationId == activation)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"The request '{step.ReplyToRequest}' this wait answers has no open wait");
+        if (wait.Timeout == null && step.WaitTimeout is { } timeout)
+        {
+            wait.Timeout = timeout;
+            wait.DeadlineUtc = StoreNow(checkpoint) + timeout;
+        }
+        continuation.Status = ContinuationStatus.Waiting;
     }
 
     public static bool ShouldCancelInvokedChild(ContinuationState continuation) =>
@@ -276,8 +336,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     {
         var pending = continuation.PendingActivity
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A child has no parent invocation");
-        checkpoint.Waits.RemoveAll(wait => wait.ChildWorkflowId == childInstanceId &&
-            wait.ContinuationId == continuation.Id);
+        checkpoint.RemoveWaits(wait => wait.ChildWorkflowId == childInstanceId &&
+            wait.ContinuationId == continuation.Id, WaitCloseReason.Replaced);
         checkpoint.Waits.Add(new WaitState
         {
             RegisteredAtUtc = Now,
@@ -301,8 +361,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 "A child wait has no parent invocation");
         pending.ChildWorkflowId = childInstanceId;
-        checkpoint.Waits.RemoveAll(wait => wait.ChildWorkflowId == childInstanceId &&
-            wait.ContinuationId == continuation.Id);
+        checkpoint.RemoveWaits(wait => wait.ChildWorkflowId == childInstanceId &&
+            wait.ContinuationId == continuation.Id, WaitCloseReason.Replaced);
         foreach (var childWait in childCheckpoint.Waits)
             checkpoint.Waits.Add(new WaitState
             {
@@ -311,7 +371,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 StepId = pending.StepId,
                 Key = childWait.Key,
                 EventType = childWait.EventType,
-                DeadlineUtc = childWait.DeadlineUtc,
+                // The parent checks the child at the child's deadline, on the parent's own clock.
+                DeadlineUtc = childWait.DeadlineUtc is { } childDeadline
+                    ? checkpoint.Clock.ToLocal(childDeadline) : null,
                 ChildWorkflowId = childInstanceId,
                 ChildWaitId = childWait.Id
             });
@@ -320,11 +382,17 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     }
 
     private static void Fork(WorkflowScopeCatalog scopes, WorkflowStep step, ExecutionCheckpoint checkpoint,
-        ContinuationState parent)
+        ContinuationState parent, int maxActiveBranches)
     {
         if (step.ParallelBranches.Count == 0)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Parallel step '{step.Id}' has no branches");
+        // Branches that finished or are cancelling do not count, so whether a nested fork fits can
+        // depend on how far its siblings have got.
+        var live = checkpoint.Continuations.Count(item => item.Status is not (ContinuationStatus.Completed or
+            ContinuationStatus.Cancelled or ContinuationStatus.Cancelling));
+        if (live + step.ParallelBranches.Count > maxActiveBranches)
+            throw new BranchLimitExceededException(live, step.ParallelBranches.Count, maxActiveBranches);
 
         var join = new ParallelJoinState
         {
@@ -398,7 +466,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             SagaScopeTransitions.PreserveCompensation(continuation);
             return;
         }
-        checkpoint.Waits.RemoveAll(wait => wait.ContinuationId == continuation.Id);
+        checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id, WaitCloseReason.Cancelled);
         continuation.AcceptedWait = null;
         foreach (var join in checkpoint.Joins.Where(item => item.ParentContinuationId == continuation.Id).ToList())
         {
@@ -411,8 +479,10 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             : ContinuationStatus.Cancelling;
     }
 
-    public static void FinishCompletingJoins(ExecutionCheckpoint checkpoint)
+    /// <summary>Completes joins whose branches have all finished; returns true when one completed.</summary>
+    public static bool FinishCompletingJoins(ExecutionCheckpoint checkpoint)
     {
+        var completed = false;
         foreach (var join in checkpoint.Joins.Where(item => item.IsCompleting).ToList())
         {
             var children = checkpoint.Continuations.Where(item => join.ChildContinuationIds.Contains(item.Id));
@@ -420,6 +490,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 continue;
             var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
             checkpoint.Joins.Remove(join);
+            completed = true;
             if (checkpoint.UnhandledError != null)
             {
                 var finishingCleanup = TryScopeTransitions.IsInsideFinally(parent) ||
@@ -442,6 +513,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 parent.Status = ContinuationStatus.Active;
             }
         }
+        return completed;
     }
 
     public bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
@@ -450,7 +522,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (WorkflowEngineException.IsEngineFailure(error))
             return false;
         if (allowStepRetry && !continuation.CancellationUnwind &&
-            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, Now))
+            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, StoreNow(checkpoint)))
             return true;
         if (continuation.CancellationUnwind)
         {
