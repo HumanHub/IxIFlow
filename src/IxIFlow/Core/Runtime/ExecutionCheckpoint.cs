@@ -13,17 +13,64 @@ internal sealed class ExecutionCheckpoint
     public List<ContinuationState> Continuations { get; set; } = [];
     public List<ParallelJoinState> Joins { get; set; } = [];
     public List<WaitState> Waits { get; set; } = [];
+
+    /// <summary>
+    /// Answers to requests that arrived before their <c>WaitFor</c> was reached (D-33). Each is taken
+    /// by the <c>WaitFor</c> of its request's scope occurrence, or dropped when that scope ends.
+    /// </summary>
+    public List<BoundReplyState> BoundReplies { get; set; } = [];
+
+    /// <summary>
+    /// How long the instance may run in all, or null. The store stamps the deadline when it records the
+    /// execution deadline's row, <see cref="ExecutionTimerId"/>, in the waits table (D-35).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TimeSpan? ExecutionTimeout { get; set; }
+
+    /// <summary>The waits-table row of the execution deadline, when there is one.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExecutionTimerId { get; set; }
+
+    /// <summary>The execution deadline as the store stamped it, or the run's estimate until it reads it.</summary>
     public DateTime? ExecutionDeadlineUtc { get; set; }
     public bool TimedOut { get; set; }
-    public Dictionary<string, string> AcceptedDeliveries { get; set; } = [];
     public SerializedException? UnhandledError { get; set; }
     public bool CancellationRequested { get; set; }
 
-    /// <summary>Set when a commit exceeded a resource limit and the instance waits for an operator (D-28).</summary>
-    public ResourceStopState? ResourceStop { get; set; }
+    /// <summary>
+    /// Set while the instance is stopped at NeedsResolution for an operator: after a commit exceeded a
+    /// resource limit (D-28) or after too many crashes (B-08). Only a release or a cancellation moves it.
+    /// </summary>
+    public OperatorStopState? OperatorStop { get; set; }
 
     [JsonIgnore]
     public Exception? RuntimeUnhandledError { get; set; }
+
+    /// <summary>
+    /// What the run has done with the inbox and the waits table since its last commit. It is not
+    /// saved: the store holds what was committed, and a run that loses it re-reads the inbox.
+    /// </summary>
+    [JsonIgnore]
+    public InboxProgress Inbox { get; private set; } = new();
+
+    /// <summary>The store's clock as this run last read it (D-35). It is not saved.</summary>
+    [JsonIgnore]
+    public StoreClock Clock { get; } = new();
+
+    /// <summary>
+    /// When the host should next look at the instance after its last commit, in the host's clock, or
+    /// null when nothing but an event or an operator moves it. It is not saved.
+    /// </summary>
+    [JsonIgnore]
+    public DateTime? LocalWakeUtc { get; set; }
+
+    /// <summary>
+    /// True while the execution deadline can still end the run: it is set, and the run has neither
+    /// reached it nor been cancelled, and its root has not finished.
+    /// </summary>
+    [JsonIgnore]
+    public bool ExecutionTimerOpen => ExecutionTimerId != null && !CancellationRequested && !TimedOut &&
+        Continuations.Count > 0 && !ContinuationTransitions.RootFinished(this);
 
     public static ExecutionCheckpoint Read(string json)
     {
@@ -31,8 +78,62 @@ internal sealed class ExecutionCheckpoint
         if (checkpoint?.Runtime != "structured-v2" || checkpoint.SchemaVersion != 2)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 "Unsupported execution checkpoint version");
+        // Every wait in a saved checkpoint was committed with it.
+        checkpoint.Inbox = InboxProgress.Committed(checkpoint);
         return checkpoint;
     }
+
+    /// <summary>
+    /// Takes the deadlines the store stamped from a page it read (D-35). A wait the store has no deadline
+    /// for has none yet: it is not committed, or not armed. A page without deadlines reports none.
+    /// </summary>
+    public void ReadDeadlines(InboxPage page)
+    {
+        var deadlines = page.Deadlines ?? new Dictionary<string, DateTime>();
+        foreach (var wait in Waits.Where(wait => wait.TableKind is not (null or WaitKind.Child)))
+            wait.DeadlineUtc = deadlines.TryGetValue(wait.Id, out var deadline) ? deadline : null;
+        if (ExecutionTimerId != null)
+            ExecutionDeadlineUtc = deadlines.TryGetValue(ExecutionTimerId, out var execution) ? execution : null;
+    }
+
+    /// <summary>
+    /// The earliest time, in the host's clock, at which a wait or the execution deadline may be due, or
+    /// a child is to be checked.
+    /// </summary>
+    public DateTime? NextDeadlineLocal() =>
+        Waits.Select(wait => wait.ChildWorkflowId == null && wait.DeadlineUtc is { } deadline
+                ? Clock.ToLocal(deadline) : wait.DeadlineUtc)
+            .Append(ExecutionTimerOpen && ExecutionDeadlineUtc is { } execution ? Clock.ToLocal(execution) : null)
+            .Min();
+
+    /// <summary>
+    /// Closes the reply waits, and drops the answers kept, of scope occurrences that have ended: their
+    /// iteration or branch finished, failed or was cancelled before the request's <c>WaitFor</c> took the
+    /// answer (D-33).
+    /// </summary>
+    public void CloseEndedRequests()
+    {
+        var live = Continuations
+            .Where(item => item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled))
+            .SelectMany(item => item.Stack.Select(position => position.ActivationId))
+            .ToHashSet(StringComparer.Ordinal);
+        RemoveWaits(wait => wait.IsReply && !live.Contains(wait.ScopeActivationId ?? ""), WaitCloseReason.Cancelled);
+        BoundReplies.RemoveAll(reply => !live.Contains(reply.ScopeActivationId));
+    }
+
+    /// <summary>Removes the waits that match and records why each one closed, for the next commit (D-33).</summary>
+    public void RemoveWaits(Func<WaitState, bool> match, WaitCloseReason reason)
+    {
+        foreach (var wait in Waits.Where(match).ToArray())
+        {
+            Waits.Remove(wait);
+            Inbox.Closed(wait.Id, reason);
+        }
+    }
+
+    /// <summary>The operator stop of a saved instance, read without its workflow data.</summary>
+    public static OperatorStopState? StopOf(WorkflowInstance instance) =>
+        IsStructured(instance.ExecutionStateJson) ? Read(instance.ExecutionStateJson).OperatorStop : null;
 
     public static bool IsStructured(string json)
     {
@@ -44,10 +145,29 @@ internal sealed class ExecutionCheckpoint
     }
 }
 
-internal sealed class ResourceStopState
+internal sealed class OperatorStopState
 {
+    public OperatorStopKind Kind { get; set; }
     public string Reason { get; set; } = "";
     public DateTime StoppedAtUtc { get; set; }
+
+    /// <summary>For a quarantine, how many owners in a row lost the instance.</summary>
+    public int CrashCount { get; set; }
+
+    /// <summary>What the operator sees, with the actions that move the instance.</summary>
+    public string Describe() => Kind switch
+    {
+        OperatorStopKind.Quarantine =>
+            $"The workflow instance is quarantined: {Reason}. Release it to run it again, or cancel it",
+        _ => $"The workflow instance is stopped at a resource limit ({Reason}); " +
+            "raise the limit and release it, or cancel it"
+    };
+}
+
+internal enum OperatorStopKind
+{
+    ResourceLimit,
+    Quarantine
 }
 
 internal enum ContinuationStatus
@@ -71,6 +191,8 @@ internal sealed class ContinuationState
     public SerializedValue? Previous { get; set; }
     public ActivityInvocationState? PendingActivity { get; set; }
     public AcceptedWaitState? AcceptedWait { get; set; }
+
+    /// <summary>When the continuation's retry is due, on the store's clock as the run last read it (D-35).</summary>
     public DateTime? RetryAfterUtc { get; set; }
 
     [JsonIgnore]
@@ -297,21 +419,82 @@ internal sealed class WaitState
     public string Key { get; set; } = "";
     public string EventType { get; set; } = "";
     public DateTime RegisteredAtUtc { get; set; }
+
+    /// <summary>
+    /// For a wait the store times out, its deadline as the store stamped it, or the run's estimate until
+    /// the run reads it (D-35). For a child's wait, when the parent next checks the child, in the host's clock.
+    /// </summary>
     public DateTime? DeadlineUtc { get; set; }
+
+    /// <summary>
+    /// The wait's timeout or delay, from the commit that records it, or for a reply wait from the commit
+    /// that reaches its <c>WaitFor</c>. The store adds it to its own time (D-35).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TimeSpan? Timeout { get; set; }
     public string? ChildWorkflowId { get; set; }
     public string? ChildWaitId { get; set; }
+
+    /// <summary>
+    /// True for the answer to a request: opened when the request's activity starts, answered only by
+    /// its token, and taken by the request's <c>WaitFor</c> (D-33).
+    /// </summary>
+    public bool IsReply { get; set; }
+
+    /// <summary>For a reply wait, the request's activity invocation; a retry of the step keeps the wait.</summary>
+    public string? InvocationId { get; set; }
+
+    /// <summary>For a reply wait, the scope occurrence of the request and its <c>WaitFor</c>.</summary>
+    public string? ScopeActivationId { get; set; }
+
+    /// <summary>For a reply wait, the digest of what the request is about; an answer must carry it.</summary>
+    public string? Subject { get; set; }
+
+    /// <summary>
+    /// How the waits table knows this wait, or null for a child shown only as running (D-33, D-35).
+    /// </summary>
+    [JsonIgnore]
+    public WaitKind? TableKind => string.IsNullOrEmpty(EventType)
+            ? ChildWorkflowId == null ? WaitKind.Delay : null
+        : IsReply ? WaitKind.Reply
+        : ChildWorkflowId != null ? WaitKind.Child
+        : WaitKind.Event;
+
+    /// <summary>True for a wait an event can answer.</summary>
+    [JsonIgnore]
+    public bool Answerable => TableKind is WaitKind.Event or WaitKind.Reply or WaitKind.Child;
+}
+
+/// <summary>An answer to a request kept until its <c>WaitFor</c> takes it (D-33).</summary>
+internal sealed class BoundReplyState
+{
+    public string WaitId { get; set; } = "";
+    public string EventId { get; set; } = "";
+
+    /// <summary>The <c>WaitFor</c> step that takes it.</summary>
+    public string StepId { get; set; } = "";
+    public string ScopeActivationId { get; set; } = "";
+    public string? InvocationId { get; set; }
+    public string? Subject { get; set; }
+    public SerializedValue Event { get; set; } = new();
 }
 
 internal sealed class AcceptedWaitState
 {
     public string StepId { get; set; } = "";
     public SerializedValue Event { get; set; } = new();
-    public string? Key { get; set; }
-    public string? DeliveryId { get; set; }
-    public string? DeliveryHash { get; set; }
 
-    [JsonIgnore]
-    public bool? EventAccepted { get; set; }
+    /// <summary>The inbox event this is.</summary>
+    public string EventId { get; set; } = "";
+
+    /// <summary>The wait that took it.</summary>
+    public string WaitId { get; set; } = "";
+
+    /// <summary>For a child's wait, the key the event is forwarded with.</summary>
+    public string? Key { get; set; }
+
+    /// <summary>For a child's wait, true once the child has decided the event and the parent settled its copy.</summary>
+    public bool Forwarded { get; set; }
 }
 
 internal sealed class SerializedValue

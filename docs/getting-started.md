@@ -56,7 +56,7 @@ services.AddTransient<ValidateOrderActivity>();
 
 using var provider = services.BuildServiceProvider();
 using var scope = provider.CreateScope();
-var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+var client = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
 
 var definition = Workflow.Create<OrderData>("ValidateOrder")
     .Step<ValidateOrderActivity>(step => step
@@ -65,7 +65,7 @@ var definition = Workflow.Create<OrderData>("ValidateOrder")
     .Build();
 
 var data = new OrderData { OrderId = "ORD-001" };
-var result = await engine.ExecuteWorkflowAsync(definition, data);
+var result = await client.RunAsync(definition, data);
 
 Console.WriteLine($"Status: {result.Status}");
 Console.WriteLine($"Valid: {((OrderData)result.WorkflowData!).IsValid}");

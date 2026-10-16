@@ -618,7 +618,6 @@ CREATE TABLE WorkflowInstances (
     WorkflowDataJson NVARCHAR(MAX) NOT NULL,
     WorkflowDataType NVARCHAR(500) NOT NULL,
     ExecutionStateJson NVARCHAR(MAX) NULL,
-    SuspensionInfoJson NVARCHAR(MAX) NULL,
     LastError NVARCHAR(MAX) NULL,
     LastErrorStackTrace NVARCHAR(MAX) NULL,
     PropertiesJson NVARCHAR(MAX) NULL,

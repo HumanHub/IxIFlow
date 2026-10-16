@@ -21,7 +21,7 @@ public sealed class OptionalSetupTests
             .Step<RecordActivity>()
             .Build();
 
-        var result = await Engine(services).ExecuteWorkflowAsync(definition, new ParentData());
+        var result = await Engine(services).RunAsync(definition, new ParentData());
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["activity-default"], Probe(services).Seen);
@@ -37,7 +37,7 @@ public sealed class OptionalSetupTests
                 .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Result))
             .Build();
 
-        var result = await Engine(services).ExecuteWorkflowAsync(definition, new ParentData { Value = "from-parent" });
+        var result = await Engine(services).RunAsync(definition, new ParentData { Value = "from-parent" });
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["from-parent"], Probe(services).Seen);
@@ -54,7 +54,7 @@ public sealed class OptionalSetupTests
             .Invoke<ChildData>("SetupChild", 1)
             .Build();
 
-        var result = await Engine(services).ExecuteWorkflowAsync(definition, new ParentData());
+        var result = await Engine(services).RunAsync(definition, new ParentData());
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["activity-default", "child-default"], Probe(services).Seen);
@@ -69,7 +69,7 @@ public sealed class OptionalSetupTests
             .Invoke<ChildWorkflow, ChildData>()
             .Build();
 
-        var result = await Engine(services).ExecuteWorkflowAsync(definition, new ParentData());
+        var result = await Engine(services).RunAsync(definition, new ParentData());
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["activity-default", "child-default"], Probe(services).Seen);
@@ -87,7 +87,7 @@ public sealed class OptionalSetupTests
                 .Output(child => child.Result).To(ctx => ctx.WorkflowData.Result))
             .Build();
 
-        var result = await Engine(services).ExecuteWorkflowAsync(definition, new ParentData { Value = "from-parent" });
+        var result = await Engine(services).RunAsync(definition, new ParentData { Value = "from-parent" });
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["activity-default", "from-parent"], Probe(services).Seen);
@@ -108,7 +108,7 @@ public sealed class OptionalSetupTests
             .Invoke<ChildData>("SetupChild", 1)
             .Build();
 
-        var result = await Engine(services).ExecuteWorkflowAsync(definition, new ParentData());
+        var result = await Engine(services).RunAsync(definition, new ParentData());
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["activity-default", "child-default", "activity-default", "child-default"],
@@ -126,8 +126,8 @@ public sealed class OptionalSetupTests
         return services.BuildServiceProvider();
     }
 
-    private static IWorkflowEngine Engine(IServiceProvider services) =>
-        services.GetRequiredService<IWorkflowEngine>();
+    private static IWorkflowClient Engine(IServiceProvider services) =>
+        services.GetRequiredService<IWorkflowClient>();
 
     private static SetupProbe Probe(IServiceProvider services) => services.GetRequiredService<SetupProbe>();
 

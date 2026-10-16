@@ -19,7 +19,9 @@ internal sealed class InstanceHost(
     InProcessInstanceGate gate,
     ExecutionLeaseSettings? leaseSettings = null,
     TimeProvider? timeProvider = null,
-    ExecutionLimits? limits = null)
+    ExecutionLimits? limits = null,
+    RunControl? control = null,
+    CancellationWatch? watch = null)
 {
     private readonly IWorkflowStateRepository _store = GuardedStateRepository.Wrap(repository);
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
@@ -27,9 +29,10 @@ internal sealed class InstanceHost(
     private readonly bool _childStartIsCheckpointed = workflowInvoker is ICheckpointedWorkflowInvoker;
     private readonly ExecutionLeaseSettings _leaseSettings = leaseSettings ?? ExecutionLeaseSettings.Default;
     private readonly ExecutionLimits _limits = limits ?? ExecutionLimits.Default;
+    private readonly RunControl _control = control ?? new RunControl();
+    private readonly CancellationWatch _watch = watch ?? new CancellationWatch(repository, timeProvider);
     private readonly WorkflowExecutor _executor = new(services, activityExecutor,
         timeProvider ?? TimeProvider.System);
-    private readonly ContinuationTransitions _transitions = new(services, timeProvider ?? TimeProvider.System);
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
@@ -37,6 +40,15 @@ internal sealed class InstanceHost(
         instance != null && ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson);
 
     public async Task<WorkflowExecutionResult> CancelAsync(string instanceId,
+        CancellationReason reason, CancellationToken cancellationToken) =>
+        await RequestCancellationAsync(instanceId, reason, cancellationToken)
+        ?? await RecoverAsync(instanceId, cancellationToken);
+
+    /// <summary>
+    /// Saves a durable cancellation request. Returns the result when nothing has to run here, or
+    /// null when the instance is idle and must be recovered to unwind.
+    /// </summary>
+    public async Task<WorkflowExecutionResult?> RequestCancellationAsync(string instanceId,
         CancellationReason reason, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
@@ -66,7 +78,23 @@ internal sealed class InstanceHost(
         if (instance?.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
             WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
             return ExistingResult(instance);
-        return await RecoverAsync(instanceId, cancellationToken);
+        return null;
+    }
+
+    /// <summary>The saved state of an instance as a result, or null when it does not exist.</summary>
+    public async Task<WorkflowExecutionResult?> ReadAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+        return instance == null ? null : ReadResult(instance);
+    }
+
+    /// <summary>The status of an instance as a result would report it, without reading its data.</summary>
+    public async Task<WorkflowExecutionStatus?> ReadStatusAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+        return instance == null ? null : StatusOf(instance.Status);
     }
 
     public async Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
@@ -87,8 +115,8 @@ internal sealed class InstanceHost(
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
-        if (StoppedAtLimit(instanceId, checkpoint) is { } stopped)
-            return stopped;
+        if (checkpoint.OperatorStop is { } stop)
+            return Rejected(instanceId, stop.Describe());
         var continuation = checkpoint.Continuations.SingleOrDefault(item =>
             item.PendingActivity?.Id == invocationId && item.Status == ContinuationStatus.WaitingResolution)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
@@ -114,7 +142,7 @@ internal sealed class InstanceHost(
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
 
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-            _store, instance, _leaseSettings, _time);
+            _store, instance, _leaseSettings, _watch, _time);
         if (owner == null)
             return WorkflowExecutor.Busy(instanceId);
         var current = await _store.GetWorkflowInstanceAsync(instanceId);
@@ -299,8 +327,11 @@ internal sealed class InstanceHost(
         var checkpoint = new ExecutionCheckpoint
         {
             DefinitionFingerprint = scopes.Fingerprint,
-            ExecutionDeadlineUtc = options.ExecutionTimeout is { } timeout
-                ? instance.StartedAt!.Value.Add(timeout) : null,
+            // The store stamps the execution deadline when the start is committed (D-35); a run that
+            // saves nothing keeps its own.
+            ExecutionTimeout = options.ExecutionTimeout,
+            ExecutionTimerId = options.ExecutionTimeout != null ? Guid.NewGuid().ToString("N") : null,
+            ExecutionDeadlineUtc = instance.StartedAt + options.ExecutionTimeout,
             Continuations =
             [
                 new ContinuationState
@@ -313,8 +344,13 @@ internal sealed class InstanceHost(
         try
         {
             using var lease = await gate.EnterAsync(instance.InstanceId, cancellationToken);
+            // A repeated start of an existing instance is answered without claiming it, so retries
+            // never count as crashes of an instance another host lost (B-08).
+            if (options.InstanceId != null &&
+                await _store.GetWorkflowInstanceAsync(instance.InstanceId) is { } started)
+                return ExistingStart(started, definition, scopes);
             await using var owner = options.PersistState
-                ? await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _time)
+                ? await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, _time)
                     ?? (options.InstanceId == null
                         ? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
                             "The new workflow instance could not acquire execution ownership")
@@ -322,18 +358,10 @@ internal sealed class InstanceHost(
                 : null;
             if (options.PersistState && owner == null)
                 return WorkflowExecutor.Busy(instance.InstanceId);
-            if (options.InstanceId != null)
-            {
-                var existing = await _store.GetWorkflowInstanceAsync(instance.InstanceId);
-                if (existing != null)
-                {
-                    if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version ||
-                        ExecutionCheckpoint.Read(existing.ExecutionStateJson).DefinitionFingerprint != scopes.Fingerprint)
-                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                            $"Workflow instance '{instance.InstanceId}' belongs to a different definition");
-                    return ExistingResult(existing);
-                }
-            }
+            // Another start may have saved the instance since the first read.
+            if (options.InstanceId != null &&
+                await _store.GetWorkflowInstanceAsync(instance.InstanceId) is { } existing)
+                return ExistingStart(existing, definition, scopes);
             var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
             if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true &&
                 isActive is false)
@@ -345,6 +373,8 @@ internal sealed class InstanceHost(
             {
                 await registry.RegisterWorkflowAsync(definition);
                 await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
+                // The start is durable from here; a caller waiting only for acceptance continues.
+                _control.Accept(instance.InstanceId);
             }
             return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                 options.PersistState, owner, cancellationToken);
@@ -360,186 +390,156 @@ internal sealed class InstanceHost(
         }
     }
 
+    /// <summary>
+    /// Stores an event in the instance's inbox before acknowledging it, then runs the instance so its
+    /// owner decides the event at its next pass (D-32, D-33). The result is the instance's state and
+    /// the event's receipt. The event stays pending while another host runs the instance or while it is
+    /// stopped for an operator; that owner, or the release, decides it.
+    /// </summary>
     public async Task<WorkflowExecutionResult> ResumeAsync<TEvent>(
         string instanceId,
         string? key,
         TEvent @event,
         CancellationToken cancellationToken,
-        string? deliveryId = null)
+        string? eventId = null)
         where TEvent : class
     {
-        using var lease = await gate.EnterAsync(instanceId, cancellationToken);
-        var deliveryHash = deliveryId == null ? null : ComputeDeliveryHash(key, @event);
-        for (var attempt = 0; attempt < 5; attempt++)
-        {
-            var instance = await _store.GetWorkflowInstanceAsync(instanceId);
-            if (deliveryId != null && HasStructuredCheckpoint(instance) &&
-                ExecutionCheckpoint.Read(instance!.ExecutionStateJson).AcceptedDeliveries
-                    .TryGetValue(deliveryId, out var acceptedHash))
-            {
-                if (acceptedHash != deliveryHash)
-                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                        $"Delivery ID '{deliveryId}' was already used with a different event");
-                var accepted = ExistingResult(instance);
-                accepted.EventAccepted = true;
-                return accepted;
-            }
-            if (instance?.Status == WorkflowStatus.Running && HasStructuredCheckpoint(instance))
-                return new WorkflowExecutionResult
-                {
-                    InstanceId = instanceId,
-                    Status = WorkflowExecutionStatus.Running,
-                    ErrorMessage = "The workflow instance is executing; retry the event after it becomes idle"
-                };
-            if (instance?.Status is not (WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) ||
-                !HasStructuredCheckpoint(instance))
-                return Rejected(instanceId, "The workflow instance is not waiting");
-
-            var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
-            if (StoppedAtLimit(instanceId, checkpoint) is { } stopped)
-                return stopped;
-            var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
-            if (definition == null)
-                return Rejected(instanceId, "The registered workflow definition is unavailable");
-
-            var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-            var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                    "Saved workflow data cannot be read");
-            var scopes = new WorkflowScopeCatalog(definition);
-            if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
-                return Rejected(instanceId, "The registered workflow definition differs from the saved version");
-            await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-                _store, instance, _leaseSettings, _time);
-            if (owner == null)
-                return WorkflowExecutor.Busy(instanceId);
-            var current = await _store.GetWorkflowInstanceAsync(instanceId);
-            if (current?.Revision != instance.Revision || current.Status != instance.Status)
-            {
-                if (current?.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution)
-                    continue;
-                return current?.Status == WorkflowStatus.Running
-                    ? WorkflowExecutor.Busy(instanceId)
-                    : Rejected(instanceId, "The wait changed before this event could be accepted");
-            }
-            if (await _executor.ReconcileChildWaitsAsync(checkpoint, new HostedRun(this, instance, owner, true)))
-            {
-                instance.Status = WorkflowStatus.Running;
-                await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
-                var refreshed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-                    true, owner, cancellationToken);
-                if (refreshed.Status == WorkflowExecutionStatus.Suspended)
-                    continue;
-                return refreshed;
-            }
-            if (_transitions.HasDueDeadline(checkpoint))
-            {
-                instance.Status = WorkflowStatus.Running;
-                await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
-                var afterDeadline = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-                    true, owner, cancellationToken);
-                if (afterDeadline.Status == WorkflowExecutionStatus.Suspended)
-                    continue;
-                return afterDeadline;
-            }
-            var candidates = checkpoint.Waits.Where(wait =>
-                (key == null || wait.Key == key) &&
-                WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(@event.GetType()) == true).ToList();
-            if (candidates.Count == 0)
-                return Rejected(instanceId, "No active wait matches this event and key");
-            var matching = StructuredWaitMatcher.FindMatches(checkpoint, scopes, workflowData,
-                @event, services, key);
-            if (matching.Count == 0)
-                return new WorkflowExecutionResult
-                {
-                    InstanceId = instanceId,
-                    Status = WorkflowExecutionStatus.Suspended,
-                    WorkflowData = workflowData,
-                    ErrorMessage = "The event did not satisfy any active wait"
-                };
-            if (matching.Count > 1)
-                return Rejected(instanceId, "The event satisfies more than one wait; provide a unique key");
-
-            var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
-            if (cancellationReason != null && !checkpoint.CancellationRequested)
-            {
-                instance.CancellationReason = cancellationReason;
-                checkpoint.CancellationRequested = true;
-                ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
-                instance.Status = WorkflowStatus.Running;
-                await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
-                return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-                    true, owner, cancellationToken);
-            }
-
-            var wait = matching[0];
-            var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
-
-            var acceptedWait = new AcceptedWaitState
-            {
-                StepId = wait.StepId,
-                Event = SerializedValue.From(@event)!,
-                Key = wait.ChildWorkflowId == null ? null : wait.Key,
-                DeliveryId = wait.ChildWorkflowId == null ? null : deliveryId ?? Guid.NewGuid().ToString("N"),
-                DeliveryHash = wait.ChildWorkflowId == null ? null : deliveryHash
-            };
-            continuation.AcceptedWait = acceptedWait;
-            if (wait.ChildWorkflowId != null)
-                checkpoint.Waits.RemoveAll(item => item.ChildWorkflowId == wait.ChildWorkflowId &&
-                    item.ContinuationId == continuation.Id);
-            else
-                checkpoint.Waits.Remove(wait);
-            if (deliveryId != null && wait.ChildWorkflowId == null)
-                checkpoint.AcceptedDeliveries.Add(deliveryId, deliveryHash!);
-            continuation.Status = ContinuationStatus.Active;
-
-            instance.Status = WorkflowStatus.Running;
-            await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
-
-            var resumed = await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-                true, owner, cancellationToken);
-            resumed.EventAccepted = wait.ChildWorkflowId == null || acceptedWait.EventAccepted == true;
-            return resumed;
-        }
-        return WorkflowExecutor.Busy(instanceId);
+        eventId ??= Guid.NewGuid().ToString("N");
+        var appended = await DeliverAsync(instanceId, key, @event, eventId);
+        return await AnswerAsync(instanceId, eventId, appended)
+            ?? await TakeEventAsync(instanceId, eventId, cancellationToken);
     }
 
-    private static string ComputeDeliveryHash<TEvent>(string? key, TEvent @event)
+    /// <summary>
+    /// Stores an event without running the instance, bypassing its queue and slots (D-32). The caller
+    /// runs or wakes the instance; its owner decides the event at its next pass.
+    /// </summary>
+    public Task<EventAppendResult> DeliverAsync<TEvent>(string instanceId, string? key, TEvent @event,
+        string eventId) where TEvent : class =>
+        AppendAsync(EventFor(instanceId, key, @event, eventId));
+
+    /// <summary>
+    /// The result for an event the inbox answered without keeping it, or null when it was stored for
+    /// the owner to decide.
+    /// </summary>
+    public async Task<WorkflowExecutionResult?> AnswerAsync(string instanceId, string eventId,
+        EventAppendResult appended) => appended.Status switch
+    {
+        EventAppendStatus.NotFound => throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+            $"Workflow instance '{instanceId}' does not exist").At(instanceId),
+        EventAppendStatus.Closed => await AnsweredAsync(instanceId,
+            new EventReceipt(eventId, EventOutcome.Closed, EventRejection.InstanceFinished)),
+        EventAppendStatus.Rejected => await AnsweredAsync(instanceId,
+            new EventReceipt(eventId, EventOutcome.Rejected, appended.Rejection)),
+        _ => null
+    };
+
+    /// <summary>
+    /// Runs the instance so its owner decides a stored event, and returns its state with the event's
+    /// receipt. The event stays pending while another host owns the instance or it is stopped.
+    /// </summary>
+    public async Task<WorkflowExecutionResult> TakeEventAsync(string instanceId, string eventId,
+        CancellationToken cancellationToken)
+    {
+        var result = await ContinueAsync(instanceId, release: false, cancellationToken, forEvent: true);
+        result.Event = await ReadEventAsync(instanceId, eventId);
+        return result;
+    }
+
+    /// <summary>What became of an event sent to an instance, or null when it was never stored.</summary>
+    public async Task<EventReceipt?> ReadEventAsync(string instanceId, string eventId) =>
+        await _store.GetEventAsync(instanceId, eventId) is { } stored ? EventReceipt.Of(stored) : null;
+
+    /// <summary>Open waits that match the query, across instances (D-13, D-14).</summary>
+    public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) => _store.GetOpenWaitsAsync(query);
+
+    /// <summary>
+    /// Stores a reply addressed to one wait by its token's wait ID, with the token's subject (D-33),
+    /// without running the instance.
+    /// </summary>
+    public Task<EventAppendResult> DeliverReplyAsync<TReply>(string instanceId, string waitId, TReply reply,
+        string eventId, string? subject) where TReply : class =>
+        AppendAsync(EventFor(instanceId, null, reply, eventId, waitId, subject));
+
+    private static WorkflowEvent EventFor<TEvent>(string instanceId, string? key, TEvent @event, string eventId,
+        string? targetWaitId = null, string? subject = null)
         where TEvent : class
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentNullException.ThrowIfNull(@event);
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
         var type = @event.GetType();
-        var payload = $"{WorkflowTypeIdentity.StableName(type)}\n{key}\n" +
-            JsonSerializer.Serialize(@event, type);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
+        return new WorkflowEvent(instanceId, eventId, type.AssemblyQualifiedName!,
+            JsonSerializer.Serialize(@event, type), key, targetWaitId, subject);
     }
 
-    public async Task<WorkflowExecutionResult> RecoverAsync(string instanceId, CancellationToken cancellationToken)
+    private async Task<EventAppendResult> AppendAsync(WorkflowEvent stored)
+    {
+        var appended = await _store.AppendEventAsync(stored);
+        return appended.Status == EventAppendStatus.Conflict
+            ? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                $"Event ID '{stored.EventId}' was already used for a different event").At(stored.InstanceId)
+            : appended;
+    }
+
+    // An event answered without running the instance: its state as saved, with the receipt.
+    private async Task<WorkflowExecutionResult> AnsweredAsync(string instanceId, EventReceipt receipt)
+    {
+        var result = await ReadAsync(instanceId) ?? throw new WorkflowEngineException(
+            WorkflowErrorKind.InvalidRequest, $"Workflow instance '{instanceId}' does not exist").At(instanceId);
+        result.Event = receipt;
+        return result;
+    }
+
+    public Task<WorkflowExecutionResult> RecoverAsync(string instanceId, CancellationToken cancellationToken) =>
+        ContinueAsync(instanceId, release: false, cancellationToken);
+
+    /// <summary>
+    /// Releases an instance stopped for an operator and runs it. Automatic recovery, including a
+    /// parent checking its child, never releases a stop.
+    /// </summary>
+    public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId, CancellationToken cancellationToken) =>
+        ContinueAsync(instanceId, release: true, cancellationToken);
+
+    // With forEvent, an instance with nothing to run is answered as it is saved: another run took the
+    // event already, or it was stored for an instance that is finished or stopped.
+    private async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, bool release,
+        CancellationToken cancellationToken, bool forEvent = false)
     {
         using var lease = await gate.EnterAsync(instanceId, cancellationToken);
         var instance = await _store.GetWorkflowInstanceAsync(instanceId);
         var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
         var canRecover = instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
             instance?.Status == WorkflowStatus.Suspended &&
-            (cancellationReason != null || HasDueDeadline(instance) || HasChildWait(instance));
+            (cancellationReason != null || HasChildWait(instance) || await HasInboxWorkAsync(instanceId));
+        // Another run may have decided the event since the instance was read, so it is read again.
         if (!canRecover || !HasStructuredCheckpoint(instance))
-            return Rejected(instanceId, "The workflow instance has no interrupted execution to recover");
+            return forEvent && await ReadAsync(instanceId) is { } latest ? latest
+                : Rejected(instanceId, release
+                    ? "The workflow instance is not stopped for an operator"
+                    : "The workflow instance has no interrupted execution to recover");
+        var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+        if (release && checkpoint.OperatorStop == null)
+            return Rejected(instanceId, "The workflow instance is not stopped for an operator");
+        // A request already applied is being unwound; only a new one changes what the run does.
+        var newCancellation = cancellationReason != null && !checkpoint.CancellationRequested &&
+            checkpoint.Continuations[0].Status != ContinuationStatus.Completed;
+        // Only a release or a new cancellation moves a stopped instance, so recovery, including a
+        // parent checking its child, answers it without claiming it. A cancellation that is already
+        // unwinding and stopped again needs a release.
+        if (checkpoint.OperatorStop is { } held && !release && !newCancellation)
+            return Stopped(instance, held);
 
         var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
         if (definition == null)
             return Rejected(instanceId, "The registered workflow definition is unavailable");
-        var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
-            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-        var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
-            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
-        var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         var scopes = new WorkflowScopeCatalog(definition);
         if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             return Rejected(instanceId, "The registered workflow definition differs from the saved version");
+        // Ownership comes before the workflow data is read, so an instance whose data or code kills
+        // its host is still counted by the next claim, and quarantined (B-08).
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-            _store, instance, _leaseSettings, _time);
+            _store, instance, _leaseSettings, _watch, _time);
         if (owner == null)
             return WorkflowExecutor.Busy(instanceId);
         var current = await _store.GetWorkflowInstanceAsync(instanceId);
@@ -547,20 +547,25 @@ internal sealed class InstanceHost(
             return current?.Status == WorkflowStatus.Running
                 ? WorkflowExecutor.Busy(instanceId)
                 : Rejected(instanceId, "The workflow instance changed before recovery could start");
+        // Only a claim of a running instance can see crashes: every commit that leaves Running
+        // records progress and clears the count, and other entry points refuse running instances.
+        if (owner.CrashCount >= _limits.MaxCrashes)
+            return await QuarantineAsync(instance, checkpoint, scopes, owner);
+        var stopCleared = checkpoint.OperatorStop != null;
+        if (stopCleared)
+        {
+            checkpoint.OperatorStop = null;
+            instance.LastError = null;
+            instance.LastErrorStackTrace = null;
+        }
+        // A run for an event only takes it: an activity waiting for an operator stays waiting.
         foreach (var continuation in checkpoint.Continuations.Where(item =>
                      item.PendingActivity is { ChildWorkflowId: null } &&
-                     item.Status is (ContinuationStatus.WaitingResolution or
-                         ContinuationStatus.Cancelling)))
+                     (item.Status == ContinuationStatus.Cancelling ||
+                      item.Status == ContinuationStatus.WaitingResolution && (!forEvent || stopCleared))))
             continuation.Status = ContinuationStatus.Active;
-        // An instance stopped at a resource limit runs again; it stops again if the limit still applies.
-        if (checkpoint.ResourceStop != null)
-        {
-            checkpoint.ResourceStop = null;
-            instance.LastError = null;
-        }
         instance.Status = WorkflowStatus.Running;
-        if (cancellationReason != null && !checkpoint.CancellationRequested &&
-            checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
+        if (newCancellation)
         {
             instance.CancellationReason = cancellationReason;
             checkpoint.CancellationRequested = true;
@@ -568,18 +573,56 @@ internal sealed class InstanceHost(
             checkpoint.RuntimeUnhandledError = null;
             ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
         }
+        if (stopCleared)
+        {
+            // Leaving a stop is saved before any workflow code runs, so a crash after it is counted
+            // and a cancellation is not left waiting. It saves the stopped checkpoint without its
+            // marker, so no limit applies; a run that still exceeds a limit stops again at its next commit.
+            await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner, true), instance,
+                checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
+        }
+        var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
+        var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
         return await RunAndSaveAsync(definition, instance, checkpoint,
             workflowData, true, owner, cancellationToken);
     }
 
-    private bool HasDueDeadline(WorkflowInstance instance) =>
-        HasStructuredCheckpoint(instance) &&
-        _transitions.HasDueDeadline(ExecutionCheckpoint.Read(instance.ExecutionStateJson));
+    // An idle instance has work when an event waits for it or the store finds one of its deadlines due
+    // (D-35). A host that looked too early, because its clock runs ahead of the store's, looks again when
+    // the store's clock reaches the earliest deadline.
+    private async Task<bool> HasInboxWorkAsync(string instanceId)
+    {
+        var page = await _store.GetPendingEventsAsync(instanceId, 0, 1);
+        if (page.Events.Count > 0 || page.Deadlines?.Keys.Any(page.IsDue) == true)
+            return true;
+        if (page is { StoreTimeUtc: { } storeTime, Deadlines.Count: > 0 })
+            _control.Schedule(instanceId, Now + (page.Deadlines.Values.Min() - storeTime));
+        return false;
+    }
+
+    // A stopped instance is answered without reading its data, which may be what stopped it.
+    private static WorkflowExecutionResult ReadResult(WorkflowInstance instance) =>
+        ExecutionCheckpoint.StopOf(instance) is { } stop ? Stopped(instance, stop) : ExistingResult(instance);
 
     private bool HasChildWait(WorkflowInstance instance) =>
         HasStructuredCheckpoint(instance) &&
         ExecutionCheckpoint.Read(instance.ExecutionStateJson).Waits.Any(wait =>
             wait.ChildWorkflowId != null);
+
+    private static WorkflowExecutionResult ExistingStart(WorkflowInstance existing, WorkflowDefinition definition,
+        WorkflowScopeCatalog scopes)
+    {
+        var checkpoint = ExecutionCheckpoint.Read(existing.ExecutionStateJson);
+        if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version ||
+            checkpoint.DefinitionFingerprint != scopes.Fingerprint)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                $"Workflow instance '{existing.InstanceId}' belongs to a different definition");
+        // A stopped instance is answered without reading its data, which may be what stopped it.
+        return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : ExistingResult(existing);
+    }
 
     private static WorkflowExecutionResult Rejected(string instanceId, string reason) => new()
     {
@@ -588,20 +631,22 @@ internal sealed class InstanceHost(
         ErrorMessage = reason
     };
 
+    private static WorkflowExecutionStatus StatusOf(WorkflowStatus status) => status switch
+    {
+        WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
+        WorkflowStatus.Suspended => WorkflowExecutionStatus.Suspended,
+        WorkflowStatus.NeedsResolution => WorkflowExecutionStatus.NeedsResolution,
+        WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
+        WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
+        WorkflowStatus.TimedOut => WorkflowExecutionStatus.TimedOut,
+        WorkflowStatus.Terminated => WorkflowExecutionStatus.Failed,
+        _ => WorkflowExecutionStatus.Running
+    };
+
     private static WorkflowExecutionResult ExistingResult(WorkflowInstance instance) => new()
     {
         InstanceId = instance.InstanceId,
-        Status = instance.Status switch
-        {
-            WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
-            WorkflowStatus.Suspended => WorkflowExecutionStatus.Suspended,
-            WorkflowStatus.NeedsResolution => WorkflowExecutionStatus.NeedsResolution,
-            WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
-            WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
-            WorkflowStatus.TimedOut => WorkflowExecutionStatus.TimedOut,
-            WorkflowStatus.Terminated => WorkflowExecutionStatus.Failed,
-            _ => WorkflowExecutionStatus.Running
-        },
+        Status = StatusOf(instance.Status),
         WorkflowData = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType) is { } dataType
             ? JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
             : null,
@@ -628,11 +673,35 @@ internal sealed class InstanceHost(
         }
     }
 
-    private Task<WorkflowExecutionResult> RunAndSaveAsync(WorkflowDefinition definition, WorkflowInstance instance,
-        ExecutionCheckpoint checkpoint, object workflowData, bool persistState, WorkflowExecutionLease? owner,
-        CancellationToken cancellationToken) =>
-        _executor.RunAsync(definition, instance, checkpoint, workflowData,
-            new HostedRun(this, instance, owner, persistState), cancellationToken);
+    // Runs nested in this scope's run, such as children and inline client calls, never park: the
+    // slot they would need to resume is held by the run they are nested in.
+    private int _runDepth;
+
+    private async Task<WorkflowExecutionResult> RunAndSaveAsync(WorkflowDefinition definition,
+        WorkflowInstance instance, ExecutionCheckpoint checkpoint, object workflowData, bool persistState,
+        WorkflowExecutionLease? owner, CancellationToken cancellationToken)
+    {
+        var depth = Interlocked.Increment(ref _runDepth);
+        try
+        {
+            var result = await _executor.RunAsync(definition, instance, checkpoint, workflowData,
+                new HostedRun(this, instance, owner, persistState, canPark: depth == 1), cancellationToken);
+            // The local host resumes what it saved with a runnable time, on time (C-12), and forgets
+            // what has finished.
+            if (persistState && checkpoint.LocalWakeUtc is { } due &&
+                result.Status is WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended or
+                    WorkflowExecutionStatus.NeedsResolution)
+                _control.Schedule(instance.InstanceId, due);
+            else if (persistState && instance.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
+                         WorkflowStatus.Cancelled or WorkflowStatus.TimedOut or WorkflowStatus.Terminated)
+                _control.Unschedule(instance.InstanceId);
+            return result;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _runDepth);
+        }
+    }
 
     // A request whose checkpoint would exceed a limit is refused; the instance keeps its saved state.
     private async Task PersistAsync(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
@@ -677,7 +746,13 @@ internal sealed class InstanceHost(
         {
             case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
                 await MakeParentRunnableAsync(instance);
-                return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision);
+                return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision,
+                    PendingCancellation: result.PendingCancellation, Parked: result.Parked,
+                    UnreadEvents: result.UnreadEvents);
+            case WorkflowCommitStatus.EventsChanged:
+                return new CheckpointReply(CheckpointReplyKind.EventsChanged, result.Revision,
+                    new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                        $"An inbox event workflow instance '{commit.InstanceId}' settles is no longer pending"));
             case WorkflowCommitStatus.Conflict:
                 return new CheckpointReply(CheckpointReplyKind.Conflict, result.Revision,
                     new WorkflowEngineException(WorkflowErrorKind.InvalidState,
@@ -693,29 +768,58 @@ internal sealed class InstanceHost(
         }
     }
 
-    // Only an operator moves an instance stopped at a resource limit, by recovering or cancelling it.
-    private static WorkflowExecutionResult? StoppedAtLimit(string instanceId, ExecutionCheckpoint checkpoint) =>
-        checkpoint.ResourceStop is { } stop
-            ? Rejected(instanceId,
-                $"The workflow instance is stopped at a resource limit ({stop.Reason}); " +
-                "raise the limit and recover it, or cancel it")
-            : null;
+    // A stopped instance as a result: it waits for an operator to release or cancel it.
+    private static WorkflowExecutionResult Stopped(WorkflowInstance instance, OperatorStopState stop) => new()
+    {
+        InstanceId = instance.InstanceId,
+        Status = WorkflowExecutionStatus.NeedsResolution,
+        TraceEntries = instance.ExecutionHistory.ToList(),
+        ErrorMessage = stop.Describe()
+    };
 
-    private IWorkflowEngine Engine =>
-        (IWorkflowEngine?)services.GetService(typeof(IWorkflowEngine))
+    // A claim that finds the instance lost by MaxCrashes owners in a row stops it instead of running
+    // it (B-08). Nothing of the workflow runs and its data is not read; the last checkpoint stays.
+    // The stop clears the live count, so a released instance gets MaxCrashes new attempts.
+    private async Task<WorkflowExecutionResult> QuarantineAsync(WorkflowInstance instance,
+        ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes, WorkflowExecutionLease owner)
+    {
+        var stop = new OperatorStopState
+        {
+            Kind = OperatorStopKind.Quarantine,
+            Reason = $"{owner.CrashCount} owners in a row lost it while it was running",
+            StoppedAtUtc = Now,
+            CrashCount = owner.CrashCount
+        };
+        checkpoint.OperatorStop = stop;
+        instance.Status = WorkflowStatus.NeedsResolution;
+        instance.LastError = stop.Reason;
+        instance.LastErrorStackTrace = null;
+        // Like the resource stop, this saves the last checkpoint plus a marker, so no limit applies.
+        await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner, true), instance,
+            checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
+        return Stopped(instance, stop);
+    }
+
+    // Children run inline in the parent's slot and scope (D-17 makes them independent later).
+    private DirectInstanceClient Children =>
+        (DirectInstanceClient?)services.GetService(typeof(DirectInstanceClient))
         ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
             "The workflow engine is not registered");
 
     /// <summary>The host side of one run: the instance's lease, its saved state and its children.</summary>
     private sealed class HostedRun(InstanceHost host, WorkflowInstance instance, WorkflowExecutionLease? owner,
-        bool persistState) : IExecutionHost
+        bool persistState, bool canPark = false) : IExecutionHost
     {
         public bool PersistsState => persistState;
+        public bool CanPark => canPark && persistState && owner != null;
+        public CancellationToken Drain => host._control.Drain;
         public long Epoch => owner?.Epoch ?? 0;
-        public long MaxCheckpointBytes => host._limits.MaxCheckpointBytes;
+        public ExecutionLimits Limits => host._limits;
         public bool ChildStartIsCheckpointed => host._childStartIsCheckpointed;
         public Task? OwnershipLoss => owner?.Loss;
         public Task<CancellationReason>? CancellationSignal => owner?.Cancellation;
+        public long ObservedInboxSequence => owner?.InboxSequence ?? 0;
+        public Task? InboxChanged => owner?.InboxChanged;
 
         public CancellationReason? ObservedCancellation =>
             owner?.Cancellation.IsCompletedSuccessfully == true ? owner.Cancellation.Result : null;
@@ -725,8 +829,7 @@ internal sealed class InstanceHost(
         public Task<CheckpointReply> CommitAsync(CheckpointCommit commit) =>
             host.CommitAsync(instance, commit, Epoch);
 
-        public Task<CancellationReason?> ReadCancellationRequestAsync() =>
-            host._store.GetCancellationRequestAsync(instance.InstanceId);
+        public void ObserveCancellation(CancellationReason reason) => owner?.ObserveCancellation(reason);
 
         public Task<WorkflowInstance?> ReadChildAsync(string childInstanceId) =>
             host._store.GetWorkflowInstanceAsync(childInstanceId);
@@ -739,20 +842,26 @@ internal sealed class InstanceHost(
 
         public Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,
             CancellationToken cancellationToken = default) =>
-            host.Engine.RecoverWorkflowAsync(childInstanceId, cancellationToken);
+            host.Children.RecoverAsync(childInstanceId, cancellationToken);
 
         public Task<WorkflowExecutionResult> CancelChildAsync(string childInstanceId, CancellationReason reason,
             CancellationToken cancellationToken) =>
-            host.Engine.CancelWorkflowAsync(childInstanceId, reason, cancellationToken);
+            host.Children.CancelAsync(childInstanceId, reason, cancellationToken);
 
         public async Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key,
-            object @event, string deliveryId, CancellationToken cancellationToken)
+            object @event, string eventId, CancellationToken cancellationToken)
         {
-            var method = typeof(IWorkflowEngine).GetMethods().Single(candidate =>
-                candidate.Name == nameof(IWorkflowEngine.ResumeWorkflowDeliveryAsync));
+            var method = typeof(DirectInstanceClient).GetMethods().Single(candidate =>
+                candidate.Name == nameof(DirectInstanceClient.ResumeAsync) && candidate.GetParameters().Length == 5);
             var task = (Task<WorkflowExecutionResult>)method.MakeGenericMethod(@event.GetType())
-                .Invoke(host.Engine, [childInstanceId, key, @event, deliveryId, cancellationToken])!;
+                .Invoke(host.Children, [childInstanceId, key, @event, eventId, cancellationToken])!;
             return await task;
         }
+
+        public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) =>
+            host._store.GetPendingEventsAsync(instance.InstanceId, afterSequence, limit);
+
+        public Task<StoredWait?> ReadWaitAsync(string waitId) =>
+            host._store.GetWaitAsync(instance.InstanceId, waitId);
     }
 }

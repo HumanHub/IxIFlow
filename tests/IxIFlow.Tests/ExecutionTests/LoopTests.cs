@@ -10,7 +10,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class LoopTests
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly IWorkflowEngine _workflowEngine;
+    private readonly IWorkflowClient _workflowEngine;
 
     public LoopTests()
     {
@@ -20,7 +20,7 @@ public class LoopTests
         services.AddIxIFlow();
 
         _serviceProvider = services.BuildServiceProvider();
-        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
+        _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
     }
 
     [Fact]
@@ -64,7 +64,7 @@ public class LoopTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -122,7 +122,7 @@ public class LoopTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -180,7 +180,7 @@ public class LoopTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -236,7 +236,7 @@ public class LoopTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -312,7 +312,7 @@ public class LoopTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -383,7 +383,7 @@ public class LoopTests
         };
 
         // Act
-        var result = await _workflowEngine.ExecuteWorkflowAsync(definition, workflowData);
+        var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);

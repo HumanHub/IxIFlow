@@ -20,7 +20,7 @@ public sealed class FailureClassificationTests
     public async Task StoreFailureWhileCheckingAChildLeavesTheParentRecoverable()
     {
         var time = new FakeTimeProvider();
-        var repository = new FaultInjectingRepository();
+        var repository = new FaultInjectingRepository(time);
         using var services = Services(repository, time);
         var child = Workflow.Create<ChildData>("ClassifiedTimedChild")
             .Step<NoopActivity>()
@@ -37,7 +37,7 @@ public sealed class FailureClassificationTests
         var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
         await registry.RegisterWorkflowAsync(child);
         await registry.RegisterWorkflowAsync(parent);
-        var started = await Engine(services).ExecuteWorkflowAsync(parent, new ParentData());
+        var started = await Engine(services).RunAsync(parent, new ParentData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var parentId = started.InstanceId;
 
@@ -47,10 +47,16 @@ public sealed class FailureClassificationTests
         Assert.True(repository.FailedReads > 0);
         Assert.NotEqual(WorkflowStatus.Failed, (await repository.GetWorkflowInstanceAsync(parentId))!.Status);
 
+        // The host's own timers fired with the clock as well; scan until the parent has finished.
         repository.FailRead = _ => false;
-        await RecoverOnceAsync(services, repository, time);
-        await RecoverOnceAsync(services, repository, time);
-        var saved = await repository.GetWorkflowInstanceAsync(parentId);
+        WorkflowInstance? saved = null;
+        for (var pass = 0; pass < 40 && saved?.Status != WorkflowStatus.Completed; pass++)
+        {
+            await RecoverOnceAsync(services, repository, time);
+            saved = await repository.GetWorkflowInstanceAsync(parentId);
+            if (saved?.Status != WorkflowStatus.Completed)
+                await Task.Delay(50);
+        }
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
         Assert.Contains("\"ChildTimedOut\":true", saved.WorkflowDataJson);
     }
@@ -59,7 +65,7 @@ public sealed class FailureClassificationTests
     public async Task ChildCommitFailureIsNotHandledAsAChildFailure()
     {
         var time = new FakeTimeProvider();
-        var repository = new FaultInjectingRepository();
+        var repository = new FaultInjectingRepository(time);
         using var services = Services(repository, time);
         var child = Workflow.Create<ChildData>("ClassifiedChild")
             .Step<NoopActivity>()
@@ -80,7 +86,7 @@ public sealed class FailureClassificationTests
         string parentId;
         try
         {
-            var result = await Engine(services).ExecuteWorkflowAsync(parent, new ParentData());
+            var result = await Engine(services).RunAsync(parent, new ParentData());
             parentId = result.InstanceId;
         }
         catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure)
@@ -113,8 +119,8 @@ public sealed class FailureClassificationTests
         return services.BuildServiceProvider();
     }
 
-    private static IWorkflowEngine Engine(IServiceProvider services) =>
-        services.GetRequiredService<IWorkflowEngine>();
+    private static IWorkflowClient Engine(IServiceProvider services) =>
+        services.GetRequiredService<IWorkflowClient>();
 
     private static async Task RecoverOnceAsync(IServiceProvider services,
         IWorkflowStateRepository repository, TimeProvider time)

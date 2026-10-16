@@ -165,8 +165,8 @@ public class WorkflowHost : IWorkflowHost, IDisposable
 
             // Execute workflow using the existing engine
             using var scope = _scopeFactory.CreateScope();
-            var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, workflowData, options);
+            var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, workflowData, options);
 
             // Update instance status
             instance.Status = result.IsSuccess ? WorkflowStatus.Completed : WorkflowStatus.Failed;
@@ -207,8 +207,8 @@ public class WorkflowHost : IWorkflowHost, IDisposable
 
             // Resume using the existing engine
             using var scope = _scopeFactory.CreateScope();
-            var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-                .ResumeWorkflowAsync(instanceId, @event);
+            var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+                .ResumeAsync(instanceId, @event);
 
             // Update instance status if we're tracking it
             if (instance != null)
@@ -298,8 +298,8 @@ public class WorkflowHost : IWorkflowHost, IDisposable
 
             // Execute workflow using the existing engine
             using var scope = _scopeFactory.CreateScope();
-            var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, workflowData, workflowOptions);
+            var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, workflowData, workflowOptions);
 
             // Update instance status
             instance.Status = result.IsSuccess ? WorkflowStatus.Completed : WorkflowStatus.Failed;

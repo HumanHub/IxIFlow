@@ -8,7 +8,28 @@ namespace IxIFlow.Tests.Infrastructure;
 /// </summary>
 public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox
 {
-    private readonly InMemoryWorkflowStateRepository _inner = new();
+    public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+        _inner.AppendEventAsync(workflowEvent);
+    public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
+        _inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
+    public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+        _inner.GetEventAsync(instanceId, eventId);
+    public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+        _inner.GetWaitAsync(instanceId, waitId);
+    public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(
+        IReadOnlyCollection<string> instanceIds) =>
+        _inner.GetInboxSequencesAsync(instanceIds);
+    public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+        _inner.GetOpenWaitsAsync(query);
+
+    private readonly InMemoryWorkflowStateRepository _inner;
+
+    public FaultInjectingRepository() : this(TimeProvider.System)
+    {
+    }
+
+    /// <summary>A store whose clock is <paramref name="time"/>, as a test that drives the engine's clock needs.</summary>
+    public FaultInjectingRepository(TimeProvider time) => _inner = new InMemoryWorkflowStateRepository(time);
     private int _failedReads;
     private int _failedCommits;
 
@@ -40,13 +61,16 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
 
     public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
         _inner.RequestCancellationAsync(instanceId, reason);
-    public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
+    public virtual Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         _inner.GetCancellationRequestAsync(instanceId);
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
-        _inner.GetWorkflowsRequiringRecoveryAsync();
-    public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+    public virtual Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        IReadOnlyCollection<string> instanceIds) =>
+        _inner.GetCancellationRequestsAsync(instanceIds);
+    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
+        _inner.GetRunnableInstancesAsync(limit);
+    public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
-    public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+    public virtual Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
     public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         _inner.ReleaseExecutionLeaseAsync(instanceId, token);

@@ -50,8 +50,8 @@ public class StructuredSagaWaitTests
             .OnError<InvalidOperationException>(handler => handler.Step<HandlerMarkerActivity>())
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("payment failed", result.ErrorMessage);
@@ -65,8 +65,8 @@ public class StructuredSagaWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(ForwardWorkflow(), new SagaData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(ForwardWorkflow(), new SagaData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             Assert.Equal(1, Data(started).Reserved);
             Assert.Equal(0, Data(started).Completed);
@@ -76,8 +76,8 @@ public class StructuredSagaWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(ForwardWorkflow());
-        var result = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "approval", new Approval());
+        var result = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(1, Data(result).Reserved);
@@ -92,8 +92,8 @@ public class StructuredSagaWaitTests
         using (var firstProvider = CreateServices(repository))
         {
             object data = new SagaData();
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(ForwardWorkflow(), data);
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(ForwardWorkflow(), data);
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -101,8 +101,8 @@ public class StructuredSagaWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(ForwardWorkflow());
-        var result = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "approval", new Approval());
+        var result = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(1, Data(result).Reserved);
@@ -116,8 +116,8 @@ public class StructuredSagaWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(FailingWorkflow(), new SagaData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(FailingWorkflow(), new SagaData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -125,8 +125,8 @@ public class StructuredSagaWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(FailingWorkflow());
-        var result = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "approval", new Approval());
+        var result = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("payment failed", result.ErrorMessage);
@@ -163,11 +163,11 @@ public class StructuredSagaWaitTests
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new SagaData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("ABba", Data(result).Trace);
@@ -194,12 +194,12 @@ public class StructuredSagaWaitTests
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Compensated)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new SagaData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Equal(1, Data(started).Reserved);
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "winner", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "winner", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(1, Data(result).Compensated);
@@ -224,11 +224,11 @@ public class StructuredSagaWaitTests
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))))
                 .Do(branch => branch.WaitFor<Approval>("winner")))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new SagaData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "winner", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "winner", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(0, Data(result).Completed);
@@ -254,10 +254,10 @@ public class StructuredSagaWaitTests
                 .WaitFor<Approval>("approval")
                 .Step<FailActivity>())
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new SagaData());
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal("payment failed", result.ErrorMessage);
@@ -289,8 +289,8 @@ public class StructuredSagaWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new SagaData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new SagaData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -298,8 +298,8 @@ public class StructuredSagaWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(definition);
-        var result = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "approval", new Approval());
+        var result = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("payment failed", result.ErrorMessage);
@@ -326,10 +326,10 @@ public class StructuredSagaWaitTests
                 .WaitFor<Approval>("approval")
                 .Step<FailActivity>())
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new SagaData());
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(8, Data(result).Compensated);
@@ -348,8 +348,8 @@ public class StructuredSagaWaitTests
             .Build();
 
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidDefinition, () =>
-            services.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new SagaData()));
+            services.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new SagaData()));
 
         Assert.Contains("requires a preceding", error.Message);
     }
@@ -371,10 +371,10 @@ public class StructuredSagaWaitTests
                 .WaitFor<Approval>("approval")
                 .Step<FailActivity>())
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new SagaData());
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("compensation failed", result.ErrorMessage);
@@ -399,8 +399,8 @@ public class StructuredSagaWaitTests
             .Step<HandlerMarkerActivity>()
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(expectedStatus, result.Status);
         if (ignoreCompensationErrors)
@@ -432,8 +432,8 @@ public class StructuredSagaWaitTests
                 })
                 .Do(branch => branch.Step<BeginActivity>()))
             .Build();
-        var executing = services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var executing = services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
         var probe = services.GetRequiredService<SlowReserveProbe>();
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await probe.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -468,13 +468,13 @@ public class StructuredSagaWaitTests
             .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
             .Build();
 
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
-        var executing = engine.ExecuteWorkflowAsync(definition, new SagaData(),
+        var executing = engine.RunAsync(definition, new SagaData(),
             new WorkflowOptions { InstanceId = instanceId });
         var probe = provider.GetRequiredService<PausedCompensationProbe>();
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await engine.CancelWorkflowAsync(instanceId,
+        await engine.CancelAsync(instanceId,
             new CancellationReason { ReasonCode = "operator" });
         probe.Release.SetResult();
 
@@ -500,8 +500,8 @@ public class StructuredSagaWaitTests
                 .CompensateWith<UnsafeOutputCompensation>()))
             .Build();
 
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
-        var result = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        var engine = provider.GetRequiredService<IWorkflowClient>();
+        var result = await engine.RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
         Assert.Contains("saga output could not be saved",
@@ -555,12 +555,12 @@ public class StructuredSagaWaitTests
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
 
-        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new SagaData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
-        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+        var recovered = await engine.RecoverAsync(saved.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
         Assert.Equal("payment failed", Data(recovered).Error);
@@ -581,12 +581,12 @@ public class StructuredSagaWaitTests
                 .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
 
-        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new SagaData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
-        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+        var recovered = await engine.RecoverAsync(saved.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
         Assert.Equal("payment failed", Data(recovered).Error);
@@ -611,12 +611,12 @@ public class StructuredSagaWaitTests
                     .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                     .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
 
-        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new SagaData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
-        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+        var recovered = await engine.RecoverAsync(saved.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
         Assert.Equal("private constructor value", Data(recovered).Trace);
@@ -637,8 +637,8 @@ public class StructuredSagaWaitTests
                 .Step<HandlerMarkerActivity>())
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("", Data(result).Trace);
@@ -655,12 +655,12 @@ public class StructuredSagaWaitTests
             .OnError<NonRestorableSagaException, MessageFault>(handler => handler
                 .Step<RecoverableHandlerActivity>())
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
 
-        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new SagaData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
-        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+        var recovered = await engine.RecoverAsync(saved.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, recovered.Status);
         Assert.Equal(typeof(NonRestorableSagaException).FullName, recovered.ErrorType);
@@ -682,12 +682,12 @@ public class StructuredSagaWaitTests
                     .Input(activity => activity.Message).From(ctx => ctx.Fault.PublicCode)
                     .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Trace)))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
 
-        await EngineAssert.StoreFailureAsync(() => engine.ExecuteWorkflowAsync(definition, new SagaData()));
+        await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new SagaData()));
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
 
-        var recovered = await engine.RecoverWorkflowAsync(saved.InstanceId);
+        var recovered = await engine.RecoverAsync(saved.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
         Assert.Equal("base value", Data(recovered).Trace);
@@ -711,12 +711,12 @@ public class StructuredSagaWaitTests
                     .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)
                     .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
 
-        var suspended = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        var suspended = await engine.RunAsync(definition, new SagaData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
 
-        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId, "cleanup", new Approval());
+        var resumed = await engine.ResumeAsync(suspended.InstanceId, "cleanup", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         Assert.Contains("Saga terminated", Data(resumed).Error);
@@ -752,12 +752,12 @@ public class StructuredSagaWaitTests
                 .WaitFor<Approval>("review")
                 .Step<FailActivity>()))
             .Build();
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
-        var reviewing = await engine.ResumeWorkflowAsync(started.InstanceId, "start", new Approval());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new SagaData());
+        var reviewing = await engine.ResumeAsync(started.InstanceId, "start", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Suspended, reviewing.Status);
 
-        var result = await engine.ResumeWorkflowAsync(started.InstanceId, "review", new Approval());
+        var result = await engine.ResumeAsync(started.InstanceId, "review", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(1, Data(result).Compensated);
@@ -770,8 +770,8 @@ public class StructuredSagaWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(PredicateWorkflow(), new SagaData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(PredicateWorkflow(), new SagaData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -779,11 +779,11 @@ public class StructuredSagaWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(PredicateWorkflow());
-        var engine = secondProvider.GetRequiredService<IWorkflowEngine>();
-        var rejected = await engine.ResumeWorkflowAsync(instanceId, "approval", new Approval { Expected = 0 });
+        var engine = secondProvider.GetRequiredService<IWorkflowClient>();
+        var rejected = await engine.ResumeAsync(instanceId, "approval", new Approval { Expected = 0 });
         Assert.Equal(WorkflowExecutionStatus.Suspended, rejected.Status);
 
-        var result = await engine.ResumeWorkflowAsync(instanceId, "approval", new Approval { Expected = 1 });
+        var result = await engine.ResumeAsync(instanceId, "approval", new Approval { Expected = 1 });
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(1, Data(result).Completed);
     }
@@ -800,10 +800,10 @@ public class StructuredSagaWaitTests
                 .WaitFor<Approval>("approval"))
             .Build();
 
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new SagaData());
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, new SagaData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var resumed = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
     }
 
@@ -823,8 +823,8 @@ public class StructuredSagaWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(8, Data(result).Completed);
@@ -852,8 +852,8 @@ public class StructuredSagaWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(2, provider.GetRequiredService<SagaRetryProbe>().Attempts);
@@ -878,12 +878,12 @@ public class StructuredSagaWaitTests
             .Build();
         var data = new SagaData();
 
-        var engine = services.GetRequiredService<IWorkflowEngine>();
-        var started = await engine.ExecuteWorkflowAsync(definition, data);
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(definition, data);
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Equal(1, data.Reserved);
         Assert.Equal(1, data.Completed);
-        var resumed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval", new Approval());
+        var resumed = await engine.ResumeAsync(started.InstanceId, "approval", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
     }
 
@@ -904,8 +904,8 @@ public class StructuredSagaWaitTests
                 .Step<FailActivity>())
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData { Method = "card" });
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData { Method = "card" });
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(1, Data(result).Reserved);
@@ -926,8 +926,8 @@ public class StructuredSagaWaitTests
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated))))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("output mapping failed", result.ErrorMessage);
@@ -955,8 +955,8 @@ public class StructuredSagaWaitTests
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(1, Data(result).Compensated);
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -982,8 +982,8 @@ public class StructuredSagaWaitTests
                 .OnError<InvalidOperationException>(handler => handler.ThenRetry(1))))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(1, Data(result).Compensated);
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
@@ -1005,8 +1005,8 @@ public class StructuredSagaWaitTests
                 .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Contains("retry exhausted", Data(result).Error);
@@ -1027,8 +1027,8 @@ public class StructuredSagaWaitTests
                 .OnError<InvalidOperationException>(handler => handler.ThenRetry(1))))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var ids = provider.GetRequiredService<RetryIdProbe>().InvocationIds;
@@ -1053,8 +1053,8 @@ public class StructuredSagaWaitTests
                         TimeSpan.FromMilliseconds(180), 1, 1)))))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var starts = provider.GetRequiredService<RetryIdProbe>().StartedTicks;
@@ -1080,8 +1080,8 @@ public class StructuredSagaWaitTests
                     TimeSpan.FromMilliseconds(180), 1, 1)))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var starts = provider.GetRequiredService<SagaRetryProbe>().StartedTicks;
@@ -1101,7 +1101,7 @@ public class StructuredSagaWaitTests
         services.AddTransient<RetryIdActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
         var definition = Workflow.Create<SagaData>("InterruptedStepRetry")
             .Step<BeginActivity>()
@@ -1111,14 +1111,14 @@ public class StructuredSagaWaitTests
                         TimeSpan.FromMilliseconds(700), 1, 1)))))
             .Build();
         using var cancellation = new CancellationTokenSource();
-        var running = engine.ExecuteWorkflowAsync(definition, new SagaData(),
+        var running = engine.RunAsync(definition, new SagaData(),
             new WorkflowOptions { InstanceId = instanceId }, cancellation.Token);
 
         await WaitForRetryCheckpointAsync(repository, instanceId);
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running);
 
-        var recovered = await engine.RecoverWorkflowAsync(instanceId);
+        var recovered = await engine.RecoverAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
         var starts = provider.GetRequiredService<RetryIdProbe>().StartedTicks;
@@ -1138,7 +1138,7 @@ public class StructuredSagaWaitTests
         services.AddTransient<RetryIdActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
         var definition = Workflow.Create<SagaData>("CancelPendingRetry")
             .Step<BeginActivity>()
@@ -1147,11 +1147,11 @@ public class StructuredSagaWaitTests
                     new RetryPolicy(TimeSpan.FromSeconds(10),
                         TimeSpan.FromSeconds(10), 1, 1)))))
             .Build();
-        var running = engine.ExecuteWorkflowAsync(definition, new SagaData(),
+        var running = engine.RunAsync(definition, new SagaData(),
             new WorkflowOptions { InstanceId = instanceId });
 
         await WaitForRetryCheckpointAsync(repository, instanceId);
-        await engine.CancelWorkflowAsync(instanceId,
+        await engine.CancelAsync(instanceId,
             new CancellationReason { ReasonCode = "operator" });
         var stopped = await running.WaitAsync(TimeSpan.FromSeconds(4));
 
@@ -1197,8 +1197,8 @@ public class StructuredSagaWaitTests
             .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var ids = provider.GetRequiredService<RetryIdProbe>().InvocationIds;
@@ -1272,8 +1272,8 @@ public class StructuredSagaWaitTests
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Trace))
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("ABHD", Data(result).Trace);
@@ -1288,8 +1288,8 @@ public class StructuredSagaWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new SagaData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new SagaData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             Assert.Equal("payment failed", Data(started).Error);
             instanceId = started.InstanceId;
@@ -1298,8 +1298,8 @@ public class StructuredSagaWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(SagaErrorWaitWorkflow());
-        var resumed = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "review", new Approval());
+        var resumed = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "review", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         Assert.Equal("payment failed", Data(resumed).Error);
@@ -1318,8 +1318,8 @@ public class StructuredSagaWaitTests
                 .CompensateNone().ThenContinue())
             .Build();
 
-        var result = await services.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new SagaData());
+        var result = await services.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("handler failed", result.ErrorMessage);
@@ -1355,8 +1355,8 @@ public class StructuredSagaWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new SagaData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new SagaData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -1364,8 +1364,8 @@ public class StructuredSagaWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(SagaRetryAfterWaitWorkflow());
-        var resumed = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "retry", new Approval());
+        var resumed = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "retry", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         Assert.Equal(2, Data(resumed).Completed);
@@ -1379,8 +1379,8 @@ public class StructuredSagaWaitTests
         string instanceId;
         using (var firstProvider = CreateServices(repository))
         {
-            var started = await firstProvider.GetRequiredService<IWorkflowEngine>()
-                .ExecuteWorkflowAsync(definition, new SagaData());
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new SagaData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -1388,8 +1388,8 @@ public class StructuredSagaWaitTests
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(SagaTerminateAfterWaitWorkflow());
-        var resumed = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, "terminate", new Approval());
+        var resumed = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, "terminate", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, resumed.Status);
         Assert.Contains("Error policy requested termination", resumed.ErrorMessage);
@@ -1647,14 +1647,28 @@ public class StructuredSagaWaitTests
 
     public sealed class HandlerStartCrashStore : IWorkflowStateRepository
     {
+        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
+            _inner.AppendEventAsync(workflowEvent);
+        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
+            _inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
+        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+            _inner.GetEventAsync(instanceId, eventId);
+        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
+            _inner.GetWaitAsync(instanceId, waitId);
+        public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(
+            IReadOnlyCollection<string> instanceIds) =>
+            _inner.GetInboxSequencesAsync(instanceIds);
+        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
+            _inner.GetOpenWaitsAsync(query);
+
         private readonly InMemoryWorkflowStateRepository _inner = new();
         public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
             _inner.RequestCancellationAsync(instanceId, reason);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowsRequiringRecoveryAsync() =>
-            _inner.GetWorkflowsRequiringRecoveryAsync();
-        public Task<long?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
+            _inner.GetRunnableInstancesAsync(limit);
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);

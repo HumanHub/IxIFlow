@@ -29,9 +29,9 @@ public class EngineContractRegressionTests
         using (var firstProvider = new ServiceCollection().AddLogging().AddIxIFlow()
                    .AddSingleton<IWorkflowStateRepository>(repository).BuildServiceProvider())
         {
-            var engine = firstProvider.GetRequiredService<IWorkflowEngine>();
-            var first = await engine.ExecuteWorkflowAsync(Immediate(), new RegressionData());
-            var waiting = await engine.ExecuteWorkflowAsync(Waiting(), new RegressionData());
+            var engine = firstProvider.GetRequiredService<IWorkflowClient>();
+            var first = await engine.RunAsync(Immediate(), new RegressionData());
+            var waiting = await engine.RunAsync(Waiting(), new RegressionData());
             Assert.Equal(WorkflowExecutionStatus.Success, first.Status);
             Assert.Equal(WorkflowExecutionStatus.Suspended, waiting.Status);
             var savedFirst = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
@@ -46,8 +46,8 @@ public class EngineContractRegressionTests
             .AddSingleton<IWorkflowStateRepository>(repository).BuildServiceProvider();
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(Waiting());
-        var recovered = await secondProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(waitingId, "approval", new RegressionApprovalEvent());
+        var recovered = await secondProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(waitingId, "approval", new RegressionApprovalEvent());
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
         Assert.Equal(waitingName, (await repository.GetWorkflowInstanceAsync(waitingId))!.WorkflowName);
     }
@@ -145,15 +145,15 @@ public class EngineContractRegressionTests
             .AddLogging()
             .AddIxIFlow()
             .BuildServiceProvider();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<RegressionData>("OptionsMustBeHonest")
             .Step<MarkChildActivity>().Build();
 
         await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
-            engine.ExecuteWorkflowAsync(definition, new RegressionData(),
+            engine.RunAsync(definition, new RegressionData(),
                 new WorkflowOptions { EnableDebugging = true }));
         await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
-            engine.ExecuteWorkflowAsync(definition, new RegressionData(),
+            engine.RunAsync(definition, new RegressionData(),
                 new WorkflowOptions { WorkflowRetryPolicy = new RetryPolicy(2) }));
         Assert.Empty(await provider.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstancesByNameAsync(definition.Name));
@@ -266,14 +266,14 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         services.AddTransient<MarkChildActivity>();
         using var provider = services.BuildServiceProvider();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
         WorkflowDefinition Build() => Workflow.Create<RegressionData>("RepeatedDefinition")
             .Step<MarkChildActivity>(step => step
                 .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Value))
             .Build();
 
-        var first = await engine.ExecuteWorkflowAsync(Build(), new RegressionData { Value = "one" });
-        var second = await engine.ExecuteWorkflowAsync(Build(), new RegressionData { Value = "two" });
+        var first = await engine.RunAsync(Build(), new RegressionData { Value = "one" });
+        var second = await engine.RunAsync(Build(), new RegressionData { Value = "two" });
 
         Assert.Equal(WorkflowExecutionStatus.Success, first.Status);
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
@@ -288,8 +288,8 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         services.AddTransient<MarkChildActivity>();
         using var provider = services.BuildServiceProvider();
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(Workflow.Create<RegressionData>("TraceResult")
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(Workflow.Create<RegressionData>("TraceResult")
                 .Step<MarkChildActivity>().Build(), new RegressionData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -306,7 +306,7 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         services.AddTransient<MarkChildActivity>();
         using var provider = services.BuildServiceProvider();
-        var engine = provider.GetRequiredService<IWorkflowEngine>();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
         var repository = provider.GetRequiredService<IWorkflowStateRepository>();
         var definition = Workflow.Create<RegressionData>("TraceOption")
             .Step<MarkChildActivity>()
@@ -314,12 +314,12 @@ public class EngineContractRegressionTests
             .Step<MarkChildActivity>()
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new RegressionData(),
+        var started = await engine.RunAsync(definition, new RegressionData(),
             new WorkflowOptions { EnableTracing = false });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Empty((await repository.GetWorkflowInstanceAsync(started.InstanceId))!.ExecutionHistory);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId, "approval",
+        var completed = await engine.ResumeAsync(started.InstanceId, "approval",
             new RegressionApprovalEvent());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Empty((await repository.GetWorkflowInstanceAsync(started.InstanceId))!.ExecutionHistory);
@@ -341,8 +341,8 @@ public class EngineContractRegressionTests
         await provider.GetRequiredService<IWorkflowStateRepository>()
             .SaveWorkflowInstanceAsync(instance);
 
-        var result = await provider.GetRequiredService<IWorkflowEngine>()
-            .CancelWorkflowAsync(instance.InstanceId,
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .CancelAsync(instance.InstanceId,
                 new CancellationReason { ReasonCode = "operator" });
 
         Assert.Equal(WorkflowExecutionStatus.Failed, result.Status);
@@ -421,15 +421,15 @@ public class EngineContractRegressionTests
         string instanceId;
         using (var firstScope = provider.CreateScope())
         {
-            var engine = firstScope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-            var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+            var engine = firstScope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+            var suspended = await engine.RunAsync(definition, new RegressionData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
             instanceId = suspended.InstanceId;
         }
 
         using var secondScope = provider.CreateScope();
-        var resumed = await secondScope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-            .ResumeWorkflowAsync(instanceId, new RegressionApprovalEvent { Approved = true });
+        var resumed = await secondScope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(instanceId, new RegressionApprovalEvent { Approved = true });
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         Assert.True(Assert.IsType<RegressionData>(resumed.WorkflowData).ChildExecuted);
     }
@@ -453,22 +453,21 @@ public class EngineContractRegressionTests
             .Suspend<RegressionApprovalEvent>("approval", (evt, _) => evt.Approved)
             .Step<BlockingResumeActivity>()
             .Build();
-        var firstEngine = firstScope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
-        var suspended = await firstEngine.ExecuteWorkflowAsync(definition, new RegressionData());
+        var firstEngine = firstScope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+        var suspended = await firstEngine.RunAsync(definition, new RegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
 
-        var firstResume = firstEngine.ResumeWorkflowAsync(suspended.InstanceId,
+        var firstResume = firstEngine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         try
         {
             await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            var secondResumeTask = secondScope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-                .ResumeWorkflowAsync(suspended.InstanceId, new RegressionApprovalEvent { Approved = true });
-            Assert.False(secondResumeTask.IsCompleted);
+            // The first event answered the wait, so the second finds no open wait when it arrives
+            // and is refused at once, while the first run is still going (D-33).
+            var secondResume = await secondScope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+                .ResumeAsync(suspended.InstanceId, new RegressionApprovalEvent { Approved = true });
+            EventAssert.Rejected(secondResume, EventRejection.NoOpenWait);
             gate.Release.TrySetResult();
-            var secondResume = await secondResumeTask;
-            Assert.Equal(WorkflowExecutionStatus.Faulted, secondResume.Status);
-            Assert.Contains("not waiting", secondResume.ErrorMessage);
             Assert.Equal(1, gate.ExecutionCount);
         }
         finally
@@ -505,8 +504,8 @@ public class EngineContractRegressionTests
                 .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.ChildExecuted)))
             .Build();
 
-        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new RegressionData());
+        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new RegressionData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.False(Assert.IsType<RegressionData>(result.WorkflowData).ChildExecuted);
@@ -531,8 +530,8 @@ public class EngineContractRegressionTests
                     .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.CatchExecuted)))
             .Build();
 
-        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new RegressionData());
+        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new RegressionData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.True(Assert.IsType<RegressionData>(result.WorkflowData).CatchExecuted);
@@ -559,8 +558,8 @@ public class EngineContractRegressionTests
                     .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Result)))
             .Build();
 
-        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new RegressionData());
+        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new RegressionData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("outer", Assert.IsType<RegressionData>(result.WorkflowData).Result);
@@ -587,8 +586,8 @@ public class EngineContractRegressionTests
                     .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Result))))
             .Build();
 
-        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(definition, new RegressionData());
+        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new RegressionData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("outer", Assert.IsType<RegressionData>(result.WorkflowData).Result);
@@ -603,7 +602,7 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
 
         var definition = Workflow.Create<LoopResumeRegressionData>("LoopResume")
             .Step<MarkChildActivity>()
@@ -614,16 +613,16 @@ public class EngineContractRegressionTests
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Count)))
             .Build();
 
-        var started = await engine.ExecuteWorkflowAsync(definition, new LoopResumeRegressionData());
+        var started = await engine.RunAsync(definition, new LoopResumeRegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        var resumed = await engine.ResumeWorkflowAsync(started.InstanceId,
+        var resumed = await engine.ResumeAsync(started.InstanceId,
             new RegressionApprovalEvent { Approved = true });
 
         Assert.True(resumed.Status == WorkflowExecutionStatus.Suspended, $"Expected another suspension, got {resumed.Status}: {resumed.ErrorMessage}");
         Assert.Equal(1, Assert.IsType<LoopResumeRegressionData>(resumed.WorkflowData).Count);
 
-        var completed = await engine.ResumeWorkflowAsync(started.InstanceId,
+        var completed = await engine.ResumeAsync(started.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(2, Assert.IsType<LoopResumeRegressionData>(completed.WorkflowData).Count);
@@ -638,7 +637,7 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
 
         var definition = Workflow.Create<RegressionData>("TryResumeFailure")
             .Step<MarkChildActivity>()
@@ -655,9 +654,9 @@ public class EngineContractRegressionTests
                 .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.AfterTryExecuted))
             .Build();
 
-        var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        var suspended = await engine.RunAsync(definition, new RegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
-        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+        var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         var data = Assert.IsType<RegressionData>(resumed.WorkflowData);
@@ -675,7 +674,7 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
 
         var definition = Workflow.Create<RegressionData>("ConditionalEntryResume")
             .Step<MarkChildActivity>(setup => setup
@@ -687,9 +686,9 @@ public class EngineContractRegressionTests
                 .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Result))
             .Build();
 
-        var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        var suspended = await engine.RunAsync(definition, new RegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
-        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+        var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         Assert.Equal("entry", Assert.IsType<RegressionData>(resumed.WorkflowData).Result);
@@ -704,7 +703,7 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
 
         var definition = Workflow.Create<RegressionData>("CatchWait")
             .Step<MarkChildActivity>()
@@ -720,13 +719,13 @@ public class EngineContractRegressionTests
                 .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.FinallyExecuted)))
             .Build();
 
-        var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        var suspended = await engine.RunAsync(definition, new RegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
         var suspendedData = Assert.IsType<RegressionData>(suspended.WorkflowData);
         Assert.Equal(1, suspendedData.CatchBeforeWaitCount);
         Assert.False(suspendedData.FinallyExecuted);
 
-        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+        var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         Assert.True(resumed.Status == WorkflowExecutionStatus.Success,
             $"Expected catch continuation to succeed, got {resumed.Status}: {resumed.ErrorMessage}");
@@ -745,7 +744,7 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
 
         var definition = Workflow.Create<RegressionData>("FinallyWait")
             .Step<MarkChildActivity>()
@@ -761,13 +760,13 @@ public class EngineContractRegressionTests
                 .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.AfterTryExecuted))
             .Build();
 
-        var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        var suspended = await engine.RunAsync(definition, new RegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
         var suspendedData = Assert.IsType<RegressionData>(suspended.WorkflowData);
         Assert.Equal(1, suspendedData.FinallyBeforeWaitCount);
         Assert.False(suspendedData.AfterTryExecuted);
 
-        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+        var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         Assert.True(resumed.Status == WorkflowExecutionStatus.Success,
             $"Expected finally continuation to succeed, got {resumed.Status}: {resumed.ErrorMessage}");
@@ -786,7 +785,7 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
 
         var definition = Workflow.Create<RegressionData>("ParallelWait")
             .Step<MarkChildActivity>()
@@ -805,13 +804,13 @@ public class EngineContractRegressionTests
                 .Output(activity => activity.Executed).To(ctx => ctx.WorkflowData.AfterTryExecuted))
             .Build();
 
-        var suspended = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        var suspended = await engine.RunAsync(definition, new RegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
         var suspendedData = Assert.IsType<RegressionData>(suspended.WorkflowData);
         Assert.Equal(1, suspendedData.ParallelCompletedBranchCount);
         Assert.False(suspendedData.AfterTryExecuted);
 
-        var resumed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+        var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         Assert.True(resumed.Status == WorkflowExecutionStatus.Suspended,
             $"Expected a second parallel wait, got {resumed.Status}: {resumed.ErrorMessage}");
@@ -820,7 +819,7 @@ public class EngineContractRegressionTests
         Assert.True(data.ParallelWaitBranchCompleted);
         Assert.False(data.AfterTryExecuted);
 
-        var completed = await engine.ResumeWorkflowAsync(suspended.InstanceId,
+        var completed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
         Assert.True(completed.Status == WorkflowExecutionStatus.Success,
             $"Expected parallel continuation to succeed, got {completed.Status}: {completed.ErrorMessage}");
@@ -848,18 +847,18 @@ public class EngineContractRegressionTests
             })
             .Build();
 
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
         var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
-        var started = await engine.ExecuteWorkflowAsync(definition, new RegressionData());
+        var started = await engine.RunAsync(definition, new RegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(2, saved!.ExecutionSnapshot!.Pointers.Count(pointer => pointer.Status == "Waiting"));
 
-        var first = await engine.ResumeWorkflowAsync(started.InstanceId, "first",
+        var first = await engine.ResumeAsync(started.InstanceId, "first",
             new RegressionApprovalEvent { Approved = true });
         Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
 
-        var second = await engine.ResumeWorkflowAsync(started.InstanceId, "second",
+        var second = await engine.ResumeAsync(started.InstanceId, "second",
             new RegressionApprovalEvent { Approved = true });
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
     }
@@ -1094,8 +1093,8 @@ public class EngineContractRegressionTests
                 .Input(data => data.Value).From(ctx => ctx.WorkflowData.Value)
                 .Output(data => data.Executed).To(ctx => ctx.WorkflowData.ChildExecuted))
             .Build();
-        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowEngine>()
-            .ExecuteWorkflowAsync(parent, new RegressionData { Value = "input" });
+        var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(parent, new RegressionData { Value = "input" });
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);
@@ -1110,7 +1109,7 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowEngine>();
+        var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
         var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
 
         var parent = Workflow.Create<RegressionData>("MissingChildParent")
@@ -1119,7 +1118,7 @@ public class EngineContractRegressionTests
                 .Output(data => data.Executed).To(ctx => ctx.WorkflowData.ChildExecuted))
             .Build();
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
-            () => engine.ExecuteWorkflowAsync(parent, new RegressionData()));
+            () => engine.RunAsync(parent, new RegressionData()));
         Assert.Contains("Workflow definition not found: MissingChild v1", error.Message);
         var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("MissingChildParent"));
         Assert.NotEqual(WorkflowStatus.Failed, saved.Status);
@@ -1129,7 +1128,7 @@ public class EngineContractRegressionTests
                 .Step<MarkChildActivity>(setup => setup
                     .Output(a => a.Executed).To(ctx => ctx.WorkflowData.Executed))
                 .Build());
-        var result = await engine.RecoverWorkflowAsync(saved.InstanceId);
+        var result = await engine.RecoverAsync(saved.InstanceId);
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);

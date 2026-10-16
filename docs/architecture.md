@@ -3,7 +3,7 @@ title: Architecture
 description: The local workflow core and optional host infrastructure.
 ---
 
-IxIFlow's core can run inside one .NET application. Call `AddIxIFlow()` to register the engine, create a definition with the fluent API, and execute it through `IWorkflowEngine`. Activities run in that application process. This local mode does not require the coordinator or SQL host infrastructure.
+IxIFlow's core can run inside one .NET application. Call `AddIxIFlow()` to register the engine, create a definition with the fluent API, and execute it through `IWorkflowClient`. Activities run in that application process. This local mode does not require the coordinator or SQL host infrastructure.
 
 ## Local execution
 

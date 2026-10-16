@@ -3,7 +3,7 @@ title: Execution model
 description: How IxIFlow definitions, instances, steps, and hosts work.
 ---
 
-IxIFlow has a definition, an execution engine, and an instance record. A definition contains ordered steps and the workflow data type. `IWorkflowEngine.ExecuteWorkflowAsync` runs that definition with a data object and returns a `WorkflowExecutionResult`.
+IxIFlow has a definition, an execution engine, and an instance record. A definition contains ordered steps and the workflow data type. `IWorkflowClient.RunAsync` runs that definition with a data object and returns a `WorkflowExecutionResult`.
 
 ## Normal execution
 
@@ -35,7 +35,19 @@ The SQL host overload registers a SQL workflow state repository, host registry, 
 
 ## Checkpoints
 
-The scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. The SQL host scans for interrupted running instances. An uncertain external activity outcome stops for an explicit resolution decision; inspect pending attempts and resolve them through `IWorkflowEngine` before continuing.
+The scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. An uncertain external activity outcome stops for an explicit resolution decision; inspect pending attempts and resolve them through `IWorkflowClient` before continuing.
+
+Each saved instance carries the time it may next run, `RunnableAtUtc`: the time of the save while it runs, its earliest deadline or retry while it waits, and now when a cancellation request or a finished child needs it. A host resumes the instances it saved at those times with its own timer, and every `IxIFlowOptions.PollInterval` (one second by default) it claims due instances that nobody owns, such as work left by a host that stopped, up to its free slots. A run with nothing else to do whose next retry is more than `IxIFlowOptions.ParkRetriesLongerThan` away (one second by default) saves itself, gives its slot back, and continues at the retry; a caller of `RunAsync`, `ResumeAsync`, `ResolveAsync` or `ReleaseAsync` keeps waiting, while `RecoverAsync` returns `Scheduled`. After such a pause the run continues from its saved data, so read the outcome from the result, not from the object passed in.
+
+A checkpoint is saved at effect boundaries: when the instance starts, before and after each activity or child workflow, when a wait is saved or a scheduled retry is set, when a branch is cancelled, and when the run stops. Control flow between them, such as `If`, loops and scope changes, is not saved; after an interruption it is evaluated again from the last checkpoint. Conditions, mappings, wait predicates and parallel completion conditions may therefore run more than once. Keep them pure: read the workflow data and the previous step, perform no I/O, and read time only through the injected `TimeProvider`.
+
+A checkpoint larger than `IxIFlowOptions.MaxCheckpointBytes` (4 MiB of workflow data and execution state by default) is never saved. The instance stops at `NeedsResolution` with its last checkpoint and the limit as its error; raise the limit and call `ReleaseAsync`, or cancel it. A start, event or resolution that would exceed the limit is refused with a `WorkflowEngineException` of kind `ResourceExhausted`.
+
+An owner that loses a running instance, because its process dies or its lease expires, counts one crash for the instance. Any saved progress resets the count; starting an activity or child workflow does not. When `IxIFlowOptions.MaxCrashes` owners in a row (3 by default) have lost the instance, the next host to claim it does not run it: the instance is quarantined at `NeedsResolution` with its last checkpoint, and no host claims it again. `RecoverAsync`, including a parent checking its child, leaves a stopped instance stopped. Call `ReleaseAsync` to run it again with a fresh count, or cancel it. A graceful shutdown releases its leases and never counts.
+
+Two more limits keep one instance from taking over a host. `IxIFlowOptions.MaxActiveBranches` (1,000 by default) caps the live continuations of an instance: the root, every parallel branch, and every parent waiting at its join; branches that are being cancelled do not count. A parallel step that would go over it does not fork: the run starts nothing new, lets its running activities finish and saves them, then stops at `NeedsResolution` like a checkpoint over the size limit. Raise the limit and call `ReleaseAsync`. `IxIFlowOptions.MaxActivitiesPerRun` (100 by default) caps the activities one run has in flight; further activities wait for one to finish while other branches keep advancing. Branches that wait on each other's activities need room to run together.
+
+The SQL store keeps a separate connection pool for leases and cancellation (16 connections by default, the `ownershipPoolSize` argument of `SqlWorkflowStateRepository`), so a host whose runs exhaust the main pool still renews its leases and delivers cancellation. A lease that cannot be renewed before it may have expired is given up at that moment, not when the store call finally returns. Enable `READ_COMMITTED_SNAPSHOT` on the database so that reads of cancellation requests do not wait behind commits of other instances.
 
 ## Interrupted activities
 
@@ -77,10 +89,10 @@ public sealed class ChargeCardActivity(IPaymentLedger ledger) : IRecoverableActi
 An activity without this contract, or one that returns `Unresolved`, stops at `NeedsResolution`. An operator lists the pending attempts and records a decision. A completed decision supplies the activity's output properties; a failed decision supplies an error. The decision is saved before execution continues.
 
 ```csharp
-var pending = await engine.GetPendingActivitiesAsync(instanceId);
+var pending = await client.GetPendingActivitiesAsync(instanceId);
 var attempt = pending.Single();
 
-await engine.ResolveActivityAsync(instanceId, attempt.InvocationId,
+await client.ResolveAsync(instanceId, attempt.InvocationId,
     ActivityResolution.Completed(
         new Dictionary<string, object?> { ["ChargeId"] = "ch_123" },
         note: "Confirmed in the payment dashboard",

@@ -32,19 +32,23 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         Action<IServiceCollection>? configure = null) =>
         new(await StoreProfiles.CreateAsync(profile), configure ?? (_ => { }));
 
-    /// <summary>Starts another host on the shared store and returns its engine.</summary>
-    public IWorkflowEngine AddHost()
+    /// <summary>
+    /// Starts another host on the shared store and returns its engine. <paramref name="wrap"/> puts
+    /// faults between the host and its repository.
+    /// </summary>
+    public IWorkflowClient AddHost(Func<IWorkflowStateRepository, IWorkflowStateRepository>? wrap = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
-        services.Replace(ServiceDescriptor.Singleton(_store.NewRepository()));
+        var repository = _store.NewRepository();
+        services.Replace(ServiceDescriptor.Singleton(wrap?.Invoke(repository) ?? repository));
         services.Replace(ServiceDescriptor.Singleton(Registry));
         services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
         _configure(services);
         var host = services.BuildServiceProvider();
         _hosts.Add(host);
-        return host.GetRequiredService<IWorkflowEngine>();
+        return host.GetRequiredService<IWorkflowClient>();
     }
 
     /// <summary>Runs one recovery scan on the first host, as its background service would.</summary>
@@ -55,6 +59,9 @@ internal sealed class ConformanceCluster : IAsyncDisposable
             host.GetRequiredService<IWorkflowStateRepository>(), NullLogger<WorkflowRecoveryService>.Instance);
         await scanner.RecoverOnceAsync(CancellationToken.None);
     }
+
+    /// <summary>A repository on the shared store, as another process would have.</summary>
+    public IWorkflowStateRepository NewRepository() => _store.NewRepository();
 
     /// <summary>Reads an instance directly from the shared store.</summary>
     public Task<WorkflowInstance?> GetInstanceAsync(string instanceId) =>

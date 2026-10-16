@@ -89,6 +89,14 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             }
 
             var savedChild = await _repository.GetWorkflowInstanceAsync(invocationId);
+            // A stopped child waits for an operator; its data is not read, since it may be what stopped it.
+            if (savedChild != null && ExecutionCheckpoint.StopOf(savedChild) != null)
+                return new StepExecutionResult
+                {
+                    IsSuccess = true,
+                    WorkflowStatus = WorkflowExecutionStatus.NeedsResolution,
+                    ChildInstanceId = invocationId
+                };
             if (savedChild == null)
             {
                 childWorkflowData = Activator.CreateInstance(childWorkflowDataType)
@@ -298,8 +306,8 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
         CancellationToken cancellationToken)
     where TChildWorkflowData : class
     {
-        // Get the workflow engine from DI
-        var workflowEngine = _serviceProvider.GetRequiredService<IWorkflowEngine>();
+        // The child runs inline in the parent's slot and scope.
+        var workflowEngine = _serviceProvider.GetRequiredService<DirectInstanceClient>();
 
         // Create child workflow options
         var childOptions = new WorkflowOptions
@@ -311,7 +319,7 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
         };
 
         // Execute child workflow recursively
-        return await workflowEngine.ExecuteWorkflowAsync(childDefinition, childData, childOptions, cancellationToken);
+        return await workflowEngine.RunAsync(childDefinition, childData, childOptions, cancellationToken);
     }
 
     /// <summary>
