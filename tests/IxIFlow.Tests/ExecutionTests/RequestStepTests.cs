@@ -424,13 +424,53 @@ public sealed class RequestStepTests
             new ApprovalDecision { Approved = true }), EventRejection.WaitCancelled);
     }
 
-    private static ServiceProvider HostOn(IWorkflowStateRepository store, Outbox outbox)
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task CancellingARunWhileABranchAwaitsResolutionClosesItsRequestsWait()
+    {
+        var store = new FaultInjectingRepository();
+        var outbox = new Outbox();
+        var gate = new StepGate();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var definition = Workflow.Create<OrderData>("ResolutionThenCancelWhileRunning")
+            .Step<StartActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch
+                    .Request<RequestApproval>("approval")
+                    .Step<SetLinesActivity>(step => step
+                        .Output(activity => activity.Lines).To(ctx => ctx.WorkflowData.Lines))
+                    .WaitFor<ApprovalDecision>("approval"))
+                .Do(branch => branch.WaitFor<OtherAnswer>("go").Step<GatedActivity>()))
+            .Build();
+        store.FailCommit = instance => instance.WorkflowDataJson.Contains("\"Lines\":7");
+        using (var first = HostOn(store, outbox, gate))
+            await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new OrderData(), new WorkflowOptions { InstanceId = instanceId }));
+        store.FailCommit = _ => false;
+        using var second = HostOn(store, outbox, gate);
+        var engine = second.GetRequiredService<IWorkflowClient>();
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await engine.RecoverAsync(instanceId);
+
+        // The other branch runs; the first is back to awaiting resolution when the cancellation arrives.
+        var running = engine.ResumeAsync(instanceId, "go", new OtherAnswer());
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await engine.CancelAsync(instanceId, new CancellationReason { ReasonCode = "withdrawn" });
+        await running.WaitAsync(TimeSpan.FromSeconds(10));
+
+        EventAssert.Rejected(await engine.ReplyAsync(Assert.Single(outbox.Sent).Token,
+            new ApprovalDecision { Approved = true }), EventRejection.WaitCancelled);
+    }
+
+    private static ServiceProvider HostOn(IWorkflowStateRepository store, Outbox outbox, StepGate? gate = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(store);
         services.AddSingleton(outbox);
+        services.AddSingleton(gate ?? new StepGate());
         services.AddTransient<RequestApproval>();
+        services.AddTransient<GatedActivity>();
         services.AddIxIFlow();
         return services.BuildServiceProvider();
     }
