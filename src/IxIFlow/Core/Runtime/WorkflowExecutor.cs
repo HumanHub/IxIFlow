@@ -60,8 +60,6 @@ internal sealed class WorkflowExecutor
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     "The registered workflow definition differs from the saved version");
-            if (await ReconcileChildWaitsAsync(checkpoint, host))
-                await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -86,12 +84,8 @@ internal sealed class WorkflowExecutor
                 }
                 if (!CancellationPending(checkpoint, host))
                     progressed |= _transitions.ProcessDueWaits(checkpoint, scopes);
-                var children = await ProcessDueChildWaitsAsync(checkpoint, host);
-                progressed |= children == ChildCheck.Progressed;
-                // A check that only finds children still running reschedules itself; that is not progress.
-                if (progressed || children == ChildCheck.Rescheduled)
-                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
-                        clearsCrashCount: progressed);
+                if (progressed)
+                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
                 await ApplyCancellationRequestAsync(instance, checkpoint, checkpoint.RootData,
                     scopes, host, host.ObservedCancellation);
                 // A tree cancelled after the limit was hit never runs the step that hit it; it unwinds
@@ -275,6 +269,12 @@ internal sealed class WorkflowExecutor
 
                 await SignalCancellationsAsync(inFlight, uncommitted, host, instance, checkpoint, checkpoint.RootData,
                     scopes);
+                // Children start, or are asked to cancel, in the run's next commit (D-17). A run about to wait
+                // for its activities makes that commit now rather than when they end; like claiming an
+                // activity, it records no progress of the parent's own (B-08).
+                if (inFlight.Count > 0 && (checkpoint.ChildStarts.Count > 0 || checkpoint.ChildCancellations.Count > 0))
+                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
+                        clearsCrashCount: false);
 
                 var runningTasks = inFlight.Values.Select(item => (Task)item.Task).ToList();
                 using var retryTimerCancellation = new CancellationTokenSource();
@@ -556,127 +556,6 @@ internal sealed class WorkflowExecutor
         ContinuationTransitions.CancelTree(checkpoint, root);
         await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
         return true;
-    }
-
-    private enum ChildCheck
-    {
-        None,
-        Rescheduled,
-        Progressed
-    }
-
-    private async Task<ChildCheck> ProcessDueChildWaitsAsync(ExecutionCheckpoint checkpoint, IExecutionHost host)
-    {
-        var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId != null &&
-            wait.DeadlineUtc <= Now)
-            .GroupBy(wait => (wait.ContinuationId, wait.ChildWorkflowId))
-            .ToArray();
-        if (due.Length == 0)
-            return ChildCheck.None;
-        var check = ChildCheck.Rescheduled;
-        foreach (var childWaits in due)
-        {
-            var childId = childWaits.Key.ChildWorkflowId!;
-            var result = await host.RecoverChildAsync(childId);
-            if (result.Status == WorkflowExecutionStatus.Running)
-            {
-                foreach (var wait in childWaits)
-                    wait.DeadlineUtc = Now.AddSeconds(5);
-                continue;
-            }
-            check = ChildCheck.Progressed;
-            if (result.Status == WorkflowExecutionStatus.NeedsResolution)
-            {
-                foreach (var wait in childWaits)
-                    wait.DeadlineUtc = null;
-                var unresolved = checkpoint.Continuations.Single(item =>
-                    item.Id == childWaits.Key.ContinuationId);
-                unresolved.Status = ContinuationStatus.WaitingResolution;
-                // A stopped child says why; recovering it never releases the stop.
-                unresolved.PendingActivity!.ResolutionReason = result.ErrorMessage != null
-                    ? $"Child workflow '{childId}' needs resolution: {result.ErrorMessage}"
-                    : $"Child workflow '{childId}' needs activity resolution";
-                continue;
-            }
-            checkpoint.RemoveWaits(wait => wait.ChildWorkflowId == childId &&
-                wait.ContinuationId == childWaits.Key.ContinuationId, WaitCloseReason.InstanceFinished);
-            var continuation = checkpoint.Continuations.Single(item =>
-                item.Id == childWaits.Key.ContinuationId);
-            continuation.Status = ContinuationStatus.Active;
-        }
-        return check;
-    }
-
-    public async Task<bool> ReconcileChildWaitsAsync(ExecutionCheckpoint checkpoint, IExecutionHost host)
-    {
-        var changed = false;
-        var childWaits = checkpoint.Waits.Where(wait => wait.ChildWorkflowId != null)
-            .GroupBy(wait => (wait.ContinuationId, wait.ChildWorkflowId)).ToArray();
-        foreach (var group in childWaits)
-        {
-            var child = await host.ReadChildAsync(group.Key.ChildWorkflowId!);
-            if (child == null)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                    $"Saved child workflow '{group.Key.ChildWorkflowId}' is missing");
-            var continuation = checkpoint.Continuations.Single(item =>
-                item.Id == group.Key.ContinuationId);
-            if (child.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
-                WorkflowStatus.Cancelled or WorkflowStatus.TimedOut or WorkflowStatus.Terminated)
-            {
-                checkpoint.RemoveWaits(wait => wait.ChildWorkflowId == child.InstanceId &&
-                    wait.ContinuationId == continuation.Id, WaitCloseReason.InstanceFinished);
-                continuation.Status = ContinuationStatus.Active;
-                changed = true;
-            }
-            else if (child.Status == WorkflowStatus.Running &&
-                     (continuation.Status != ContinuationStatus.Waiting ||
-                      group.Any(wait => !string.IsNullOrEmpty(wait.EventType) ||
-                                        wait.ChildWaitId != null)))
-            {
-                _transitions.ProjectChildLifecycleWait(checkpoint, continuation, child.InstanceId,
-                    needsResolution: false);
-                changed = true;
-            }
-            else if (child.Status == WorkflowStatus.NeedsResolution &&
-                     (continuation.Status != ContinuationStatus.WaitingResolution ||
-                      group.Any(wait => !string.IsNullOrEmpty(wait.EventType) ||
-                                        wait.ChildWaitId != null)))
-            {
-                _transitions.ProjectChildLifecycleWait(checkpoint, continuation, child.InstanceId,
-                    needsResolution: true);
-                changed = true;
-            }
-            else if (child.Status == WorkflowStatus.Suspended &&
-                     ContinuationTransitions.ShouldCancelInvokedChild(continuation))
-            {
-                // A cancelled parent polls the child's cancellation rather than
-                // exposing a child event wait that it no longer intends to accept.
-                if (continuation.Status != ContinuationStatus.Waiting ||
-                    group.Any(wait => !string.IsNullOrEmpty(wait.EventType) ||
-                                      wait.ChildWaitId != null))
-                {
-                    _transitions.ProjectChildLifecycleWait(checkpoint, continuation, child.InstanceId,
-                        needsResolution: false);
-                    changed = true;
-                }
-            }
-            else if (child.Status == WorkflowStatus.Suspended)
-            {
-                var childCheckpoint = ExecutionCheckpoint.Read(child.ExecutionStateJson);
-                var savedWaitIds = group.Select(wait => wait.ChildWaitId)
-                    .OrderBy(id => id, StringComparer.Ordinal);
-                var currentWaitIds = childCheckpoint.Waits.Select(wait => wait.Id)
-                    .OrderBy(id => id, StringComparer.Ordinal);
-                if (continuation.Status != ContinuationStatus.Waiting ||
-                    !savedWaitIds.SequenceEqual(currentWaitIds))
-                {
-                    _transitions.ProjectChildWaits(checkpoint, continuation, child.InstanceId, childCheckpoint);
-                    continuation.PendingActivity!.ResolutionReason = null;
-                    changed = true;
-                }
-            }
-        }
-        return changed;
     }
 
     // Records where an engine failure happened. Failures raised by workflow code keep their own message.

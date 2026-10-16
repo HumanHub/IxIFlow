@@ -473,51 +473,53 @@ public sealed class ActivityRecoveryTests
     }
 
     [Fact]
-    public async Task InterruptedChildWorkflowInvocationIsNotRepeated()
+    public async Task ARecoveredParentWaitsForTheChildItStartedAndStartsNoOther()
     {
-        var store = new FaultStore();
-        var ledger = new ChargeLedger(store);
-        using var services = CreateServices(store, ledger, new InvocationProbe(store));
+        // The commit that starts the child is applied, but its acknowledgement is lost every time.
+        var store = new FaultStore { FailChildStartAfterApply = 3 };
+        using var services = CreateServices(store, new ChargeLedger(store));
         var engine = services.GetRequiredService<IWorkflowClient>();
-
         var definition = Workflow.Create<ChargeData>("InterruptedChildInvocation")
-            .Step<WorkflowInvocationTests.PrepareDataActivity>(_ => { })
-            .Invoke<WorkflowInvocationTests.ChildWorkflow, WorkflowInvocationTests.ChildWorkflowData>(step => step
-                .Input(child => child.InputData).From(ctx => ctx.WorkflowData.OrderId))
-            .Build();
-
-        await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition,
-            new ChargeData { OrderId = "order-6" }));
-        var saved = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
-
-        var recovered = await engine.RecoverAsync(saved.InstanceId);
-
-        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, recovered.Status);
-        Assert.Equal(1, services.GetRequiredService<InvocationProbe>().Calls);
-    }
-
-    [Fact]
-    public async Task OperatorCanCompleteUnknownChildInvocationWithoutRepeatingIt()
-    {
-        var store = new FaultStore();
-        var probe = new InvocationProbe(store);
-        using var services = CreateServices(store, new ChargeLedger(store), probe);
-        var engine = services.GetRequiredService<IWorkflowClient>();
-        var definition = Workflow.Create<ChargeData>("ResolveChildInvocation")
             .Step<WorkflowInvocationTests.PrepareDataActivity>(_ => { })
             .Invoke<WorkflowInvocationTests.ChildWorkflow, WorkflowInvocationTests.ChildWorkflowData>(step => step
                 .Input(child => child.InputData).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(child => child.ProcessedResult).To(ctx => ctx.WorkflowData.ChildResult))
             .Build();
+
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition,
-            new ChargeData { OrderId = "child-1" }));
-        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
-        Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
-            (await engine.RecoverAsync(running.InstanceId)).Status);
-        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
+            new ChargeData { OrderId = "order-6" }));
+        var parent = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended));
+        var recovered = await engine.RecoverAsync(parent.InstanceId);
+
+        // The parent waits for the child its commit started; recovering it starts no other.
+        Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
+        var child = Assert.Single(await ChildrenOfAsync(store, parent));
+        await engine.RecoverAsync(child.InstanceId);
+        var finished = await engine.AwaitAsync(parent.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        Assert.NotEmpty(((ChargeData)finished.WorkflowData!).ChildResult);
+        Assert.Single(await ChildrenOfAsync(store, parent));
+    }
+
+    [Fact]
+    public async Task OperatorCanCompleteAChildInvocationRefusedAtTheLimit()
+    {
+        var store = new FaultStore();
+        using var services = CreateServices(store, new ChargeLedger(store), maxCheckpointBytes: 8_000);
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var definition = Workflow.Create<ChargeData>("ResolveChildInvocation")
+            .Step<WorkflowInvocationTests.PrepareDataActivity>(_ => { })
+            .Invoke<WorkflowInvocationTests.ChildWorkflow, WorkflowInvocationTests.ChildWorkflowData>(step => step
+                .Input(child => child.InputData).From(_ => new string('x', 20_000))
+                .Output(child => child.ProcessedResult).To(ctx => ctx.WorkflowData.ChildResult))
+            .Build();
+        var stopped = await engine.RunAsync(definition, new ChargeData { OrderId = "child-1" });
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stopped.Status);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(stopped.InstanceId));
         Assert.Contains("ProcessedResult", pending.RequiredOutputProperties);
 
-        var resolved = await engine.ResolveAsync(running.InstanceId, pending.InvocationId,
+        var resolved = await engine.ResolveAsync(stopped.InstanceId, pending.InvocationId,
             ActivityResolution.CompletedInvocation(new WorkflowInvocationTests.ChildWorkflowData
             {
                 ProcessedResult = "observed-child-result"
@@ -525,39 +527,38 @@ public sealed class ActivityRecoveryTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, resolved.Status);
         Assert.Equal("observed-child-result", ((ChargeData)resolved.WorkflowData!).ChildResult);
-        Assert.Equal(1, probe.Calls);
+        Assert.Empty(await ChildrenOfAsync(store, (await store.GetWorkflowInstanceAsync(stopped.InstanceId))!));
     }
 
     [Fact]
-    public async Task OperatorCanFailUnknownChildInvocationIntoCatch()
+    public async Task OperatorCanFailAChildInvocationRefusedAtTheLimitIntoCatch()
     {
         var store = new FaultStore();
-        var probe = new InvocationProbe(store);
-        using var services = CreateServices(store, new ChargeLedger(store), probe);
+        using var services = CreateServices(store, new ChargeLedger(store), maxCheckpointBytes: 8_000);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ChargeData>("FailChildInvocation")
             .Step<NoopActivity>()
             .Try(body => body
-                .Invoke<WorkflowInvocationTests.ChildWorkflow,
-                    WorkflowInvocationTests.ChildWorkflowData>(_ => { }))
+                .Invoke<WorkflowInvocationTests.ChildWorkflow, WorkflowInvocationTests.ChildWorkflowData>(step => step
+                    .Input(child => child.InputData).From(_ => new string('x', 20_000))))
             .Catch<OperatorFaultException, OperatorFaultData>(handler => handler
                 .Step<HandleOperatorFaultActivity>(step => step
                     .Input(activity => activity.Code).From(ctx => ctx.Fault.Code)
                     .Output(activity => activity.Code).To(ctx => ctx.WorkflowData.FaultCode)))
             .Build();
-        await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition,
-            new ChargeData { OrderId = "child-failed" }));
-        var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
-        await engine.RecoverAsync(running.InstanceId);
-        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
+        var stopped = await engine.RunAsync(definition, new ChargeData { OrderId = "child-failed" });
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(stopped.InstanceId));
 
-        var resolved = await engine.ResolveAsync(running.InstanceId, pending.InvocationId,
+        var resolved = await engine.ResolveAsync(stopped.InstanceId, pending.InvocationId,
             ActivityResolution.Failed(new OperatorFaultException(42)));
 
         Assert.Equal(WorkflowExecutionStatus.Success, resolved.Status);
         Assert.Equal(42, ((ChargeData)resolved.WorkflowData!).FaultCode);
-        Assert.Equal(1, probe.Calls);
     }
+
+    private static async Task<WorkflowInstance[]> ChildrenOfAsync(FaultStore store, WorkflowInstance parent) =>
+        (await store.GetWorkflowInstancesByCorrelationIdAsync(parent.CorrelationId))
+        .Where(instance => instance.ParentInstanceId == parent.InstanceId).ToArray();
 
     [Fact]
     public async Task WaitAnyCannotDiscardAnUnresolvedLosingBranch()
@@ -690,18 +691,17 @@ public sealed class ActivityRecoveryTests
         .Build();
 
     private static ServiceProvider CreateServices(FaultStore store, ChargeLedger ledger,
-        InvocationProbe? invocation = null)
+        long? maxCheckpointBytes = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options =>
+        {
+            if (maxCheckpointBytes is { } limit)
+                options.MaxCheckpointBytes = limit;
+        });
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(store));
         services.AddSingleton(ledger);
-        if (invocation != null)
-        {
-            services.AddSingleton(invocation);
-            services.Replace(ServiceDescriptor.Singleton<IWorkflowInvoker>(invocation));
-        }
         services.AddTransient<RecoverableChargeActivity>();
         services.AddTransient<OrdinaryChargeActivity>();
         services.AddTransient<StepIndexActivity>();
@@ -905,6 +905,7 @@ public sealed class ActivityRecoveryTests
         public int FailCompletionBeforeApply { get; set; }
         public int FailCompletionAfterApply { get; set; }
         public int FailFailureCommits { get; set; }
+        public int FailChildStartAfterApply { get; set; }
 
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
@@ -926,6 +927,8 @@ public sealed class ActivityRecoveryTests
                 throw new IOException("Start acknowledgment lost");
             if (completed && FailCompletionAfterApply-- > 0)
                 throw new IOException("Completion acknowledgment lost");
+            if (commit.ChildStarts.Count > 0 && FailChildStartAfterApply-- > 0)
+                throw new IOException("Child start acknowledgment lost");
             return result;
         }
 
@@ -986,26 +989,6 @@ public sealed class ActivityRecoveryTests
         {
             probe.ExecuteCount++;
             return Task.CompletedTask;
-        }
-    }
-
-    public sealed class InvocationProbe(FaultStore store) : IWorkflowInvoker
-    {
-        public int Calls { get; private set; }
-
-        public Task<StepExecutionResult> ExecuteWorkflowInvocationAsync<TWorkflowData>(
-            WorkflowStep step, StepExecutionContext<TWorkflowData> context,
-            ExecutionState executionState, string invocationId,
-            CancellationToken cancellationToken)
-            where TWorkflowData : class
-        {
-            Calls++;
-            store.FailCompletionBeforeApply = 3;
-            return Task.FromResult(new StepExecutionResult
-            {
-                IsSuccess = true,
-                OutputData = new WorkflowInvocationTests.ChildWorkflowData()
-            });
         }
     }
 }

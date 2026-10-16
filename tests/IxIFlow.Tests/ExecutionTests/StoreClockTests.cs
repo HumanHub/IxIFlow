@@ -266,9 +266,45 @@ public sealed class StoreClockTests
     }
 
     [Fact]
-    public async Task AChildsWaitTimesOutWhileItsParentRunsASiblingInTheOnlySlot()
+    public async Task AChildWaitsForASlotWhileItsParentHoldsTheOnlyOne()
     {
         using var services = RealServices(slots: 1);
+        var gate = services.GetRequiredService<Gate>();
+        var store = services.GetRequiredService<IWorkflowStateRepository>();
+        var child = Workflow.Create<ClockData>("SlotlessChild")
+            .Step<NoopActivity>()
+            .WaitFor<Approval>("approval", configure: ShortTimeout)
+            .Build();
+        var parent = Workflow.Create<ClockData>("SlotHoldingParent")
+            .Step<NoopActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch.Step<GatedActivity>())
+                .Do(branch => branch.Invoke<ClockData>("SlotlessChild", 1)))
+            .Build();
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        var instanceId = Guid.NewGuid().ToString("N");
+        var run = Engine(services).RunAsync(parent, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The child is started, but the parent's run holds the only slot, so the child has not run.
+        WorkflowInstance? started = null;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (DateTime.UtcNow < deadline && (started = (await store.GetWorkflowInstancesByNameAsync("SlotlessChild"))
+                   .SingleOrDefault(item => item.ParentInstanceId == instanceId)) == null)
+            await Task.Delay(20);
+        await Task.Delay(300);
+        Assert.Equal(1, (await store.GetWorkflowInstanceAsync(started!.InstanceId))!.Revision);
+
+        // Once the parent waits for it, the slot is free: the child runs, times out and wakes its parent.
+        gate.Release.TrySetResult();
+        var idle = await run.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowExecutionStatus.Success, (await Engine(services).FinishedAsync(idle)).Status);
+    }
+
+    [Fact]
+    public async Task AChildsWaitTimesOutWhileItsParentRunsASiblingInAnotherSlot()
+    {
+        using var services = RealServices(slots: 2);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
         var child = Workflow.Create<ClockData>("StoreClockChild")
@@ -286,7 +322,7 @@ public sealed class StoreClockTests
         var run = Engine(services).RunAsync(parent, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // The child runs in its parent's slot, so the parent checks it at the child's deadline.
+        // The child runs in the other slot, and its own deadline ends its wait.
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         WorkflowInstance? childInstance = null;
         while (DateTime.UtcNow < deadline &&
@@ -771,25 +807,10 @@ public sealed class StoreClockTests
 
         public Task<StoredWait?> ReadWaitAsync(string waitId) => Task.FromResult<StoredWait?>(null);
 
-        public Task<WorkflowInstance?> ReadChildAsync(string childInstanceId) =>
-            throw new NotSupportedException();
+        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step) => throw new NotSupportedException();
 
-        public Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step,
-            WorkflowDefinition definition, WorkflowInstance instance, object workflowData, object? previous,
-            string invocationId, ItemValues items, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task<WorkflowExecutionResult> CancelChildAsync(string childInstanceId, CancellationReason reason,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key, object @event,
-            string eventId, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+        public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
+            string childInstanceId, string parentWaitId) => throw new NotSupportedException();
     }
 
     public sealed class ClockData

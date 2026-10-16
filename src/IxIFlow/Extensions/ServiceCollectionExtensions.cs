@@ -30,7 +30,6 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DirectInstanceClient>();
         services.AddScoped<RunControl>();
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
-        services.AddScoped<IWorkflowInvoker, WorkflowInvoker>();
         services.AddScoped<InstanceHost>();
         services.AddHostedService<WorkflowRecoveryService>();
         // Registered after the scanner so it stops first: hosted services stop in reverse order,

@@ -38,7 +38,24 @@ public sealed record WorkflowCommitResult(
     long Revision,
     CancellationReason? PendingCancellation = null,
     bool Parked = false,
-    bool UnreadEvents = false);
+    bool UnreadEvents = false,
+    IReadOnlyList<string>? MadeRunnable = null)
+{
+    /// <summary>
+    /// Other instances the commit made runnable: the children it started, and a parent whose inbox took
+    /// the child's completion. A host may run them at once; the poll finds them otherwise.
+    /// </summary>
+    public IReadOnlyList<string> MadeRunnable { get; init; } = MadeRunnable ?? [];
+
+    /// <summary>Receipts are equal when every field is, the instances made runnable compared in order.</summary>
+    public bool Equals(WorkflowCommitResult? other) =>
+        other is not null && Status == other.Status && Revision == other.Revision &&
+        Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
+        UnreadEvents == other.UnreadEvents && MadeRunnable.SequenceEqual(other.MadeRunnable, StringComparer.Ordinal);
+
+    public override int GetHashCode() =>
+        HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count);
+}
 
 /// <summary>
 /// An execution lease granted by the store. <see cref="Epoch"/> fences the owner's commits.
@@ -56,7 +73,9 @@ public sealed class CheckpointCommit
     private CheckpointCommit(string instanceId, string payload, long epoch, string commitId,
         long expectedRevision, bool clearsCrashCount, bool parks, IReadOnlyList<EventSettlement> settlements,
         long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
-        IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped)
+        IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
+        IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
+        ParentNotice? parentNotice)
     {
         InstanceId = instanceId;
         Payload = payload;
@@ -72,11 +91,16 @@ public sealed class CheckpointCommit
         ClosedWaits = closedWaits;
         WakeAfter = wakeAfter;
         Stopped = stopped;
+        ChildStarts = childStarts;
+        ChildCancellations = childCancellations;
+        ParentNotice = parentNotice;
         _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes(
             $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}{(stopped ? 1 : 0)}\n" +
             $"{inboxReadThrough?.ToString() ?? "-"}\n{wakeAfter?.Ticks.ToString() ?? "-"}\n" +
             $"{JsonSerializer.Serialize(settlements)}\n{JsonSerializer.Serialize(openedWaits)}\n" +
-            $"{JsonSerializer.Serialize(armedWaits)}\n{JsonSerializer.Serialize(closedWaits)}\n{payload}"));
+            $"{JsonSerializer.Serialize(armedWaits)}\n{JsonSerializer.Serialize(closedWaits)}\n" +
+            $"{JsonSerializer.Serialize(childStarts)}\n{JsonSerializer.Serialize(childCancellations)}\n" +
+            $"{JsonSerializer.Serialize(parentNotice)}\n{payload}"));
     }
 
     /// <summary>The longest timeout, delay or park a commit may carry.</summary>
@@ -146,6 +170,22 @@ public sealed class CheckpointCommit
     public IReadOnlyList<ClosedWait> ClosedWaits { get; }
 
     /// <summary>
+    /// Children this commit starts, in the same transaction as the waits it opens for them (D-17). Each
+    /// is saved as revision 1 of a new instance, runnable now, with this instance as its parent.
+    /// </summary>
+    public IReadOnlyList<ChildStart> ChildStarts { get; }
+
+    /// <summary>Cancellation requests this commit writes for its children; the first request for a child wins.</summary>
+    public IReadOnlyList<ChildCancellation> ChildCancellations { get; }
+
+    /// <summary>
+    /// For a child's terminal commit, the completion appended to its parent's inbox in the same
+    /// transaction. Whatever the parent's state, the child's commit applies: an absent parent drops the
+    /// notice, a finished parent or a closed wait records it as rejected.
+    /// </summary>
+    public ParentNotice? ParentNotice { get; }
+
+    /// <summary>
     /// SHA-256 of <see cref="Payload"/> and every other field that changes what the commit does; a reused commit ID must
     /// carry the same hash. Returns a copy.
     /// </summary>
@@ -155,7 +195,9 @@ public sealed class CheckpointCommit
         string? commitId = null, bool clearsCrashCount = true, bool parks = false,
         IReadOnlyList<EventSettlement>? settlements = null, long? inboxReadThrough = null,
         IReadOnlyList<OpenedWait>? openedWaits = null, IReadOnlyList<ClosedWait>? closedWaits = null,
-        IReadOnlyList<ArmedWait>? armedWaits = null, TimeSpan? wakeAfter = null, bool stopped = false)
+        IReadOnlyList<ArmedWait>? armedWaits = null, TimeSpan? wakeAfter = null, bool stopped = false,
+        IReadOnlyList<ChildStart>? childStarts = null, IReadOnlyList<ChildCancellation>? childCancellations = null,
+        ParentNotice? parentNotice = null)
     {
         ArgumentNullException.ThrowIfNull(instance);
         ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
@@ -216,9 +258,46 @@ public sealed class CheckpointCommit
         ValidateDuration(wakeAfter, nameof(wakeAfter));
         if (parks && wakeAfter == null)
             throw new ArgumentException("A park says how long the run stops", nameof(wakeAfter));
+        var started = (childStarts ?? []).ToArray();
+        foreach (var child in started)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(child.ChildInstanceId, nameof(childStarts));
+            ArgumentException.ThrowIfNullOrWhiteSpace(child.ParentWaitId, nameof(childStarts));
+            var childInstance = JsonSerializer.Deserialize<WorkflowInstance>(child.Payload)
+                ?? throw new ArgumentException("A child start carries the child's instance", nameof(childStarts));
+            if (childInstance.InstanceId != child.ChildInstanceId || childInstance.ParentInstanceId != instance.InstanceId ||
+                childInstance.ParentWaitId != child.ParentWaitId || childInstance.Status != WorkflowStatus.Running ||
+                child.ChildInstanceId == instance.InstanceId)
+                throw new ArgumentException(
+                    "A child start names a new running instance whose parent and wait are this commit's",
+                    nameof(childStarts));
+            if (!opened.Any(wait => wait.WaitId == child.ParentWaitId && wait.Kind == WaitKind.Child))
+                throw new ArgumentException("A child starts with the parent's wait for it", nameof(childStarts));
+        }
+        if (started.Select(child => child.ChildInstanceId).Distinct(StringComparer.Ordinal).Count() != started.Length)
+            throw new ArgumentException("A commit starts each child once", nameof(childStarts));
+        var cancelled = (childCancellations ?? []).ToArray();
+        foreach (var child in cancelled)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(child.ChildInstanceId, nameof(childCancellations));
+            ArgumentNullException.ThrowIfNull(child.Reason, nameof(childCancellations));
+        }
+        if (parentNotice != null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.ParentInstanceId, nameof(parentNotice));
+            ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.ParentWaitId, nameof(parentNotice));
+            ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.EventId, nameof(parentNotice));
+            ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.EventType, nameof(parentNotice));
+            if (instance.Status is not (WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
+                    WorkflowStatus.Terminated or WorkflowStatus.TimedOut) ||
+                instance.ParentInstanceId != parentNotice.ParentInstanceId ||
+                instance.ParentWaitId != parentNotice.ParentWaitId)
+                throw new ArgumentException("Only a child's terminal commit notifies its own parent", nameof(parentNotice));
+        }
         return new CheckpointCommit(instance.InstanceId, JsonSerializer.Serialize(instance), epoch, commitId,
             expectedRevision, clearsCrashCount, parks, Array.AsReadOnly(settled), inboxReadThrough,
-            Array.AsReadOnly(opened), Array.AsReadOnly(armed), Array.AsReadOnly(closed), wakeAfter, stopped);
+            Array.AsReadOnly(opened), Array.AsReadOnly(armed), Array.AsReadOnly(closed), wakeAfter, stopped,
+            Array.AsReadOnly(started), Array.AsReadOnly(cancelled), parentNotice);
     }
 
     private static void ValidateDuration(TimeSpan? duration, string parameter)

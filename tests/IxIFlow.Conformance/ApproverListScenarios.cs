@@ -143,11 +143,12 @@ public sealed class ApproverListScenarios
             new Billing { Customers = ["ann", "bob", "cid"] });
 
         // Two children asked their customers; the third child has not started.
-        Assert.Equal(["ann", "bob"], mailer.Names);
+        await mailer.WaitForAsync(2).WaitAsync(Patience);
+        Assert.Equal(["ann", "bob"], mailer.Names.Order());
         // The answer goes to the child; the parent wakes when the child finishes and starts the next one.
         await engine.ReplyAsync(mailer.TokenOf("ann"), new ApprovalDecision { Approved = true });
         await mailer.WaitForAsync(3).WaitAsync(Patience);
-        Assert.Equal(["ann", "bob", "cid"], mailer.Names);
+        Assert.Equal(["ann", "bob", "cid"], mailer.Names.Order());
         await engine.ReplyAsync(mailer.TokenOf("cid"), new ApprovalDecision { Approved = true });
         await engine.ReplyAsync(mailer.TokenOf("bob"), new ApprovalDecision { Approved = false });
 

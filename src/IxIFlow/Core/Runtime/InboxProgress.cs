@@ -100,9 +100,7 @@ internal sealed class InboxProgress
     private static IEnumerable<OpenedWait> Rows(ExecutionCheckpoint checkpoint)
     {
         foreach (var wait in checkpoint.Waits)
-            if (wait.TableKind is { } kind)
-                yield return new OpenedWait(wait.Id, kind, wait.Key, TypeName(wait.EventType),
-                    kind == WaitKind.Child ? null : wait.Timeout);
+            yield return new OpenedWait(wait.Id, wait.TableKind, wait.Key, TypeName(wait.EventType), wait.Timeout);
         if (checkpoint.ExecutionTimerOpen)
             yield return new OpenedWait(checkpoint.ExecutionTimerId!, WaitKind.Execution, "execution", "",
                 checkpoint.ExecutionTimeout);

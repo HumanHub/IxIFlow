@@ -1096,7 +1096,7 @@ public class EngineContractRegressionTests
                 .Output(data => data.Executed).To(ctx => ctx.WorkflowData.ChildExecuted))
             .Build();
         var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
-            .RunAsync(parent, new RegressionData { Value = "input" });
+            .RunToEndAsync(parent, new RegressionData { Value = "input" });
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);
@@ -1130,7 +1130,7 @@ public class EngineContractRegressionTests
                 .Step<MarkChildActivity>(setup => setup
                     .Output(a => a.Executed).To(ctx => ctx.WorkflowData.Executed))
                 .Build());
-        var result = await engine.RecoverAsync(saved.InstanceId);
+        var result = await engine.FinishedAsync(await engine.RecoverAsync(saved.InstanceId));
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);

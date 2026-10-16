@@ -333,6 +333,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
                 control.OnInstanceKnown(instanceId => Register(item, instanceId));
                 control.OnScheduled(Schedule);
                 control.OnUnscheduled(Unschedule);
+                control.OnRunnable(WakeNow);
                 var client = scope.ServiceProvider.GetRequiredService<DirectInstanceClient>();
                 context = new RunContext(client, control);
                 CurrentRun.Value = context;
@@ -667,6 +668,16 @@ internal sealed class RunControl
     public void OnUnscheduled(Action<string> unscheduled) => _unscheduled = unscheduled;
 
     public void Unschedule(string instanceId) => _unscheduled?.Invoke(instanceId);
+
+    private Action<string>? _runnable;
+
+    /// <summary>
+    /// Called for each other instance a commit in this scope made runnable now, such as a child it started
+    /// or a parent its completion woke (D-17), so the host runs it without waiting for its poll.
+    /// </summary>
+    public void OnRunnable(Action<string> runnable) => _runnable = runnable;
+
+    public void Runnable(string instanceId) => _runnable?.Invoke(instanceId);
 
     /// <summary>Cancelled when the host drains; runs stop starting new steps.</summary>
     public CancellationToken Drain { get; set; }

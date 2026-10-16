@@ -21,6 +21,17 @@ internal sealed class ExecutionCheckpoint
     public List<BoundReplyState> BoundReplies { get; set; } = [];
 
     /// <summary>
+    /// Children this run starts, carried by its next commit with the waits it opened for them (D-17).
+    /// Never saved: a run lost before that commit started neither.
+    /// </summary>
+    [JsonIgnore]
+    public List<ChildStart> ChildStarts { get; } = [];
+
+    /// <summary>Cancellation requests for children, carried by the run's next commit.</summary>
+    [JsonIgnore]
+    public List<ChildCancellation> ChildCancellations { get; } = [];
+
+    /// <summary>
     /// How long the instance may run in all, or null. The store stamps the deadline when it records the
     /// execution deadline's row, <see cref="ExecutionTimerId"/>, in the waits table (D-35).
     /// </summary>
@@ -90,19 +101,15 @@ internal sealed class ExecutionCheckpoint
     public void ReadDeadlines(InboxPage page)
     {
         var deadlines = page.Deadlines ?? new Dictionary<string, DateTime>();
-        foreach (var wait in Waits.Where(wait => wait.TableKind is not (null or WaitKind.Child)))
+        foreach (var wait in Waits.Where(wait => wait.TableKind is not WaitKind.Child))
             wait.DeadlineUtc = deadlines.TryGetValue(wait.Id, out var deadline) ? deadline : null;
         if (ExecutionTimerId != null)
             ExecutionDeadlineUtc = deadlines.TryGetValue(ExecutionTimerId, out var execution) ? execution : null;
     }
 
-    /// <summary>
-    /// The earliest time, in the host's clock, at which a wait or the execution deadline may be due, or
-    /// a child is to be checked.
-    /// </summary>
+    /// <summary>The earliest time, in the host's clock, at which a wait or the execution deadline may be due.</summary>
     public DateTime? NextDeadlineLocal() =>
-        Waits.Select(wait => wait.ChildWorkflowId == null && wait.DeadlineUtc is { } deadline
-                ? Clock.ToLocal(deadline) : wait.DeadlineUtc)
+        Waits.Select(wait => wait.DeadlineUtc is { } deadline ? Clock.ToLocal(deadline) : (DateTime?)null)
             .Append(ExecutionTimerOpen && ExecutionDeadlineUtc is { } execution ? Clock.ToLocal(execution) : null)
             .Min();
 
@@ -532,7 +539,7 @@ internal sealed class WaitState
 
     /// <summary>
     /// For a wait the store times out, its deadline as the store stamped it, or the run's estimate until
-    /// the run reads it (D-35). For a child's wait, when the parent next checks the child, in the host's clock.
+    /// the run reads it (D-35).
     /// </summary>
     public DateTime? DeadlineUtc { get; set; }
 
@@ -542,8 +549,8 @@ internal sealed class WaitState
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TimeSpan? Timeout { get; set; }
+    /// <summary>For a child's wait, the child: only its completion, addressed to this wait, answers it (D-17).</summary>
     public string? ChildWorkflowId { get; set; }
-    public string? ChildWaitId { get; set; }
 
     /// <summary>
     /// True for the answer to a request: opened when the request's activity starts, answered only by
@@ -560,12 +567,9 @@ internal sealed class WaitState
     /// <summary>For a reply wait, the digest of what the request is about; an answer must carry it.</summary>
     public string? Subject { get; set; }
 
-    /// <summary>
-    /// How the waits table knows this wait, or null for a child shown only as running (D-33, D-35).
-    /// </summary>
+    /// <summary>How the waits table knows this wait (D-33, D-35).</summary>
     [JsonIgnore]
-    public WaitKind? TableKind => string.IsNullOrEmpty(EventType)
-            ? ChildWorkflowId == null ? WaitKind.Delay : null
+    public WaitKind TableKind => string.IsNullOrEmpty(EventType) ? WaitKind.Delay
         : IsReply ? WaitKind.Reply
         : ChildWorkflowId != null ? WaitKind.Child
         : WaitKind.Event;
@@ -599,12 +603,6 @@ internal sealed class AcceptedWaitState
 
     /// <summary>The wait that took it.</summary>
     public string WaitId { get; set; } = "";
-
-    /// <summary>For a child's wait, the key the event is forwarded with.</summary>
-    public string? Key { get; set; }
-
-    /// <summary>For a child's wait, true once the child has decided the event and the parent settled its copy.</summary>
-    public bool Forwarded { get; set; }
 }
 
 internal sealed class SerializedValue

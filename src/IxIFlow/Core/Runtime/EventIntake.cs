@@ -52,9 +52,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             }
             foreach (var stored in page.Events)
             {
-                // An event taken for a child is settled once the child has decided it.
-                if (inbox.IsDecided(stored.EventId) || checkpoint.Continuations.Any(item =>
-                        item.AcceptedWait?.EventId == stored.EventId))
+                if (inbox.IsDecided(stored.EventId))
                     continue;
                 await DecideAsync(scopes, checkpoint, host, stored, page);
                 decided = true;
@@ -81,13 +79,13 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         }
         var eventType = payload.GetType();
         // The waits this event is addressed to and that were open for it. A request's answer is
-        // addressed by its token only, and is taken even before its WaitFor is reached.
+        // addressed by its token only, and is taken even before its WaitFor is reached; a child's
+        // completion only by the wait its parent opened for it.
         var addressed = checkpoint.Waits.Where(wait => wait.Answerable &&
             (stored.TargetWaitId != null
                 ? wait.Id == stored.TargetWaitId
-                : wait.TableKind != WaitKind.Reply && (stored.Key == null || wait.Key == stored.Key) &&
-                  (wait.TableKind == WaitKind.Child ||
-                   page.OpenWaits.TryGetValue(wait.Id, out var opened) && opened < stored.Sequence)) &&
+                : wait.TableKind == WaitKind.Event && (stored.Key == null || wait.Key == stored.Key) &&
+                  page.OpenWaits.TryGetValue(wait.Id, out var opened) && opened < stored.Sequence) &&
             checkpoint.Continuations.Any(item => item.Id == wait.ContinuationId &&
                 (item.Status == ContinuationStatus.Waiting || wait.IsReply &&
                  item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled)))).ToList();
@@ -130,13 +128,13 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         }
     }
 
-    // A child decides its own waits' conditions when the event is forwarded to it. A condition that
-    // throws does not accept the event; the instance keeps waiting.
+    // A child's completion has no condition. A condition that throws does not accept the event; the
+    // instance keeps waiting.
     private bool Accepts(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, WaitState wait,
         object payload)
     {
-        if (wait.ChildWorkflowId != null)
-            return true;
+        if (wait.TableKind == WaitKind.Child)
+            return payload is ChildCompleted completed && completed.ChildInstanceId == wait.ChildWorkflowId;
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
         try
         {
@@ -175,19 +173,11 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             StepId = wait.StepId,
             Event = SerializedValue.From(payload)!,
             EventId = stored.EventId,
-            WaitId = wait.Id,
-            Key = wait.ChildWorkflowId == null ? null : wait.Key
+            WaitId = wait.Id
         };
         continuation.Status = ContinuationStatus.Active;
         checkpoint.RemoveWaits(item => item.Id == wait.Id, WaitCloseReason.Answered);
-        if (wait.ChildWorkflowId == null)
-        {
-            checkpoint.Inbox.Settle(new EventSettlement(stored.EventId, EventOutcome.Consumed, wait.Id));
-            return;
-        }
-        // The child's other waits are shown again once it has taken the event.
-        checkpoint.RemoveWaits(item => item.ChildWorkflowId == wait.ChildWorkflowId &&
-                                       item.ContinuationId == continuation.Id, WaitCloseReason.Replaced);
+        checkpoint.Inbox.Settle(new EventSettlement(stored.EventId, EventOutcome.Consumed, wait.Id));
     }
 
     // A continuation waits at a request's WaitFor when its current step is that WaitFor.
