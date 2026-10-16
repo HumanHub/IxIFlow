@@ -371,7 +371,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 StepId = pending.StepId,
                 Key = childWait.Key,
                 EventType = childWait.EventType,
-                DeadlineUtc = childWait.DeadlineUtc,
+                // The parent checks the child at the child's deadline, on the parent's own clock.
+                DeadlineUtc = childWait.DeadlineUtc is { } childDeadline
+                    ? checkpoint.Clock.ToLocal(childDeadline) : null,
                 ChildWorkflowId = childInstanceId,
                 ChildWaitId = childWait.Id
             });

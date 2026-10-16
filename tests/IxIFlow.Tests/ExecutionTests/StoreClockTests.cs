@@ -5,6 +5,7 @@ using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
@@ -22,6 +23,10 @@ public sealed class StoreClockTests
 {
     private static readonly DateTimeOffset Start = new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
 
+    // One SQL Server store for these tests, so its schema is checked once.
+    private static readonly Lazy<SqlWorkflowStateRepository> SqlStore =
+        new(() => new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+
     [Theory]
     [InlineData(5)]
     [InlineData(-5)]
@@ -32,9 +37,11 @@ public sealed class StoreClockTests
         var started = await Engine(services).RunAsync(ApprovalWorkflow("StoreClockTimeout"), new ClockData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
-        // Nine minutes on the store's clock: a host five minutes ahead reads fourteen, and still nothing is due.
+        // Nine minutes on the store's clock: a host five minutes ahead reads fourteen, and still nothing is
+        // due, whether the poll looks or the host runs the instance itself.
         clocks.Advance(TimeSpan.FromMinutes(9));
         await RecoverOnceAsync(services, clocks);
+        Assert.Equal(WorkflowExecutionStatus.Faulted, (await Engine(services).RecoverAsync(started.InstanceId)).Status);
         Assert.Equal(WorkflowStatus.Suspended, (await InstanceAsync(services, started.InstanceId)).Status);
 
         // Eleven on the store's clock: a host five minutes behind reads six, and the wait has timed out.
@@ -376,7 +383,7 @@ public sealed class StoreClockTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-03")]
     public Task SqlStoreRefusesEventsThatArriveAfterTheirDeadline() =>
-        VerifyLateArrivals(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyLateArrivals(SqlStore.Value);
 
     private static async Task VerifyLateArrivals(IWorkflowStateRepository store)
     {
@@ -425,7 +432,7 @@ public sealed class StoreClockTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-03")]
     public Task SqlStoreFindsDeadlinesDueWithTheEventsReceivedBeforeThem() =>
-        VerifyDuePage(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyDuePage(SqlStore.Value);
 
     private static async Task VerifyDuePage(IWorkflowStateRepository store)
     {
@@ -461,6 +468,49 @@ public sealed class StoreClockTests
         }
     }
 
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "D-03")]
+    public async Task SqlStoreReadsItsTimeOnceTheInstanceLockIsHeld()
+    {
+        var store = SqlStore.Value;
+        var instanceId = Guid.NewGuid().ToString("N");
+        try
+        {
+            await CommitAsync(store, instanceId, null,
+                new OpenedWait("approval", WaitKind.Event, "approval", "Approval", TimeSpan.FromHours(1)));
+
+            // Another transaction holds the instance row while a read and an append wait for it.
+            await using var holder = new SqlConnection(SqlServerTestServer.ConnectionString);
+            await holder.OpenAsync();
+            await using var transaction = holder.BeginTransaction();
+            await using (var lockRow = new SqlCommand(
+                             "SELECT InstanceId FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK) " +
+                             "WHERE InstanceId = @InstanceId", holder, transaction))
+            {
+                lockRow.Parameters.AddWithValue("@InstanceId", instanceId);
+                await lockRow.ExecuteScalarAsync();
+            }
+            var read = store.GetPendingEventsAsync(instanceId, 0, 10);
+            var append = store.AppendEventAsync(Event(instanceId, "held", key: "approval"));
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+            Assert.False(read.IsCompleted || append.IsCompleted);
+            DateTime releasedAt;
+            await using (var clock = new SqlCommand("SELECT SYSUTCDATETIME()", holder, transaction))
+                releasedAt = (DateTime)(await clock.ExecuteScalarAsync())!;
+            await transaction.CommitAsync();
+
+            // Both took the store's time after the lock was theirs, not when they started waiting.
+            Assert.True((await read).StoreTimeUtc >= releasedAt);
+            Assert.Equal(EventAppendStatus.Stored, (await append).Status);
+            Assert.True((await store.GetEventAsync(instanceId, "held"))!.ReceivedAtUtc >= releasedAt);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
     [Fact]
     [Trait("Spec", "D-03")]
     public Task MemoryStoreArmsAReplyWaitOnce() => VerifyArming(new InMemoryWorkflowStateRepository());
@@ -469,7 +519,7 @@ public sealed class StoreClockTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-03")]
     public Task SqlStoreArmsAReplyWaitOnce() =>
-        VerifyArming(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyArming(SqlStore.Value);
 
     private static async Task VerifyArming(IWorkflowStateRepository store)
     {

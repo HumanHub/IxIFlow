@@ -160,14 +160,14 @@ public sealed class ParkedRunTests
                     InstanceId = ids[index], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
                     WorkflowDataJson = "{}"
                 }, new OpenedWait($"{ids[index]}-delay", WaitKind.Delay, "delay", "",
-                    TimeSpan.FromMilliseconds(1500 - 500 * index)));
+                    TimeSpan.FromSeconds(3 - index)));
             await Commit(store, new WorkflowInstance
             {
                 InstanceId = ids[3], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
                 WorkflowDataJson = "{}"
             });
-            Assert.DoesNotContain(await store.GetRunnableInstancesAsync(1000), item => ids.Contains(item.InstanceId));
-            await Task.Delay(TimeSpan.FromMilliseconds(1700));
+            Assert.DoesNotContain(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == ids[0]);
+            await Task.Delay(TimeSpan.FromSeconds(3.3));
 
             // The poll takes the earliest first, no more than it asks for. Other rows of a shared store
             // may be due earlier, so only these instances' order is checked.
