@@ -205,15 +205,17 @@ public sealed class ParallelDataContractTests
     public async Task ACombinedValueIsReadBackWithTheRestOfTheMerge()
     {
         using var services = Services();
+        // The plain value comes first, so applying the merge in its order would take High=40 while Low is
+        // still 0, then Low=50; only reading the whole merge back, combined value included, refuses it.
         var definition = Workflow.Create<SummedBounds>("RefusedCombination")
             .Step<Noop>()
             .Try(attempt => attempt.Parallel(parallel => parallel
                 .Do(first => first.Step<SetNumber>(step => step
-                    .Input(activity => activity.Value).From(_ => 50)
-                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Low)))
-                .Do(second => second.Step<SetNumber>(step => step
                     .Input(activity => activity.Value).From(_ => 40)
-                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.High)))))
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.High)))
+                .Do(second => second.Step<SetNumber>(step => step
+                    .Input(activity => activity.Value).From(_ => 50)
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Low)))))
             .Catch<JoinConflictException>(handler => handler.Step<Record>(step => step
                 .Input(activity => activity.Value).From(ctx => $"caught {ctx.WorkflowData.Low}-{ctx.WorkflowData.High}")))
             .Build();
@@ -222,6 +224,116 @@ public sealed class ParallelDataContractTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(["caught 0-100"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-07")]
+    public async Task ASetterThatChangesItsObjectAndThenRefusesIsUndoneToo()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Capped>("AssignThenRefuse")
+            .Step<Noop>()
+            .Try(attempt => attempt.Parallel(parallel => parallel
+                .Do(first => first.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "first")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.First)))
+                .Do(second => second.Step<SetNumber>(step => step
+                    .Input(activity => activity.Value).From(_ => 7)
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Count)))))
+            .Catch<JoinConflictException>(handler => handler.Step<Record>(step => step
+                .Input(activity => activity.Value).From(ctx => $"caught '{ctx.WorkflowData.First}' {ctx.WorkflowData.Count}")))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new Capped { Max = 5 });
+
+        // Count took 7 before its setter refused it; both values were put back.
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["caught '' 0"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-07")]
+    public async Task DataThatRefusesToBePutBackIsAnEngineFailure()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Latching>("RefusedRestore")
+            .Step<Noop>()
+            .Try(attempt => attempt.Parallel(parallel => parallel
+                .Do(first => first.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "first")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.First)))
+                .Do(second => second.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "second")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Second)))))
+            .Catch<JoinConflictException>(handler => handler.Step<Noop>())
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new Latching { Watched = true });
+
+        // First latches once it is set, so it cannot be put back after Second is refused: the data is
+        // changed and no handler can be told it is not, so the instance fails as the engine's failure.
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("could not put the workflow data back", result.ErrorMessage);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-07")]
+    public async Task ACombinedValueIsNotCheckedAgainstTheDataAtTheFork()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<CombinedBounds>("CombinedBesideItsBound")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Do(first => first
+                    .Step<SetNumber>(step => step
+                        .Input(activity => activity.Value).From(_ => 200)
+                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.High))
+                    .Step<SetNumber>(step => step
+                        .Input(activity => activity.Value).From(_ => 150)
+                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Low)))
+                .Do(second => second.Step<Noop>()))
+            .Step<Record>(step => step
+                .Input(activity => activity.Value).From(ctx => $"{ctx.WorkflowData.Low}-{ctx.WorkflowData.High}"))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new CombinedBounds());
+
+        // Low=150 is valid beside High=200, which the merge also takes; at the fork High was 100.
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["150-200"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-04")]
+    public void WritesTheJoinWouldDropAreRefusedWhereverThePathGoes()
+    {
+        // An ignored member inside a list's items, and a value merged whole that has no setter.
+        Assert.Contains("'Scratch' is not serialized", Assert.Throws<WorkflowEngineException>(() =>
+            Workflow.Create<ScratchItems>("IgnoredInsideAList").Step<Noop>()
+                .Parallel(parallel => parallel.WaitAny()
+                    .Do(only => only.Step<Copy>(step => step
+                        .Input(activity => activity.Value).From(_ => "x")
+                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Items[0].Scratch))))
+                .Build()).Message);
+        Assert.Contains("which a join sets whole but which has no setter", Assert.Throws<WorkflowEngineException>(() =>
+            Workflow.Create<Priced>("GetOnlyWholeValue").Step<Noop>()
+                .Parallel(parallel => parallel.WaitAny()
+                    .Do(only => only.Step<SetNumber>(step => step
+                        .Input(activity => activity.Value).From(_ => 3)
+                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Total.Amount))))
+                .Build()).Message);
+        // A populated list with a setter still reads back its initializer's items.
+        Assert.Contains("'Tags' is read back by adding", Assert.Throws<WorkflowEngineException>(() =>
+            Workflow.Create<PopulatedTags>("PopulatedWithSetter").Step<Noop>()
+                .Parallel(parallel => parallel.Do(only => only.Step<Noop>()))
+                .Build()).Message);
+        // Under WaitAny nothing is compared, so a target the rules cannot name is allowed.
+        Workflow.Create<Held>("UnnamedTargetUnderWaitAny").Step<Noop>()
+            .Parallel(parallel => parallel.WaitAny()
+                .Do(only => only.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "x")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Holder().Value))))
+            .Build();
     }
 
     [Fact]
@@ -283,7 +395,7 @@ public sealed class ParallelDataContractTests
             Assert.Throws<WorkflowEngineException>(() => Branched<TaggedItems>()).Message);
         Assert.Contains("'Totals.Tags' has no setter",
             Assert.Throws<WorkflowEngineException>(() => Branched<CombinedTotals>()).Message);
-        Assert.Contains("'Seeds' has no setter",
+        Assert.Contains("'Seeds' is read back by adding",
             Assert.Throws<WorkflowEngineException>(() => Branched<Seeded>()).Message);
         // A combiner inside a value merged whole never applies.
         Assert.Contains("never applies", Assert.Throws<WorkflowEngineException>(() => Branched<Lines>()).Message);
@@ -458,6 +570,122 @@ public sealed class ParallelDataContractTests
             get => _high;
             set => _high = value >= Low ? value : throw new ArgumentOutOfRangeException(nameof(High), "High is below Low");
         }
+    }
+
+    /// <summary>Count is assigned, then checked against Max, which is not saved.</summary>
+    public sealed class Capped
+    {
+        private int _count;
+
+        public string First { get; set; } = "";
+
+        public int Count
+        {
+            get => _count;
+            set
+            {
+                _count = value;
+                if (value > Max)
+                    throw new ArgumentOutOfRangeException(nameof(Count), "Count is over Max");
+            }
+        }
+
+        [JsonIgnore]
+        public int Max { get; set; } = int.MaxValue;
+    }
+
+    /// <summary>First can be set once; Second refuses any change on the parent's object.</summary>
+    public sealed class Latching
+    {
+        private string _first = "";
+        private string _second = "";
+        private bool _latched;
+
+        public string First
+        {
+            get => _first;
+            set
+            {
+                if (_latched)
+                    throw new InvalidOperationException("First is latched");
+                _first = value;
+                _latched = value.Length > 0 && Watched;
+            }
+        }
+
+        public string Second
+        {
+            get => _second;
+            set => _second = Watched && value.Length > 0 ? throw new InvalidOperationException("Second is fixed") : value;
+        }
+
+        [JsonIgnore]
+        public bool Watched { get; set; }
+    }
+
+    public sealed class CombinedBounds
+    {
+        private int _low;
+
+        public int High { get; set; } = 100;
+
+        [Combine<FirstWins<int>>]
+        public int Low
+        {
+            get => _low;
+            set => _low = value <= High ? value : throw new ArgumentOutOfRangeException(nameof(Low), "Low is over High");
+        }
+    }
+
+    public sealed class ScratchItems
+    {
+        public List<ScratchItem> Items { get; set; } = [new()];
+    }
+
+    public sealed class ScratchItem
+    {
+        public string Name { get; set; } = "";
+
+        [JsonIgnore]
+        public string Scratch { get; set; } = "";
+    }
+
+    public sealed class Priced
+    {
+        public Money Total { get; } = new();
+    }
+
+    [JsonConverter(typeof(MoneyConverter))]
+    public sealed class Money
+    {
+        public int Amount { get; set; }
+    }
+
+    public sealed class MoneyConverter : JsonConverter<Money>
+    {
+        public override Money Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert,
+            System.Text.Json.JsonSerializerOptions options) => new() { Amount = reader.GetInt32() };
+
+        public override void Write(System.Text.Json.Utf8JsonWriter writer, Money value,
+            System.Text.Json.JsonSerializerOptions options) => writer.WriteNumberValue(value.Amount);
+    }
+
+    public sealed class PopulatedTags
+    {
+        [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+        public List<int> Tags { get; set; } = [1];
+    }
+
+    public sealed class Held
+    {
+        private readonly Box _box = new();
+
+        public Box Holder() => _box;
+    }
+
+    public sealed class Box
+    {
+        public string Value { get; set; } = "";
     }
 
     public sealed class Mapped

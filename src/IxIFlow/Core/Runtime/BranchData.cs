@@ -125,7 +125,8 @@ internal static class BranchData
                     units[key] = unit = (path, combiner, [], change);
                     order.Add(key);
                 }
-                if (!unit.Branches.Contains(index))
+                // Branches come in order, so a branch already listed is the last one.
+                if (unit.Branches.Count == 0 || unit.Branches[^1] != index)
                     unit.Branches.Add(index);
             }
 
@@ -152,28 +153,23 @@ internal static class BranchData
             else
                 Lay(node, change);
         }
-        if (combined.Count > 0)
+        // A combined value is written as its property's contract writes it, with the property's converter
+        // and number handling, and laid over the merge, so the read-back below validates it with the rest
+        // and no setter sees it beside values it will not be merged with.
+        foreach (var (path, combiner, changedBy) in combined)
         {
-            // A combined value is written through its property's contract, on a copy of the data at the
-            // fork, and laid over the merge as JSON, so the read-back below validates it with the rest.
-            var holder = Copy(baseline);
-            foreach (var (path, combiner, changedBy) in combined)
+            var values = changedBy.Select(index => ValueAt(branches[index].Data(), path)).ToList();
+            var value = Combine(combiner, path, ValueAt(baseline, path), values);
+            string json;
+            try
             {
-                var values = changedBy.Select(index => ValueAt(branches[index].Data(), path)).ToList();
-                var value = Combine(combiner, path, ValueAt(baseline, path), values);
-                try
-                {
-                    SetAt(holder, path, value);
-                }
-                catch (Exception error) when (error is not WorkflowEngineException)
-                {
-                    throw Conflict(path, $"The combined value of '{Display(path)}' could not be set: " +
-                        $"{(error is TargetInvocationException { InnerException: { } inner } ? inner : error).Message}");
-                }
+                json = PropertyJson(type, path, value)?.ToJsonString() ?? "null";
             }
-            var written = Node(holder);
-            foreach (var (path, _, _) in combined)
-                Lay(node, new DataChange { Path = path, Value = ValueAt(written, path)?.ToJsonString() ?? "null" });
+            catch (Exception error) when (error is not (OutOfMemoryException or WorkflowEngineException))
+            {
+                throw Conflict(path, $"The combined value of '{Display(path)}' could not be written: {error.Message}");
+            }
+            Lay(node, new DataChange { Path = path, Value = json });
         }
 
         object merged;
@@ -193,8 +189,10 @@ internal static class BranchData
     /// <summary>
     /// Sets every path the merge changed on <paramref name="data"/>, the parent's own object, from the
     /// merged copy: what no branch changed keeps its value and identity. The object may refuse a value the
-    /// read-back took, through a setter that reads state the copy does not have; then every path already
-    /// set is restored and the join fails with <see cref="JoinConflictException"/>.
+    /// read-back took, through a setter that reads state the copy does not have; then every value set,
+    /// the refused one included, is put back and the join fails with <see cref="JoinConflictException"/>.
+    /// Putting a value back assigns it again, so a setter on branch data must be a plain assignment that
+    /// can be undone (D-14); one that refuses even that leaves the data changed, which is an engine failure.
     /// </summary>
     public static void Apply(object data, MergedData merge)
     {
@@ -208,23 +206,37 @@ internal static class BranchData
                 if (path.Count == 0)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                         "A branch replaced the whole workflow data, which a join cannot apply in place");
-                undo.Add(SetFrom(data, merge.Data, path));
+                SetFrom(data, merge.Data, path, undo);
             }
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
+            var refused = new List<Exception>();
             for (var index = undo.Count - 1; index >= 0; index--)
-                undo[index]();
+                try
+                {
+                    undo[index]();
+                }
+                catch (Exception restore) when (restore is not OutOfMemoryException)
+                {
+                    refused.Add(restore is TargetInvocationException { InnerException: { } inner } ? inner : restore);
+                }
+            if (refused.Count > 0)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    $"A join could not put the workflow data back after '{Display(path)}' was refused: " +
+                    string.Join("; ", refused.Select(item => item.Message)), new AggregateException(refused));
             if (error is WorkflowEngineException)
                 throw;
-            var reason = error is TargetInvocationException { InnerException: { } inner } ? inner : error;
+            var reason = error is TargetInvocationException { InnerException: { } cause } ? cause : error;
             throw Conflict(path, $"The merge could not be applied to '{Display(path)}': {reason.Message}");
         }
     }
 
     // Sets one changed path on the parent's object from the merged copy, at the first point where the
-    // merged value is new or replaces a whole value, and returns how to put the old one back.
-    private static Action SetFrom(object data, object merged, List<string> path)
+    // merged value is new or replaces a whole value. How to put the old value back is recorded first, so
+    // a setter that changes its object and then refuses is undone too; a value that did not change is
+    // left alone.
+    private static void SetFrom(object data, object merged, List<string> path, List<Action> undo)
     {
         var target = data;
         var source = merged;
@@ -240,17 +252,24 @@ internal static class BranchData
                 var mergedDictionary = (IDictionary)source;
                 var existed = dictionary.Contains(key);
                 var old = existed ? dictionary[key] : null;
-                Action restore = existed ? () => dictionary[key] = old : () => dictionary.Remove(key);
-                if (!mergedDictionary.Contains(key))
+                var value = mergedDictionary.Contains(key) ? mergedDictionary[key] : null;
+                if (!mergedDictionary.Contains(key) || last || value == null || old == null)
                 {
-                    dictionary.Remove(key);
-                    return restore;
-                }
-                var value = mergedDictionary[key];
-                if (last || value == null || old == null)
-                {
-                    dictionary[key] = value;
-                    return restore;
+                    undo.Add(() =>
+                    {
+                        if (dictionary.Contains(key) != existed || existed && !Equals(dictionary[key], old))
+                        {
+                            if (existed)
+                                dictionary[key] = old;
+                            else
+                                dictionary.Remove(key);
+                        }
+                    });
+                    if (mergedDictionary.Contains(key))
+                        dictionary[key] = value;
+                    else
+                        dictionary.Remove(key);
+                    return;
                 }
                 (target, source, info) = (old, value, Info(info.ElementType!));
             }
@@ -266,8 +285,14 @@ internal static class BranchData
                     var set = property.Set ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                         $"A join cannot set '{Display(path)}', which has no setter");
                     var owner = target;
+                    var get = property.Get;
+                    undo.Add(() =>
+                    {
+                        if (!Equals(get(owner), old))
+                            set(owner, old);
+                    });
                     set(owner, value);
-                    return () => set(owner, old);
+                    return;
                 }
                 (target, source, info) = (old, value, Info(property.PropertyType));
             }
@@ -308,6 +333,29 @@ internal static class BranchData
         }
         if (!JsonNode.DeepEquals(before, after))
             changes.Add(new DataChange { Path = path, Value = after?.ToJsonString() ?? "null" });
+    }
+
+    // A property's value as JSON, as the property's own contract writes it: with its converter and its
+    // number handling, or its owner's.
+    private static JsonNode? PropertyJson(Type type, List<string> path, object? value)
+    {
+        var owner = Info(type);
+        JsonPropertyInfo? property = null;
+        foreach (var segment in path)
+        {
+            if (property != null)
+                owner = Info(property.PropertyType);
+            if (owner.Kind == JsonTypeInfoKind.Dictionary)
+                throw Missing(path);
+            property = PropertyNamed(owner, segment) ?? throw Missing(path);
+        }
+        var options = new JsonSerializerOptions(Options)
+        {
+            NumberHandling = property!.NumberHandling ?? owner.NumberHandling ?? Options.NumberHandling
+        };
+        if (property.CustomConverter != null)
+            options.Converters.Insert(0, property.CustomConverter);
+        return JsonSerializer.SerializeToNode(value, property.PropertyType, options);
     }
 
     // Lays a change over the JSON of the data it was made against.
@@ -412,34 +460,56 @@ internal static class BranchData
     /// The JSON path a join merges a write to the CLR member path <paramref name="clrPath"/> (such as
     /// <c>WorkflowData.Order.Lines[].Total</c>) as: the path to the write, or to the value it is written
     /// into when that value is merged whole. Null when it writes into a dictionary entry, which the join
-    /// merges per key, or outside the workflow data. A write to a member the serializer does not see is an
-    /// invalid definition: the join would drop it.
+    /// merges per key, or outside the workflow data. A write the join would drop is an invalid definition:
+    /// one to a member the serializer does not see, anywhere on the path, or into a value merged whole
+    /// that has no setter for the join to set.
     /// </summary>
     public static List<string>? MergePath(Type dataType, string clrPath, Func<string> where)
     {
         const string root = "WorkflowData";
         if (!clrPath.StartsWith(root + ".", StringComparison.Ordinal))
             return null;
-        var info = Info(dataType);
+        var target = clrPath[(root.Length + 1)..];
+        var contracts = Contracts(Info(dataType));
         var path = new List<string>();
-        foreach (var segment in clrPath[(root.Length + 1)..].Split('.'))
+        List<string>? unit = null;
+        var decided = false;
+        foreach (var segment in target.Split('.'))
         {
             var indexed = segment.EndsWith("[]", StringComparison.Ordinal);
             var name = segment.Replace("[]", "", StringComparison.Ordinal);
-            var property = info.Properties.FirstOrDefault(item => ClrName(item) == name && item.Get != null)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                    $"{where()} writes '{clrPath[(root.Length + 1)..]}', but '{name}' is not serialized with the " +
-                    "workflow data, so a join would drop the write");
-            path.Add(property.Name);
+            var property = contracts.SelectMany(contract => contract.Properties)
+                               .FirstOrDefault(item => ClrName(item) == name && item.Get != null)
+                           ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                               $"{where()} writes '{target}', but '{name}' is not serialized with the workflow " +
+                               "data, so a join would drop the write");
             var value = Info(property.PropertyType);
-            if (property.CustomConverter != null || !PerMember(value))
-                return path;
-            if (indexed)
-                return null;
-            info = value;
+            if (!decided)
+            {
+                path.Add(property.Name);
+                if (property.CustomConverter != null || !PerMember(value))
+                {
+                    if (property.Set == null)
+                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                            $"{where()} writes '{target}', inside '{name}', which a join sets whole but which has " +
+                            "no setter, so a join would drop the write");
+                    (unit, decided) = (path, true);
+                }
+                else if (indexed)
+                    (unit, decided) = (null, true);
+            }
+            // The rest of the path is checked too, through list items and polymorphic values; behind a
+            // converter of its own the serializer decides, so nothing more can be checked.
+            if (property.CustomConverter != null || value.Kind == JsonTypeInfoKind.None)
+                break;
+            contracts = Contracts(indexed && value.ElementType != null ? Info(value.ElementType) : value);
         }
-        return path;
+        return decided ? unit : path;
     }
+
+    // A contract and, for a polymorphic value, those of its derived types.
+    private static List<JsonTypeInfo> Contracts(JsonTypeInfo info) =>
+        [info, .. info.PolymorphismOptions?.DerivedTypes.Select(item => Info(item.DerivedType)) ?? []];
 
     /// <summary>
     /// Records a parallel step's choice of <paramref name="combiner"/> for the property
@@ -525,11 +595,17 @@ internal static class BranchData
                         $"'{at}' has a combiner, but it is inside a value a join merges as one, so the combiner " +
                         "never applies; put it on that value's property");
             }
-            if (!branches || property.Set != null || property.AssociatedParameter != null)
+            if (!branches)
                 return;
             var value = Info(property.PropertyType);
             var populated = (property.ObjectCreationHandling ?? owner.PreferredPropertyObjectCreationHandling) ==
                             JsonObjectCreationHandling.Populate;
+            if (populated && value.Kind is JsonTypeInfoKind.Enumerable or JsonTypeInfoKind.Dictionary)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"'{at}' is read back by adding to what its initializer put in it, so a parallel branch's copy " +
+                    "would keep items the data no longer has; read it back whole");
+            if (property.Set != null || property.AssociatedParameter != null)
+                return;
             if (value.Type.IsValueType || value.Kind == JsonTypeInfoKind.None ||
                 value.Kind == JsonTypeInfoKind.Object && populated && MergedInPlace(property))
                 return;
@@ -590,14 +666,6 @@ internal static class BranchData
         }
     }
 
-    private static JsonNode? ValueAt(JsonNode root, List<string> path)
-    {
-        var node = root;
-        foreach (var segment in path)
-            node = (node as JsonObject)?[segment];
-        return node;
-    }
-
     // The value at a JSON path of a data object, read through its contract.
     private static object? ValueAt(object data, List<string> path)
     {
@@ -618,34 +686,6 @@ internal static class BranchData
             info = Info(property.PropertyType);
         }
         return current;
-    }
-
-    // Sets the value at a JSON path of a data object whose owners along the path all exist.
-    private static void SetAt(object data, List<string> path, object? value)
-    {
-        var owner = data;
-        var info = Info(data.GetType());
-        for (var depth = 0; depth < path.Count; depth++)
-        {
-            var last = depth == path.Count - 1;
-            if (info.Kind == JsonTypeInfoKind.Dictionary)
-            {
-                var dictionary = (IDictionary)owner;
-                var key = DictionaryKey(info, path[depth]);
-                if (last)
-                    dictionary[key] = value;
-                else
-                    owner = dictionary[key] ?? throw Missing(path);
-                info = Info(info.ElementType!);
-                continue;
-            }
-            var property = PropertyNamed(info, path[depth]) ?? throw Missing(path);
-            if (last)
-                (property.Set ?? throw Missing(path))(owner, value);
-            else
-                owner = property.Get!(owner) ?? throw Missing(path);
-            info = Info(property.PropertyType);
-        }
     }
 
     // A dictionary key read from its JSON name the way the serializer reads it.

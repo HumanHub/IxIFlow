@@ -55,6 +55,32 @@ public sealed class WorkflowExecutorHostTests
     }
 
     [Fact]
+    [Trait("Spec", "E-12")]
+    public async Task ADrainBetweenAnItemsCompletionAndTheNextAdmissionLeavesTheRestToRecovery()
+    {
+        using var services = Services();
+        var host = new RecordingHost(Probe(services));
+        Draining = host.Draining;
+        // The host starts draining as the join decides on the first item, before the next is admitted.
+        var definition = Workflow.Create<ExecutorData>("DrainedBetweenItems")
+            .Step<FirstActivity>()
+            .ForEach(_ => new[] { 1, 2 }, (body, _) => body.Step<SecondActivity>().Result(_ => 1),
+                setup => setup.Parallel(maxConcurrency: 1).WaitConditionally<int>((_, _) =>
+                {
+                    Draining?.Cancel();
+                    return false;
+                }))
+            .Build();
+
+        var result = await RunAsync(services, definition, host);
+
+        // Nothing is active and nothing waits, but an item is still to start: the run stops to continue on
+        // recovery, rather than finding nothing to do.
+        Assert.Equal(WorkflowExecutionStatus.Running, result.Status);
+        Assert.Single(Probe(services).Seen, seen => seen.Activity == "second");
+    }
+
+    [Fact]
     public async Task LostOwnershipStopsTheRunWithoutAnotherCommit()
     {
         using var services = Services();
@@ -135,6 +161,9 @@ public sealed class WorkflowExecutorHostTests
 
     private static ExecutorProbe Probe(IServiceProvider services) => services.GetRequiredService<ExecutorProbe>();
 
+    // The drain a definition's condition starts; read through a static, as a definition may not capture a host.
+    private static CancellationTokenSource? Draining;
+
     /// <summary>A host with no store: it records what the executor asks of it.</summary>
     private sealed class RecordingHost(ExecutorProbe probe) : IExecutionHost
     {
@@ -146,7 +175,8 @@ public sealed class WorkflowExecutorHostTests
         public Func<bool> CancellationWhen { get; init; } = () => false;
 
         public bool PersistsState => true;
-        public CancellationToken Drain => CancellationToken.None;
+        public CancellationTokenSource Draining { get; } = new();
+        public CancellationToken Drain => Draining.Token;
         public long Epoch => 1;
         public ExecutionLimits Limits { get; } = new() { MaxCheckpointBytes = long.MaxValue };
         public bool ChildStartIsCheckpointed => true;

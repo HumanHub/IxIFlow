@@ -154,9 +154,9 @@ internal static class ForEachTransitions
     /// <summary>
     /// Starts queued items of every open parallel ForEach join with room under its cap, in item order
     /// (D-34): admission is a transition of its own, after the completion that made room has been decided.
-    /// When the next item would exceed <paramref name="maxActiveBranches"/>, throws
-    /// <see cref="BranchLimitExceededException"/> having started nothing more, and the item starts after a
-    /// release. Returns true when an item started.
+    /// Items are checked one at a time: when the next would exceed <paramref name="maxActiveBranches"/>,
+    /// throws <see cref="BranchLimitExceededException"/>, keeping those already started, and that item
+    /// starts after a release. Returns true when an item started.
     /// </summary>
     public static bool Admit(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, int maxActiveBranches)
     {
@@ -181,6 +181,21 @@ internal static class ForEachTransitions
         }
         return admitted;
     }
+
+    /// <summary>
+    /// True when an open parallel ForEach join has a queued item and room under its cap: work the run has
+    /// not done yet, though no continuation is active.
+    /// </summary>
+    public static bool MayAdmit(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint) =>
+        checkpoint.Joins.Where(item => !item.IsCompleting).Any(join =>
+        {
+            if (scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
+                return false;
+            var state = StateOf(checkpoint, join, step);
+            var running = checkpoint.Continuations.Count(item => item.ParentJoinId == join.Id &&
+                item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled));
+            return state.Next < state.Items.Count && running < (step.ForEachMaxConcurrency ?? state.Items.Count);
+        });
 
     /// <summary>The saved list of the parallel ForEach a join belongs to, on its parent's frame.</summary>
     public static ForEachState StateOf(ExecutionCheckpoint checkpoint, ParallelJoinState join, WorkflowStep step)

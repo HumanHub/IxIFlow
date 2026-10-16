@@ -80,6 +80,9 @@ internal static class ParallelRules
         {
             foreach (var mapping in Mappings(step).Where(mapping => mapping.Direction == PropertyMappingDirection.Output))
             {
+                // Under WaitAny nothing is compared, so a target the rules cannot name is the author's.
+                if (mapping.TargetPath == null && parallel.ParallelJoinMode == ParallelJoinMode.WaitAny)
+                    continue;
                 if (mapping.TargetPath == null)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                         $"Step '{step.Name}' in a branch of parallel step '{parallel.Name}' writes a target that is " +
