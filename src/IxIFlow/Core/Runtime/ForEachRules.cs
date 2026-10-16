@@ -1,12 +1,15 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using IxIFlow.Builders;
 
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// The build rules of <c>ForEach</c> (D-34): a handle is read only inside its body, a result ends a
-/// body, results stored with <c>Into</c> come from a result of their type, and a body never writes the
-/// list its step stores its results in. Checked when a workflow is built and when it is registered.
+/// The build rules of <c>ForEach</c> (D-34): a handle is read only inside its body; items are read-only, so
+/// no output writes through <c>ctx.Item(...)</c>; a result ends a body, or the timeout branch of a wait that
+/// leaves the body; results stored with <c>Into</c> come from a result of exactly their type on every way
+/// out of the body; and nothing in a body writes where its step stores its results. Checked when a workflow
+/// is built and when it is registered.
 /// </summary>
 internal static class ForEachRules
 {
@@ -18,28 +21,41 @@ internal static class ForEachRules
     }
 
     public static void Validate(IReadOnlyList<WorkflowStep> steps) =>
-        ValidateBody(steps, new HashSet<ItemScope>(ReferenceEqualityComparer.Instance), [], isForEachBody: false);
+        ValidateBody(steps, new HashSet<ItemScope>(ReferenceEqualityComparer.Instance), [], resultEndsIt: false,
+            isForEachBody: false);
 
     private static void ValidateBody(IReadOnlyList<WorkflowStep> body, HashSet<ItemScope> inScope,
-        IReadOnlyList<WorkflowStep> enclosing, bool isForEachBody)
+        IReadOnlyList<WorkflowStep> enclosing, bool resultEndsIt, bool isForEachBody)
     {
         for (var index = 0; index < body.Count; index++)
         {
             var step = body[index];
-            if (step.StepType == WorkflowStepType.ForEachResult && (!isForEachBody || index != body.Count - 1))
-                throw Invalid("A ForEach result must be the last step of a ForEach body");
+            if (step.StepType == WorkflowStepType.ForEachResult && (!resultEndsIt || index != body.Count - 1))
+                throw Invalid("A ForEach result must be the last step of a ForEach body, or of the timeout " +
+                              "branch of a wait in that body");
             foreach (var behavior in Behaviors(step))
                 foreach (var handle in ItemCaptures.Of(behavior))
                     if (!inScope.Contains(handle))
                         throw Invalid($"{handle} is used outside its ForEach body, in step '{step.Name}'");
+            foreach (var mapping in Mappings(step).Where(mapping => mapping.Direction == PropertyMappingDirection.Output))
+                if (mapping.TargetPath?.StartsWith(MemberPath.ItemRoot, StringComparison.Ordinal) == true)
+                    throw Invalid($"Step '{step.Name}' writes a ForEach item; items are read-only, so write " +
+                                  "workflow data instead");
             foreach (var owner in enclosing.Where(owner => owner.ForEachIntoPath != null))
-                if (step.OutputMappings.Any(mapping => MemberPath.Writes(mapping.TargetPath, owner.ForEachIntoPath!)))
+            {
+                var writes = Mappings(step).Where(mapping => mapping.Direction == PropertyMappingDirection.Output)
+                    .Select(mapping => mapping.TargetPath)
+                    .Append(step.StepType == WorkflowStepType.ForEach ? step.ForEachIntoPath : null);
+                if (writes.Any(path => MemberPath.Overlaps(path, owner.ForEachIntoPath!)))
                     throw Invalid($"Step '{step.Name}' writes '{owner.ForEachIntoPath}', where its ForEach stores " +
                                   "its results");
+            }
             if (step.StepType == WorkflowStepType.ForEach)
                 ValidateForEach(step, inScope, enclosing);
             foreach (var nested in Bodies(step))
-                ValidateBody(nested, inScope, enclosing, isForEachBody: false);
+                ValidateBody(nested, inScope, enclosing, resultEndsIt: false, isForEachBody: false);
+            // The timeout branch of a wait directly in a ForEach body leaves the body, so it may end with a result.
+            ValidateBody(step.TimeoutSteps, inScope, enclosing, resultEndsIt: isForEachBody, isForEachBody: false);
         }
     }
 
@@ -48,18 +64,34 @@ internal static class ForEachRules
     {
         if (step.ForEachItem == null || step.ForEachItems == null)
             throw Invalid($"ForEach step '{step.Name}' has no item list");
-        var result = step.ForEachBodySteps.LastOrDefault() is { StepType: WorkflowStepType.ForEachResult } last
-            ? last : null;
-        if (step.ForEachInto != null && (result == null || !step.ResultType!.IsAssignableFrom(result.ResultType)))
-            throw Invalid($"ForEach step '{step.Name}' stores {step.ResultType?.Name} results, so its body must " +
-                          $"end with a result of that type");
+        if (step.ForEachInto != null)
+        {
+            // Every way out of the body gives a result of the stored type: its end, and every timeout branch
+            // that leaves it.
+            var exits = step.ForEachBodySteps.Where(nested => nested.TimeoutSteps.Count > 0)
+                .Select(nested => (IReadOnlyList<WorkflowStep>)nested.TimeoutSteps)
+                .Prepend(step.ForEachBodySteps);
+            foreach (var exit in exits)
+                if (exit.LastOrDefault() is not { StepType: WorkflowStepType.ForEachResult } result ||
+                    result.ResultType != step.ResultType)
+                    throw Invalid($"ForEach step '{step.Name}' stores {step.ResultType?.Name} results, so its body " +
+                                  "and every timeout branch that leaves it must end with a result of that type");
+        }
         var withItem = new HashSet<ItemScope>(inScope, ReferenceEqualityComparer.Instance) { step.ForEachItem };
-        ValidateBody(step.ForEachBodySteps, withItem, [.. enclosing, step], isForEachBody: true);
+        ValidateBody(step.ForEachBodySteps, withItem, [.. enclosing, step], resultEndsIt: true, isForEachBody: true);
     }
+
+    // The mappings a step runs with a workflow context: its own, and those of the compensations it declares.
+    private static IEnumerable<PropertyMapping> Mappings(WorkflowStep step) =>
+        step.InputMappings.Concat(step.OutputMappings)
+            .Concat(step.StepMetadata.TryGetValue("CompensationActivities", out var value) &&
+                    value is List<CompensationActivityInfo> compensations
+                ? compensations.SelectMany(compensation => compensation.InputMappings.Concat(compensation.OutputMappings))
+                : []);
 
     // The code a step runs with a workflow context, where a handle can be read.
     private static IEnumerable<Delegate?> Behaviors(WorkflowStep step) =>
-        step.InputMappings.Concat(step.OutputMappings)
+        Mappings(step)
             .SelectMany(mapping => new Delegate?[] { mapping.SourceFunction, mapping.TargetAssignmentFunction })
             .Concat([
                 step.CompiledCondition, step.OutcomeSelector, step.ParallelCompletionCondition,
@@ -70,7 +102,7 @@ internal static class ForEachRules
         new IReadOnlyList<WorkflowStep>[]
             {
                 step.SequenceSteps, step.ThenSteps, step.ElseSteps, step.LoopBodySteps, step.FinallySteps,
-                step.TimeoutSteps, step.CatchBlocks
+                step.CatchBlocks
             }
             .Concat(step.ParallelBranches)
             .Concat(step.OutcomeBranches.Select(branch => branch.Steps));
@@ -81,11 +113,12 @@ internal static class ForEachRules
 
 /// <summary>
 /// The <c>ForEach</c> handles a delegate captures, found by walking its closures: compiler-generated
-/// closure classes, compiled expression closures and nested delegates. Other objects are not walked.
+/// closure classes, compiled and interpreted expression closures, and nested delegates. Other objects
+/// are not walked, so a handle kept inside one is found only when it is read.
 /// </summary>
 internal static class ItemCaptures
 {
-    private const int MaxDepth = 12;
+    private const int MaxDepth = 32;
 
     public static IReadOnlyCollection<ItemScope> Of(Delegate? behavior)
     {
@@ -121,10 +154,11 @@ internal static class ItemCaptures
                     Collect(element, found, visited, depth + 1);
                 return;
         }
-        // A compiled expression's closure keeps what the expression captured in its fields.
+        // A compiled expression keeps what it captured in a Closure; an interpreted one in its interpreter.
         var type = value.GetType();
         if (!type.IsDefined(typeof(CompilerGeneratedAttribute)) &&
-            type.FullName != "System.Runtime.CompilerServices.Closure")
+            type.FullName != "System.Runtime.CompilerServices.Closure" &&
+            type.Namespace != "System.Linq.Expressions.Interpreter")
             return;
         foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
             Collect(field.GetValue(value), found, visited, depth + 1);

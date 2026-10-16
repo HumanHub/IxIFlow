@@ -1,8 +1,11 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -371,16 +374,413 @@ public sealed class ForEachTests
         Assert.Contains("stores its results", writes.Message);
     }
 
+    [Fact]
+    public async Task ItemsAreReadOnlySoAnActivityChangingOneIsNotSeenLater()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<OrderData>("ReadOnlyItems")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Step<MutateLineActivity>(step => step
+                    .Input(activity => activity.Line).From(ctx => ctx.Item(line)))
+                .Step<NoteActivity>(step => step
+                    .Input(activity => activity.Note).From(ctx => ctx.Item(line).Price.ToString())
+                    .Input(activity => activity.Log).From(ctx => ctx.WorkflowData.Log)
+                    .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log)))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, Order(3, 5));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal("3;5;", Data(result).Log);
+        Assert.Equal([3, 5], Data(result).Lines.Select(item => item.Price));
+    }
+
+    [Fact]
+    public void AnOutputOrResultTargetReachedThroughAnItemIsABuildError()
+    {
+        var output = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("WritesItem")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Step<CountActivity>(step => step
+                    .Output(activity => activity.Count).To(ctx => ctx.Item(line).Price)))
+            .Build());
+        var into = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("StoresIntoItem")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Customers, (customers, customer) => customers
+                .ForEach(ctx => ctx.Item(customer).Lines,
+                    (lines, line) => lines.Step<NoopActivity>().Result(ctx => ctx.Item(line).Price),
+                    setup => setup.Into(ctx => ctx.Item(customer).Results)))
+            .Build());
+
+        Assert.Equal(WorkflowErrorKind.InvalidDefinition, output.Kind);
+        Assert.Contains("read-only", output.Message);
+        Assert.Equal(WorkflowErrorKind.InvalidDefinition, into.Kind);
+        Assert.Contains("not of an item", into.Message);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-13")]
+    public async Task ATimeoutThatLeavesTheBodyGivesItsOwnResult()
+    {
+        var time = new FakeTimeProvider();
+        using var services = Services(time: time);
+        var engine = Engine(services);
+        var definition = Workflow.Create<OrderData>("ApproveOrDefault")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .WaitFor<LineApproval>("approval", (approval, ctx) => approval.Name == ctx.Item(line).Name,
+                        wait => wait
+                            .TimeoutAfter(TimeSpan.FromMinutes(10))
+                            .OnTimeout(path => path.Result(ctx => -ctx.Item(line).Price)))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
+            .Build();
+        var started = await engine.RunAsync(definition, Order(3, 5));
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approval", new LineApproval { Name = "line-0" }));
+
+        time.Advance(TimeSpan.FromMinutes(11));
+        await RecoverOnceAsync(services, time);
+
+        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(started.InstanceId);
+        Assert.Equal(WorkflowStatus.Completed, saved!.Status);
+        var data = System.Text.Json.JsonSerializer.Deserialize<OrderData>(saved.WorkflowDataJson)!;
+        Assert.Equal(
+            [new ItemResult<int>(0, ItemStatus.Completed, 3), new ItemResult<int>(1, ItemStatus.Completed, -5)],
+            data.Doubled);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-13")]
+    public void ATimeoutThatLeavesTheBodyWithoutAResultIsABuildError()
+    {
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("TimeoutWithoutResult")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .WaitFor<LineApproval>("approval", configure: wait => wait
+                        .TimeoutAfter(TimeSpan.FromMinutes(10))
+                        .OnTimeout(path => path.Step<NoopActivity>()))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
+            .Build());
+
+        Assert.Contains("every timeout branch", error.Message);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-13")]
+    public void AResultMustBeOfExactlyTheStoredType()
+    {
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("ResultOfASubtype")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body.Step<NoopActivity>().Result(ctx => ctx.Item(line)),
+                setup => setup.Into(ctx => ctx.WorkflowData.Objects))
+            .Build());
+
+        Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-13")]
+    public void AWriteToAnAncestorOfTheTargetOrANestedStepStoringThereIsABuildError()
+    {
+        var ancestor = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("WritesReport")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .Step<ReportActivity>(step => step
+                        .Output(activity => activity.Report).To(ctx => ctx.WorkflowData.Report))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.Into(ctx => ctx.WorkflowData.Report.Results))
+            .Build());
+        var nested = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("NestedStoresThere")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Customers,
+                (customers, customer) => customers
+                    .ForEach(ctx => ctx.Item(customer).Lines,
+                        (lines, line) => lines.Step<NoopActivity>().Result(ctx => ctx.Item(line).Price),
+                        setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
+                    .Result(ctx => ctx.Index(customer)),
+                setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
+            .Build());
+
+        Assert.Contains("stores its results", ancestor.Message);
+        Assert.Contains("stores its results", nested.Message);
+    }
+
+    [Fact]
+    public void TheFingerprintKnowsAHandleByItsStepNotItsLabelAndIncludesTheWholeTarget()
+    {
+        WorkflowDefinition Define(string label, int group) => Workflow.Create<OrderData>("Fingerprinted")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .Step<NoteActivity>(step => step
+                        .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.As(label).Into(ctx => ctx.WorkflowData.Groups[group].Results))
+            .Build();
+
+        Assert.Equal(new WorkflowScopeCatalog(Define("line", 0)).Fingerprint,
+            new WorkflowScopeCatalog(Define("renamed", 0)).Fingerprint);
+        Assert.NotEqual(new WorkflowScopeCatalog(Define("line", 0)).Fingerprint,
+            new WorkflowScopeCatalog(Define("line", 1)).Fingerprint);
+    }
+
+    [Fact]
+    public async Task TheFingerprintIsTheSameBeforeAndAfterTheBodyRuns()
+    {
+        using var services = Services();
+        var engine = Engine(services);
+        var definition = Workflow.Create<OrderData>("StableFingerprint")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) =>
+                {
+                    var skipped = "none";
+                    // The inner lambda is made only when the result runs, and C# keeps it in the closure.
+                    body
+                        .WaitFor<LineApproval>("approval", (approval, ctx) => approval.Name == ctx.Item(line).Name,
+                            wait => wait
+                                .TimeoutAfter(TimeSpan.FromMinutes(10))
+                                .OnTimeout(path => path.Result(ctx => -ctx.Item(line).Price)))
+                        .Result(ctx => new[] { "a", "b" }.Count(name => name != skipped) + ctx.Item(line).Price);
+                },
+                setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
+            .Build();
+        var before = new WorkflowScopeCatalog(definition).Fingerprint;
+
+        var started = await engine.RunAsync(definition, Order(3));
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approval", new LineApproval { Name = "line-0" }));
+
+        Assert.Equal(before, new WorkflowScopeCatalog(definition).Fingerprint);
+    }
+
+    [Fact]
+    public async Task BranchesForkedInABodyReadTheItemAcrossAWait()
+    {
+        using var services = Services();
+        var engine = Engine(services);
+        var definition = Workflow.Create<OrderData>("ForkPerLine")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Parallel(parallel => parallel
+                    .Do(branch => branch.Step<NoteActivity>(step => step
+                        .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name)
+                        .Input(activity => activity.Log).From(ctx => ctx.WorkflowData.Log)
+                        .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log)))
+                    .Do(branch => branch.WaitFor<LineApproval>("approval",
+                        (approval, ctx) => approval.Name == ctx.Item(line).Name,
+                        wait => wait.Output(approval => approval.Name).To(ctx => ctx.WorkflowData.LastApproved)))))
+            .Build();
+        var started = await engine.RunAsync(definition, Order(3, 5));
+
+        EventAssert.Rejected(await engine.ResumeAsync(started.InstanceId, "approval", new LineApproval { Name = "line-1" }),
+            EventRejection.NotMatched);
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approval", new LineApproval { Name = "line-0" }));
+        var finished = await engine.ResumeAsync(started.InstanceId, "approval", new LineApproval { Name = "line-1" });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        Assert.Equal("line-0;line-1;", Data(finished).Log);
+        Assert.Equal("line-1", Data(finished).LastApproved);
+    }
+
+    [Fact]
+    public async Task AForEachInsideABranchRunsItsItems()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<OrderData>("ListInBranch")
+            .Step<NoopActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch.ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                    .Step<NoteActivity>(step => step
+                        .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name)
+                        .Input(activity => activity.Log).From(ctx => ctx.WorkflowData.Log)
+                        .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log))))
+                .Do(branch => branch.Step<CountActivity>(step => step
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Expensive)
+                    .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Expensive))))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, Order(3, 5));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal("line-0;line-1;", Data(result).Log);
+        Assert.Equal(1, Data(result).Expensive);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-13")]
+    public async Task AFailureEscapingTheBodyStoresNoResults()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<OrderData>("FailMidList")
+            .Step<NoopActivity>()
+            .Try(attempt => attempt.ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .Step<FailOnFiveActivity>(step => step.Input(activity => activity.Price).From(ctx => ctx.Item(line).Price))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.Into(ctx => ctx.WorkflowData.Doubled)))
+            .Catch<InvalidOperationException>(handler => handler.Step<CountActivity>(step => step
+                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Expensive)
+                .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Expensive)))
+            .Build();
+        var data = Order(3, 5, 7);
+        data.Doubled = [new ItemResult<int>(9, ItemStatus.Completed, 9)];
+
+        var result = await Engine(services).RunAsync(definition, data);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(1, Data(result).Expensive);
+        Assert.Equal([new ItemResult<int>(9, ItemStatus.Completed, 9)], Data(result).Doubled);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-13")]
+    public async Task AFailureHandledInsideTheBodyLetsTheItemFinish()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<OrderData>("HandleInBody")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .Try(attempt => attempt.Step<FailOnFiveActivity>(step => step
+                        .Input(activity => activity.Price).From(ctx => ctx.Item(line).Price)))
+                    .Catch<InvalidOperationException>(handler => handler.Step<CountActivity>(step => step
+                        .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Expensive)
+                        .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Expensive)))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, Order(3, 5, 7));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(1, Data(result).Expensive);
+        Assert.Equal([3, 5, 7], Data(result).Doubled.Select(item => item.Value));
+    }
+
+    [Fact]
+    public async Task CancellingMidListStopsTheRemainingItems()
+    {
+        using var services = Services();
+        var engine = Engine(services);
+        var definition = Workflow.Create<OrderData>("CancelMidList")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .WaitFor<LineApproval>("approval", (approval, ctx) => approval.Name == ctx.Item(line).Name)
+                .Step<CountActivity>(step => step
+                    .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Expensive)
+                    .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Expensive)))
+            .Build();
+        var started = await engine.RunAsync(definition, Order(3, 5, 7));
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approval", new LineApproval { Name = "line-0" }));
+
+        var cancelled = await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
+        EventAssert.Closed(await engine.ResumeAsync(started.InstanceId, "approval", new LineApproval { Name = "line-1" }));
+        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(started.InstanceId);
+        Assert.Equal(WorkflowStatus.Cancelled, saved!.Status);
+        Assert.Contains("\"Expensive\":1", saved.WorkflowDataJson);
+    }
+
+    [Fact]
+    public async Task AfterACrashRecoveryUsesTheSavedListNotTheSelector()
+    {
+        var store = new FaultInjectingRepository();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var definition = Workflow.Create<OrderData>("CrashWithChangedSource")
+            .Step<NoopActivity>()
+            .ForEach(_ => MutableSource.Lines, (body, line) => body
+                .Step<RecoverablePriceLineActivity>(step => step
+                    .Input(activity => activity.Price).From(ctx => ctx.Item(line).Price)
+                    .Input(activity => activity.Index).From(ctx => ctx.Index(line))
+                    .Input(activity => activity.TotalSoFar).From(ctx => ctx.WorkflowData.Total)
+                    .Input(activity => activity.Log).From(ctx => ctx.WorkflowData.Log)
+                    .Output(activity => activity.Total).To(ctx => ctx.WorkflowData.Total)
+                    .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log)))
+            .Build();
+        MutableSource.Lines = Order(3, 5, 7).Lines;
+        store.FailCommit = instance => instance.WorkflowDataJson.Contains("\"Total\":8");
+        using (var first = Services(store: store))
+            await Assert.ThrowsAnyAsync<Exception>(() => Engine(first).RunAsync(definition, Order(),
+                new WorkflowOptions { InstanceId = instanceId }));
+        store.FailCommit = _ => false;
+        // Were the list read again, recovery would price these instead.
+        MutableSource.Lines = Order(100, 100, 100, 100).Lines;
+
+        using var second = Services(store: store);
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        var recovered = await Engine(second).RecoverAsync(instanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
+        Assert.Equal(15, Data(recovered).Total);
+        Assert.Equal("0:3:0;1:5:3;2:7:8;", Data(recovered).Log);
+    }
+
+    [Fact]
+    public async Task AnOutputCanWriteTheElementPickedByTheIndex()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<OrderData>("RowPerLine")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Step<PriceLineActivity>(step => step
+                    .Input(activity => activity.Price).From(ctx => ctx.Item(line).Price)
+                    .Output(activity => activity.Total).To(ctx => ctx.WorkflowData.Rows[ctx.Index(line)].Value)))
+            .Build();
+        var data = Order(3, 5, 7);
+        data.Rows = [new Row(), new Row(), new Row()];
+
+        var result = await Engine(services).RunAsync(definition, data);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal([3, 5, 7], Data(result).Rows.Select(row => row.Value));
+    }
+
+    [Fact]
+    public async Task ARequestSubjectReadsTheItem()
+    {
+        using var services = Services();
+        var engine = Engine(services);
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("AskAboutLine")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
+                .Request<AskActivity>("approval", step => step
+                        .Input(activity => activity.Name).From(ctx => ctx.Item(line).Name),
+                    subject: ctx => ctx.Item(line).Name)
+                .WaitFor<LineApproval>("approval"))
+            .Build();
+        await engine.RunAsync(definition, Order(1, 2));
+        var first = Assert.Single(outbox.Sent);
+        Assert.True(ReplyToken.TryRead(first.Token, out _, out _, out var subject));
+        Assert.Equal(ReplyToken.Digest("line-0"), subject);
+
+        EventAssert.Consumed(await engine.ReplyAsync(first.Token, new LineApproval { Name = "line-0" }));
+
+        Assert.True(ReplyToken.TryRead(outbox.Sent[1].Token, out _, out _, out subject));
+        Assert.Equal(ReplyToken.Digest("line-1"), subject);
+    }
+
     private static OrderData Order(params int[] prices) =>
         new() { Lines = prices.Select((price, index) => Line(index, price)).ToList() };
 
     private static OrderLine Line(int index, int price) => new() { Name = $"line-{index}", Price = price };
 
     private static ServiceProvider Services(Action<IxIFlowOptions>? configure = null,
-        IWorkflowStateRepository? store = null)
+        IWorkflowStateRepository? store = null, TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        if (time != null)
+            services.AddSingleton(time);
         if (store != null)
             services.AddSingleton(store);
         if (configure != null)
@@ -394,6 +794,20 @@ public sealed class ForEachTests
 
     private static IWorkflowClient Engine(IServiceProvider services) => services.GetRequiredService<IWorkflowClient>();
 
+    private static async Task RecoverOnceAsync(IServiceProvider services, TimeProvider time)
+    {
+        using var scanner = new WorkflowRecoveryService(services.GetRequiredService<IServiceScopeFactory>(),
+            services.GetRequiredService<IWorkflowStateRepository>(), NullLogger<WorkflowRecoveryService>.Instance,
+            time);
+        await scanner.RecoverOnceAsync(CancellationToken.None);
+    }
+
+    /// <summary>A list a selector reads from outside the workflow data, changed between runs by one test.</summary>
+    private static class MutableSource
+    {
+        public static List<OrderLine> Lines { get; set; } = [];
+    }
+
     private static OrderData Data(WorkflowExecutionResult result) => Assert.IsType<OrderData>(result.WorkflowData);
 
     public sealed class OrderData
@@ -405,6 +819,25 @@ public sealed class ForEachTests
         public string Log { get; set; } = "";
         public string LastApproved { get; set; } = "";
         public List<ItemResult<int>> Doubled { get; set; } = [];
+        public List<ItemResult<object>> Objects { get; set; } = [];
+        public List<Row> Rows { get; set; } = [];
+        public List<Group> Groups { get; set; } = [];
+        public Report Report { get; set; } = new();
+    }
+
+    public sealed class Row
+    {
+        public int Value { get; set; }
+    }
+
+    public sealed class Group
+    {
+        public List<ItemResult<int>> Results { get; set; } = [];
+    }
+
+    public sealed class Report
+    {
+        public List<ItemResult<int>> Results { get; set; } = [];
     }
 
     public sealed class OrderLine
@@ -417,6 +850,7 @@ public sealed class ForEachTests
     {
         public string Name { get; set; } = "";
         public List<OrderLine> Lines { get; set; } = [];
+        public List<ItemResult<int>> Results { get; set; } = [];
     }
 
     public sealed class ChildData
@@ -525,6 +959,33 @@ public sealed class ForEachTests
             Count++;
             return Task.CompletedTask;
         }
+    }
+
+    public sealed class MutateLineActivity : IAsyncActivity
+    {
+        public OrderLine Line { get; set; } = new();
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Line.Price = 100;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class FailOnFiveActivity : IAsyncActivity
+    {
+        public int Price { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Price == 5 ? throw new InvalidOperationException("five") : Task.CompletedTask;
+    }
+
+    public sealed class ReportActivity : IAsyncActivity
+    {
+        public Report Report { get; set; } = new();
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 
     public sealed class ResultsActivity : IAsyncActivity

@@ -834,6 +834,9 @@ public class WorkflowStep
     /// <summary>For a <c>ForEach</c> step, the member path its results are stored to, such as <c>WorkflowData.Results</c>.</summary>
     public string? ForEachIntoPath { get; set; }
 
+    /// <summary>For a <c>ForEach</c> step that stores results, the signature of its whole target expression.</summary>
+    public string? ForEachIntoSignature { get; set; }
+
     /// <summary>For a <c>.Result(...)</c> step, or a <c>ForEach</c> step that stores results, the result type.</summary>
     public Type? ResultType { get; set; }
 
@@ -934,6 +937,7 @@ public class WorkflowStep
             ForEachItems = ForEachItems,
             ForEachInto = ForEachInto,
             ForEachIntoPath = ForEachIntoPath,
+            ForEachIntoSignature = ForEachIntoSignature,
             ResultType = ResultType,
             ResultSelector = ResultSelector,
             WorkflowDataType = WorkflowDataType,
