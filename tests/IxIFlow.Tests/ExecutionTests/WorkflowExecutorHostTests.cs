@@ -146,6 +146,8 @@ public sealed class WorkflowExecutorHostTests
         public Func<bool> CancellationWhen { get; init; } = () => false;
 
         public bool PersistsState => true;
+        public long Epoch => 1;
+        public long MaxCheckpointBytes => long.MaxValue;
         public bool ChildStartIsCheckpointed => true;
         public Task? OwnershipLoss => null;
         public Task<CancellationReason>? CancellationSignal => null;
@@ -155,13 +157,14 @@ public sealed class WorkflowExecutorHostTests
         {
         }
 
-        public Task CommitAsync(WorkflowInstance instance)
+        public Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
         {
             if (_commits.Count + 1 == LoseOwnershipAtCommit)
-                throw new ExecutionOwnershipLostException(new InvalidOperationException("Another owner committed"));
-            _commits.Add(instance.Status);
+                return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Conflict,
+                    Error: new InvalidOperationException("Another owner committed")));
+            _commits.Add(commit.ReadInstance().Status);
             probe.Commits = _commits.Count;
-            return Task.CompletedTask;
+            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, _commits.Count));
         }
 
         public Task<CancellationReason?> ReadCancellationRequestAsync() =>

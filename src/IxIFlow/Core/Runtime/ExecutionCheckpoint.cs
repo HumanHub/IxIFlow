@@ -19,6 +19,9 @@ internal sealed class ExecutionCheckpoint
     public SerializedException? UnhandledError { get; set; }
     public bool CancellationRequested { get; set; }
 
+    /// <summary>Set when a commit exceeded a resource limit and the instance waits for an operator (D-28).</summary>
+    public ResourceStopState? ResourceStop { get; set; }
+
     [JsonIgnore]
     public Exception? RuntimeUnhandledError { get; set; }
 
@@ -39,6 +42,12 @@ internal sealed class ExecutionCheckpoint
         return document.RootElement.TryGetProperty(nameof(Runtime), out var runtime) &&
             runtime.GetString() == "structured-v2";
     }
+}
+
+internal sealed class ResourceStopState
+{
+    public string Reason { get; set; } = "";
+    public DateTime StoppedAtUtc { get; set; }
 }
 
 internal enum ContinuationStatus

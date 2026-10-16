@@ -538,6 +538,14 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
 
     public static void PrepareCheckpoint(ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes)
     {
+        // A finished branch that no join or wait still refers to can never run again, so it is not
+        // saved. The root stays: its status is the instance's outcome.
+        var root = checkpoint.Continuations.FirstOrDefault();
+        checkpoint.Continuations.RemoveAll(continuation => continuation != root &&
+            continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled &&
+            !checkpoint.Joins.Any(join => join.ParentContinuationId == continuation.Id ||
+                                          join.ChildContinuationIds.Contains(continuation.Id)) &&
+            !checkpoint.Waits.Any(wait => wait.ContinuationId == continuation.Id));
         foreach (var continuation in checkpoint.Continuations)
         {
             if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)

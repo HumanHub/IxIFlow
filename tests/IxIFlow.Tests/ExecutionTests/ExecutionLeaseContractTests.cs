@@ -66,7 +66,7 @@ public sealed class ExecutionLeaseContractTests
             }).ToArray();
             start.SetResult();
 
-            Assert.Single((await Task.WhenAll(attempts)).Where(acquired => acquired));
+            Assert.Single((await Task.WhenAll(attempts)).Where(epoch => epoch != null));
         }
         finally
         {
@@ -324,20 +324,21 @@ public sealed class ExecutionLeaseContractTests
                 WorkflowName = "CancellationCommitFence",
                 Status = WorkflowStatus.Running
             });
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, owner,
-                TimeSpan.FromSeconds(10)));
+            var epoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, owner,
+                TimeSpan.FromSeconds(10));
+            Assert.NotNull(epoch);
             var active = (await repository.GetWorkflowInstanceAsync(instanceId))!;
-            active.ExecutionLeaseToken = owner;
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await repository.CommitWorkflowInstanceAsync(active, 0, Guid.NewGuid().ToString("N"))).Status);
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(active, epoch.Value, 0,
+                    Guid.NewGuid().ToString("N")))).Status);
             Assert.True(await repository.RequestCancellationAsync(instanceId,
                 new CancellationReason { ReasonCode = "operator" }));
             var terminal = (await repository.GetWorkflowInstanceAsync(instanceId))!;
-            terminal.ExecutionLeaseToken = owner;
             terminal.Status = terminalStatus;
 
-            var result = await repository.CommitWorkflowInstanceAsync(terminal, terminal.Revision,
-                Guid.NewGuid().ToString("N"));
+            var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(terminal, epoch.Value,
+                terminal.Revision,
+                Guid.NewGuid().ToString("N")));
 
             Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
             Assert.Equal(terminalStatus,
@@ -1097,9 +1098,9 @@ public sealed class ExecutionLeaseContractTests
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromSeconds(5)));
-            Assert.False(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
+            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5)));
         }
         finally
@@ -1113,10 +1114,10 @@ public sealed class ExecutionLeaseContractTests
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromMilliseconds(100)));
             await Task.Delay(300);
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5)));
             Assert.False(await repository.RenewExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromSeconds(5)));
@@ -1132,13 +1133,13 @@ public sealed class ExecutionLeaseContractTests
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromSeconds(1)));
             await Task.Delay(500);
             Assert.True(await repository.RenewExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromSeconds(1)));
             await Task.Delay(750);
-            Assert.False(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
+            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(1)));
         }
         finally
@@ -1152,28 +1153,31 @@ public sealed class ExecutionLeaseContractTests
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromMilliseconds(100)));
+            var firstEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
+                TimeSpan.FromMilliseconds(100));
+            Assert.NotNull(firstEpoch);
             var oldOwner = new WorkflowInstance
             {
                 InstanceId = instanceId,
                 WorkflowName = "LeaseFencing",
                 Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}",
-                ExecutionLeaseToken = "first"
+                WorkflowDataJson = "{}"
             };
-            var initial = await repository.CommitWorkflowInstanceAsync(oldOwner, 0, "initial");
+            var initial = await repository.CommitWorkflowInstanceAsync(
+                CheckpointCommit.Create(oldOwner, firstEpoch.Value, 0, "initial"));
             Assert.Equal(WorkflowCommitStatus.Applied, initial.Status);
             await Task.Delay(300);
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
-                TimeSpan.FromSeconds(5)));
+            var secondEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
+                TimeSpan.FromSeconds(5));
+            Assert.NotNull(secondEpoch);
             oldOwner.WorkflowDataJson = "\"stale\"";
-            var stale = await repository.CommitWorkflowInstanceAsync(oldOwner, 1, "stale");
-            Assert.Equal(WorkflowCommitStatus.Conflict, stale.Status);
+            var stale = await repository.CommitWorkflowInstanceAsync(
+                CheckpointCommit.Create(oldOwner, firstEpoch.Value, 1, "stale"));
+            Assert.Equal(WorkflowCommitStatus.StaleEpoch, stale.Status);
             var newOwner = (await repository.GetWorkflowInstanceAsync(instanceId))!;
-            newOwner.ExecutionLeaseToken = "second";
             newOwner.WorkflowDataJson = "\"current\"";
-            var current = await repository.CommitWorkflowInstanceAsync(newOwner, 1, "current");
+            var current = await repository.CommitWorkflowInstanceAsync(
+                CheckpointCommit.Create(newOwner, secondEpoch.Value, 1, "current"));
             Assert.Equal(WorkflowCommitStatus.Applied, current.Status);
             Assert.Equal("\"current\"",
                 (await repository.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson);
@@ -1189,13 +1193,13 @@ public sealed class ExecutionLeaseContractTests
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromSeconds(5)));
             Assert.False(await repository.ReleaseExecutionLeaseAsync(instanceId, "second"));
-            Assert.False(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
+            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5)));
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "first"));
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5)));
         }
         finally
@@ -1209,24 +1213,24 @@ public sealed class ExecutionLeaseContractTests
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromMilliseconds(100)));
+            var formerEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
+                TimeSpan.FromMilliseconds(100));
+            Assert.NotNull(formerEpoch);
             var formerOwner = new WorkflowInstance
             {
                 InstanceId = instanceId,
                 WorkflowName = "ReceiptFencing",
                 Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}",
-                ExecutionLeaseToken = "first"
+                WorkflowDataJson = "{}"
             };
-            Assert.Equal(WorkflowCommitStatus.Applied,
-                (await repository.CommitWorkflowInstanceAsync(formerOwner, 0, "start")).Status);
+            var start = CheckpointCommit.Create(formerOwner, formerEpoch.Value, 0, "start");
+            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(start)).Status);
             await Task.Delay(300);
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5)));
 
-            Assert.Equal(WorkflowCommitStatus.Conflict,
-                (await repository.CommitWorkflowInstanceAsync(formerOwner, 0, "start")).Status);
+            Assert.Equal(WorkflowCommitStatus.StaleEpoch,
+                (await repository.CommitWorkflowInstanceAsync(start)).Status);
         }
         finally
         {
@@ -1273,7 +1277,7 @@ public sealed class ExecutionLeaseContractTests
             });
             Assert.Contains(await repository.GetWorkflowsRequiringRecoveryAsync(),
                 instance => instance.InstanceId == instanceId);
-            Assert.True(await repository.TryAcquireExecutionLeaseAsync(instanceId, "worker",
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "worker",
                 TimeSpan.FromMilliseconds(150)));
             Assert.DoesNotContain(await repository.GetWorkflowsRequiringRecoveryAsync(),
                 instance => instance.InstanceId == instanceId);
@@ -1424,7 +1428,7 @@ public sealed class ExecutionLeaseContractTests
             return snapshot;
         }
 
-        public Task<bool> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration) =>
+        public Task<long?> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration) =>
             inner.TryAcquireExecutionLeaseAsync(id, token, duration);
         public Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
         {
@@ -1443,9 +1447,9 @@ public sealed class ExecutionLeaseContractTests
         public Task<bool> ReleaseExecutionLeaseAsync(string id, string token) =>
             FailRelease ? throw new IOException("Release acknowledgment unavailable") :
                 inner.ReleaseExecutionLeaseAsync(id, token);
-        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(
-            WorkflowInstance instance, long revision, string commitId)
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
+            var instance = commit.ReadInstance();
             if (instance.Status == WorkflowStatus.Completed &&
                 Interlocked.Exchange(ref CancelBeforeTerminalCommit, 0) > 0)
                 await inner.RequestCancellationAsync(instance.InstanceId,
@@ -1454,7 +1458,7 @@ public sealed class ExecutionLeaseContractTests
                 Interlocked.Exchange(ref CancelBeforeFailedCommit, 0) > 0)
                 await inner.RequestCancellationAsync(instance.InstanceId,
                     new CancellationReason { ReasonCode = "operator" });
-            return await inner.CommitWorkflowInstanceAsync(instance, revision, commitId);
+            return await inner.CommitWorkflowInstanceAsync(commit);
         }
         public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
             inner.SaveWorkflowInstanceAsync(instance);
