@@ -14,6 +14,7 @@ internal sealed class WorkflowScopeCatalog
         AddScope("root", definition.Steps);
         ValidateSupportedSteps();
         RequestPairing.Pair(definition.Steps);
+        ForEachRules.Validate(definition.Steps);
         Fingerprint = ComputeFingerprint();
     }
 
@@ -44,6 +45,7 @@ internal sealed class WorkflowScopeCatalog
     public string ThenScope(WorkflowStep step) => $"{Id(step)}/then";
     public string ElseScope(WorkflowStep step) => $"{Id(step)}/else";
     public string LoopScope(WorkflowStep step) => $"{Id(step)}/loop";
+    public string ForEachScope(WorkflowStep step) => $"{Id(step)}/foreach";
     public string SagaScope(WorkflowStep step) => SequenceScope(step);
     public string CompensationScope(WorkflowStep saga, WorkflowStep source) =>
         $"{Id(saga)}/compensation/{Id(source)}";
@@ -66,6 +68,7 @@ internal sealed class WorkflowScopeCatalog
             AddScope(ThenScope(step), step.ThenSteps);
             AddScope(ElseScope(step), step.ElseSteps);
             AddScope(LoopScope(step), step.LoopBodySteps);
+            AddScope(ForEachScope(step), step.ForEachBodySteps);
             AddScope(FinallyScope(step), step.FinallySteps);
             AddScope(TimeoutScope(step), step.TimeoutSteps);
             AddScope($"{stepId}/catch", step.CatchBlocks);
@@ -155,7 +158,11 @@ internal sealed class WorkflowScopeCatalog
                     string.Join(';', step.InputMappings.Select(MappingSignature)),
                     string.Join(';', step.OutputMappings.Select(MappingSignature)),
                     step.RequestName, WorkflowTypeIdentity.StableName(step.ReplyType), step.ReplyToRequest,
-                    WorkflowCodeSignature.Of(step.RequestSubject));
+                    WorkflowCodeSignature.Of(step.RequestSubject),
+                    step.ForEachItem == null ? "" : WorkflowCodeSignature.OfCapturedValue(step.ForEachItem),
+                    WorkflowCodeSignature.Of(step.ForEachItems),
+                    WorkflowTypeIdentity.StableName(step.ResultType), WorkflowCodeSignature.Of(step.ResultSelector),
+                    step.ForEachIntoPath);
             }));
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature));
         return Convert.ToHexString(bytes);
@@ -208,7 +215,8 @@ internal sealed class WorkflowScopeCatalog
             {
                 WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.Sequence or
                     WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop or
-                    WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga => true,
+                    WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
+                    WorkflowStepType.ForEach or WorkflowStepType.ForEachResult => true,
                 WorkflowStepType.SuspendResume => step.StepMetadata.ContainsKey("WaitKey"),
                 WorkflowStepType.Delay => step.DelayDuration > TimeSpan.Zero,
                 _ => false

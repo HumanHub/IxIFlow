@@ -282,6 +282,7 @@ public class ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : I
             SourceFunction = dummySourceFunction, // Not used for outputs
             TargetAssignmentFunction = assignmentFunction,
             ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
+            TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Output

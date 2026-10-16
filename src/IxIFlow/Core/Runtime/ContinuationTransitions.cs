@@ -94,7 +94,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         ExecutionCheckpoint checkpoint,
         ContinuationState continuation,
         object workflowData,
-        int maxActiveBranches = int.MaxValue)
+        int maxActiveBranches = int.MaxValue,
+        int maxForEachItems = int.MaxValue)
     {
         if (continuation.AcceptedWait is { } accepted)
         {
@@ -110,7 +111,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             // A saga retry asks again, so a request's answer is not kept for replay.
             if (acceptedStep.ReplyToRequest == null)
                 SagaScopeTransitions.RecordAcceptedWait(continuation, accepted.StepId, @event);
-            WorkflowValueBinding.ApplyEventOutputs(acceptedStep, @event, workflowData);
+            WorkflowValueBinding.ApplyEventOutputs(acceptedStep, @event, workflowData,
+                ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
             continuation.SetPrevious(@event);
             acceptedPosition.NextStepIndex++;
             return;
@@ -145,6 +147,10 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 {
                     // Revisit the loop guard with the completed iteration recorded on its parent.
                 }
+                else if (ForEachTransitions.ItemFinished(scopes, parent, position, currentStep))
+                {
+                    // The ForEach runs its next item, or completes, when it is advanced again.
+                }
                 else if (!TryScopeTransitions.Exit(scopes, parent, position, currentStep, continuation) &&
                          !SagaScopeTransitions.Exit(scopes, parent, position, currentStep, continuation))
                     parent.NextStepIndex++;
@@ -169,7 +175,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 if (step.OutcomeSelector != null)
                 {
                     var outcomeContext = WorkflowValueBinding.EvaluationContext(workflowData,
-                        step.PreviousStepDataType, continuation.GetPrevious(services));
+                        step.PreviousStepDataType, continuation.GetPrevious(services),
+                        ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
                     var outcome = step.OutcomeSelector(outcomeContext);
                     var selectedOutcome = step.OutcomeBranches.FindIndex(branch =>
                         !branch.IsDefault && Equals(branch.Value, outcome));
@@ -188,7 +195,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     break;
                 }
                 var conditionContext = WorkflowValueBinding.EvaluationContext(workflowData, step.PreviousStepDataType,
-                    continuation.GetPrevious(services));
+                    continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
                 var selected = step.CompiledCondition?.Invoke(conditionContext)
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                         $"If step '{step.Id}' has no condition");
@@ -220,7 +227,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 if (!shouldRun)
                 {
                     var loopContext = WorkflowValueBinding.EvaluationContext(workflowData,
-                        step.PreviousStepDataType, continuation.GetPrevious(services));
+                        step.PreviousStepDataType, continuation.GetPrevious(services),
+                        ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
                     shouldRun = step.CompiledCondition?.Invoke(loopContext)
                         ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                             $"Loop step '{step.Id}' has no condition");
@@ -241,6 +249,16 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 });
                 break;
 
+            case WorkflowStepType.ForEach:
+                ForEachTransitions.Advance(scopes, checkpoint, continuation, position, step, workflowData,
+                    services, maxForEachItems);
+                break;
+
+            case WorkflowStepType.ForEachResult:
+                ForEachTransitions.TakeResult(scopes, checkpoint, continuation, position, step, workflowData,
+                    services);
+                break;
+
             case WorkflowStepType.SuspendResume when step.ReplyToRequest != null:
                 TryScopeTransitions.EnsureCanWait(checkpoint, continuation);
                 AwaitReply(scopes, checkpoint, continuation, step);
@@ -251,7 +269,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 if (SagaScopeTransitions.TryReuseAcceptedWait(continuation, scopes.Id(step),
                         services, out var acceptedEvent))
                 {
-                    WorkflowValueBinding.ApplyEventOutputs(step, acceptedEvent!, workflowData);
+                    WorkflowValueBinding.ApplyEventOutputs(step, acceptedEvent!, workflowData,
+                        ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
                     continuation.SetPrevious(acceptedEvent);
                     position.NextStepIndex++;
                     break;

@@ -100,7 +100,8 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
                     var workflowContext = new WorkflowContext<TWorkflowData, TPreviousStepData>
                     {
                         WorkflowData = typed.WorkflowData,
-                        PreviousStep = typed.PreviousStep
+                        PreviousStep = typed.PreviousStep,
+                        Items = typed.Items
                     };
                     return resumeCondition(typed.ResumeEvent, workflowContext);
                 }
@@ -108,7 +109,8 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
                 {
                     var workflowContext = new WorkflowContext<TWorkflowData, TPreviousStepData>
                     {
-                        WorkflowData = resumeContext.WorkflowData
+                        WorkflowData = resumeContext.WorkflowData,
+                        Items = resumeContext.Items
                     };
                     return resumeCondition(resumeContext.ResumeEvent, workflowContext);
                 }
@@ -512,6 +514,7 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
             TargetProperty = propertyName,
             TargetAssignmentFunction = targetAssignmentFunction,
             ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
+            TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = propertyType,
             TargetType = typeof(WorkflowContext<TWorkflowData>),
             Direction = PropertyMappingDirection.Output

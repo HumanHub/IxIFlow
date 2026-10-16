@@ -74,7 +74,7 @@ internal static class RequestPairing
             foreach (var nested in new[]
                      {
                          step.SequenceSteps, step.ThenSteps, step.ElseSteps, step.LoopBodySteps, step.FinallySteps,
-                         step.TimeoutSteps, step.CatchBlocks
+                         step.TimeoutSteps, step.CatchBlocks, step.ForEachBodySteps
                      })
                 Collect(nested, bodies);
             foreach (var branch in step.ParallelBranches)

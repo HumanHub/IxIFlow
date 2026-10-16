@@ -149,6 +149,26 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure);
 
     /// <summary>
+    /// Runs <paramref name="body"/> once per item of the list <paramref name="items"/> gives when the step
+    /// starts, one item after another (D-34). The list is saved then, so later changes to the data add or
+    /// remove no item. Each item sees the data changes of the items before it. The body reads the item
+    /// with <c>ctx.Item(item)</c> and its position with <c>ctx.Index(item)</c>, and may end with
+    /// <see cref="Result{TResult}"/>; <paramref name="setup"/> names the handle and says where the results go.
+    /// </summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null);
+
+    /// <summary>
+    /// Ends a <c>ForEach</c> body with the value it gives for its item, which the step's
+    /// <see cref="IForEachSetup{TWorkflowData}.Into{TResult}"/> stores. Only the last step of a
+    /// <c>ForEach</c> body can be a result.
+    /// </summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult> value);
+
+    /// <summary>
     /// Defines a try-catch block for error handling
     /// </summary>
     /// <param name="configure">Configuration for the try block</param>

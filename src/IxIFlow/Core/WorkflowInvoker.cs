@@ -434,13 +434,14 @@ public class WorkflowInvoker : ICheckpointedWorkflowInvoker
             contextType.GetProperty("WorkflowData")?.SetValue(contextInstance, context.WorkflowData);
             contextType.GetProperty("PreviousStep")?.SetValue(contextInstance, previousStepData);
 
-            return contextInstance!;
+            return context.Items.On(contextInstance!);
         }
 
         // Create WorkflowContext<TWorkflowData>
         return new WorkflowContext<TWorkflowData>
         {
-            WorkflowData = context.WorkflowData
+            WorkflowData = context.WorkflowData,
+            Items = context.Items
         };
     }
 

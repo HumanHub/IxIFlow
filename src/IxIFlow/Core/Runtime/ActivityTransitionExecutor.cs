@@ -21,13 +21,15 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
         bool applyInputMappings,
         IReadOnlyCollection<string>? codeInputs = null,
         CompensationInputs? compensationInputs = null,
-        IDictionary<string, object>? metadata = null)
+        IDictionary<string, object>? metadata = null,
+        ItemValues? items = null)
     {
         var method = GetType().GetMethod(nameof(PrepareTypedAsync), BindingFlags.Instance | BindingFlags.NonPublic)!
             .MakeGenericMethod(workflowData.GetType(), step.PreviousStepDataType ?? typeof(object));
         var task = (Task<PreparedActivity>)method.Invoke(this,
             [step, definition, instance, workflowData, previous, catchFault, cancellationToken,
-                invocationId, attemptId, stepNumber, applyInputMappings, codeInputs, compensationInputs, metadata])!;
+                invocationId, attemptId, stepNumber, applyInputMappings, codeInputs, compensationInputs, metadata,
+                items ?? ItemValues.None])!;
         return await task;
     }
 
@@ -45,10 +47,12 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
         bool applyInputMappings,
         IReadOnlyCollection<string>? codeInputs,
         CompensationInputs? compensationInputs,
-        IDictionary<string, object>? metadata)
+        IDictionary<string, object>? metadata,
+        ItemValues items)
     {
         var request = CreateRequest<TData, TPrevious>(step, definition, instance, workflowData,
             previous, catchFault, cancellationToken, stepNumber, compensationInputs, metadata);
+        request.Items = items;
         return executor.PrepareTypedActivityAsync(request, applyInputMappings, invocationId,
             attemptId, codeInputs);
     }

@@ -40,7 +40,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = RequestPairing.Paired(_steps)
+            Steps = Core.Runtime.ForEachRules.Paired(RequestPairing.Paired(_steps))
         };
     }
 
@@ -418,7 +418,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
                     // Create WorkflowContext<TWorkflowData> for the resume condition
                     var workflowContext = new WorkflowContext<TWorkflowData>
                     {
-                        WorkflowData = resumeContext.WorkflowData
+                        WorkflowData = resumeContext.WorkflowData,
+                        Items = resumeContext.Items
                     };
                     return resumeCondition(resumeContext.ResumeEvent, workflowContext);
                 }
@@ -509,6 +510,51 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         return this;
     }
 
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        ArgumentNullException.ThrowIfNull(body);
+        var step = new WorkflowStep
+        {
+            Id = Guid.NewGuid().ToString(),
+            Name = "ForEach",
+            StepType = WorkflowStepType.ForEach,
+            WorkflowDataType = typeof(TWorkflowData),
+            PreviousStepDataType = typeof(TPreviousStepData),
+            ForEachItems = context => items((WorkflowContext<TWorkflowData, TPreviousStepData>)context),
+            Order = _steps.Count
+        };
+        // The setup runs first, so the handle the body is given carries its label.
+        var options = new ForEachSetup<TWorkflowData>(step);
+        setup?.Invoke(options);
+        var item = new ItemScope<TItem>(options.Label);
+        step.ForEachItem = item;
+        body(new SequenceBuilder<TWorkflowData, TPreviousStepData>(step.ForEachBodySteps), item);
+        _steps.Add(step);
+        return this;
+    }
+
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult> value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        _steps.Add(new WorkflowStep
+        {
+            Id = Guid.NewGuid().ToString(),
+            Name = "Result",
+            StepType = WorkflowStepType.ForEachResult,
+            WorkflowDataType = typeof(TWorkflowData),
+            PreviousStepDataType = typeof(TPreviousStepData),
+            ResultType = typeof(TResult),
+            ResultSelector = context => value((WorkflowContext<TWorkflowData, TPreviousStepData>)context),
+            Order = _steps.Count
+        });
+        return this;
+    }
+
     /// <summary>
     ///     Builds the final workflow definition
     /// </summary>
@@ -522,7 +568,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = RequestPairing.Paired(_steps)
+            Steps = Core.Runtime.ForEachRules.Paired(RequestPairing.Paired(_steps))
         };
     }
 

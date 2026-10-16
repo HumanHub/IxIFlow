@@ -196,11 +196,12 @@ internal sealed class WorkflowExecutor
                         try
                         {
                             _transitions.Advance(scopes, checkpoint, runnable, workflowData,
-                                host.Limits.MaxActiveBranches);
+                                host.Limits.MaxActiveBranches, host.Limits.MaxForEachItems);
                         }
-                        catch (BranchLimitExceededException limit)
+                        catch (ResourceLimitExceededException limit) when
+                            (limit is BranchLimitExceededException or ForEachLimitExceededException)
                         {
-                            // Nothing was forked; the parallel step runs after a release.
+                            // Nothing was forked or saved; the step runs after a release.
                             limitStop = limit.Message;
                             limitHitWhileCancelling = checkpoint.CancellationRequested;
                             break;

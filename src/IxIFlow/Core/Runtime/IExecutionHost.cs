@@ -57,9 +57,13 @@ internal interface IExecutionHost
 
     Task<WorkflowInstance?> ReadChildAsync(string childInstanceId);
 
+    /// <summary>
+    /// Starts or continues a child workflow. <paramref name="items"/> are the <c>ForEach</c> items the
+    /// child's input and output mappings can read.
+    /// </summary>
     Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step, WorkflowDefinition definition,
         WorkflowInstance instance, object workflowData, object? previous, string invocationId,
-        CancellationToken cancellationToken);
+        ItemValues items, CancellationToken cancellationToken);
 
     Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,
         CancellationToken cancellationToken = default);

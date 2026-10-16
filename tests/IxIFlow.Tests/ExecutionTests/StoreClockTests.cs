@@ -776,7 +776,7 @@ public sealed class StoreClockTests
 
         public Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step,
             WorkflowDefinition definition, WorkflowInstance instance, object workflowData, object? previous,
-            string invocationId, CancellationToken cancellationToken) =>
+            string invocationId, ItemValues items, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
         public Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,

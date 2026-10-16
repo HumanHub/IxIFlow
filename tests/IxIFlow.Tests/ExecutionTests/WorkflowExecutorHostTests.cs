@@ -177,7 +177,7 @@ public sealed class WorkflowExecutorHostTests
 
         public Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step,
             WorkflowDefinition definition, WorkflowInstance instance, object workflowData, object? previous,
-            string invocationId, CancellationToken cancellationToken)
+            string invocationId, ItemValues items, CancellationToken cancellationToken)
         {
             Invocations.Add(step);
             return Task.FromResult(new WorkflowInvocationTransitionResult(invocationId, new ExecutorData(), false));
