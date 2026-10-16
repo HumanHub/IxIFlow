@@ -745,8 +745,9 @@ public class WorkflowStep
     /// </summary>
     public Func<object, bool>? CompiledCondition { get; set; }
 
-    /// <summary>Stable source shape for expression-based conditions.</summary>
-    public string? ConditionExpressionSignature { get; set; }
+    /// <summary>For an expression-based condition, the expression it was compiled from; its shape and captures are fingerprinted.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? ConditionExpression { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
     public Func<object, object?>? OutcomeSelector { get; set; }
@@ -834,8 +835,9 @@ public class WorkflowStep
     /// <summary>For a <c>ForEach</c> step, the member path its results are stored to, such as <c>WorkflowData.Results</c>.</summary>
     public string? ForEachIntoPath { get; set; }
 
-    /// <summary>For a <c>ForEach</c> step that stores results, the signature of its whole target expression.</summary>
-    public string? ForEachIntoSignature { get; set; }
+    /// <summary>For a <c>ForEach</c> step that stores results, its target expression; its shape and captures are fingerprinted.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? ForEachIntoExpression { get; set; }
 
     /// <summary>For a <c>.Result(...)</c> step, or a <c>ForEach</c> step that stores results, the result type.</summary>
     public Type? ResultType { get; set; }
@@ -910,7 +912,7 @@ public class WorkflowStep
             InputMappings = InputMappings.Select(m => m.Clone()).ToList(),
             OutputMappings = OutputMappings.Select(m => m.Clone()).ToList(),
             CompiledCondition = CompiledCondition,
-            ConditionExpressionSignature = ConditionExpressionSignature,
+            ConditionExpression = ConditionExpression,
             OutcomeSelector = OutcomeSelector,
             OutcomeBranches = OutcomeBranches.Select(branch => new WorkflowOutcomeBranch
             {
@@ -937,7 +939,7 @@ public class WorkflowStep
             ForEachItems = ForEachItems,
             ForEachInto = ForEachInto,
             ForEachIntoPath = ForEachIntoPath,
-            ForEachIntoSignature = ForEachIntoSignature,
+            ForEachIntoExpression = ForEachIntoExpression,
             ResultType = ResultType,
             ResultSelector = ResultSelector,
             WorkflowDataType = WorkflowDataType,
@@ -1059,8 +1061,9 @@ public class PropertyMapping
     /// </summary>
     public string TargetProperty { get; set; } = string.Empty;
 
-    /// <summary>Stable source or destination expression used to bind this property.</summary>
-    public string? ExpressionSignature { get; set; }
+    /// <summary>The source or destination expression the mapping was built from; its shape and captures are fingerprinted.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? Expression { get; set; }
 
     /// <summary>
     /// For an output, the member path it writes, such as <c>WorkflowData.Total</c>, or null when the
@@ -1104,7 +1107,7 @@ public class PropertyMapping
         {
             Id = Id,
             TargetProperty = TargetProperty,
-            ExpressionSignature = ExpressionSignature,
+            Expression = Expression,
             TargetPath = TargetPath,
             SourceFunction = SourceFunction,
             TargetAssignmentFunction = TargetAssignmentFunction,

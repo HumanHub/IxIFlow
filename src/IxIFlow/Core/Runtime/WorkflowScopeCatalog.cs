@@ -153,7 +153,7 @@ internal sealed class WorkflowScopeCatalog
                     step.WaitTimeout?.Ticks, step.DelayDuration?.Ticks, step.ParallelJoinMode,
                     step.LoopType, WorkflowTypeIdentity.StableName(step.ExceptionType),
                     WorkflowTypeIdentity.StableName(step.FaultType),
-                    step.ConditionExpressionSignature,
+                    Shape(step.ConditionExpression),
                     Code(step.CompiledCondition),
                     Code(step.OutcomeSelector),
                     Code(step.ParallelCompletionCondition),
@@ -169,7 +169,7 @@ internal sealed class WorkflowScopeCatalog
                         : "sequential:" + WorkflowTypeIdentity.StableName(step.ForEachItem.ItemType),
                     Code(step.ForEachItems),
                     WorkflowTypeIdentity.StableName(step.ResultType), Code(step.ResultSelector),
-                    step.ForEachIntoSignature);
+                    Shape(step.ForEachIntoExpression));
             }));
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature));
         return Convert.ToHexString(bytes);
@@ -177,12 +177,15 @@ internal sealed class WorkflowScopeCatalog
 
     private string Code(Delegate? behavior) => WorkflowCodeSignature.Of(behavior, _handles);
 
+    private string Shape(System.Linq.Expressions.LambdaExpression? expression) =>
+        expression == null ? "" : WorkflowExpressionSignature.Of(expression, _handles);
+
     private string MappingSignature(PropertyMapping mapping) => string.Join(':',
         mapping.Direction, mapping.TargetProperty,
         WorkflowTypeIdentity.StableName(mapping.SourceType),
         WorkflowTypeIdentity.StableName(mapping.TargetType),
         mapping.CompensationSource,
-        mapping.ExpressionSignature,
+        Shape(mapping.Expression),
         Code(mapping.SourceFunction),
         Code(mapping.TargetAssignmentFunction));
 

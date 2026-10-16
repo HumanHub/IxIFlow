@@ -34,7 +34,7 @@ internal sealed class ForEachSetup<TWorkflowData>(WorkflowStep step) : IForEachS
             Expression.Assign(Expression.Property(owner, property), value), context, value).Compile();
         step.ResultType = typeof(TResult);
         step.ForEachIntoPath = path;
-        step.ForEachIntoSignature = Core.Runtime.WorkflowExpressionSignature.Of(target);
+        step.ForEachIntoExpression = Core.Runtime.WorkflowExpressionSignature.Checked(target);
         step.ForEachInto = (workflowContext, results) => assign(
             (WorkflowContext<TWorkflowData>)workflowContext,
             results.Select((result, index) => new ItemResult<TResult>(index, result.Status,

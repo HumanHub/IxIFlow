@@ -106,7 +106,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         {
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             SourceType = typeof(CompensationContext<TWorkflowData, TCurrentStepData>),
             CompensationSource = CompensationInputSource.CurrentStepContext,
             TargetType = propertyType,
@@ -208,7 +208,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         {
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             SourceType = typeof(WorkflowContext<TWorkflowData>),
             CompensationSource = CompensationInputSource.CurrentStepContext,
             TargetType = propertyType,
@@ -230,7 +230,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         {
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             SourceType = typeof(TPreviousStepData),
             CompensationSource = CompensationInputSource.PreviousStep,
             TargetType = propertyType,
@@ -252,7 +252,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         {
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             SourceType = typeof(TPreviousChainActivity),
             CompensationSource = CompensationInputSource.PreviousCompensation,
             TargetType = propertyType,
@@ -351,7 +351,7 @@ public class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActiv
         {
             TargetProperty = propertyName,
             TargetAssignmentFunction = targetAssignmentFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(destination),
             TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = propertyType,
             TargetType = typeof(WorkflowContext<TWorkflowData>),
@@ -500,7 +500,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         {
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             SourceType = typeof(WorkflowContext<TWorkflowData>),
             CompensationSource = CompensationInputSource.CurrentStepContext,
             TargetType = propertyType,

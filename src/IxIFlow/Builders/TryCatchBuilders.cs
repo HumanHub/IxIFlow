@@ -254,7 +254,7 @@ public sealed class CatchActivitySetupInputBuilder<TWorkflowData, TActivity, TPr
         {
             Direction = PropertyMappingDirection.Input,
             TargetProperty = member.Member.Name,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             TargetType = typeof(TProperty),
             SourceType = typeof(TProperty),
             SourceFunction = context => compiled((FaultContext<TWorkflowData, TFault, TPreviousStepData>)context)

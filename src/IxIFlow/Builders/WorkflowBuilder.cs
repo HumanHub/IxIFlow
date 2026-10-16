@@ -262,7 +262,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             CompiledCondition = conditionWrapper,
-            ConditionExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(condition),
+            ConditionExpression = Core.Runtime.WorkflowExpressionSignature.Checked(condition),
             Order = _steps.Count
         };
 

@@ -4,26 +4,42 @@ using System.Runtime.CompilerServices;
 
 namespace IxIFlow.Core.Runtime;
 
-/// <summary>Records the expression shape and scalar values captured by a closure.</summary>
+/// <summary>Records the expression shape and the values captured by a closure.</summary>
 internal static class WorkflowExpressionSignature
 {
-    public static string Of(LambdaExpression expression)
+    /// <summary>
+    /// The signature of <paramref name="expression"/>. A <c>ForEach</c> handle it captures is named by its
+    /// step's place in <paramref name="handles"/> (D-34).
+    /// </summary>
+    public static string Of(LambdaExpression expression, IReadOnlyDictionary<ItemScope, string>? handles = null)
     {
-        var captures = new CapturedFields();
+        ArgumentNullException.ThrowIfNull(expression);
+        var captures = new CapturedFields(handles);
         captures.Visit(expression.Body);
         return expression + "|" + string.Join(";", captures.Values
             .Distinct(StringComparer.Ordinal)
             .OrderBy(value => value, StringComparer.Ordinal));
     }
 
-    private sealed class CapturedFields : ExpressionVisitor
+    /// <summary>
+    /// Returns <paramref name="expression"/> once its signature can be made, so a capture that cannot be
+    /// fingerprinted fails where the expression is given. The signature itself is made when the workflow
+    /// is registered, when the places of its handles are known.
+    /// </summary>
+    public static TExpression Checked<TExpression>(TExpression expression) where TExpression : LambdaExpression
+    {
+        Of(expression);
+        return expression;
+    }
+
+    private sealed class CapturedFields(IReadOnlyDictionary<ItemScope, string>? handles) : ExpressionVisitor
     {
         public List<string> Values { get; } = [];
 
         protected override Expression VisitMember(MemberExpression node)
         {
             if (TryReadCapturedField(node, out var value))
-                Values.Add(node + "=" + WorkflowCodeSignature.OfCapturedValue(value));
+                Values.Add(node + "=" + WorkflowCodeSignature.OfCapturedValue(value, handles));
             return base.VisitMember(node);
         }
 

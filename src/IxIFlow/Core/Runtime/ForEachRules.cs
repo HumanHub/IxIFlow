@@ -6,10 +6,14 @@ namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// The build rules of <c>ForEach</c> (D-34): a handle is read only inside its body; items are read-only, so
-/// no output writes through <c>ctx.Item(...)</c>; a result ends a body, or the timeout branch of a wait that
-/// leaves the body; results stored with <c>Into</c> come from a result of exactly their type on every way
-/// out of the body; and nothing in a body writes where its step stores its results. Checked when a workflow
-/// is built and when it is registered.
+/// no output writes through <c>ctx.Item(...)</c>; a result ends a body, or a timeout branch that leaves the
+/// body; results stored with <c>Into</c> come from a result of exactly their type on every way out of the
+/// body; and nothing in a body writes where its step stores its results, or anywhere the rules cannot
+/// name. Checked when a workflow is built and when it is registered.
+/// <para>
+/// A timeout branch ends the scope its wait is in, so the timeout branch of a wait directly in a body
+/// leaves the body, and so does the timeout branch of a wait directly in such a branch.
+/// </para>
 /// </summary>
 internal static class ForEachRules
 {
@@ -21,30 +25,34 @@ internal static class ForEachRules
     }
 
     public static void Validate(IReadOnlyList<WorkflowStep> steps) =>
-        ValidateBody(steps, new HashSet<ItemScope>(ReferenceEqualityComparer.Instance), [], resultEndsIt: false,
-            isForEachBody: false);
+        ValidateBody(steps, new HashSet<ItemScope>(ReferenceEqualityComparer.Instance), [], leavesItem: false);
 
+    // leavesItem: the body is a ForEach body, or a timeout branch that leaves one, so a result may end it.
     private static void ValidateBody(IReadOnlyList<WorkflowStep> body, HashSet<ItemScope> inScope,
-        IReadOnlyList<WorkflowStep> enclosing, bool resultEndsIt, bool isForEachBody)
+        IReadOnlyList<WorkflowStep> enclosing, bool leavesItem)
     {
         for (var index = 0; index < body.Count; index++)
         {
             var step = body[index];
-            if (step.StepType == WorkflowStepType.ForEachResult && (!resultEndsIt || index != body.Count - 1))
-                throw Invalid("A ForEach result must be the last step of a ForEach body, or of the timeout " +
-                              "branch of a wait in that body");
+            if (step.StepType == WorkflowStepType.ForEachResult && (!leavesItem || index != body.Count - 1))
+                throw Invalid("A ForEach result must be the last step of a ForEach body, or of a timeout " +
+                              "branch that leaves the body");
             foreach (var behavior in Behaviors(step))
                 foreach (var handle in ItemCaptures.Of(behavior))
                     if (!inScope.Contains(handle))
                         throw Invalid($"{handle} is used outside its ForEach body, in step '{step.Name}'");
-            foreach (var mapping in Mappings(step).Where(mapping => mapping.Direction == PropertyMappingDirection.Output))
-                if (mapping.TargetPath?.StartsWith(MemberPath.ItemRoot, StringComparison.Ordinal) == true)
-                    throw Invalid($"Step '{step.Name}' writes a ForEach item; items are read-only, so write " +
-                                  "workflow data instead");
+            var outputs = Mappings(step).Where(mapping => mapping.Direction == PropertyMappingDirection.Output)
+                .ToArray();
+            if (outputs.Any(mapping => mapping.TargetPath?.StartsWith(MemberPath.ItemRoot, StringComparison.Ordinal) == true))
+                throw Invalid($"Step '{step.Name}' writes a ForEach item; items are read-only, so write " +
+                              "workflow data instead");
+            // In a body, a target must be named to show that it writes neither an item nor stored results.
+            if (enclosing.Count > 0 && outputs.Any(mapping => mapping.TargetPath == null))
+                throw Invalid($"Step '{step.Name}' in a ForEach body writes a target that is not a chain of " +
+                              "members and indexes, so it cannot be shown to write workflow data");
             foreach (var owner in enclosing.Where(owner => owner.ForEachIntoPath != null))
             {
-                var writes = Mappings(step).Where(mapping => mapping.Direction == PropertyMappingDirection.Output)
-                    .Select(mapping => mapping.TargetPath)
+                var writes = outputs.Select(mapping => mapping.TargetPath)
                     .Append(step.StepType == WorkflowStepType.ForEach ? step.ForEachIntoPath : null);
                 if (writes.Any(path => MemberPath.Overlaps(path, owner.ForEachIntoPath!)))
                     throw Invalid($"Step '{step.Name}' writes '{owner.ForEachIntoPath}', where its ForEach stores " +
@@ -53,11 +61,16 @@ internal static class ForEachRules
             if (step.StepType == WorkflowStepType.ForEach)
                 ValidateForEach(step, inScope, enclosing);
             foreach (var nested in Bodies(step))
-                ValidateBody(nested, inScope, enclosing, resultEndsIt: false, isForEachBody: false);
-            // The timeout branch of a wait directly in a ForEach body leaves the body, so it may end with a result.
-            ValidateBody(step.TimeoutSteps, inScope, enclosing, resultEndsIt: isForEachBody, isForEachBody: false);
+                ValidateBody(nested, inScope, enclosing, leavesItem: false);
+            ValidateBody(step.TimeoutSteps, inScope, enclosing, leavesItem);
         }
     }
+
+    // The bodies that end an item: the ForEach body and every timeout branch that leaves it.
+    private static IEnumerable<IReadOnlyList<WorkflowStep>> Exits(IReadOnlyList<WorkflowStep> body) =>
+        body.Where(step => step.TimeoutSteps.Count > 0)
+            .SelectMany(step => Exits(step.TimeoutSteps))
+            .Prepend(body);
 
     private static void ValidateForEach(WorkflowStep step, HashSet<ItemScope> inScope,
         IReadOnlyList<WorkflowStep> enclosing)
@@ -66,19 +79,15 @@ internal static class ForEachRules
             throw Invalid($"ForEach step '{step.Name}' has no item list");
         if (step.ForEachInto != null)
         {
-            // Every way out of the body gives a result of the stored type: its end, and every timeout branch
-            // that leaves it.
-            var exits = step.ForEachBodySteps.Where(nested => nested.TimeoutSteps.Count > 0)
-                .Select(nested => (IReadOnlyList<WorkflowStep>)nested.TimeoutSteps)
-                .Prepend(step.ForEachBodySteps);
-            foreach (var exit in exits)
+            // Every way out of the body gives a result of the stored type.
+            foreach (var exit in Exits(step.ForEachBodySteps))
                 if (exit.LastOrDefault() is not { StepType: WorkflowStepType.ForEachResult } result ||
                     result.ResultType != step.ResultType)
                     throw Invalid($"ForEach step '{step.Name}' stores {step.ResultType?.Name} results, so its body " +
                                   "and every timeout branch that leaves it must end with a result of that type");
         }
         var withItem = new HashSet<ItemScope>(inScope, ReferenceEqualityComparer.Instance) { step.ForEachItem };
-        ValidateBody(step.ForEachBodySteps, withItem, [.. enclosing, step], resultEndsIt: true, isForEachBody: true);
+        ValidateBody(step.ForEachBodySteps, withItem, [.. enclosing, step], leavesItem: true);
     }
 
     // The mappings a step runs with a workflow context: its own, and those of the compensations it declares.

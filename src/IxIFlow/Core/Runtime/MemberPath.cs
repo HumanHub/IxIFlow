@@ -4,8 +4,9 @@ namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// The member chain an output writes, from its context parameter, such as <c>WorkflowData.Total</c>.
-/// An index is written <c>[]</c>, whatever it is, so two writes into the same list overlap. A chain that
-/// starts at a <c>ForEach</c> item, <c>ctx.Item(...)</c>, begins with <see cref="ItemRoot"/>.
+/// An index is written <c>[]</c>, whatever it is, so two writes into the same list overlap, and a cast
+/// is passed through. A chain that starts at a <c>ForEach</c> item, <c>ctx.Item(...)</c>, begins with
+/// <see cref="ItemRoot"/>.
 /// </summary>
 internal static class MemberPath
 {
@@ -31,6 +32,10 @@ internal static class MemberPath
                 case BinaryExpression { NodeType: ExpressionType.ArrayIndex } array:
                     parts.Push("[]");
                     current = array.Left;
+                    continue;
+                case UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked or
+                    ExpressionType.TypeAs } cast:
+                    current = cast.Operand;
                     continue;
                 case MethodCallExpression call when IsItem(call):
                     return Join(ItemRoot, parts);
