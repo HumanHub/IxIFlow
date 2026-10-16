@@ -786,6 +786,12 @@ public class WorkflowStep
     public Func<object, bool>? ParallelCompletionCondition { get; set; }
 
     /// <summary>
+    /// For a parallel step, combiners it chooses for properties of the workflow data, by JSON property
+    /// path; they take precedence over those declared on the data type (spec E-05).
+    /// </summary>
+    public Dictionary<string, Type> ParallelCombiners { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     ///     Catch blocks for try/catch error handling
     /// </summary>
     public List<WorkflowStep> CatchBlocks { get; set; } = new();
@@ -927,6 +933,7 @@ public class WorkflowStep
             ParallelBranches = ParallelBranches.Select(branch => branch.Select(s => s.Clone()).ToList()).ToList(),
             ParallelJoinMode = ParallelJoinMode,
             ParallelCompletionCondition = ParallelCompletionCondition,
+            ParallelCombiners = new Dictionary<string, Type>(ParallelCombiners, StringComparer.Ordinal),
             CatchBlocks = CatchBlocks.Select(s => s.Clone()).ToList(),
             FinallySteps = FinallySteps.Select(s => s.Clone()).ToList(),
             WaitTimeout = WaitTimeout,

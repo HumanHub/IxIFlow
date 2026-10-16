@@ -38,7 +38,7 @@ internal static class ParallelRules
                     foreach (var other in writes[second].Where(other => MemberPath.Overlaps(one, other)))
                     {
                         var shorter = one.Length <= other.Length ? one : other;
-                        if (!Combined(parallel.WorkflowDataType, shorter))
+                        if (!Combined(parallel.WorkflowDataType, shorter, parallel.ParallelCombiners))
                             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                                 $"Branches {first + 1} and {second + 1} of parallel step '{parallel.Name}' both " +
                                 $"write '{shorter}' and it has no combiner; give the property a combiner, write " +
@@ -79,10 +79,12 @@ internal static class ParallelRules
         }
     }
 
-    // True when a property on the path, such as WorkflowData.Order.Total, declares a combiner.
-    private static bool Combined(Type? dataType, string path)
+    // True when a property on the path, such as WorkflowData.Order.Total, has a combiner: one the step
+    // chooses, by JSON path, or one its type declares.
+    private static bool Combined(Type? dataType, string path, IReadOnlyDictionary<string, Type> overrides)
     {
         var current = dataType;
+        var jsonPath = new List<string>();
         foreach (var segment in path.Split('.').Skip(1))
         {
             if (current == null)
@@ -91,20 +93,18 @@ internal static class ParallelRules
             var property = current.GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
             if (property == null)
                 return false;
-            if (property.GetCustomAttribute<CombineAttribute>() != null)
+            jsonPath.Add(property.GetCustomAttribute<System.Text.Json.Serialization.JsonPropertyNameAttribute>()?.Name
+                         ?? property.Name);
+            if (property.GetCustomAttribute<CombineAttribute>() != null ||
+                overrides.ContainsKey(string.Join('.', jsonPath)))
                 return true;
-            current = segment.EndsWith("[]", StringComparison.Ordinal)
-                ? ElementType(property.PropertyType)
-                : property.PropertyType;
+            // A list is merged whole (spec E-03), so nothing inside one has a combiner of its own.
+            if (segment.EndsWith("[]", StringComparison.Ordinal))
+                return false;
+            current = property.PropertyType;
         }
         return false;
     }
-
-    private static Type? ElementType(Type type) =>
-        type.IsArray ? type.GetElementType()
-        : type.GetInterfaces().Append(type)
-            .FirstOrDefault(item => item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IEnumerable<>))
-            ?.GetGenericArguments()[0];
 
     /// <summary>The combiners a data type declares, for the fingerprint (spec E-05).</summary>
     public static string CombinerSignature(Type? dataType)
