@@ -232,7 +232,8 @@ internal static class TryScopeTransitions
         for (var index = continuation.Stack.Count - 1; index >= 0; index--)
         {
             var owner = continuation.Stack[index];
-            if (SagaScopeTransitions.BeginCancellation(continuation, index))
+            if (SagaScopeTransitions.BeginCancellation(continuation, index) ||
+                SagaScopeTransitions.CancelRetryHandler(scopes, continuation, index))
                 return;
             var state = owner.TryState;
             if (state == null || state.Phase == TryPhase.Finally)
