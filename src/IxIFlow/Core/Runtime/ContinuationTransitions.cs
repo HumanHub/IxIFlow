@@ -126,10 +126,6 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var steps = scopes.Steps(position.ScopeId);
         if (position.NextStepIndex == steps.Count)
         {
-            // An item's completion and the next item's admission are one transition, so admission is checked
-            // before anything changes: a stop leaves the item where it was, to complete after a release.
-            if (continuation.Stack.Count == 1 && ForEachTransitions.AdmitsAfter(scopes, checkpoint, continuation, position))
-                EnsureBranchesFit(checkpoint, 1, maxActiveBranches, leaving: continuation);
             continuation.Stack.RemoveAt(continuation.Stack.Count - 1);
             if (position.RestorePreviousOnExit)
             {
@@ -497,7 +493,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     }
 
     // A parallel ForEach decides after each item completes, counting queued items as not completed
-    // (D-34). An open join starts the next queued item, whose room was checked before the item completed;
+    // (D-34). An open join's next queued item starts in a transition of its own (ForEachTransitions.Admit);
     // a decision starts none and cancels the running ones.
     private static void CompleteItemJoin(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ParallelJoinState join, WorkflowStep step, List<ContinuationState> children)
@@ -513,15 +509,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             _ => throw new ArgumentOutOfRangeException(nameof(join.Mode))
         };
         if (!decided)
-        {
-            if (state.Next < state.Items.Count)
-            {
-                var parent = ParentOf(checkpoint, join);
-                ForEachTransitions.StartItem(scopes, checkpoint, parent, join, step, state,
-                    BranchData.Snapshot(checkpoint.DataOf(parent)));
-            }
             return;
-        }
         join.IsCompleting = true;
         foreach (var sibling in children.Where(item => item.Status != ContinuationStatus.Completed))
             CancelTree(checkpoint, sibling);
@@ -613,9 +601,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         ParallelJoinState join, IEnumerable<ContinuationState> children)
     {
         var baseline = checkpoint.DataOf(ParentOf(checkpoint, join));
+        var order = join.ChildContinuationIds.Select((id, index) => (id, index))
+            .ToDictionary(item => item.id, item => item.index, StringComparer.Ordinal);
         JsonNode? baselineNode = null;
         var completed = children.Where(item => item.Status == ContinuationStatus.Completed)
-            .OrderBy(item => join.ChildContinuationIds.IndexOf(item.Id))
+            .OrderBy(item => order[item.Id])
             .Select(item =>
             {
                 if (item.DataChanged)
@@ -679,16 +669,16 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             var merges = !join.ResumeParentWithoutAdvance &&
                          (checkpoint.UnhandledError == null ? !parent.CancellationUnwind || finishingCleanup
                              : finishingCleanup);
-            MergedData? merged = null;
             JoinConflictException? conflict = null;
             if (merges)
             {
                 try
                 {
-                    // Branch copies are rebuilt through the join, so the merge is made before it goes.
-                    merged = join.Conflict != null
+                    // Branch copies are rebuilt through the join, so the merge is made and applied before it
+                    // goes; a merge the parent's data refuses leaves it as it was.
+                    ApplyMerge(checkpoint, parent, join.Conflict != null
                         ? throw new JoinConflictException(join.ConflictPath ?? "", join.Conflict)
-                        : Merge(scopes, checkpoint, join, children);
+                        : Merge(scopes, checkpoint, join, children));
                 }
                 catch (JoinConflictException error)
                 {
@@ -697,8 +687,6 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             }
             checkpoint.Joins.Remove(join);
             completed = true;
-            if (merged != null)
-                ApplyMerge(checkpoint, parent, merged);
             if (checkpoint.UnhandledError != null)
             {
                 if (!inheritedCleanup)

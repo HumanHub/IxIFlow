@@ -146,6 +146,19 @@ internal sealed class WorkflowExecutor
                         host.CancellationSignal?.IsCompleted == true &&
                         checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                         break;
+                    // A parallel ForEach starts its queued items as room frees, in a transition of its own.
+                    var admission = EffectBoundary.Of(checkpoint);
+                    try
+                    {
+                        ForEachTransitions.Admit(scopes, checkpoint, host.Limits.MaxActiveBranches);
+                    }
+                    catch (BranchLimitExceededException limit)
+                    {
+                        limitStop = limit.Message;
+                        limitHitWhileCancelling = checkpoint.CancellationRequested;
+                        break;
+                    }
+                    uncommitted.NoteIf(admission.CrossedBy(checkpoint), instance);
                     // At the activity cap, continuations about to start an activity wait their turn;
                     // the rest keep advancing (B-09).
                     var activitiesFull = inFlight.Values.Count(item =>
@@ -211,8 +224,7 @@ internal sealed class WorkflowExecutor
                         catch (ResourceLimitExceededException limit) when
                             (limit is BranchLimitExceededException or ForEachLimitExceededException)
                         {
-                            // Nothing changed: no fork, no saved list, no item completed that would
-                            // start the next one. The step runs after a release.
+                            // Nothing was forked or saved, the list included; the step runs after a release.
                             limitStop = limit.Message;
                             limitHitWhileCancelling = checkpoint.CancellationRequested;
                             break;

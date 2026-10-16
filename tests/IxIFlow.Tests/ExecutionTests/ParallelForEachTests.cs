@@ -237,10 +237,11 @@ public sealed class ParallelForEachTests
         await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
         Assert.Equal(WorkflowExecutionStatus.Suspended, (await Engine(second).RecoverAsync(instanceId)).Status);
         await Engine(second).ReplyAsync(outbox.TokenOf("ann"), new Answer { Approved = true });
-        var finished = await Engine(second).ReplyAsync(outbox.LastTokenOf("cid"), new Answer { Approved = false });
+        var finished = await Engine(second).ReplyAsync(outbox.TokenOf("cid"), new Answer { Approved = false });
 
+        // The commit that failed was the claim before cid's request ran, so each was asked once.
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
-        Assert.Equal(["ann", "bob", "cid"], outbox.Names.Distinct());
+        Assert.Equal(["ann", "bob", "cid"], outbox.Names);
         Assert.Equal([true, true, false], Assert.IsType<Approvals>(finished.WorkflowData).Answers.Select(item => item.Value));
     }
 
@@ -563,13 +564,6 @@ public sealed class ParallelForEachTests
         {
             lock (_sent)
                 return _sent.Single(item => item.Name == name).Token;
-        }
-
-        /// <summary>The token of the latest request to <paramref name="name"/>, which a recovery may repeat.</summary>
-        public string LastTokenOf(string name)
-        {
-            lock (_sent)
-                return _sent.Last(item => item.Name == name).Token;
         }
 
         public void Add(string name, string token)

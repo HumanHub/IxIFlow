@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json.Serialization;
 using IxIFlow.Builders;
 using IxIFlow.Core;
@@ -173,10 +174,174 @@ public sealed class ParallelDataContractTests
         Assert.Equal(["caught 0-100"], services.GetRequiredService<Seen>().Values);
     }
 
-    private static ServiceProvider Services()
+    [Fact]
+    [Trait("Spec", "E-07")]
+    public async Task AMergeTheParentsObjectRefusesIsUndoneAndFailsTheJoin()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Sealable>("RefusedApply")
+            .Step<Seal>(step => step.Output(activity => activity.Sealed).To(ctx => ctx.WorkflowData.Sealed))
+            .Try(attempt => attempt.Parallel(parallel => parallel
+                .Do(first => first.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "first")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.First)))
+                .Do(second => second.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "renamed")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Name)))))
+            .Catch<JoinConflictException>(handler => handler.Step<Record>(step => step
+                .Input(activity => activity.Value).From(ctx => $"caught '{ctx.WorkflowData.First}' '{ctx.WorkflowData.Name}'")))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new Sealable());
+
+        // The branches' copies were not sealed, and the read-back was not either; the parent is, so setting
+        // the name failed after the first value was set, and that value was put back.
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["caught '' 'draft'"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-07")]
+    public async Task ACombinedValueIsReadBackWithTheRestOfTheMerge()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<SummedBounds>("RefusedCombination")
+            .Step<Noop>()
+            .Try(attempt => attempt.Parallel(parallel => parallel
+                .Do(first => first.Step<SetNumber>(step => step
+                    .Input(activity => activity.Value).From(_ => 50)
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Low)))
+                .Do(second => second.Step<SetNumber>(step => step
+                    .Input(activity => activity.Value).From(_ => 40)
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.High)))))
+            .Catch<JoinConflictException>(handler => handler.Step<Record>(step => step
+                .Input(activity => activity.Value).From(ctx => $"caught {ctx.WorkflowData.Low}-{ctx.WorkflowData.High}")))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new SummedBounds());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["caught 0-100"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-03")]
+    public async Task AnImmutableDictionaryIsMergedWhole()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Mapped>("ImmutableMap")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Do(first => first.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "first")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.First)))
+                .Do(second => second.Step<AddEntry>(step => step
+                    .Input(activity => activity.Map).From(ctx => ctx.WorkflowData.Map)
+                    .Output(activity => activity.Map).To(ctx => ctx.WorkflowData.Map))))
+            .Step<Record>(step => step
+                .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.First + ":" + ctx.WorkflowData.Map.Count))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new Mapped());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["first:2"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-03")]
+    public async Task AnObjectWhoseConstructorSetsItsStateIsMergedWhole()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Owned>("ReplacedOwner")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Do(first => first.Step<Rename>(step => step
+                    .Output(activity => activity.Owner).To(ctx => ctx.WorkflowData.Owner)))
+                .Do(second => second.Step<Noop>()))
+            .Step<Record>(step => step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Owner.Name))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new Owned());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["new"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-01")]
+    public void EveryPartOfTheDataABranchCopiesMustReadBackWhatItWasGiven()
+    {
+        static WorkflowDefinition Branched<T>() where T : class, new() =>
+            Workflow.Create<T>(typeof(T).Name).Step<Noop>()
+                .Parallel(branches => branches.Do(only => only.Step<Noop>()))
+                .Build();
+
+        // Inside a list's items, inside a property with a combiner, and a populated dictionary that would
+        // keep what its initializer put in it.
+        Assert.Contains("'Items[].Tags' has no setter",
+            Assert.Throws<WorkflowEngineException>(() => Branched<TaggedItems>()).Message);
+        Assert.Contains("'Totals.Tags' has no setter",
+            Assert.Throws<WorkflowEngineException>(() => Branched<CombinedTotals>()).Message);
+        Assert.Contains("'Seeds' has no setter",
+            Assert.Throws<WorkflowEngineException>(() => Branched<Seeded>()).Message);
+        // A combiner inside a value merged whole never applies.
+        Assert.Contains("never applies", Assert.Throws<WorkflowEngineException>(() => Branched<Lines>()).Message);
+        // What the serializer ignores is not branch data at all.
+        Branched<Cached>();
+    }
+
+    [Fact]
+    [Trait("Spec", "E-04")]
+    public void AWriteTheJoinWouldDropIsRefusedUnderWaitAnyToo()
+    {
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Cached>("IgnoredWrite")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .WaitAny()
+                .Do(first => first.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "x")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Scratch)))
+                .Do(second => second.Step<Noop>()))
+            .Build());
+
+        Assert.Contains("not serialized with the workflow data", error.Message);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-01")]
+    public async Task APropertyLeftOutWhenNullStaysNullAfterARecovery()
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        var definition = Workflow.Create<Sparse>("OmittedNullsRecovered")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Do(first => first.WaitFor<Go>("go"))
+                .Do(second => second.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "other")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Other))))
+            .Step<Record>(step => step
+                .Input(activity => activity.Value).From(ctx => (ctx.WorkflowData.Note ?? "null") + "|" + ctx.WorkflowData.Other))
+            .Build();
+        string instanceId;
+        using (var first = Services(store))
+            instanceId = (await Engine(first).RunAsync(definition, new Sparse { Note = null })).InstanceId;
+
+        using var second = Services(store);
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        var finished = await Engine(second).ResumeAsync(instanceId, "go", new Go());
+
+        // The saved data says the note is null, so the next host reads null, not the initial value.
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        Assert.Equal(["null|other"], second.GetRequiredService<Seen>().Values);
+    }
+
+    private static ServiceProvider Services(IWorkflowStateRepository? store = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        if (store != null)
+            services.AddSingleton(store);
         services.AddSingleton<Seen>();
         services.AddTransient<Record>();
         services.AddIxIFlow();
@@ -264,6 +429,99 @@ public sealed class ParallelDataContractTests
         }
     }
 
+    /// <summary>A record whose name may not change once it is sealed, which is not saved.</summary>
+    public sealed class Sealable
+    {
+        private string _name = "draft";
+
+        public string First { get; set; } = "";
+
+        public string Name
+        {
+            get => _name;
+            set => _name = Sealed ? throw new InvalidOperationException("The record is sealed") : value;
+        }
+
+        [JsonIgnore]
+        public bool Sealed { get; set; }
+    }
+
+    public sealed class SummedBounds
+    {
+        private int _high = 100;
+
+        [Combine<Sum<int>>]
+        public int Low { get; set; }
+
+        public int High
+        {
+            get => _high;
+            set => _high = value >= Low ? value : throw new ArgumentOutOfRangeException(nameof(High), "High is below Low");
+        }
+    }
+
+    public sealed class Mapped
+    {
+        public string First { get; set; } = "";
+        public ImmutableDictionary<string, int> Map { get; set; } = ImmutableDictionary<string, int>.Empty.Add("a", 1);
+    }
+
+    public sealed class Owned
+    {
+        public Person Owner { get; set; } = new("old");
+    }
+
+    public sealed class Person(string name)
+    {
+        public string Name { get; } = name;
+    }
+
+    public sealed class TaggedItems
+    {
+        public List<Tagged> Items { get; set; } = [];
+    }
+
+    public sealed class CombinedTotals
+    {
+        [Combine<FirstWins<TagTotals>>]
+        public TagTotals Totals { get; set; } = new();
+    }
+
+    public sealed class TagTotals
+    {
+        public List<string> Tags { get; } = [];
+    }
+
+    public sealed class Seeded
+    {
+        [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+        public Dictionary<string, int> Seeds { get; } = new() { ["seed"] = 1 };
+    }
+
+    public sealed class Lines
+    {
+        public List<Line> Items { get; set; } = [];
+    }
+
+    public sealed class Line
+    {
+        [Combine<Sum<int>>]
+        public int Total { get; set; }
+    }
+
+    public sealed class Cached
+    {
+        public string Other { get; set; } = "";
+
+        [JsonIgnore]
+        public string Scratch { get; set; } = "";
+
+        [JsonIgnore]
+        public TagTotals Cache { get; set; } = new();
+    }
+
+    public sealed class Go;
+
     public sealed class Seen
     {
         private readonly List<string> _values = [];
@@ -337,6 +595,39 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Home = new Address { City = "Lyon", Zip = null };
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class Seal : IAsyncActivity
+    {
+        public bool Sealed { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Sealed = true;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class AddEntry : IAsyncActivity
+    {
+        public ImmutableDictionary<string, int> Map { get; set; } = ImmutableDictionary<string, int>.Empty;
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Map = Map.Add("b", 2);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class Rename : IAsyncActivity
+    {
+        public Person Owner { get; set; } = new("");
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Owner = new Person("new");
             return Task.CompletedTask;
         }
     }
