@@ -344,9 +344,12 @@ public sealed class InboxStoreTests
                 openedWaits: [new OpenedWait(next, WaitKind.Event, "approval", "Approval", timeout)]));
             Assert.Equal(1, (await inbox.GetWaitAsync(instanceId, next))!.OpenedSequence);
 
-            // While a child's wait is shown here, an event with any key is kept for the child to decide.
+            // A child's wait takes only its child's completion, addressed to it (D-17): an event with
+            // another key finds no wait.
+            Assert.Equal(EventRejection.NoOpenWait, (await inbox.AppendEventAsync(
+                Event(instanceId, "for-child", "{}") with { Key = "anything" })).Rejection);
             Assert.Equal(EventAppendStatus.Stored, (await inbox.AppendEventAsync(
-                Event(instanceId, "for-child", "{}") with { Key = "anything" })).Status);
+                Event(instanceId, "child-done", "{}") with { Key = null, TargetWaitId = child })).Status);
 
             // Open waits can be listed by instance, key, type and kind, in wait ID order, and paged.
             Assert.Equal(new[] { first, next, child }.Order(StringComparer.Ordinal),
@@ -462,6 +465,102 @@ public sealed class InboxStoreTests
         Assert.NotEqual(plain.ContentHash, opening.ContentHash);
         Assert.NotEqual(plain.ContentHash, closing.ContentHash);
     }
+
+    [Fact]
+    [Trait("Spec", "D-06")]
+    public Task MemoryStoreStartsAndCompletesChildrenInTheirCommits() =>
+        VerifyChildren(new InMemoryWorkflowStateRepository());
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "D-06")]
+    public Task SqlStoreStartsAndCompletesChildrenInTheirCommits() =>
+        VerifyChildren(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+
+    // A parent's commit starts a child as its own instance with the parent's wait for it; the child's
+    // terminal commit appends its completion to that wait in the parent's inbox. Neither needs a relay.
+    private static async Task VerifyChildren(IWorkflowStateRepository store)
+    {
+        var inbox = (IWorkflowInbox)store;
+        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
+        var childId = Guid.NewGuid().ToString("N");
+        var otherId = Guid.NewGuid().ToString("N");
+        var wait = $"{parentId}-child";
+        try
+        {
+            var parent = (await store.GetWorkflowInstanceAsync(parentId))!;
+            var start = CheckpointCommit.Create(parent, 0, parent.Revision,
+                openedWaits: [new OpenedWait(wait, WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
+                childStarts: [new ChildStart(childId, System.Text.Json.JsonSerializer.Serialize(
+                    Child(childId, parentId, wait)), wait)]);
+            var started = await store.CommitWorkflowInstanceAsync(start);
+
+            Assert.Equal(WorkflowCommitStatus.Applied, started.Status);
+            Assert.Equal([childId], started.MadeRunnable);
+            var child = (await store.GetWorkflowInstanceAsync(childId))!;
+            Assert.Equal((1L, WorkflowStatus.Running, parentId, wait),
+                (child.Revision, child.Status, child.ParentInstanceId, child.ParentWaitId));
+            Assert.Contains(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == childId);
+            // The same commit again starts nothing more; another start under the child's ID is refused.
+            Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(start)).Status);
+            parent.Revision = started.Revision;
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.CommitWorkflowInstanceAsync(
+                CheckpointCommit.Create(parent, 0, parent.Revision,
+                    openedWaits: [new OpenedWait($"{wait}-again", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
+                    childStarts: [new ChildStart(childId, System.Text.Json.JsonSerializer.Serialize(
+                        Child(childId, parentId, $"{wait}-again")), $"{wait}-again")])));
+
+            // A parent's commit can ask its child to cancel; the first request stands.
+            var cancelled = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, parent.Revision,
+                childCancellations: [new ChildCancellation(childId, new CancellationReason { ReasonCode = "parent" })]));
+            Assert.Equal(WorkflowCommitStatus.Applied, cancelled.Status);
+            Assert.Equal("parent", (await store.GetCancellationRequestAsync(childId))!.ReasonCode);
+
+            // The child's terminal commit puts its completion in the parent's inbox, addressed to the wait.
+            var grant = (await store.TryAcquireExecutionLeaseAsync(childId, "owner", TimeSpan.FromMinutes(1)))!;
+            child.Status = WorkflowStatus.Completed;
+            var completed = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(child, grant.Epoch, 1,
+                parentNotice: new ParentNotice(parentId, wait, $"completed-{childId}", "IxIFlow.ChildCompleted",
+                    "{\"Status\":\"Completed\"}")));
+            Assert.Equal(WorkflowCommitStatus.Applied, completed.Status);
+            Assert.Equal([parentId], completed.MadeRunnable);
+            var notice = (await inbox.GetEventAsync(parentId, $"completed-{childId}"))!;
+            Assert.Equal((EventOutcome.Pending, wait), (notice.Outcome, notice.TargetWaitId));
+            Assert.Contains(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == parentId);
+
+            // A child whose parent no longer waits still finishes: the completion is recorded as refused.
+            parent.Revision = cancelled.Revision;
+            var closing = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, parent.Revision,
+                openedWaits: [new OpenedWait($"{wait}-2", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
+                childStarts: [new ChildStart(otherId, System.Text.Json.JsonSerializer.Serialize(
+                    Child(otherId, parentId, $"{wait}-2")), $"{wait}-2")]));
+            parent.Revision = closing.Revision;
+            await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, parent.Revision,
+                closedWaits: [new ClosedWait($"{wait}-2", WaitCloseReason.Cancelled)]));
+            var other = (await store.GetWorkflowInstanceAsync(otherId))!;
+            var otherGrant = (await store.TryAcquireExecutionLeaseAsync(otherId, "owner", TimeSpan.FromMinutes(1)))!;
+            other.Status = WorkflowStatus.Failed;
+            var late = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(other, otherGrant.Epoch, 1,
+                parentNotice: new ParentNotice(parentId, $"{wait}-2", $"completed-{otherId}", "IxIFlow.ChildCompleted",
+                    "{}")));
+            Assert.Equal(WorkflowCommitStatus.Applied, late.Status);
+            Assert.Empty(late.MadeRunnable);
+            Assert.Equal(EventRejection.WaitCancelled,
+                (await inbox.GetEventAsync(parentId, $"completed-{otherId}"))!.Rejection);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(parentId);
+            await store.DeleteWorkflowInstanceAsync(childId);
+            await store.DeleteWorkflowInstanceAsync(otherId);
+        }
+    }
+
+    private static WorkflowInstance Child(string childId, string parentId, string waitId) => new()
+    {
+        InstanceId = childId, WorkflowName = "Child", Status = WorkflowStatus.Running, WorkflowDataJson = "{}",
+        ParentInstanceId = parentId, ParentWaitId = waitId
+    };
 
     private static WorkflowEvent Event(string instanceId, string eventId, string payload) =>
         new(instanceId, eventId, "Approval", payload, Key: "approval");

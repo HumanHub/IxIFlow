@@ -350,58 +350,23 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         continuation.Status = ContinuationStatus.Waiting;
     }
 
-    public static bool ShouldCancelInvokedChild(ContinuationState continuation) =>
-        continuation.CancellationUnwind &&
-        !TryScopeTransitions.IsInsideFinally(continuation) &&
-        !SagaScopeTransitions.IsInsideCompensation(continuation);
-
-    public void ProjectChildLifecycleWait(ExecutionCheckpoint checkpoint,
-        ContinuationState continuation, string childInstanceId, bool needsResolution)
+    /// <summary>
+    /// Waits for the child an invocation step starts (D-17): the step's invocation, whose ID is the
+    /// child's, the child's start for the next commit, and a wait only the child's completion answers.
+    /// </summary>
+    public void AwaitChild(ExecutionCheckpoint checkpoint, ContinuationState continuation, string stepId,
+        ChildStart start)
     {
-        var pending = continuation.PendingActivity
-            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A child has no parent invocation");
-        checkpoint.RemoveWaits(wait => wait.ChildWorkflowId == childInstanceId &&
-            wait.ContinuationId == continuation.Id, WaitCloseReason.Replaced);
+        checkpoint.ChildStarts.Add(start);
         checkpoint.Waits.Add(new WaitState
         {
+            Id = start.ParentWaitId,
             RegisteredAtUtc = Now,
             ContinuationId = continuation.Id,
-            StepId = pending.StepId,
-            Key = "child-workflow",
-            ChildWorkflowId = childInstanceId
+            StepId = stepId,
+            EventType = ChildCompleted.EventType,
+            ChildWorkflowId = start.ChildInstanceId
         });
-        continuation.Status = needsResolution
-            ? ContinuationStatus.WaitingResolution : ContinuationStatus.Waiting;
-        pending.ResolutionReason = needsResolution
-            ? $"Child workflow '{childInstanceId}' needs activity resolution" : null;
-    }
-
-    public void ProjectChildWaits(ExecutionCheckpoint checkpoint,
-        ContinuationState continuation, string childInstanceId,
-        ExecutionCheckpoint childCheckpoint)
-    {
-
-        var pending = continuation.PendingActivity
-            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                "A child wait has no parent invocation");
-        pending.ChildWorkflowId = childInstanceId;
-        checkpoint.RemoveWaits(wait => wait.ChildWorkflowId == childInstanceId &&
-            wait.ContinuationId == continuation.Id, WaitCloseReason.Replaced);
-        foreach (var childWait in childCheckpoint.Waits)
-            checkpoint.Waits.Add(new WaitState
-            {
-                RegisteredAtUtc = Now,
-                ContinuationId = continuation.Id,
-                StepId = pending.StepId,
-                Key = childWait.Key,
-                EventType = childWait.EventType,
-                // The parent checks the child at the child's deadline, on the parent's own clock.
-                DeadlineUtc = childWait.DeadlineUtc is { } childDeadline
-                    ? checkpoint.Clock.ToLocal(childDeadline) : null,
-                ChildWorkflowId = childInstanceId,
-                ChildWaitId = childWait.Id
-            });
-        continuation.AcceptedWait = null;
         continuation.Status = ContinuationStatus.Waiting;
     }
 
@@ -539,6 +504,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     {
         if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             return;
+        var first = !continuation.CancellationUnwind;
         continuation.CancellationUnwind = true;
         continuation.RetryAfterUtc = null;
         if (continuation.PendingActivity != null &&
@@ -559,8 +525,23 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             SagaScopeTransitions.PreserveCompensation(continuation);
             return;
         }
-        checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id, WaitCloseReason.Cancelled);
-        continuation.AcceptedWait = null;
+        // A branch waiting for its child asks the child to cancel and keeps waiting for it: it unwinds once
+        // the child has finished, so a child that needs an operator holds its parent (D-09).
+        // One whose child has finished takes the completion, and then unwinds.
+        var child = checkpoint.Waits.FirstOrDefault(wait =>
+            wait.ContinuationId == continuation.Id && wait.TableKind == WaitKind.Child);
+        var childFinished = child == null && continuation.AcceptedWait != null &&
+                            continuation.PendingActivity?.ChildWorkflowId != null;
+        checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id && wait != child,
+            WaitCloseReason.Cancelled);
+        if (child != null && first)
+            checkpoint.ChildCancellations.Add(new ChildCancellation(child.ChildWorkflowId!, new CancellationReason
+            {
+                ReasonCode = "parent_branch_cancelled",
+                Description = "The parent workflow branch was cancelled"
+            }));
+        if (!childFinished)
+            continuation.AcceptedWait = null;
         foreach (var join in checkpoint.Joins.Where(item => item.ParentContinuationId == continuation.Id).ToList())
         {
             join.IsCompleting = true;
@@ -569,6 +550,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         }
         continuation.Status = checkpoint.Joins.Any(item => item.ParentContinuationId == continuation.Id)
             ? ContinuationStatus.Joining
+            : child != null ? ContinuationStatus.Waiting
+            : childFinished ? ContinuationStatus.Active
             : ContinuationStatus.Cancelling;
     }
 

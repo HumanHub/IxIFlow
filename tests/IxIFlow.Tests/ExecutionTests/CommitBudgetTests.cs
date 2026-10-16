@@ -160,11 +160,13 @@ public sealed class CommitBudgetTests
             .Step<WorkActivity>()
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, new BudgetData());
+        var result = await Engine(services).RunToEndAsync(definition, new BudgetData());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
 
-        // Parent and child commits together.
-        AssertBudget(store.Commits, store.MaxBytes, maxCommits: 12, maxBytes: 1500);
+        // Parent and child commits together. Starting the child adds no commit of its own: it rides in
+        // the parent's idle commit, and the child's completion in its terminal one (D-17). The parent's
+        // checkpoint holds its wait for the child beside the invocation, the child's its parent link.
+        AssertBudget(store.Commits, store.MaxBytes, maxCommits: 12, maxBytes: 1800);
     }
 
     [Fact]

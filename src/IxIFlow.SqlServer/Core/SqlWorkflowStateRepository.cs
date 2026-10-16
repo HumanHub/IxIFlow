@@ -286,18 +286,6 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         return changed == 1;
     }
 
-    public async Task MakeRunnableAsync(string instanceId)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        await connection.ExecuteAsync("""
-            UPDATE dbo.IxIFlowWorkflowInstances
-            SET RunnableAtUtc = SYSUTCDATETIME()
-            WHERE InstanceId = @InstanceId AND Status = 'Suspended'
-            """, new { InstanceId = instanceId });
-    }
-
     public async Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent)
     {
         ArgumentNullException.ThrowIfNull(workflowEvent);
@@ -321,43 +309,43 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             instance = await locked.ReadSingleOrDefaultAsync<InboxRow>();
             lockedAt = await locked.ReadSingleAsync<DateTime>();
         }
+        var result = await AppendAsync(connection, transaction, workflowEvent, hash, instance,
+            DateTime.SpecifyKind(lockedAt, DateTimeKind.Utc));
+        await transaction.CommitAsync();
+        return result;
+    }
+
+    // Appends an event to an instance whose row this transaction has locked, read as instance; null when
+    // it does not exist.
+    private static async Task<EventAppendResult> AppendAsync(SqlConnection connection, SqlTransaction transaction,
+        WorkflowEvent workflowEvent, byte[] hash, InboxRow? instance, DateTime now)
+    {
         // A known event ID answers the same way whatever happened to the instance since.
         var existing = await connection.QuerySingleOrDefaultAsync<EventHashRow>("""
             SELECT Sequence, PayloadHash FROM dbo.IxIFlowWorkflowEvents
             WHERE InstanceId = @InstanceId AND EventId = @EventId
             """, new { workflowEvent.InstanceId, workflowEvent.EventId }, transaction);
         if (existing != null)
-        {
-            await transaction.CommitAsync();
             return existing.PayloadHash.SequenceEqual(hash)
                 ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Sequence)
                 : new EventAppendResult(EventAppendStatus.Conflict);
-        }
         if (instance == null)
-        {
-            await transaction.CommitAsync();
             return new EventAppendResult(EventAppendStatus.NotFound);
-        }
         var finished = instance.Status is "Completed" or "Failed" or "Cancelled" or "Terminated" or "TimedOut";
         // A finished instance takes no events; one sent to a wait is told why that wait closed.
         if (finished && workflowEvent.TargetWaitId == null)
-        {
-            await transaction.CommitAsync();
             return new EventAppendResult(EventAppendStatus.Closed);
-        }
-        // The named wait, or the open wait that could take the event: one that is not past its deadline
-        // comes first, as WorkflowStoreRules.Candidates orders them.
-        var now = DateTime.SpecifyKind(lockedAt, DateTimeKind.Utc);
+        // The named wait, or the open event wait that could take the event: one that is not past its
+        // deadline comes first, as WorkflowStoreRules.Candidates orders them.
         var waits = (await connection.QueryAsync<WaitRow>($"""
             SELECT TOP (1) {WaitColumns} FROM dbo.IxIFlowWorkflowWaits
             WHERE InstanceId = @InstanceId AND (@TargetWaitId IS NOT NULL AND WaitId = @TargetWaitId
                 OR @TargetWaitId IS NULL AND CloseReason IS NULL
-                    AND (Kind = @Child OR Kind = @Event AND (@Key IS NULL OR WaitKey = @Key)))
-            ORDER BY CASE WHEN Kind <> @Child AND DeadlineUtc <= @Now THEN 1 ELSE 0 END
+                    AND Kind = @Event AND (@Key IS NULL OR WaitKey = @Key))
+            ORDER BY CASE WHEN DeadlineUtc <= @Now THEN 1 ELSE 0 END
             """, WithTimes(new
         {
-            workflowEvent.InstanceId, workflowEvent.TargetWaitId, workflowEvent.Key,
-            Child = (byte)WaitKind.Child, Event = (byte)WaitKind.Event
+            workflowEvent.InstanceId, workflowEvent.TargetWaitId, workflowEvent.Key, Event = (byte)WaitKind.Event
         }, ("Now", now)), transaction)).Select(row => row.Read()).ToArray();
         var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent, waits.SingleOrDefault(), waits, now)
             ?? (finished ? EventRejection.InstanceFinished : null);
@@ -384,7 +372,6 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 @Hash, @Now, CASE WHEN @Rejection IS NULL THEN 0 ELSE 2 END, @Rejection,
                 CASE WHEN @Rejection IS NULL THEN NULL ELSE @Now END);
             """, appendParameters, transaction);
-        await transaction.CommitAsync();
         return rejection == null
             ? new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable)
             : new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection);
@@ -645,6 +632,14 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+        // A child's terminal commit appends to its parent's inbox. Rows are locked parent first, as a
+        // parent's commit that cancels its children does, so the two cannot deadlock.
+        var parent = commit.ParentNotice is { } notice
+            ? await connection.QuerySingleOrDefaultAsync<InboxRow>("""
+                SELECT Status, InboxSequence FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
+                WHERE InstanceId = @ParentInstanceId
+                """, new { notice.ParentInstanceId }, transaction)
+            : null;
         // One store time for the whole commit, read once the instance row's lock is held: its deadlines,
         // its runnable time and its records (D-35).
         CommitState? current;
@@ -701,6 +696,13 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             await transaction.CommitAsync();
             return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
         }
+        // A child's ID is new; a commit that names an existing instance changes nothing.
+        if (commit.ChildStarts.Count > 0 && await connection.ExecuteScalarAsync<string?>("""
+                SELECT TOP (1) InstanceId FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId IN @Ids
+                """, new { Ids = commit.ChildStarts.Select(child => child.ChildInstanceId).ToArray() }, transaction)
+            is { } taken)
+            throw new InvalidOperationException(
+                $"Child workflow '{taken}' cannot start: an instance with its ID exists");
 
         // An event this commit settles must still be pending (D-04). One statement settles them all,
         // so their row locks are taken in one order.
@@ -807,9 +809,54 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             {
                 snapshot.InstanceId, Released = releases, ClearsCrashCount = clears
             }, transaction);
+        var madeRunnable = new List<string>();
+        // Each child starts as its own instance, runnable now, with no owner yet (D-17).
+        foreach (var start in commit.ChildStarts)
+        {
+            var child = JsonSerializer.Deserialize<WorkflowInstance>(start.Payload)!;
+            child.Revision = 1;
+            child.RunnableAtUtc = now;
+            await connection.ExecuteAsync("""
+                INSERT INTO dbo.IxIFlowWorkflowInstances
+                    (InstanceId, WorkflowName, Status, CorrelationId, RunnableAtUtc, StateJson, Revision, ParentInstanceId)
+                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @Now, @StateJson, 1, @ParentInstanceId)
+                """, WithTimes(new
+            {
+                child.InstanceId, child.WorkflowName, Status = child.Status.ToString(), child.CorrelationId,
+                StateJson = JsonSerializer.Serialize(child), ParentInstanceId = commit.InstanceId
+            }, ("Now", now)), transaction);
+            madeRunnable.Add(child.InstanceId);
+        }
+        foreach (var cancellation in commit.ChildCancellations)
+            if (await connection.ExecuteScalarAsync<bool>("""
+                UPDATE dbo.IxIFlowWorkflowInstances
+                SET CancellationJson = COALESCE(CancellationJson, @ReasonJson),
+                    CancellationAcknowledged = CASE WHEN CancellationJson IS NULL
+                        THEN 0 ELSE CancellationAcknowledged END,
+                    RunnableAtUtc = CASE WHEN CancellationJson IS NULL OR CancellationAcknowledged = 0
+                        THEN @Now ELSE RunnableAtUtc END
+                WHERE InstanceId = @InstanceId AND Status IN ('Running', 'Suspended', 'NeedsResolution');
+                DECLARE @Changed INT = @@ROWCOUNT;
+                SELECT CAST(CASE WHEN @Changed = 1 AND EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances
+                    WHERE InstanceId = @InstanceId AND CancellationAcknowledged = 0) THEN 1 ELSE 0 END AS BIT);
+                """, WithTimes(new
+            {
+                InstanceId = cancellation.ChildInstanceId, ReasonJson = JsonSerializer.Serialize(cancellation.Reason)
+            }, ("Now", now)), transaction))
+                madeRunnable.Add(cancellation.ChildInstanceId);
+        // The child's completion goes to its parent's inbox; whatever the parent's state, the child's
+        // commit stands.
+        if (commit.ParentNotice is { } completion)
+        {
+            var completed = new WorkflowEvent(completion.ParentInstanceId, completion.EventId, completion.EventType,
+                completion.PayloadJson, TargetWaitId: completion.ParentWaitId);
+            if (await AppendAsync(connection, transaction, completed, completed.ContentHash(), parent, now) is
+                { Status: EventAppendStatus.Stored, MadeRunnable: true })
+                madeRunnable.Add(completion.ParentInstanceId);
+        }
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
-            ReadReason(current?.CancellationJson), parked, unread);
+            ReadReason(current?.CancellationJson), parked, unread, madeRunnable);
     }
 
     // A wait opens at the inbox sequence read under the instance row's lock, which appends also take,
@@ -1082,6 +1129,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                     ALTER TABLE dbo.IxIFlowWorkflowInstances
                         ADD InboxReadThrough BIGINT NOT NULL
                             CONSTRAINT DF_IxIFlowWorkflowInstances_InboxReadThrough DEFAULT 0;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'ParentInstanceId') IS NULL
+                BEGIN
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD ParentInstanceId NVARCHAR(100) NULL;
+                    EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_Parent
+                        ON dbo.IxIFlowWorkflowInstances (ParentInstanceId) WHERE ParentInstanceId IS NOT NULL');
+                END
                 IF OBJECT_ID(N'dbo.IxIFlowWorkflowEvents', N'U') IS NULL
                 BEGIN
                     CREATE TABLE dbo.IxIFlowWorkflowEvents (

@@ -89,11 +89,16 @@ public sealed class FaultScenarios
             .Continuations.Single(item => item.PendingActivity?.ChildWorkflowId != null)
             .PendingActivity!.ChildWorkflowId!;
 
-        var cancelled = await operatorHost.CancelAsync(started.InstanceId,
+        await cluster.UntilAsync(childId, WorkflowStatus.Suspended);
+
+        // The parent asks its child to cancel and waits for it to end before it ends itself (D-09).
+        var waiting = await operatorHost.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
+        Assert.Equal(WorkflowExecutionStatus.Suspended, waiting.Status);
+        var cancelled = await operatorHost.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
-        Assert.Equal(WorkflowStatus.Cancelled, (await cluster.GetInstanceAsync(started.InstanceId))!.Status);
         Assert.Equal(WorkflowStatus.Cancelled, (await cluster.GetInstanceAsync(childId))!.Status);
     }
 

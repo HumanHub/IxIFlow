@@ -306,7 +306,7 @@ public sealed class ForEachTests
                     .Output(data => data.Echo).To(ctx => ctx.WorkflowData.LastApproved)))
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, Order(1, 2));
+        var result = await Engine(services).RunToEndAsync(definition, Order(1, 2));
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("line-1;", Data(result).LastApproved);

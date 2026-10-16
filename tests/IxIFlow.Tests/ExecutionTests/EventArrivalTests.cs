@@ -45,7 +45,7 @@ public sealed class EventArrivalTests
 
     [Fact]
     [Trait("Spec", "D-03")]
-    public async Task AnEventForAChildThatAnotherHostRunsStaysPendingUntilTheChildDecides()
+    public async Task AnEventForAChildThatAnotherHostOwnsStaysPendingUntilItsOwnerDecides()
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
@@ -62,22 +62,20 @@ public sealed class EventArrivalTests
                 .Output(data => data.Approved).To(ctx => ctx.WorkflowData.Approved))
             .Build(), new RaceData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, parent.Status);
-        var childId = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("ChildWithApproval")).InstanceId;
+        var childId = await repository.WaitingInstanceAsync("ChildWithApproval", "approval");
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, "other-host", TimeSpan.FromMinutes(1)));
 
-        // The parent forwards the event, but the child's owner has not decided it.
+        // The event goes to the child (D-17); its owner has not decided it.
         using var attempt = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            engine.ResumeAsync(parent.InstanceId, "approval", new Approval { Approved = true }, "approval-1",
-                attempt.Token));
-        Assert.Equal(EventOutcome.Pending, (await repository.GetEventAsync(parent.InstanceId, "approval-1"))!.Outcome);
+            engine.ResumeAsync(childId, "approval", new Approval { Approved = true }, "approval-1", attempt.Token));
+        Assert.Equal(EventOutcome.Pending, (await repository.GetEventAsync(childId, "approval-1"))!.Outcome);
 
-        // Once the child is free, the parent forwards it again and both settle it as taken.
+        // Once the child is free, it takes the event, and its completion wakes its parent.
         Assert.True(await repository.ReleaseExecutionLeaseAsync(childId, "other-host"));
-        await engine.RecoverAsync(parent.InstanceId);
+        await engine.RecoverAsync(childId);
         Assert.Equal(EventOutcome.Consumed,
-            (await EventAssert.DecidedAsync(repository, parent.InstanceId, "approval-1")).Outcome);
-        Assert.Equal(EventOutcome.Consumed, (await repository.GetEventAsync(childId, "approval-1"))!.Outcome);
+            (await EventAssert.DecidedAsync(repository, childId, "approval-1")).Outcome);
         var finished = await engine.AwaitAsync(parent.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(20));
         Assert.True(Assert.IsType<RaceData>(finished.WorkflowData).Approved);

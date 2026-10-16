@@ -260,6 +260,12 @@ public class WorkflowInstance
     public string? ParentInstanceId { get; set; }
 
     /// <summary>
+    /// The parent's wait for this child, which the child's terminal commit answers with its completion
+    /// (D-17).
+    /// </summary>
+    public string? ParentWaitId { get; set; }
+
+    /// <summary>
     ///     When the workflow was created
     /// </summary>
     public DateTime CreatedAt { get; set; }

@@ -73,10 +73,6 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
         Guard(() => _store.ReleaseExecutionLeaseAsync(instanceId, token),
             $"Releasing the execution lease of workflow instance '{instanceId}'");
 
-    public Task MakeRunnableAsync(string instanceId) =>
-        Guard(() => _store.MakeRunnableAsync(instanceId),
-            $"Making workflow instance '{instanceId}' runnable");
-
     public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
         Guard(() => _store.SaveWorkflowInstanceAsync(instance),
             $"Saving workflow instance '{instance.InstanceId}'");
