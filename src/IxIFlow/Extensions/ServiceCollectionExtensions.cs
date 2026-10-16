@@ -73,6 +73,8 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The branch limit must be positive");
         if (options.MaxActivitiesPerRun <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The activity limit must be positive");
+        if (options.MaxForEachItems <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The ForEach item limit must be positive");
         if (options.ParkRetriesLongerThan < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(configure), "The park threshold cannot be negative");
         if (options.PollInterval <= TimeSpan.Zero)
@@ -83,6 +85,7 @@ public static class ServiceCollectionExtensions
             MaxCrashes = options.MaxCrashes,
             MaxActiveBranches = options.MaxActiveBranches,
             MaxActivitiesPerRun = options.MaxActivitiesPerRun,
+            MaxForEachItems = options.MaxForEachItems,
             ParkRetriesLongerThan = options.ParkRetriesLongerThan
         }));
         if (options.Slots <= 0)
@@ -393,6 +396,12 @@ public class IxIFlowOptions
     /// enough room to run together.
     /// </summary>
     public int MaxActivitiesPerRun { get; set; } = ExecutionLimits.DefaultMaxActivitiesPerRun;
+
+    /// <summary>
+    /// The longest list a <c>ForEach</c> takes. A longer one stops the instance at NeedsResolution before
+    /// any item runs; raise the limit and release the instance to continue, or split the list.
+    /// </summary>
+    public int MaxForEachItems { get; set; } = ExecutionLimits.DefaultMaxForEachItems;
 
     /// <summary>
     /// A run with nothing else to do whose next retry is further away than this gives its slot back

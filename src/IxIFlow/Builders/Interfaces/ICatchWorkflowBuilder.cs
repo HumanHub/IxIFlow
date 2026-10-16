@@ -59,6 +59,11 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure);
 
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> ForEach<TItem>(
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null);
+
     ITryBuilder<TWorkflowData, TPreviousStepData> Try(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure);
 

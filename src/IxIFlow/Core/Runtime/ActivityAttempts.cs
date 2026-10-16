@@ -52,7 +52,8 @@ internal sealed class ActivityAttempts(
                 activityCancellation.Token, invocationId, attempt.Id,
                 continuation.Stack[^1].NextStepIndex, !isRecovery,
                 pending?.Inputs.CodeInputs,
-                compensationInputs, SagaScopeTransitions.ActivityMetadata(scopes, continuation, step));
+                compensationInputs, SagaScopeTransitions.ActivityMetadata(scopes, continuation, step),
+                ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
             if (pending == null)
             {
                 recoveryState = (prepared.Activity as IRecoverableActivity)?
@@ -223,7 +224,8 @@ internal sealed class ActivityAttempts(
             .First(candidate => candidate.ReplyToRequest == step.RequestName);
         var subject = step.RequestSubject is { } describe
             ? ReplyToken.Digest(describe(WorkflowValueBinding.EvaluationContext(workflowData,
-                step.PreviousStepDataType, continuation.GetPrevious(services))))
+                step.PreviousStepDataType, continuation.GetPrevious(services),
+                ForEachTransitions.ItemsOf(scopes, checkpoint, continuation))))
             : null;
         var wait = new WaitState
         {
@@ -410,7 +412,8 @@ internal sealed class ActivityAttempts(
                 }
             }
             task = ObserveInvocationAsync(host.InvokeChildAsync(step, definition, instance,
-                sourceData, continuation.GetPrevious(services), pending.Id, cancellation.Token));
+                sourceData, continuation.GetPrevious(services), pending.Id,
+                ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), cancellation.Token));
         }
         return new RunningActivity(continuation, step, task,
             cancellation, null, continuation.Stack[^1].NextStepIndex);
@@ -527,7 +530,8 @@ internal sealed class ActivityAttempts(
                     await activity.Prepared.ApplyOutputsAsync();
                 else if (activity.Step.StepType == WorkflowStepType.WorkflowInvocation &&
                          activity.Continuation.PendingActivity?.Resolution?.Kind == ActivityResolutionKind.Completed)
-                    WorkflowValueBinding.ApplyActivityOutputs(activity.Step, output, workflowData);
+                    WorkflowValueBinding.ApplyActivityOutputs(activity.Step, output, workflowData,
+                        ForEachTransitions.ItemsOf(scopes, checkpoint, activity.Continuation));
                 if (activity.Continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
                     activity.Continuation.CancellationUnwind &&
                     !TryScopeTransitions.IsInsideFinally(activity.Continuation) &&

@@ -352,6 +352,7 @@ public class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActiv
             TargetProperty = propertyName,
             TargetAssignmentFunction = targetAssignmentFunction,
             ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
+            TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = propertyType,
             TargetType = typeof(WorkflowContext<TWorkflowData>),
             Direction = PropertyMappingDirection.Output

@@ -11,18 +11,19 @@ internal sealed class WorkflowInvocationTransitionExecutor(IWorkflowInvoker invo
     public async Task<WorkflowInvocationTransitionResult> ExecuteAsync(
         WorkflowStep step, WorkflowDefinition definition,
         WorkflowInstance instance, object workflowData, object? previous, string invocationId,
-        CancellationToken cancellationToken)
+        ItemValues items, CancellationToken cancellationToken)
     {
         var method = GetType().GetMethod(nameof(ExecuteTypedAsync),
             BindingFlags.NonPublic | BindingFlags.Instance)!.MakeGenericMethod(workflowData.GetType());
         var task = (Task<WorkflowInvocationTransitionResult>)method.Invoke(this,
-            [step, definition, instance, workflowData, previous, invocationId, cancellationToken])!;
+            [step, definition, instance, workflowData, previous, invocationId, items, cancellationToken])!;
         return await task;
     }
 
     private async Task<WorkflowInvocationTransitionResult> ExecuteTypedAsync<TData>(WorkflowStep step,
         WorkflowDefinition definition, WorkflowInstance instance, object workflowData,
-        object? previous, string invocationId, CancellationToken cancellationToken) where TData : class
+        object? previous, string invocationId, ItemValues items, CancellationToken cancellationToken)
+        where TData : class
     {
         var executionState = new ExecutionState { LastStepResult = previous };
         var context = new StepExecutionContext<TData>
@@ -30,7 +31,8 @@ internal sealed class WorkflowInvocationTransitionExecutor(IWorkflowInvoker invo
             WorkflowInstance = instance,
             WorkflowDefinition = definition,
             WorkflowData = (TData)workflowData,
-            PreviousStepData = previous
+            PreviousStepData = previous,
+            Items = items
         };
         var result = await invoker.ExecuteWorkflowInvocationAsync(step, context,
             executionState, invocationId, cancellationToken);

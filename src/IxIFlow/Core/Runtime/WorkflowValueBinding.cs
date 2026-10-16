@@ -6,7 +6,7 @@ namespace IxIFlow.Core.Runtime;
 internal static class WorkflowValueBinding
 {
     public static bool Matches<TEvent>(WorkflowStep step, TEvent @event, object workflowData,
-        object? previous = null)
+        object? previous = null, ItemValues? items = null)
         where TEvent : class
     {
         if (step.CompiledCondition == null)
@@ -24,13 +24,14 @@ internal static class WorkflowValueBinding
         if (typedPrevious)
             contextType.GetProperty(nameof(WorkflowContext<object, object>.PreviousStep))!
                 .SetValue(context, previous);
-        return step.CompiledCondition(context);
+        return step.CompiledCondition((items ?? ItemValues.None).On(context));
     }
 
-    public static void ApplyEventOutputs<TEvent>(WorkflowStep step, TEvent @event, object workflowData)
+    public static void ApplyEventOutputs<TEvent>(WorkflowStep step, TEvent @event, object workflowData,
+        ItemValues? items = null)
         where TEvent : class
     {
-        var context = EvaluationContext(workflowData, null, null);
+        var context = EvaluationContext(workflowData, null, null, items);
         foreach (var mapping in step.OutputMappings)
         {
             var property = @event.GetType().GetProperty(mapping.TargetProperty)
@@ -43,12 +44,13 @@ internal static class WorkflowValueBinding
         }
     }
 
-    public static void ApplyActivityOutputs(WorkflowStep step, object? output, object workflowData)
+    public static void ApplyActivityOutputs(WorkflowStep step, object? output, object workflowData,
+        ItemValues? items = null)
     {
         if (output == null)
             return;
 
-        var context = EvaluationContext(workflowData, null, null);
+        var context = EvaluationContext(workflowData, null, null, items);
         foreach (var mapping in step.OutputMappings)
         {
             var property = output.GetType().GetProperty(mapping.TargetProperty)
@@ -61,7 +63,8 @@ internal static class WorkflowValueBinding
         }
     }
 
-    public static object EvaluationContext(object workflowData, Type? previousType, object? previous)
+    public static object EvaluationContext(object workflowData, Type? previousType, object? previous,
+        ItemValues? items = null)
     {
         var type = previousType == null
             ? typeof(WorkflowContext<>).MakeGenericType(workflowData.GetType())
@@ -70,6 +73,6 @@ internal static class WorkflowValueBinding
         type.GetProperty(nameof(WorkflowContext<object>.WorkflowData))!.SetValue(context, workflowData);
         if (previousType != null && previous != null)
             type.GetProperty(nameof(WorkflowContext<object, object>.PreviousStep))!.SetValue(context, previous);
-        return context;
+        return (items ?? ItemValues.None).On(context);
     }
 }

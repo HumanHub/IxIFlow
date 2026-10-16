@@ -88,6 +88,9 @@ public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
     public CancellationToken CancellationToken { get; set; } = default;
     public object? CatchFault { get; set; }
     public bool IsCompensationActivity { get; set; } = false; // For compensation activity detection
+
+    /// <summary>The items of the <c>ForEach</c> bodies the activity runs in (D-34).</summary>
+    internal ItemValues Items { get; set; } = ItemValues.None;
     public object? CompensationPreviousStepData { get; set; }
     public object? CompensationPreviousChainData { get; set; }
     public IDictionary<string, object>? StepMetadata { get; set; } = null; // Step-level metadata from ExecutionState
@@ -244,12 +247,12 @@ public class ActivityExecutor : IActivityExecutor
                 request.WorkflowData,
                 request.PreviousStepData, request.CatchFault, mappingResult,
                 request.IsCompensationActivity, request.CompensationPreviousStepData,
-                request.CompensationPreviousChainData);
+                request.CompensationPreviousChainData, request.Items);
 
         return new PreparedActivity(activity, context,
             () => ApplyTypedOutputMappingsAsync(activity, request.OutputMappings,
                 request.WorkflowData, request.PreviousStepData, request.CatchFault,
-                new TypedActivityExecutionResult<object>()),
+                new TypedActivityExecutionResult<object>(), request.Items),
             state => context.RecoveryState = state,
             reply => context.Reply = reply);
     }
@@ -426,7 +429,8 @@ public class ActivityExecutor : IActivityExecutor
         TypedActivityExecutionResult<object> result,
         bool isCompensationActivity = false,
         object? compensationPreviousStep = null,
-        object? compensationPreviousChain = null)
+        object? compensationPreviousChain = null,
+        ItemValues? items = null)
     {
         _logger.LogTrace("Applying typed input mappings - Activity: {ActivityType}, Mappings: {Count}, TWorkflowData: {WorkflowDataType}, TPreviousStepData: {PreviousStepDataType}, CatchFault: {CatchFault}",
             activity.GetType().Name, inputMappings.Count, typeof(TWorkflowData).Name, typeof(TPreviousStepData).Name, catchFault?.GetType().Name ?? "null");
@@ -495,6 +499,7 @@ public class ActivityExecutor : IActivityExecutor
                     }
                 }
 
+                (items ?? ItemValues.None).On(evaluationContext);
                 _logger.LogTrace("Executing mapping.SourceFunction with context type: {ContextType}", evaluationContext.GetType().FullName);
 
                 // Execute the compiled source function
@@ -538,7 +543,8 @@ public class ActivityExecutor : IActivityExecutor
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
         object? catchFault,
-        TypedActivityExecutionResult<object> result)
+        TypedActivityExecutionResult<object> result,
+        ItemValues? items = null)
     {
         _logger.LogDebug("Applying {Count} typed output mappings from activity {ActivityType}",
             outputMappings.Count, activity.GetType().Name);
@@ -571,6 +577,7 @@ public class ActivityExecutor : IActivityExecutor
                         // Use regular workflow context for non-catch activities
                         evaluationContext = CreateEvaluationContext(workflowData, previousStepData);
                     }
+                    (items ?? ItemValues.None).On(evaluationContext);
 
                     // Use the compiled target assignment function
                     if (mapping.TargetAssignmentFunction != null)

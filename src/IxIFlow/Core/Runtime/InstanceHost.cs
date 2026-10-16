@@ -836,9 +836,9 @@ internal sealed class InstanceHost(
 
         public Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step,
             WorkflowDefinition definition, WorkflowInstance instance, object workflowData, object? previous,
-            string invocationId, CancellationToken cancellationToken) =>
+            string invocationId, ItemValues items, CancellationToken cancellationToken) =>
             host._invocations.ExecuteAsync(step, definition, instance, workflowData, previous, invocationId,
-                cancellationToken);
+                items, cancellationToken);
 
         public Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,
             CancellationToken cancellationToken = default) =>

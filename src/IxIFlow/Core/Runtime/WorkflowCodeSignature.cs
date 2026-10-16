@@ -39,6 +39,9 @@ internal static class WorkflowCodeSignature
             return depth < 8 ? Describe(nested, visited, depth + 1) : "nested-delegate";
         if (value is Type type)
             return WorkflowTypeIdentity.StableName(type);
+        // A ForEach handle is known by its label and item type; which step it belongs to is the step's place.
+        if (value is ItemScope item)
+            return $"item:{item.Label}:{WorkflowTypeIdentity.StableName(item.ItemType)}";
         if (value is string text)
             return $"string:{text.Length}:{text}";
         if (value is bool or char or Guid or TimeSpan or DateTime or DateTimeOffset ||

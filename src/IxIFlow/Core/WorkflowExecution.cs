@@ -813,6 +813,34 @@ public class WorkflowStep
     /// </summary>
     public LoopType LoopType { get; set; }
 
+    /// <summary>For a <c>ForEach</c> step, the body run once per item (D-34).</summary>
+    public List<WorkflowStep> ForEachBodySteps { get; set; } = new();
+
+    /// <summary>For a <c>ForEach</c> step, its body's handle on the current item.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ItemScope? ForEachItem { get; set; }
+
+    /// <summary>For a <c>ForEach</c> step, the list it runs over, read from the context when the step starts.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, System.Collections.IEnumerable?>? ForEachItems { get; set; }
+
+    /// <summary>
+    /// For a <c>ForEach</c> step, where its results go: given the context and each item's result in order,
+    /// stores a <c>List&lt;ItemResult&lt;TResult&gt;&gt;</c>.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Action<object, IReadOnlyList<(ItemStatus Status, object? Value)>>? ForEachInto { get; set; }
+
+    /// <summary>For a <c>ForEach</c> step, the member path its results are stored to, such as <c>WorkflowData.Results</c>.</summary>
+    public string? ForEachIntoPath { get; set; }
+
+    /// <summary>For a <c>.Result(...)</c> step, or a <c>ForEach</c> step that stores results, the result type.</summary>
+    public Type? ResultType { get; set; }
+
+    /// <summary>For a <c>.Result(...)</c> step, the value it gives for its item.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, object?>? ResultSelector { get; set; }
+
     /// <summary>
     ///     Context type information for compilation
     /// </summary>
@@ -901,6 +929,13 @@ public class WorkflowStep
             TimeoutSteps = TimeoutSteps.Select(s => s.Clone()).ToList(),
             LoopBodySteps = LoopBodySteps.Select(s => s.Clone()).ToList(),
             LoopType = LoopType,
+            ForEachBodySteps = ForEachBodySteps.Select(s => s.Clone()).ToList(),
+            ForEachItem = ForEachItem,
+            ForEachItems = ForEachItems,
+            ForEachInto = ForEachInto,
+            ForEachIntoPath = ForEachIntoPath,
+            ResultType = ResultType,
+            ResultSelector = ResultSelector,
             WorkflowDataType = WorkflowDataType,
             PreviousStepDataType = PreviousStepDataType,
             ExceptionType = ExceptionType,
@@ -980,7 +1015,13 @@ public enum WorkflowStepType
     Loop,
 
     /// <summary>Park until a durable timer becomes due.</summary>
-    Delay
+    Delay,
+
+    /// <summary>Run a body once per item of a list (D-34).</summary>
+    ForEach,
+
+    /// <summary>The last step of a <c>ForEach</c> body: the value it gives for its item.</summary>
+    ForEachResult
 }
 
 /// <summary>
@@ -1016,6 +1057,12 @@ public class PropertyMapping
 
     /// <summary>Stable source or destination expression used to bind this property.</summary>
     public string? ExpressionSignature { get; set; }
+
+    /// <summary>
+    /// For an output, the member path it writes, such as <c>WorkflowData.Total</c>, or null when the
+    /// destination is not a plain member chain.
+    /// </summary>
+    public string? TargetPath { get; set; }
 
     /// <summary>
     ///     Compiled source function from context (fast execution)
@@ -1054,6 +1101,7 @@ public class PropertyMapping
             Id = Id,
             TargetProperty = TargetProperty,
             ExpressionSignature = ExpressionSignature,
+            TargetPath = TargetPath,
             SourceFunction = SourceFunction,
             TargetAssignmentFunction = TargetAssignmentFunction,
             SourceType = SourceType,

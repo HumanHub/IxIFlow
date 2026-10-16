@@ -8,7 +8,7 @@ namespace IxIFlow.Core;
 ///     Base workflow context providing access to workflow data and execution metadata
 /// </summary>
 /// <typeparam name="TWorkflowData">The type of workflow data</typeparam>
-public class WorkflowContext<TWorkflowData>
+public class WorkflowContext<TWorkflowData> : IItemContext
 {
     /// <summary>
     ///     The workflow data instance
@@ -49,6 +49,21 @@ public class WorkflowContext<TWorkflowData>
     ///     Custom properties for workflow execution
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
+
+    /// <summary>The items of the <c>ForEach</c> bodies this context is made in (D-34).</summary>
+    internal ItemValues Items { get; set; } = ItemValues.None;
+
+    ItemValues IItemContext.Items
+    {
+        get => Items;
+        set => Items = value;
+    }
+
+    /// <summary>The current item of the <c>ForEach</c> body that <paramref name="item"/> belongs to.</summary>
+    public TItem Item<TItem>(ItemScope<TItem> item) => (TItem)Items.Of(item).Value!;
+
+    /// <summary>The position in its list of the current item of <paramref name="item"/>'s body, from zero.</summary>
+    public int Index<TItem>(ItemScope<TItem> item) => Items.Of(item).Index;
 }
 
 /// <summary>

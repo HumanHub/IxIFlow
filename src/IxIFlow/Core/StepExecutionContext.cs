@@ -9,4 +9,7 @@ public class StepExecutionContext<TWorkflowData>
     public WorkflowDefinition WorkflowDefinition { get; set; } = null!;
     public TWorkflowData WorkflowData { get; set; } = default!;
     public object? PreviousStepData { get; set; }
+
+    /// <summary>The items of the <c>ForEach</c> bodies the step runs in (D-34).</summary>
+    internal ItemValues Items { get; set; } = ItemValues.None;
 }

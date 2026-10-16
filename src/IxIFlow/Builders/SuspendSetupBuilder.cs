@@ -215,6 +215,7 @@ public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevi
             SourceFunction = dummySourceFunction, // Not used for outputs
             TargetAssignmentFunction = assignmentFunction,
             ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
+            TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = typeof(TResumeEvent),
             TargetType = typeof(WorkflowContext<TWorkflowData>),
             Direction = PropertyMappingDirection.Output

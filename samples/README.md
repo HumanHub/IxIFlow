@@ -21,5 +21,7 @@ The Site project contains matching Vue designers under `src/activities/demo` and
 | `DeliveryRecipe` | A notification by key: taken by a wait that is open when it arrives, refused if sent earlier |
 | `FraudRecipe` | One workflow cancelling another, whose late answers are refused as cancelled |
 | `ChildApprovalRecipe` | A child workflow sends the request; the answer goes to the child and the parent continues |
+| `PriceLinesRecipe` | A step per order line with `ForEach`: each line sees the running total of the lines before it, and each line's total is kept in line order with `.Result(...)` and `Into` |
+| `InvoiceCustomersRecipe` | Nested lists: a `ForEach` over customers holds a `ForEach` over their lines, and the inner body reads both items |
 
 An answer that must not reach the wrong wait goes through `IWorkflowClient.ReplyAsync(token, answer)`. The token comes from `IActivityContext.Reply` in a request activity, or from `GetOpenWaitsAsync` for a wait without a request.

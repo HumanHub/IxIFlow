@@ -208,6 +208,15 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         return this;
     }
 
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> ForEach<TItem>(
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null)
+    {
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).ForEach(items, body, setup);
+        return this;
+    }
+
     public ITryBuilder<TWorkflowData, TPreviousStepData> Try(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure) =>
         new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).Try(configure);

@@ -141,7 +141,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         try
         {
             return WorkflowValueBinding.Matches(scopes.Step(wait.StepId), payload, workflowData,
-                continuation.GetPrevious(services));
+                continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {

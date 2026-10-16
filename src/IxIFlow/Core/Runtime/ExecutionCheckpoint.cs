@@ -312,8 +312,41 @@ internal sealed class ScopePosition
     public bool RestorePreviousOnExit { get; set; }
     public bool ExitParentScopeOnExit { get; set; }
 
+    /// <summary>While the step at <see cref="NextStepIndex"/> is a <c>ForEach</c>: its saved list, next item and results (D-34).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ForEachState? ForEach { get; set; }
+
+    /// <summary>For an item's frame of a <c>ForEach</c> body, the item's position in the list.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ForEachIndex { get; set; }
+
+    /// <summary>For an item's frame, the value its result step gave, as JSON of the result type.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ForEachResult { get; set; }
+
     [JsonIgnore]
     public object? RuntimeEntryPrevious { get; set; }
+}
+
+/// <summary>
+/// A <c>ForEach</c>'s list, saved once in item order as JSON of the item type, the next item to run, and
+/// the results of the items that ran (D-34). The step's definition gives the types.
+/// </summary>
+internal sealed class ForEachState
+{
+    public List<string> Items { get; set; } = [];
+    public int Next { get; set; }
+    public List<string?> Results { get; set; } = [];
+
+    [JsonIgnore]
+    private readonly Dictionary<int, object?> _read = new();
+
+    public object? Item(int index, Type type)
+    {
+        if (!_read.TryGetValue(index, out var value))
+            _read[index] = value = ForEachTransitions.Deserialize(Items[index], type);
+        return value;
+    }
 }
 
 internal enum TryPhase
