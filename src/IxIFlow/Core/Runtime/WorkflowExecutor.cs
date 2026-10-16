@@ -75,15 +75,16 @@ internal sealed class WorkflowExecutor
                     _transitions.MayBeDue(checkpoint))
                     checkpoint.Inbox.ExpectArrivals();
                 if (!CancellationPending(checkpoint, host))
-                {
                     progressed |= await _intake.TakeAsync(scopes, checkpoint, workflowData, host);
-                    if (_transitions.ProcessExecutionDeadline(instance, checkpoint))
-                    {
-                        progressed = true;
-                        await _intake.TakeAsync(scopes, checkpoint, workflowData, host);
-                    }
-                    progressed |= _transitions.ProcessDueWaits(checkpoint, scopes);
+                // A request the host learned of while the run read its inbox also goes first.
+                if (!CancellationPending(checkpoint, host) &&
+                    _transitions.ProcessExecutionDeadline(instance, checkpoint))
+                {
+                    progressed = true;
+                    await _intake.TakeAsync(scopes, checkpoint, workflowData, host);
                 }
+                if (!CancellationPending(checkpoint, host))
+                    progressed |= _transitions.ProcessDueWaits(checkpoint, scopes);
                 var children = await ProcessDueChildWaitsAsync(checkpoint, host);
                 progressed |= children == ChildCheck.Progressed;
                 // A check that only finds children still running reschedules itself; that is not progress.
@@ -141,7 +142,7 @@ internal sealed class WorkflowExecutor
                     var ready = checkpoint.Continuations.Where(item =>
                         item.Status == ContinuationStatus.Active &&
                         !inFlight.ContainsKey(item.Id) &&
-                        (item.RetryAfterUtc == null || item.RetryAfterUtc <= Now)).ToList();
+                        (item.RetryAfterUtc == null || item.RetryAfterUtc <= checkpoint.Clock.ToStore(Now))).ToList();
                     var runnable = activitiesFull
                         ? ready.FirstOrDefault(item => NextStep(scopes, item)?.StepType != WorkflowStepType.Activity)
                         : ready.Where(item => waitingForActivity.ContainsKey(item.Id))
@@ -228,10 +229,13 @@ internal sealed class WorkflowExecutor
                     continue;
                 if (_transitions.MayBeDue(checkpoint))
                     continue;
+                // Retry times are the store's, as the run last read its clock, so a host whose clock
+                // differs retries when the one that scheduled the retry would have (D-35).
                 var nextRetry = checkpoint.Continuations
                     .Where(item => item.Status == ContinuationStatus.Active &&
-                                   item.RetryAfterUtc > Now)
-                    .Min(item => item.RetryAfterUtc);
+                                   item.RetryAfterUtc > checkpoint.Clock.ToStore(Now))
+                    .Min(item => item.RetryAfterUtc) is { } retryTime
+                    ? checkpoint.Clock.ToLocal(retryTime) : (DateTime?)null;
                 if (inFlight.Count == 0 &&
                     (nextRetry == null || host.Drain.IsCancellationRequested || limitStop != null))
                 {
@@ -512,11 +516,8 @@ internal sealed class WorkflowExecutor
         }
     }
 
-    // A cancellation request the host observed and the run has not applied yet; while one is pending,
-    // the run applies it before it takes events.
     private static bool CancellationPending(ExecutionCheckpoint checkpoint, IExecutionHost host) =>
-        !checkpoint.CancellationRequested && host.ObservedCancellation != null &&
-        checkpoint.Continuations[0].Status != ContinuationStatus.Completed;
+        ContinuationTransitions.CancellationPending(checkpoint, host);
 
     private async Task<bool> ApplyCancellationRequestAsync(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes,
@@ -702,7 +703,8 @@ internal sealed class WorkflowExecutor
 
     /// <summary>
     /// What a control-flow step can change that must be saved before anything outside the instance
-    /// depends on it: the saved waits, which accept events, and their deadlines, which must not move;
+    /// depends on it: the saved waits, which accept events, and their timeouts, from which the store
+    /// stamps deadlines that must not move (D-35);
     /// branches stopped for resolution; scheduled retries, whose deadline must not move; and branches
     /// being cancelled, whose running activities are told to stop. Other control flow is not committed
     /// and is re-derived from the last checkpoint after a crash (A-04).
@@ -710,7 +712,7 @@ internal sealed class WorkflowExecutor
     private readonly record struct EffectBoundary(string Key)
     {
         public static EffectBoundary Of(ExecutionCheckpoint checkpoint) => new(string.Join("|",
-            string.Join(",", checkpoint.Waits.Select(wait => $"{wait.Id}@{wait.DeadlineUtc:O}")),
+            string.Join(",", checkpoint.Waits.Select(wait => $"{wait.Id}@{wait.Timeout}")),
             string.Join(",", checkpoint.Continuations
                 .Where(item => item.Status is ContinuationStatus.WaitingResolution or ContinuationStatus.Cancelling)
                 .Select(item => $"{item.Id}:{item.Status}")),

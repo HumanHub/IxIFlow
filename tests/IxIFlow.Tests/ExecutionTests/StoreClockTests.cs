@@ -1,5 +1,6 @@
 using System.Text.Json;
 using IxIFlow.Builders;
+using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
@@ -187,6 +188,183 @@ public sealed class StoreClockTests
         Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
         Assert.Equal(WaitCloseReason.Cancelled, host.Closed[waitId]);
         Assert.Equal("", Assert.IsType<ClockData>(result.WorkflowData).Outcome);
+    }
+
+    [Fact]
+    public async Task ACancellationLearnedWhileTheInboxIsReadGoesBeforeTheExecutionDeadline()
+    {
+        var time = new FakeTimeProvider(Start);
+        using var services = Services(new Clocks(0));
+        var gate = services.GetRequiredService<Gate>();
+        var host = new DueHost(time);
+        var definition = Workflow.Create<ClockData>("StoreClockCancelDuringRead")
+            .Step<GatedActivity>()
+            .WaitFor<Approval>("approval")
+            .Build();
+        var run = RunExecutorAsync(services, definition, host, time, TimeSpan.FromMinutes(10));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The execution deadline wakes the run, which reads its inbox; while it reads, the host learns
+        // of a cancellation request and the store finds the deadline due.
+        var reading = host.HoldReads();
+        time.Advance(TimeSpan.FromMinutes(11));
+        await reading.WaitAsync(TimeSpan.FromSeconds(10));
+        host.Cancel();
+        host.ReleaseReads();
+        gate.Release.TrySetResult();
+
+        var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AWaitTimesOutWhileASiblingBranchRuns(bool answersARequest)
+    {
+        using var services = RealServices();
+        var gate = services.GetRequiredService<Gate>();
+        var store = services.GetRequiredService<IWorkflowStateRepository>();
+        var definition = answersARequest
+            ? Workflow.Create<ClockData>("SiblingRunsWhileARequestWaits")
+                .Step<NoopActivity>()
+                .Parallel(parallel => parallel
+                    .Do(branch => branch.Step<GatedActivity>())
+                    .Do(branch => branch
+                        .Request<AskActivity>("approval")
+                        .WaitFor<Approval>("approval", configure: ShortTimeout)))
+                .Build()
+            : Workflow.Create<ClockData>("SiblingRunsWhileAWaitWaits")
+                .Step<NoopActivity>()
+                .Parallel(parallel => parallel
+                    .Do(branch => branch.Step<GatedActivity>())
+                    .Do(branch => branch.WaitFor<Approval>("approval", configure: ShortTimeout)))
+                .Build();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var run = Engine(services).RunAsync(definition, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // No event comes and the sibling keeps running: the wait still times out on time.
+        var waitId = await OpenWaitIdAsync(store, instanceId);
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        StoredWait? wait;
+        while ((wait = await store.GetWaitAsync(instanceId, waitId))!.IsOpen && DateTime.UtcNow < deadline)
+            await Task.Delay(20);
+        Assert.Equal(WaitCloseReason.TimedOut, wait.CloseReason);
+        Assert.False(run.IsCompleted);
+
+        gate.Release.TrySetResult();
+        var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("timeout", Assert.IsType<ClockData>(result.WorkflowData).Outcome);
+    }
+
+    [Fact]
+    public async Task AChildsWaitTimesOutWhileItsParentRunsASiblingInTheOnlySlot()
+    {
+        using var services = RealServices(slots: 1);
+        var gate = services.GetRequiredService<Gate>();
+        var store = services.GetRequiredService<IWorkflowStateRepository>();
+        var child = Workflow.Create<ClockData>("StoreClockChild")
+            .Step<NoopActivity>()
+            .WaitFor<Approval>("approval", configure: ShortTimeout)
+            .Build();
+        var parent = Workflow.Create<ClockData>("StoreClockParent")
+            .Step<NoopActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch.Step<GatedActivity>())
+                .Do(branch => branch.Invoke<ClockData>("StoreClockChild", 1)))
+            .Build();
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        var instanceId = Guid.NewGuid().ToString("N");
+        var run = Engine(services).RunAsync(parent, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The child runs in its parent's slot, so the parent checks it at the child's deadline.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        WorkflowInstance? childInstance = null;
+        while (DateTime.UtcNow < deadline &&
+               (childInstance = (await store.GetWorkflowInstancesByNameAsync("StoreClockChild"))
+                   .SingleOrDefault(item => item.ParentInstanceId == instanceId))?.Status != WorkflowStatus.Completed)
+            await Task.Delay(20);
+        Assert.Equal(WorkflowStatus.Completed, childInstance?.Status);
+        Assert.False(run.IsCompleted);
+
+        gate.Release.TrySetResult();
+        Assert.Equal(WorkflowExecutionStatus.Success, (await run.WaitAsync(TimeSpan.FromSeconds(10))).Status);
+    }
+
+    [Fact]
+    public async Task ARetryScheduledByAHostWithAFastClockIsTakenOnTimeByAnother()
+    {
+        var store = new FakeTimeProvider(Start);
+        var fast = new FakeTimeProvider(Start.AddMinutes(5));
+        var correct = new FakeTimeProvider(Start);
+        var repository = new InMemoryWorkflowStateRepository(store);
+        var failures = new FailOnce();
+        var definition = Workflow.Create<ClockData>("StoreClockRetryHandoff")
+            .Step<NoopActivity>()
+            .Saga(saga => saga.Step<FailOnceActivity>(step => step
+                .OnError<InvalidOperationException>(handler => handler.ThenRetry(new RetryPolicy(
+                    TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1), 1, 1)))))
+            .Build();
+
+        // A host five minutes fast runs the step, which fails, and parks the retry for a minute.
+        string instanceId;
+        using (var first = HostServices(fast, repository, failures))
+        {
+            instanceId = await Engine(first).StartAsync(definition, new ClockData());
+            var parked = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (await repository.GetWorkflowInstanceAsync(instanceId) is not
+                   { Status: WorkflowStatus.Running, RunnableAtUtc: { } due } || due < Start.UtcDateTime.AddSeconds(30))
+            {
+                Assert.True(DateTime.UtcNow < parked, "The retry was never parked");
+                await Task.Delay(10);
+            }
+        }
+
+        // That host is gone. A minute later on the store's clock, a host with the right time retries.
+        store.Advance(TimeSpan.FromSeconds(61));
+        correct.Advance(TimeSpan.FromSeconds(61));
+        using var second = HostServices(correct, repository, failures);
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await RecoverOnceAsync(second, correct);
+
+        Assert.Equal(WorkflowStatus.Completed, (await repository.GetWorkflowInstanceAsync(instanceId))!.Status);
+        Assert.Equal(2, failures.Attempts);
+    }
+
+    private static ServiceProvider HostServices(TimeProvider time, IWorkflowStateRepository repository,
+        FailOnce failures)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(time);
+        services.AddSingleton(repository);
+        services.AddIxIFlow();
+        services.AddSingleton(failures);
+        services.AddTransient<NoopActivity>();
+        services.AddTransient<FailOnceActivity>();
+        return services.BuildServiceProvider();
+    }
+
+    private static void ShortTimeout<TPrevious>(ISuspendSetupBuilder<ClockData, Approval, TPrevious> wait)
+        where TPrevious : class => wait
+        .TimeoutAfter(TimeSpan.FromMilliseconds(300))
+        .OnTimeout(path => path.Step<MarkActivity>(step => step
+            .Input(activity => activity.Value).From(_ => "timeout")
+            .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome)));
+
+    private static async Task<string> OpenWaitIdAsync(IWorkflowStateRepository store, string instanceId)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (true)
+        {
+            if ((await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId, Key: "approval")))
+                .SingleOrDefault() is { } open)
+                return open.WaitId;
+            Assert.True(DateTime.UtcNow < deadline, "The wait never opened");
+            await Task.Delay(10);
+        }
     }
 
     [Fact]
@@ -397,22 +575,42 @@ public sealed class StoreClockTests
         return services.BuildServiceProvider();
     }
 
+    // The system clock for host and store, as a deployment has; a test waits for real deadlines.
+    private static ServiceProvider RealServices(int? slots = null)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        if (slots is { } count)
+            services.AddIxIFlow(options => options.Slots = count);
+        else
+            services.AddIxIFlow();
+        services.AddSingleton<Gate>();
+        services.AddTransient<NoopActivity>();
+        services.AddTransient<MarkActivity>();
+        services.AddTransient<GatedActivity>();
+        services.AddTransient<AskActivity>();
+        return services.BuildServiceProvider();
+    }
+
     private static IWorkflowClient Engine(IServiceProvider services) =>
         services.GetRequiredService<IWorkflowClient>();
 
     private static async Task<WorkflowInstance> InstanceAsync(IServiceProvider services, string instanceId) =>
         (await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(instanceId))!;
 
-    private static async Task RecoverOnceAsync(IServiceProvider services, Clocks clocks)
+    private static Task RecoverOnceAsync(IServiceProvider services, Clocks clocks) =>
+        RecoverOnceAsync(services, clocks.Host);
+
+    private static async Task RecoverOnceAsync(IServiceProvider services, TimeProvider hostTime)
     {
         using var scanner = new WorkflowRecoveryService(services.GetRequiredService<IServiceScopeFactory>(),
             services.GetRequiredService<IWorkflowStateRepository>(), NullLogger<WorkflowRecoveryService>.Instance,
-            clocks.Host);
+            hostTime);
         await scanner.RecoverOnceAsync(CancellationToken.None);
     }
 
     private static Task<WorkflowExecutionResult> RunExecutorAsync(IServiceProvider services,
-        WorkflowDefinition definition, IExecutionHost host, TimeProvider time)
+        WorkflowDefinition definition, IExecutionHost host, TimeProvider time, TimeSpan? executionTimeout = null)
     {
         var now = time.GetUtcNow().UtcDateTime;
         var data = new ClockData();
@@ -430,6 +628,9 @@ public sealed class StoreClockTests
         var checkpoint = new ExecutionCheckpoint
         {
             DefinitionFingerprint = new WorkflowScopeCatalog(definition).Fingerprint,
+            ExecutionTimeout = executionTimeout,
+            ExecutionTimerId = executionTimeout != null ? "execution" : null,
+            ExecutionDeadlineUtc = now + executionTimeout,
             Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
         };
         var executor = new WorkflowExecutor(services, services.GetRequiredService<IActivityExecutor>(), time);
@@ -459,6 +660,19 @@ public sealed class StoreClockTests
         }
 
         public void Cancel() => _cancelled = true;
+
+        private TaskCompletionSource? _readStarted;
+        private TaskCompletionSource? _readRelease;
+
+        /// <summary>Holds the next inbox read until <see cref="ReleaseReads"/>; the task completes when it starts.</summary>
+        public Task HoldReads()
+        {
+            _readRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _readStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            return _readStarted.Task;
+        }
+
+        public void ReleaseReads() => _readRelease?.TrySetResult();
 
         public bool PersistsState => true;
         public CancellationToken Drain => CancellationToken.None;
@@ -493,12 +707,16 @@ public sealed class StoreClockTests
         {
         }
 
-        public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit)
+        public async Task<InboxPage> ReadInboxAsync(long afterSequence, int limit)
         {
+            if (_readRelease is { } release)
+            {
+                _readStarted!.TrySetResult();
+                await release.Task;
+            }
             var now = time.GetUtcNow().UtcDateTime;
             var deadlines = Opened.ToDictionary(id => id, _ => _cancelled ? now.AddHours(-1) : now.AddHours(1));
-            return Task.FromResult(new InboxPage([], afterSequence, Opened.ToDictionary(id => id, _ => 0L),
-                deadlines, now));
+            return new InboxPage([], afterSequence, Opened.ToDictionary(id => id, _ => 0L), deadlines, now);
         }
 
         public Task<StoredWait?> ReadWaitAsync(string waitId) => Task.FromResult<StoredWait?>(null);
@@ -550,6 +768,29 @@ public sealed class StoreClockTests
     {
         public string Value { get; set; } = "";
 
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    /// <summary>Counts attempts; the first one fails.</summary>
+    public sealed class FailOnce
+    {
+        private int _attempts;
+
+        public int Attempts => Volatile.Read(ref _attempts);
+
+        public bool First() => Interlocked.Increment(ref _attempts) == 1;
+    }
+
+    public sealed class FailOnceActivity(FailOnce failures) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            failures.First() ? throw new InvalidOperationException("Planned failure") : Task.CompletedTask;
+    }
+
+    /// <summary>A request whose answer never comes.</summary>
+    public sealed class AskActivity : IRequestActivity<Approval>
+    {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }

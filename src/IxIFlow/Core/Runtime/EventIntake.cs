@@ -42,6 +42,9 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             if (page.StoreTimeUtc is { } storeTime)
                 checkpoint.Clock.Observe(storeTime, Now);
             checkpoint.ReadDeadlines(page);
+            // A cancellation request the host learned of meanwhile goes first; the events stay unread.
+            if (ContinuationTransitions.CancellationPending(checkpoint, host))
+                return decided;
             if (checkpoint.ExecutionTimerOpen && page.IsDue(checkpoint.ExecutionTimerId!))
             {
                 inbox.Due([checkpoint.ExecutionTimerId!]);

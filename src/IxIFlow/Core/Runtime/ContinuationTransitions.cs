@@ -15,6 +15,18 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     /// </summary>
     public bool MayBeDue(ExecutionCheckpoint checkpoint) => checkpoint.NextDeadlineLocal() <= Now;
 
+    /// <summary>
+    /// A cancellation request the host observed and the run has not applied yet; while one is pending,
+    /// the run applies it before it takes events or deadlines.
+    /// </summary>
+    public static bool CancellationPending(ExecutionCheckpoint checkpoint, IExecutionHost host) =>
+        !checkpoint.CancellationRequested && host.ObservedCancellation != null &&
+        checkpoint.Continuations[0].Status != ContinuationStatus.Completed;
+
+    // The store's time as the run last read its clock. A deadline the run sets is an estimate until it
+    // reads the one the store stamped; a retry time stays the run's estimate (D-35).
+    private DateTime StoreNow(ExecutionCheckpoint checkpoint) => checkpoint.Clock.ToStore(Now);
+
     public static bool RootFinished(ExecutionCheckpoint checkpoint) =>
         checkpoint.Continuations[0].Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled;
 
@@ -200,7 +212,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 break;
 
             case WorkflowStepType.Saga:
-                SagaScopeTransitions.Enter(scopes, step, position, continuation, services, Now);
+                SagaScopeTransitions.Enter(scopes, step, position, continuation, services, StoreNow(checkpoint));
                 break;
 
             case WorkflowStepType.Loop:
@@ -254,6 +266,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     StepId = scopes.Id(step),
                     Key = key,
                     Timeout = step.WaitTimeout,
+                    DeadlineUtc = StoreNow(checkpoint) + step.WaitTimeout,
                     EventType = step.ResumeEventType?.AssemblyQualifiedName
                         ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                             $"Wait step '{step.Id}' has no event type")
@@ -269,7 +282,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     ContinuationId = continuation.Id,
                     StepId = scopes.Id(step),
                     Key = "delay",
-                    Timeout = step.DelayDuration!.Value
+                    Timeout = step.DelayDuration!.Value,
+                    DeadlineUtc = StoreNow(checkpoint) + step.DelayDuration!.Value
                 });
                 continuation.Status = ContinuationStatus.Waiting;
                 break;
@@ -304,7 +318,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 item.IsReply && item.StepId == stepId && item.ScopeActivationId == activation)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"The request '{step.ReplyToRequest}' this wait answers has no open wait");
-        wait.Timeout ??= step.WaitTimeout;
+        if (wait.Timeout == null && step.WaitTimeout is { } timeout)
+        {
+            wait.Timeout = timeout;
+            wait.DeadlineUtc = StoreNow(checkpoint) + timeout;
+        }
         continuation.Status = ContinuationStatus.Waiting;
     }
 
@@ -502,7 +520,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (WorkflowEngineException.IsEngineFailure(error))
             return false;
         if (allowStepRetry && !continuation.CancellationUnwind &&
-            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, Now))
+            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, StoreNow(checkpoint)))
             return true;
         if (continuation.CancellationUnwind)
         {
