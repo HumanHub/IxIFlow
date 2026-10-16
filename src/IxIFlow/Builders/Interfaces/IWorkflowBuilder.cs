@@ -154,6 +154,8 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// remove no item. Each item sees the data changes of the items before it. The body reads the item
     /// with <c>ctx.Item(item)</c> and its position with <c>ctx.Index(item)</c>, and may end with
     /// <see cref="Result{TResult}"/>; <paramref name="setup"/> names the handle and says where the results go.
+    /// Items are read-only: outputs in the body write workflow data, through targets that are chains of
+    /// members, indexes and built-in casts, such as <c>ctx.WorkflowData.Rows[ctx.Index(item)].Value</c>.
     /// </summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,

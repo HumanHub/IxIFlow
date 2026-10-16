@@ -4,8 +4,8 @@ namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// The member chain an output writes, from its context parameter, such as <c>WorkflowData.Total</c>.
-/// An index is written <c>[]</c>, whatever it is, so two writes into the same list overlap, and a cast
-/// is passed through. A chain that starts at a <c>ForEach</c> item, <c>ctx.Item(...)</c>, begins with
+/// An index is written <c>[]</c>, whatever it is, so two writes into the same list overlap, and a
+/// built-in cast is passed through. A chain that starts at a <c>ForEach</c> item, <c>ctx.Item(...)</c>, begins with
 /// <see cref="ItemRoot"/>.
 /// </summary>
 internal static class MemberPath
@@ -33,8 +33,9 @@ internal static class MemberPath
                     parts.Push("[]");
                     current = array.Left;
                     continue;
+                // A built-in cast keeps the object; a user-defined conversion may return another one.
                 case UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked or
-                    ExpressionType.TypeAs } cast:
+                    ExpressionType.TypeAs, Method: null } cast:
                     current = cast.Operand;
                     continue;
                 case MethodCallExpression call when IsItem(call):
