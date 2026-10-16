@@ -357,10 +357,11 @@ internal sealed class WorkflowExecutor
             if (limitStop != null)
                 return await StopForLimitAsync(instance, checkpoint, checkpoint.RootData, host, scopes, limitStop);
 
-            // A drained run stops before the instance is idle; it keeps its status and continues on
-            // recovery from what was committed.
+            // A drained run stops before the instance is idle, with branches still to advance or items still
+            // to admit; it keeps its status and continues on recovery from what was committed.
             if (host.Drain.IsCancellationRequested &&
-                checkpoint.Continuations.Any(item => item.Status == ContinuationStatus.Active))
+                (checkpoint.Continuations.Any(item => item.Status == ContinuationStatus.Active) ||
+                 ForEachTransitions.MayAdmit(scopes, checkpoint)))
             {
                 if (uncommitted.IsPending(instance))
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
