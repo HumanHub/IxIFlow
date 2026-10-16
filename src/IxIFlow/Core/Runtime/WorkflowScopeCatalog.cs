@@ -16,7 +16,8 @@ internal sealed class WorkflowScopeCatalog
         ValidateSupportedSteps();
         RequestPairing.Pair(definition.Steps);
         ForEachRules.Validate(definition.Steps);
-        Fingerprint = ComputeFingerprint();
+        ParallelRules.Validate(definition.Steps);
+        Fingerprint = ComputeFingerprint(definition);
     }
 
     public string Fingerprint { get; }
@@ -136,9 +137,11 @@ internal sealed class WorkflowScopeCatalog
         }
     }
 
-    private string ComputeFingerprint()
+    private string ComputeFingerprint(WorkflowDefinition definition)
     {
-        var signature = string.Join("\n", _steps.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+        // Combiners declared on the data type decide how joins merge, so they are part of it (spec E-05).
+        var signature = "combiners:" + ParallelRules.CombinerSignature(definition.WorkflowDataType) + "\n" +
+            string.Join("\n", _steps.OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .Select(pair =>
             {
                 var step = pair.Value;

@@ -122,10 +122,43 @@ internal sealed class ExecutionCheckpoint
     {
         if (continuation.ParentJoinId == null)
             return RootData;
-        if (continuation.Data != null)
-            return continuation.Data;
-        var join = Joins.Single(item => item.Id == continuation.ParentJoinId);
-        return DataOf(Continuations.Single(item => item.Id == join.ParentContinuationId));
+        return continuation.Data ??= BranchData.Rebuild(DataOf(ForkParent(continuation)),
+            continuation.DataChanges ?? []);
+    }
+
+    /// <summary>Replaces the data <paramref name="continuation"/> reads and writes, as a join's merge does.</summary>
+    public void SetData(ContinuationState continuation, object data)
+    {
+        if (continuation.ParentJoinId == null)
+        {
+            RootData = data;
+            return;
+        }
+        continuation.Data = data;
+        continuation.DataChanged = true;
+    }
+
+    /// <summary>The continuation a branch was forked from.</summary>
+    public ContinuationState ForkParent(ContinuationState branch)
+    {
+        var join = Joins.Single(item => item.Id == branch.ParentJoinId);
+        return Continuations.Single(item => item.Id == join.ParentContinuationId);
+    }
+
+    /// <summary>
+    /// Records, for every branch whose copy may have changed, its changes against the data it was forked
+    /// from, so a recovery rebuilds the same copy (spec E-01). A branch is never recorded while its own
+    /// activity runs: it is marked only when it settles or advances.
+    /// </summary>
+    public void RecordBranchChanges()
+    {
+        foreach (var branch in Continuations.Where(item => item.ParentJoinId != null && item.DataChanged &&
+                                                           item.Data != null))
+        {
+            var changes = BranchData.Changes(DataOf(ForkParent(branch)), branch.Data!);
+            branch.DataChanges = changes.Count == 0 ? null : changes;
+            branch.DataChanged = false;
+        }
     }
 
     /// <summary>
@@ -225,11 +258,20 @@ internal sealed class ContinuationState
     public object? RuntimePrevious { get; set; }
 
     /// <summary>
-    /// For a branch, its own copy of the workflow data (D-14); null until it is needed. The root reads
-    /// and writes the instance's data, <see cref="ExecutionCheckpoint.RootData"/>.
+    /// For a branch, its own copy of the workflow data (D-14); null until it is needed, when it is
+    /// rebuilt from the data it was forked from and <see cref="DataChanges"/>. The root reads and writes
+    /// the instance's data, <see cref="ExecutionCheckpoint.RootData"/>.
     /// </summary>
     [JsonIgnore]
     public object? Data { get; set; }
+
+    /// <summary>For a branch, its changes to the data it was forked from, as of the last commit (spec E-01).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<DataChange>? DataChanges { get; set; }
+
+    /// <summary>Set when the branch may have changed its copy since its changes were last recorded.</summary>
+    [JsonIgnore]
+    public bool DataChanged { get; set; }
 
     public object? GetPrevious(IServiceProvider services) =>
         RuntimePrevious ??= Previous?.Read(services);
@@ -468,6 +510,13 @@ internal sealed class ParallelJoinState
     public ParallelJoinMode Mode { get; set; }
     public bool IsCompleting { get; set; }
     public bool ResumeParentWithoutAdvance { get; set; }
+
+    /// <summary>Set when a provisional merge found branches in conflict; the join fails with it (spec E-09).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ConflictPath { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Conflict { get; set; }
 }
 
 internal sealed class WaitState

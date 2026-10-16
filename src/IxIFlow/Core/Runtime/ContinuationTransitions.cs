@@ -97,6 +97,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         int maxForEachItems = int.MaxValue)
     {
         var workflowData = checkpoint.DataOf(continuation);
+        // A branch's copy may change in any transition; its changes are recorded at the next commit.
+        continuation.DataChanged = continuation.ParentJoinId != null;
         if (continuation.AcceptedWait is { } accepted)
         {
             var acceptedPosition = continuation.Stack[^1];
@@ -131,7 +133,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             if (continuation.Stack.Count == 0)
             {
                 continuation.Status = ContinuationStatus.Completed;
-                CompleteJoin(scopes, checkpoint, continuation, workflowData);
+                CompleteJoin(scopes, checkpoint, continuation);
             }
             else
             {
@@ -422,11 +424,14 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         checkpoint.Joins.Add(join);
         parent.Status = ContinuationStatus.Joining;
 
+        // Each branch works on its own copy of the data as it is at the fork (D-14).
+        var forkData = checkpoint.DataOf(parent);
         for (var index = 0; index < step.ParallelBranches.Count; index++)
         {
             var child = new ContinuationState
             {
                 ParentJoinId = join.Id,
+                Data = BranchData.Copy(forkData),
                 InheritedItems = ForEachTransitions.Inherited(scopes, parent),
                 Previous = parent.Previous,
                 RuntimePrevious = parent.RuntimePrevious,
@@ -440,8 +445,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     private static void CompleteJoin(
         WorkflowScopeCatalog scopes,
         ExecutionCheckpoint checkpoint,
-        ContinuationState child,
-        object workflowData)
+        ContinuationState child)
     {
         if (child.ParentJoinId == null)
             return;
@@ -455,11 +459,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         {
             ParallelJoinMode.WaitAll => allCompleted,
             ParallelJoinMode.WaitAny => true,
-            ParallelJoinMode.WaitConditionally =>
-                (scopes.Step(join.StepId).ParallelCompletionCondition?.Invoke(workflowData)
-                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                     "Conditional parallel join has no completion condition")) ||
-                allCompleted,
+            ParallelJoinMode.WaitConditionally => allCompleted || ConditionHolds(scopes, checkpoint, join, children),
             _ => throw new ArgumentOutOfRangeException(nameof(join.Mode))
         };
         if (!shouldJoin)
@@ -507,8 +507,50 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             : ContinuationStatus.Cancelling;
     }
 
-    /// <summary>Completes joins whose branches have all finished; returns true when one completed.</summary>
-    public static bool FinishCompletingJoins(ExecutionCheckpoint checkpoint)
+    // A conditional join decides on the provisional merge of the branches completed so far, in
+    // declaration order (spec E-09). Branches already in conflict can never merge, so the join decides at
+    // once and fails with the conflict.
+    private static bool ConditionHolds(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ParallelJoinState join, List<ContinuationState> children)
+    {
+        var condition = scopes.Step(join.StepId).ParallelCompletionCondition
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                "Conditional parallel join has no completion condition");
+        object provisional;
+        try
+        {
+            provisional = Merged(checkpoint, join, children);
+        }
+        catch (JoinConflictException conflict)
+        {
+            join.ConflictPath = conflict.Path;
+            join.Conflict = conflict.Message;
+            return true;
+        }
+        return condition(provisional);
+    }
+
+    // The parent's data with the changes of the completed branches, in declaration order.
+    private static object Merged(ExecutionCheckpoint checkpoint, ParallelJoinState join,
+        IEnumerable<ContinuationState> children)
+    {
+        var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+        var baseline = checkpoint.DataOf(parent);
+        var completed = children.Where(item => item.Status == ContinuationStatus.Completed)
+            .OrderBy(item => join.ChildContinuationIds.IndexOf(item.Id))
+            .Select(item => (IReadOnlyList<DataChange>)BranchData.Changes(baseline, checkpoint.DataOf(item)))
+            .ToList();
+        return BranchData.Merge(baseline, completed);
+    }
+
+    /// <summary>
+    /// Completes joins whose branches have all finished; returns true when one completed. A join that
+    /// completes merges its completed branches into the parent's data (D-14). One whose branches are in
+    /// conflict leaves the parent at the parallel step and is listed in <paramref name="conflicts"/>, to be
+    /// raised there; one that ends through a failure or a cancellation merges nothing.
+    /// </summary>
+    public static bool FinishCompletingJoins(ExecutionCheckpoint checkpoint,
+        List<(ContinuationState Parent, JoinConflictException Conflict)> conflicts)
     {
         var completed = false;
         foreach (var join in checkpoint.Joins.Where(item => item.IsCompleting).ToList())
@@ -517,6 +559,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             if (!children.All(item => item.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled))
                 continue;
             var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+            // A branch's copy is rebuilt through its join, so every copy is loaded before the join goes.
+            foreach (var child in children)
+                checkpoint.DataOf(child);
             checkpoint.Joins.Remove(join);
             completed = true;
             if (checkpoint.UnhandledError != null)
@@ -536,9 +581,20 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 parent.Status = ContinuationStatus.Cancelling;
             else
             {
-                if (!join.ResumeParentWithoutAdvance)
-                    parent.Stack[^1].NextStepIndex++;
                 parent.Status = ContinuationStatus.Active;
+                if (join.ResumeParentWithoutAdvance)
+                    continue;
+                try
+                {
+                    if (join.Conflict != null)
+                        throw new JoinConflictException(join.ConflictPath ?? "", join.Conflict);
+                    checkpoint.SetData(parent, Merged(checkpoint, join, children));
+                    parent.Stack[^1].NextStepIndex++;
+                }
+                catch (JoinConflictException conflict)
+                {
+                    conflicts.Add((parent, conflict));
+                }
             }
         }
         return completed;
