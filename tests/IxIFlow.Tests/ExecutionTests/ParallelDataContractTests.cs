@@ -329,6 +329,50 @@ public sealed class ParallelDataContractTests
     }
 
     [Fact]
+    [Trait("Spec", "E-07")]
+    public async Task AReplacedStructIsPutBackEvenWhenItsTypeCallsTheTwoEqual()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<StructAccount>("EqualStructsReplaced")
+            .Step<Noop>()
+            .Try(attempt => attempt.Parallel(parallel => parallel
+                .Do(first => first.Step<RebalanceStruct>(step => step
+                    .Output(activity => activity.Primary).To(ctx => ctx.WorkflowData.Primary)))
+                .Do(second => second.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "renamed")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Name)))))
+            .Catch<JoinConflictException>(handler => handler.Step<Record>(step => step
+                .Input(activity => activity.Value).From(ctx => $"caught {ctx.WorkflowData.Primary.Amount}")))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new StructAccount { Sealed = true });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["caught 1"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-01")]
+    public void StateOnlyAnUnusedConstructorSetsIsRefused()
+    {
+        // The serializer makes a struct with its parameterless constructor unless told otherwise.
+        Assert.Contains("'Primary.Id' has no setter and no constructor parameter the serializer uses",
+            Assert.Throws<WorkflowEngineException>(() => Workflow.Create<LossyAccount>("UnusedConstructor").Step<Noop>()
+                .Parallel(parallel => parallel.Do(only => only.Step<Noop>()))
+                .Build()).Message);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-01")]
+    public void APopulatedCollectionIsRefusedWhateverItsConstructor()
+    {
+        Assert.Contains("'Values' is read back by adding", Assert.Throws<WorkflowEngineException>(() =>
+            Workflow.Create<SeededBag>("PopulatedBag").Step<Noop>()
+                .Parallel(parallel => parallel.Do(only => only.Step<Noop>()))
+                .Build()).Message);
+    }
+
+    [Fact]
     [Trait("Spec", "E-05")]
     public async Task ACombinerInsideADictionarysValuesMergesItsBranches()
     {
@@ -811,9 +855,12 @@ public sealed class ParallelDataContractTests
         public string Scratch { get; set; } = "";
     }
 
+    /// <summary>The total is computed from a field, so a copy does not need to read it back.</summary>
     public sealed class Priced
     {
-        public Money Total { get; } = new();
+        private readonly Money _total = new();
+
+        public Money Total => _total;
     }
 
     [JsonConverter(typeof(MoneyConverter))]
@@ -864,6 +911,59 @@ public sealed class ParallelDataContractTests
 
         [JsonIgnore]
         public bool Sealed { get; set; }
+    }
+
+    /// <summary>The name may not change once the account is sealed; the primary entry is a struct.</summary>
+    public sealed class StructAccount
+    {
+        private string _name = "";
+
+        public Entry Primary { get; set; } = new(1, 1);
+
+        public string Name
+        {
+            get => _name;
+            set => _name = Sealed ? throw new InvalidOperationException("The account is sealed") : value;
+        }
+
+        [JsonIgnore]
+        public bool Sealed { get; set; }
+    }
+
+    /// <summary>Entries are equal when their IDs are, whatever their amounts.</summary>
+    public readonly struct Entry : IEquatable<Entry>
+    {
+        [JsonConstructor]
+        public Entry(int id, int amount) => (Id, Amount) = (id, amount);
+
+        public int Id { get; }
+        public int Amount { get; }
+        public bool Equals(Entry other) => other.Id == Id;
+        public override bool Equals(object? other) => other is Entry entry && Equals(entry);
+        public override int GetHashCode() => Id;
+    }
+
+    public sealed class LossyAccount
+    {
+        public LossyEntry Primary { get; set; } = new(1, 1);
+    }
+
+    public readonly struct LossyEntry(int id, int amount)
+    {
+        public int Id { get; } = id;
+        public int Amount { get; } = amount;
+    }
+
+    /// <summary>A list that can only be made with a first item.</summary>
+    public sealed class Bag : List<int>
+    {
+        public Bag(int first) => Add(first);
+    }
+
+    public sealed class SeededBag
+    {
+        [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+        public Bag Values { get; set; } = new(1);
     }
 
     /// <summary>Entities are equal when their IDs are, whatever their amounts.</summary>
@@ -957,7 +1057,9 @@ public sealed class ParallelDataContractTests
 
     public sealed class PricedLine
     {
-        public Money Total { get; } = new();
+        private readonly Money _total = new();
+
+        public Money Total => _total;
     }
 
     public sealed class Grid
@@ -1128,6 +1230,17 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Map = Map.Add("b", 2);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class RebalanceStruct : IAsyncActivity
+    {
+        public Entry Primary { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Primary = new Entry(1, 2);
             return Task.CompletedTask;
         }
     }
