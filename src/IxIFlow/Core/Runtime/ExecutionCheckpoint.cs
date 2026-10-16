@@ -106,6 +106,28 @@ internal sealed class ExecutionCheckpoint
             .Append(ExecutionTimerOpen && ExecutionDeadlineUtc is { } execution ? Clock.ToLocal(execution) : null)
             .Min();
 
+    private object? _rootData;
+
+    /// <summary>The instance's workflow data, which the root continuation reads and writes.</summary>
+    [JsonIgnore]
+    public object RootData
+    {
+        get => _rootData ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+            "The run has no workflow data");
+        set => _rootData = value;
+    }
+
+    /// <summary>The workflow data <paramref name="continuation"/> reads and writes.</summary>
+    public object DataOf(ContinuationState continuation)
+    {
+        if (continuation.ParentJoinId == null)
+            return RootData;
+        if (continuation.Data != null)
+            return continuation.Data;
+        var join = Joins.Single(item => item.Id == continuation.ParentJoinId);
+        return DataOf(Continuations.Single(item => item.Id == join.ParentContinuationId));
+    }
+
     /// <summary>
     /// Closes the reply waits, and drops the answers kept, of scope occurrences that have ended: their
     /// iteration or branch finished, failed or was cancelled before the request's <c>WaitFor</c> took the
@@ -201,6 +223,13 @@ internal sealed class ContinuationState
 
     [JsonIgnore]
     public object? RuntimePrevious { get; set; }
+
+    /// <summary>
+    /// For a branch, its own copy of the workflow data (D-14); null until it is needed. The root reads
+    /// and writes the instance's data, <see cref="ExecutionCheckpoint.RootData"/>.
+    /// </summary>
+    [JsonIgnore]
+    public object? Data { get; set; }
 
     public object? GetPrevious(IServiceProvider services) =>
         RuntimePrevious ??= Previous?.Read(services);

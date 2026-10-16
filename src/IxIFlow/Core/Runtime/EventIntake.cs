@@ -23,7 +23,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     /// nothing has no store, so its own clock decides its execution deadline.
     /// </summary>
     public async Task<bool> TakeAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        object workflowData, IExecutionHost host)
+        IExecutionHost host)
     {
         var inbox = checkpoint.Inbox;
         if (!host.PersistsState)
@@ -56,7 +56,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
                 if (inbox.IsDecided(stored.EventId) || checkpoint.Continuations.Any(item =>
                         item.AcceptedWait?.EventId == stored.EventId))
                     continue;
-                await DecideAsync(scopes, checkpoint, workflowData, host, stored, page);
+                await DecideAsync(scopes, checkpoint, host, stored, page);
                 decided = true;
             }
             inbox.Read(page.ReadThrough);
@@ -71,7 +71,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     }
 
     private async Task DecideAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        object workflowData, IExecutionHost host, StoredWorkflowEvent stored, InboxPage page)
+        IExecutionHost host, StoredWorkflowEvent stored, InboxPage page)
     {
         var payload = Read(stored);
         if (payload == null)
@@ -101,7 +101,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         var aboutIt = typed.Where(wait => wait.Subject == null ||
                                           string.Equals(wait.Subject, stored.Subject, StringComparison.Ordinal))
             .ToList();
-        var matching = aboutIt.Where(wait => Accepts(scopes, checkpoint, wait, payload, workflowData)).ToList();
+        var matching = aboutIt.Where(wait => Accepts(scopes, checkpoint, wait, payload)).ToList();
         if (matching.Count == 1)
         {
             Consume(scopes, checkpoint, stored, matching[0], payload);
@@ -133,14 +133,14 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     // A child decides its own waits' conditions when the event is forwarded to it. A condition that
     // throws does not accept the event; the instance keeps waiting.
     private bool Accepts(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, WaitState wait,
-        object payload, object workflowData)
+        object payload)
     {
         if (wait.ChildWorkflowId != null)
             return true;
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
         try
         {
-            return WorkflowValueBinding.Matches(scopes.Step(wait.StepId), payload, workflowData,
+            return WorkflowValueBinding.Matches(scopes.Step(wait.StepId), payload, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
         }
         catch (Exception error) when (error is not OutOfMemoryException)

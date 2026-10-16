@@ -21,8 +21,6 @@ internal sealed class ActivityAttempts(
         WorkflowStep step,
         WorkflowDefinition definition,
         WorkflowInstance instance,
-        object sourceData,
-        object workflowData,
         IExecutionHost host,
         CancellationTokenSource activityCancellation)
     {
@@ -46,7 +44,7 @@ internal sealed class ActivityAttempts(
         {
             var compensationInputs = SagaScopeTransitions.PrepareCompensationActivity(
                 scopes, continuation, services);
-            prepared = await _activities.PrepareAsync(step, definition, instance, sourceData,
+            prepared = await _activities.PrepareAsync(step, definition, instance, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services),
                 TryScopeTransitions.CatchFault(checkpoint, continuation, services),
                 activityCancellation.Token, invocationId, attempt.Id,
@@ -85,8 +83,7 @@ internal sealed class ActivityAttempts(
                 }
             }
             if (step.RequestName != null)
-                prepared.SetReply(ReplyAddressFor(scopes, checkpoint, continuation, step, instance, pending,
-                    workflowData));
+                prepared.SetReply(ReplyAddressFor(scopes, checkpoint, continuation, step, instance, pending));
         }
         catch (Exception error) when (!isRecovery && !WorkflowEngineException.IsEngineFailure(error))
         {
@@ -98,7 +95,7 @@ internal sealed class ActivityAttempts(
         {
             pending!.ResolutionReason = $"Activity recovery could not be prepared: {error.Message}";
             continuation.Status = ContinuationStatus.WaitingResolution;
-            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
             return null;
         }
         catch (WorkflowEngineException error)
@@ -111,7 +108,7 @@ internal sealed class ActivityAttempts(
         {
             pending!.ResolutionReason = "The activity has no recovery contract";
             continuation.Status = ContinuationStatus.WaitingResolution;
-            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
             return null;
         }
 
@@ -139,7 +136,7 @@ internal sealed class ActivityAttempts(
         if (instance.TracingEnabled)
             instance.ExecutionHistory.Add(startTrace);
         // Claiming the attempt is not progress: an activity that kills its owner keeps counting.
-        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
+        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
             clearsCrashCount: false);
 
         var skipCancelledRecovery = isRecovery && continuation.CancellationUnwind &&
@@ -213,7 +210,7 @@ internal sealed class ActivityAttempts(
     // (D-33). A retry of the step keeps the wait and its token, even once the answer has arrived.
     private ReplyAddress ReplyAddressFor(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, WorkflowStep step, WorkflowInstance instance,
-        ActivityInvocationState pending, object workflowData)
+        ActivityInvocationState pending)
     {
         if (checkpoint.Waits.FirstOrDefault(wait => wait.IsReply && wait.InvocationId == pending.Id) is { } open)
             return new ReplyAddress(ReplyToken.Create(instance.InstanceId, open.Id, open.Subject));
@@ -223,7 +220,7 @@ internal sealed class ActivityAttempts(
         var waitFor = scopes.Steps(position.ScopeId).Skip(position.NextStepIndex + 1)
             .First(candidate => candidate.ReplyToRequest == step.RequestName);
         var subject = step.RequestSubject is { } describe
-            ? ReplyToken.Digest(describe(WorkflowValueBinding.EvaluationContext(workflowData,
+            ? ReplyToken.Digest(describe(WorkflowValueBinding.EvaluationContext(checkpoint.DataOf(continuation),
                 step.PreviousStepDataType, continuation.GetPrevious(services),
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation))))
             : null;
@@ -281,8 +278,6 @@ internal sealed class ActivityAttempts(
         WorkflowStep step,
         WorkflowDefinition definition,
         WorkflowInstance instance,
-        object sourceData,
-        object workflowData,
         IExecutionHost host,
         CancellationTokenSource cancellation)
     {
@@ -297,7 +292,7 @@ internal sealed class ActivityAttempts(
                 pending.ResolutionReason =
                     "The child workflow outcome is unknown; resolve it before continuing";
                 continuation.Status = ContinuationStatus.WaitingResolution;
-                await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
+                await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
                 return null;
             }
             if (savedChild != null)
@@ -337,7 +332,7 @@ internal sealed class ActivityAttempts(
         if (instance.TracingEnabled)
             instance.ExecutionHistory.Add(startTrace);
         // Claiming the child invocation is not progress, like an activity start.
-        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now,
+        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
             clearsCrashCount: false);
 
         if (ContinuationTransitions.ShouldCancelInvokedChild(continuation) &&
@@ -412,7 +407,7 @@ internal sealed class ActivityAttempts(
                 }
             }
             task = ObserveInvocationAsync(host.InvokeChildAsync(step, definition, instance,
-                sourceData, continuation.GetPrevious(services), pending.Id,
+                checkpoint.DataOf(continuation), continuation.GetPrevious(services), pending.Id,
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), cancellation.Token));
         }
         return new RunningActivity(continuation, step, task,
@@ -462,7 +457,6 @@ internal sealed class ActivityAttempts(
         ExecutionCheckpoint checkpoint,
         RunningActivity activity,
         Dictionary<string, RunningActivity> inFlight,
-        object workflowData,
         WorkflowInstance instance,
         IExecutionHost host)
     {
@@ -530,7 +524,7 @@ internal sealed class ActivityAttempts(
                     await activity.Prepared.ApplyOutputsAsync();
                 else if (activity.Step.StepType == WorkflowStepType.WorkflowInvocation &&
                          activity.Continuation.PendingActivity?.Resolution?.Kind == ActivityResolutionKind.Completed)
-                    WorkflowValueBinding.ApplyActivityOutputs(activity.Step, output, workflowData,
+                    WorkflowValueBinding.ApplyActivityOutputs(activity.Step, output, checkpoint.DataOf(activity.Continuation),
                         ForEachTransitions.ItemsOf(scopes, checkpoint, activity.Continuation));
                 if (activity.Continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
                     activity.Continuation.CancellationUnwind &&
