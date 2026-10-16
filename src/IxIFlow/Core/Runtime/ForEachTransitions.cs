@@ -23,6 +23,7 @@ internal static class ForEachTransitions
         var handle = step.ForEachItem ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
             $"ForEach step '{step.Name}' has no item handle");
         var state = position.ForEach;
+        var saved = state != null;
         if (state == null)
         {
             var list = step.ForEachItems!(Context(scopes, checkpoint, continuation, step, workflowData, services))
@@ -35,7 +36,7 @@ internal static class ForEachTransitions
                     throw new ForEachLimitExceededException(maxItems);
                 items.Add(RoundTrip(item, handle.ItemType, "item"));
             }
-            state = position.ForEach = new ForEachState
+            state = new ForEachState
             {
                 Items = items,
                 Results = !StoresResults(step) ? null
@@ -48,9 +49,18 @@ internal static class ForEachTransitions
             if (state.Joined || state.Items.Count == 0)
                 FinishParallel(scopes, checkpoint, continuation, position, step, state, workflowData, services);
             else
-                Fork(scopes, checkpoint, continuation, step, state, maxActiveBranches);
+            {
+                // A fork that does not fit saves nothing, the list included.
+                ContinuationTransitions.EnsureBranchesFit(checkpoint,
+                    Math.Min(state.Items.Count, step.ForEachMaxConcurrency ?? state.Items.Count), maxActiveBranches,
+                    leaving: continuation);
+                position.ForEach = state;
+                Fork(scopes, checkpoint, continuation, step, state);
+            }
             return;
         }
+        if (!saved)
+            position.ForEach = state;
         if (state.Next < state.Items.Count)
         {
             continuation.Stack.Add(new ScopePosition
@@ -83,10 +93,9 @@ internal static class ForEachTransitions
 
     // Starts the first items of a parallel ForEach as branches of a new join; the step's frame waits.
     private static void Fork(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, ContinuationState parent,
-        WorkflowStep step, ForEachState state, int maxActiveBranches)
+        WorkflowStep step, ForEachState state)
     {
         var batch = Math.Min(state.Items.Count, step.ForEachMaxConcurrency ?? state.Items.Count);
-        ContinuationTransitions.EnsureBranchesFit(checkpoint, batch, maxActiveBranches);
         var join = new ParallelJoinState
         {
             StepId = scopes.Id(step),
@@ -95,16 +104,18 @@ internal static class ForEachTransitions
         };
         checkpoint.Joins.Add(join);
         parent.Status = ContinuationStatus.Joining;
+        var snapshot = BranchData.Snapshot(checkpoint.DataOf(parent));
         for (var started = 0; started < batch; started++)
-            StartItem(scopes, checkpoint, parent, join, step, state);
+            StartItem(scopes, checkpoint, parent, join, step, state, snapshot);
     }
 
     /// <summary>
     /// Starts the next item of a parallel ForEach as a branch of its join, from a copy of the parent's
-    /// data, which is the data at the fork while the parent waits (D-34).
+    /// data, which is the data at the fork while the parent waits (D-34); <paramref name="snapshot"/> is
+    /// that data as <see cref="BranchData.Snapshot"/> gives it.
     /// </summary>
     public static void StartItem(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        ContinuationState parent, ParallelJoinState join, WorkflowStep step, ForEachState state)
+        ContinuationState parent, ParallelJoinState join, WorkflowStep step, ForEachState state, string snapshot)
     {
         var index = state.Next++;
         var inherited = Inherited(scopes, parent) ?? [];
@@ -112,7 +123,7 @@ internal static class ForEachTransitions
         var child = new ContinuationState
         {
             ParentJoinId = join.Id,
-            Data = BranchData.Copy(checkpoint.DataOf(parent)),
+            Data = BranchData.Copy(snapshot, checkpoint.DataOf(parent).GetType()),
             InheritedItems = inherited,
             Previous = parent.RuntimePrevious != null ? SerializedValue.From(parent.RuntimePrevious) : parent.Previous,
             Stack = [new ScopePosition { ScopeId = scopes.ForEachScope(step), ForEachIndex = index }]
@@ -138,6 +149,22 @@ internal static class ForEachTransitions
             state.Finished.Add(index);
         if (state.Results != null)
             state.Results[index] = finished.ForEachResult ?? throw NoResult(step);
+    }
+
+    /// <summary>
+    /// True when <paramref name="branch"/>, at the end of <paramref name="finished"/>, its last frame, is an
+    /// item of a parallel ForEach whose join is open with items still queued: completing it may start the
+    /// next one.
+    /// </summary>
+    public static bool AdmitsAfter(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState branch, ScopePosition finished)
+    {
+        if (finished.ForEachIndex == null || branch.ParentJoinId == null ||
+            checkpoint.Joins.SingleOrDefault(item => item.Id == branch.ParentJoinId) is not { IsCompleting: false } join ||
+            scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
+            return false;
+        var state = StateOf(checkpoint, join, step);
+        return state.Next < state.Items.Count;
     }
 
     /// <summary>The saved list of the parallel ForEach a join belongs to, on its parent's frame.</summary>

@@ -211,7 +211,8 @@ internal sealed class WorkflowExecutor
                         catch (ResourceLimitExceededException limit) when
                             (limit is BranchLimitExceededException or ForEachLimitExceededException)
                         {
-                            // Nothing was forked or saved; the step runs after a release.
+                            // Nothing changed: no fork, no saved list, no item completed that would
+                            // start the next one. The step runs after a release.
                             limitStop = limit.Message;
                             limitHitWhileCancelling = checkpoint.CancellationRequested;
                             break;

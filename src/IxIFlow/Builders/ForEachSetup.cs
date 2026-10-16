@@ -49,6 +49,13 @@ internal sealed class ForEachSetup<TWorkflowData>(WorkflowStep step) : IForEachS
         return this;
     }
 
+    public IForEachSetup<TWorkflowData> Combine<TValue, TCombiner>(Expression<Func<TWorkflowData, TValue>> property)
+        where TCombiner : ICombiner<TValue>, new()
+    {
+        Core.Runtime.BranchData.Choose(step, property, typeof(TWorkflowData), typeof(TValue), typeof(TCombiner));
+        return this;
+    }
+
     private void SetJoin(ParallelJoinMode mode)
     {
         if (step.ParallelJoinMode != ParallelJoinMode.WaitAll)
