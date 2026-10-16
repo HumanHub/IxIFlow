@@ -1144,6 +1144,8 @@ public sealed class SagaHandlerTests
         // The retry has not run yet: the first host left before it was due.
         Assert.Equal(1, journal.Entries.Count(entry => entry == nameof(ReserveStock)));
         Assert.Equal(WorkflowExecutionStatus.Suspended, (await engine.RecoverAsync(instanceId)).Status);
+        // The recovery ran the retry, which now waits for the payment it kept.
+        Assert.Equal(2, journal.Entries.Count(entry => entry == nameof(ShipOrder)));
         var result = await engine.ReplyAsync(Assert.Single(journal.Tokens), new PaymentReceived { Status = "paid" });
 
         EventAssert.Consumed(result);

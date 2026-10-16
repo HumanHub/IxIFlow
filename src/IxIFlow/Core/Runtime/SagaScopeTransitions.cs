@@ -510,23 +510,27 @@ internal static class SagaScopeTransitions
         state.CompensationCursor < state.CompensationFloor;
 
     /// <summary>
-    /// Cancellation unwinding reaches a saga whose retry handler's steps were running: the handler's frames go,
-    /// no retry follows, and the saga undoes the steps it kept before the cancellation goes on (D-36).
+    /// Cancellation unwinding reaches a saga whose retry handler ran, or still runs, its own steps: the
+    /// handler's frames go, no retry follows, and the saga undoes the steps it kept before the cancellation goes
+    /// on (D-36).
     /// </summary>
     public static bool CancelRetryHandler(WorkflowScopeCatalog scopes, ContinuationState continuation, int index)
     {
         var owner = continuation.Stack[index];
-        if (owner.SagaState is not
-            { Phase: SagaPhase.Compensating, ErrorAction: SagaContinuationAction.Retry, ErrorHandlerStarted: true } state ||
-            state.ErrorHandlerIndex < 0 || index + 1 >= continuation.Stack.Count)
+        if (owner.SagaState is not { Phase: SagaPhase.Compensating } state || !RunsRetryHandler(state) ||
+            state.ErrorHandlerIndex < 0)
             return false;
-        var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
-        var body = continuation.Stack[index + 1];
-        if (body.ScopeId != scopes.CatchBodyScope(saga.CatchBlocks[state.ErrorHandlerIndex]))
-            return false;
-        continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
-        continuation.Previous = body.EntryPrevious;
-        continuation.RuntimePrevious = body.RuntimeEntryPrevious;
+        // Its handler's frame is above it while the handler runs; once the handler is done, nothing is.
+        if (index + 1 < continuation.Stack.Count)
+        {
+            var saga = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
+            var body = continuation.Stack[index + 1];
+            if (body.ScopeId != scopes.CatchBodyScope(saga.CatchBlocks[state.ErrorHandlerIndex]))
+                return false;
+            continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+            continuation.Previous = body.EntryPrevious;
+            continuation.RuntimePrevious = body.RuntimeEntryPrevious;
+        }
         state.IsCancellationCleanup = true;
         GiveUp(state);
         continuation.Status = ContinuationStatus.Active;
