@@ -269,12 +269,10 @@ internal sealed class WorkflowExecutor
 
                 await SignalCancellationsAsync(inFlight, uncommitted, host, instance, checkpoint, checkpoint.RootData,
                     scopes);
-                // Children start, or are asked to cancel, in the run's next commit (D-17). A run about to wait
-                // for its activities makes that commit now rather than when they end; like claiming an
-                // activity, it records no progress of the parent's own (B-08).
-                if (inFlight.Count > 0 && (checkpoint.ChildStarts.Count > 0 || checkpoint.ChildCancellations.Count > 0))
-                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
-                        clearsCrashCount: false);
+                // Children start, or are asked to cancel, in the run's next commit (D-17). A run about to wait,
+                // for its activities or a timer, makes that commit now rather than when the wait ends.
+                if (checkpoint.ChildStarts.Count > 0 || checkpoint.ChildCancellations.Count > 0)
+                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
 
                 var runningTasks = inFlight.Values.Select(item => (Task)item.Task).ToList();
                 using var retryTimerCancellation = new CancellationTokenSource();
@@ -487,6 +485,7 @@ internal sealed class WorkflowExecutor
             instance.Status = cancelled ? WorkflowStatus.Cancelled : WorkflowStatus.Failed;
             // A reply wait whose scope already ended, such as a saga abandoned in this pass, closed as cancelled.
             checkpoint.CloseEndedRequests();
+            ContinuationTransitions.AbandonChildren(checkpoint);
             checkpoint.RemoveWaits(_ => true, WaitCloseReason.InstanceFinished);
             checkpoint.Joins.Clear();
             foreach (var continuation in checkpoint.Continuations.Where(item =>

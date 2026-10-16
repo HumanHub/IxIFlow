@@ -510,11 +510,15 @@ public sealed class InboxStoreTests
                     childStarts: [new ChildStart(childId, System.Text.Json.JsonSerializer.Serialize(
                         Child(childId, parentId, $"{wait}-again")), $"{wait}-again")])));
 
-            // A parent's commit can ask its child to cancel; the first request stands.
-            var cancelled = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, parent.Revision,
-                childCancellations: [new ChildCancellation(childId, new CancellationReason { ReasonCode = "parent" })]));
+            // A parent's commit can ask its child to cancel; the first request stands, as the commit was made.
+            var reason = new CancellationReason { ReasonCode = "parent" };
+            var cancelling = CheckpointCommit.Create(parent, 0, parent.Revision,
+                childCancellations: [new ChildCancellation(childId, reason, wait)]);
+            reason.ReasonCode = "changed after the commit was made";
+            var cancelled = await store.CommitWorkflowInstanceAsync(cancelling);
             Assert.Equal(WorkflowCommitStatus.Applied, cancelled.Status);
             Assert.Equal("parent", (await store.GetCancellationRequestAsync(childId))!.ReasonCode);
+            Assert.Equal([childId], (await store.GetChildInstancesAsync(parentId)).Select(item => item.InstanceId));
 
             // The child's terminal commit puts its completion in the parent's inbox, addressed to the wait.
             var grant = (await store.TryAcquireExecutionLeaseAsync(childId, "owner", TimeSpan.FromMinutes(1)))!;
@@ -547,6 +551,30 @@ public sealed class InboxStoreTests
             Assert.Empty(late.MadeRunnable);
             Assert.Equal(EventRejection.WaitCancelled,
                 (await inbox.GetEventAsync(parentId, $"completed-{otherId}"))!.Rejection);
+
+            // A child that is gone ends its parent's wait as terminated: one deleted while its parent waits,
+            // and one missing when its parent asks it to cancel.
+            parent = (await store.GetWorkflowInstanceAsync(parentId))!;
+            var deletedChild = Guid.NewGuid().ToString("N");
+            var missingChild = Guid.NewGuid().ToString("N");
+            var starting = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, parent.Revision,
+                openedWaits:
+                [
+                    new OpenedWait($"{wait}-deleted", WaitKind.Child, "", "IxIFlow.ChildCompleted", null),
+                    new OpenedWait($"{wait}-missing", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)
+                ],
+                childStarts: [new ChildStart(deletedChild, System.Text.Json.JsonSerializer.Serialize(
+                    Child(deletedChild, parentId, $"{wait}-deleted")), $"{wait}-deleted")]));
+            await store.DeleteWorkflowInstanceAsync(deletedChild);
+            Assert.Equal((EventOutcome.Pending, $"{wait}-deleted"),
+                ((await inbox.GetEventAsync(parentId, $"child-completed-{deletedChild}"))!.Outcome,
+                    (await inbox.GetEventAsync(parentId, $"child-completed-{deletedChild}"))!.TargetWaitId));
+            parent.Revision = starting.Revision;
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+                parent, 0, parent.Revision, childCancellations:
+                [new ChildCancellation(missingChild, new CancellationReason { ReasonCode = "parent" }, $"{wait}-missing")]))).Status);
+            Assert.Equal($"{wait}-missing",
+                (await inbox.GetEventAsync(parentId, $"child-completed-{missingChild}"))!.TargetWaitId);
         }
         finally
         {

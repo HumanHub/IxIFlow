@@ -276,12 +276,17 @@ public sealed class CheckpointCommit
         }
         if (started.Select(child => child.ChildInstanceId).Distinct(StringComparer.Ordinal).Count() != started.Length)
             throw new ArgumentException("A commit starts each child once", nameof(childStarts));
-        var cancelled = (childCancellations ?? []).ToArray();
-        foreach (var child in cancelled)
+        // Copies, so a reason changed after the commit is hashed does not change what the store writes.
+        var cancelled = (childCancellations ?? []).Select(child =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(child.ChildInstanceId, nameof(childCancellations));
+            ArgumentException.ThrowIfNullOrWhiteSpace(child.ParentWaitId, nameof(childCancellations));
             ArgumentNullException.ThrowIfNull(child.Reason, nameof(childCancellations));
-        }
+            return child with
+            {
+                Reason = JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(child.Reason))!
+            };
+        }).ToArray();
         if (parentNotice != null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.ParentInstanceId, nameof(parentNotice));

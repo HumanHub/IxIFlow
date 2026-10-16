@@ -209,7 +209,7 @@ public sealed class WorkflowExecutorHostTests
 
         public void ObserveCancellation(CancellationReason reason) => ObservedCancellation ??= reason;
 
-        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step)
+        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting)
         {
             Invocations.Add(step);
             return Task.FromResult(Workflow.Create<ExecutorData>(step.WorkflowName!).Step<FirstActivity>().Build());

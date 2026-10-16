@@ -91,10 +91,11 @@ public sealed class FaultScenarios
 
         await cluster.UntilAsync(childId, WorkflowStatus.Suspended);
 
-        // The parent asks its child to cancel and waits for it to end before it ends itself (D-09).
+        // The parent asks its child to cancel and waits for it to end before it ends itself (D-09); the
+        // call returns while it waits, or once it has ended if the child was quick.
         var waiting = await operatorHost.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
-        Assert.Equal(WorkflowExecutionStatus.Suspended, waiting.Status);
+        Assert.Contains(waiting.Status, new[] { WorkflowExecutionStatus.Suspended, WorkflowExecutionStatus.Cancelled });
         var cancelled = await operatorHost.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(30));
 

@@ -501,6 +501,10 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         "InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, CloseReason, " +
         "ClosedAtUtc";
 
+    private static WorkflowEvent ToEvent(ParentNotice notice) =>
+        new(notice.ParentInstanceId, notice.EventId, notice.EventType, notice.PayloadJson,
+            TargetWaitId: notice.ParentWaitId);
+
     private sealed class InboxRow
     {
         public string Status { get; set; } = "";
@@ -828,7 +832,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             madeRunnable.Add(child.InstanceId);
         }
         foreach (var cancellation in commit.ChildCancellations)
-            if (await connection.ExecuteScalarAsync<bool>("""
+        {
+            var outcome = await connection.ExecuteScalarAsync<byte>("""
                 UPDATE dbo.IxIFlowWorkflowInstances
                 SET CancellationJson = COALESCE(CancellationJson, @ReasonJson),
                     CancellationAcknowledged = CASE WHEN CancellationJson IS NULL
@@ -837,19 +842,32 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                         THEN @Now ELSE RunnableAtUtc END
                 WHERE InstanceId = @InstanceId AND Status IN ('Running', 'Suspended', 'NeedsResolution');
                 DECLARE @Changed INT = @@ROWCOUNT;
-                SELECT CAST(CASE WHEN @Changed = 1 AND EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances
-                    WHERE InstanceId = @InstanceId AND CancellationAcknowledged = 0) THEN 1 ELSE 0 END AS BIT);
+                SELECT CAST(CASE
+                    WHEN @Changed = 1 AND EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances
+                        WHERE InstanceId = @InstanceId AND CancellationAcknowledged = 0) THEN 1
+                    WHEN NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId) THEN 2
+                    ELSE 0 END AS TINYINT);
                 """, WithTimes(new
             {
                 InstanceId = cancellation.ChildInstanceId, ReasonJson = JsonSerializer.Serialize(cancellation.Reason)
-            }, ("Now", now)), transaction))
+            }, ("Now", now)), transaction);
+            if (outcome == 1)
                 madeRunnable.Add(cancellation.ChildInstanceId);
+            // A child that is gone will never answer; its parent's wait ends as its termination.
+            else if (outcome == 2)
+            {
+                var gone = ToEvent(WorkflowStoreRules.ChildGone(cancellation.ChildInstanceId, commit.InstanceId,
+                    cancellation.ParentWaitId));
+                await AppendAsync(connection, transaction, gone, gone.ContentHash(),
+                    new InboxRow { Status = snapshot.Status.ToString(), InboxSequence = current?.InboxSequence ?? 0 },
+                    now);
+            }
+        }
         // The child's completion goes to its parent's inbox; whatever the parent's state, the child's
         // commit stands.
         if (commit.ParentNotice is { } completion)
         {
-            var completed = new WorkflowEvent(completion.ParentInstanceId, completion.EventId, completion.EventType,
-                completion.PayloadJson, TargetWaitId: completion.ParentWaitId);
+            var completed = ToEvent(completion);
             if (await AppendAsync(connection, transaction, completed, completed.ContentHash(), parent, now) is
                 { Status: EventAppendStatus.Stored, MadeRunnable: true })
                 madeRunnable.Add(completion.ParentInstanceId);
@@ -1006,6 +1024,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
         QueryAsync("CorrelationId = @Value", correlationId);
 
+    public async Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(parentInstanceId);
+        return await QueryAsync("ParentInstanceId = @Value", parentInstanceId);
+    }
+
     public async Task DeleteWorkflowInstanceAsync(string instanceId)
     {
         await EnsureSchemaAsync();
@@ -1018,6 +1042,30 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         // tables are deleted by key. A cascading delete would take range locks in those tables, which
         // deadlock with commits of other instances inserting into the same ranges.
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+        // A child its parent still waits for ends that wait as terminated. The parent's row is locked before
+        // the child's, as a child's terminal commit locks them.
+        var deleted = await connection.QuerySingleOrDefaultAsync<string>("""
+            SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId
+            """, new { InstanceId = instanceId }, transaction) is { } json
+            ? JsonSerializer.Deserialize<WorkflowInstance>(json) : null;
+        if (deleted is { ParentInstanceId: { } parentId, ParentWaitId: { } waitId } &&
+            deleted.Status is not (WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
+                WorkflowStatus.Terminated or WorkflowStatus.TimedOut))
+        {
+            InboxRow? parent;
+            DateTime now;
+            using (var locked = await connection.QueryMultipleAsync("""
+                SELECT Status, InboxSequence FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
+                WHERE InstanceId = @ParentId;
+                SELECT SYSUTCDATETIME();
+                """, new { ParentId = parentId }, transaction))
+            {
+                parent = await locked.ReadSingleOrDefaultAsync<InboxRow>();
+                now = DateTime.SpecifyKind(await locked.ReadSingleAsync<DateTime>(), DateTimeKind.Utc);
+            }
+            var gone = ToEvent(WorkflowStoreRules.ChildGone(instanceId, parentId, waitId));
+            await AppendAsync(connection, transaction, gone, gone.ContentHash(), parent, now);
+        }
         await connection.ExecuteAsync("""
             SELECT InstanceId FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId;

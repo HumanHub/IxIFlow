@@ -285,7 +285,7 @@ internal sealed class ActivityAttempts(
             var completed = accepted.Event.Read(services) as ChildCompleted
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Child invocation step '{step.Name}' took an event that is not its child's completion");
-            var dataType = (await host.ResolveChildAsync(step)).WorkflowDataType!;
+            var dataType = (await host.ResolveChildAsync(step, starting: false)).WorkflowDataType!;
             return Settles(completed.Outcome(dataType));
         }
         if (pending != null)
@@ -303,7 +303,7 @@ internal sealed class ActivityAttempts(
 
         pending = new ActivityInvocationState { StepId = scopes.Id(step), StartedAtUtc = Now };
         pending.ChildWorkflowId = pending.Id;
-        var childDefinition = await host.ResolveChildAsync(step);
+        var childDefinition = await host.ResolveChildAsync(step, starting: true);
         ChildStart start;
         try
         {
@@ -412,7 +412,8 @@ internal sealed class ActivityAttempts(
                 }
                 if (activity.Prepared != null)
                     await activity.Prepared.ApplyOutputsAsync();
-                else if (activity.Step.StepType == WorkflowStepType.WorkflowInvocation)
+                // A child's outcome is discarded while its branch unwinds outside cleanup (D-17).
+                else if (activity.Step.StepType == WorkflowStepType.WorkflowInvocation && !Unwinding(activity.Continuation))
                     WorkflowValueBinding.ApplyActivityOutputs(activity.Step, output, checkpoint.DataOf(activity.Continuation),
                         ForEachTransitions.ItemsOf(scopes, checkpoint, activity.Continuation));
                 if (activity.Continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
@@ -456,6 +457,11 @@ internal sealed class ActivityAttempts(
             activity.Cancellation.Dispose();
         }
     }
+
+    private static bool Unwinding(ContinuationState continuation) =>
+        continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
+        continuation.CancellationUnwind && !TryScopeTransitions.IsInsideFinally(continuation) &&
+        !SagaScopeTransitions.IsInsideCompensation(continuation);
 
     private void MarkActivityUnresolved(RunningActivity activity, string? reason)
     {

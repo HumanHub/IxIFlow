@@ -500,6 +500,24 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         return condition(provisional.Data, ForEachTransitions.ResultsSoFar(step, state));
     }
 
+    private static CancellationReason ParentCancelled => new()
+    {
+        ReasonCode = "parent_branch_cancelled",
+        Description = "The parent workflow branch was cancelled"
+    };
+
+    /// <summary>
+    /// Before an instance's waits are dropped as it fails: children it waits for are asked to cancel, since
+    /// nothing will take their completions, and children it had not started yet are not started.
+    /// </summary>
+    public static void AbandonChildren(ExecutionCheckpoint checkpoint)
+    {
+        foreach (var wait in checkpoint.Waits.Where(wait => wait.TableKind == WaitKind.Child))
+            if (checkpoint.ChildStarts.All(start => start.ChildInstanceId != wait.ChildWorkflowId))
+                checkpoint.ChildCancellations.Add(new ChildCancellation(wait.ChildWorkflowId!, ParentCancelled, wait.Id));
+        checkpoint.ChildStarts.Clear();
+    }
+
     public static void CancelTree(ExecutionCheckpoint checkpoint, ContinuationState continuation)
     {
         if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
@@ -535,11 +553,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id && wait != child,
             WaitCloseReason.Cancelled);
         if (child != null && first)
-            checkpoint.ChildCancellations.Add(new ChildCancellation(child.ChildWorkflowId!, new CancellationReason
-            {
-                ReasonCode = "parent_branch_cancelled",
-                Description = "The parent workflow branch was cancelled"
-            }));
+            checkpoint.ChildCancellations.Add(new ChildCancellation(child.ChildWorkflowId!, ParentCancelled, child.Id));
         if (!childFinished)
             continuation.AcceptedWait = null;
         foreach (var join in checkpoint.Joins.Where(item => item.ParentContinuationId == continuation.Id).ToList())
