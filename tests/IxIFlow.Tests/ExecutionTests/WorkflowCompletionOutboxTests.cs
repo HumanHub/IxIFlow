@@ -218,8 +218,9 @@ public sealed class WorkflowCompletionOutboxTests
             var bus = new CompletionBus();
             var publisher = new WorkflowCompletionPublisher(secondRepository, bus, "second-host");
 
-            await publisher.PublishPendingAsync();
-            await publisher.PublishPendingAsync();
+            // The database is shared with other tests, so the publisher claims only this instance.
+            await publisher.PublishPendingAsync(result.InstanceId);
+            await publisher.PublishPendingAsync(result.InstanceId);
 
             Assert.Equal(result.InstanceId, Assert.Single(bus.Completions).InstanceId);
         }
