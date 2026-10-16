@@ -872,6 +872,34 @@ public sealed class ForEachTests
     }
 
     [Fact]
+    public void AnOutputThroughAUserDefinedConversionIsABuildError()
+    {
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<OrderData>("ConvertedTarget")
+            .Step<NoopActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Lines,
+                (body, line) => body
+                    .Step<ResultsActivity>(step => step
+                        .Output(activity => activity.Results).To(ctx => ((Report)ctx.WorkflowData).Results))
+                    .Result(ctx => ctx.Item(line).Price),
+                setup => setup.Into(ctx => ctx.WorkflowData.Report.Results))
+            .Build());
+
+        Assert.Contains("cannot be shown to write workflow data", error.Message);
+    }
+
+    [Fact]
+    public void TheCodeOfABehaviorIncludesTheLocalFunctionsItUses()
+    {
+        var limit = 1;
+        bool Keep(int value) => value > limit;
+        Func<int, bool> behavior = least => new[] { 1, 2, 3 }.Count(Keep) > least;
+
+        var parts = LambdaCode.Of(behavior.Method).Split('+');
+
+        Assert.Equal(2, parts.Length);
+    }
+
+    [Fact]
     public void TheCodeOfABehaviorIncludesTheLambdasItMakes()
     {
         Func<int, bool> behavior = limit => new[] { 1, 2, 3 }.Count(value => value > limit) > 1;
@@ -1014,6 +1042,8 @@ public sealed class ForEachTests
         public List<Row> Rows { get; set; } = [];
         public List<Group> Groups { get; set; } = [];
         public Report Report { get; set; } = new();
+
+        public static explicit operator Report(OrderData data) => data.Report;
     }
 
     public sealed class Row

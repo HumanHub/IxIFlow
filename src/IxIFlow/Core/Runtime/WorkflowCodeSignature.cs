@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Globalization;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -106,21 +106,31 @@ internal static class WorkflowCodeSignature
 }
 
 /// <summary>
-/// The code of a method as a hash of its IL and, in order, of the code of every lambda it creates, so a
-/// change inside a nested lambda changes the code of the behavior that makes it. A compiled expression
-/// has no IL to read and is <see cref="Dynamic"/>; its shape is signed by <see cref="WorkflowExpressionSignature"/>.
+/// The code of a method as a hash of its IL and, in order, of the code of every lambda it creates and
+/// every local function it uses, so a change inside them changes the code of the behavior that makes
+/// them. Other methods it calls are not read. A compiled expression has no IL to read and is
+/// <see cref="Dynamic"/>; its shape is signed by <see cref="WorkflowExpressionSignature"/>. Codes are kept
+/// per method for as long as the method is loaded; dynamic methods are not kept.
 /// </summary>
 internal static class LambdaCode
 {
     public const string Dynamic = "dynamic";
 
-    private static readonly ConcurrentDictionary<MethodBase, string> Codes = new();
+    private static readonly ConditionalWeakTable<MethodBase, string> Codes = new();
     private static readonly Dictionary<short, OpCode> OpCodesByValue = typeof(OpCodes)
         .GetFields(BindingFlags.Public | BindingFlags.Static)
         .Select(field => (OpCode)field.GetValue(null)!)
         .ToDictionary(code => code.Value);
 
-    public static string Of(MethodBase method) => Codes.GetOrAdd(method, _ => Compute(method, []));
+    public static string Of(MethodBase method)
+    {
+        if (Codes.TryGetValue(method, out var known))
+            return known;
+        var code = Compute(method, []);
+        if (code != Dynamic)
+            Codes.AddOrUpdate(method, code);
+        return code;
+    }
 
     private static string Compute(MethodBase method, HashSet<MethodBase> seen)
     {
@@ -131,13 +141,13 @@ internal static class LambdaCode
             return Dynamic;
         if (!seen.Add(method))
             return "recursive";
-        var nested = Lambdas(method, body)
+        var nested = Generated(method, body)
             .Select(lambda => Compute(lambda, seen));
         return string.Join("+", nested.Prepend(Convert.ToHexString(SHA256.HashData(body))));
     }
 
-    // The compiler-generated methods the IL loads with ldftn: the lambdas it turns into delegates.
-    private static IEnumerable<MethodBase> Lambdas(MethodBase method, byte[] il)
+    // The compiler-generated methods the IL loads with ldftn or calls: its lambdas and local functions.
+    private static IEnumerable<MethodBase> Generated(MethodBase method, byte[] il)
     {
         var position = 0;
         while (position < il.Length)
@@ -147,7 +157,8 @@ internal static class LambdaCode
                 value = unchecked((short)(0xFE00 | il[position++]));
             if (!OpCodesByValue.TryGetValue(value, out var code))
                 yield break;
-            if (code == OpCodes.Ldftn && position + 4 <= il.Length)
+            if ((code == OpCodes.Ldftn || code == OpCodes.Call || code == OpCodes.Callvirt) &&
+                position + 4 <= il.Length)
             {
                 var token = BitConverter.ToInt32(il, position);
                 MethodBase? target;
@@ -157,11 +168,12 @@ internal static class LambdaCode
                         method.DeclaringType?.IsGenericType == true ? method.DeclaringType.GetGenericArguments() : null,
                         method.IsGenericMethod ? method.GetGenericArguments() : null);
                 }
-                catch (ArgumentException)
+                catch (Exception error) when (error is ArgumentException or BadImageFormatException)
                 {
                     target = null;
                 }
-                if (target != null && target.Name.Contains(">b__", StringComparison.Ordinal))
+                if (target != null && (target.Name.Contains(">b__", StringComparison.Ordinal) ||
+                                       target.Name.Contains(">g__", StringComparison.Ordinal)))
                     yield return target;
             }
             position += code.OperandType switch
