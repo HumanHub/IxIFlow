@@ -94,6 +94,27 @@ public sealed class CommitBudgetTests
         Assert.True(store.TotalBytes <= 30000, $"{store.TotalBytes} bytes written in all; the ceiling is 30000");
     }
 
+    // D-34: an uninterrupted parallel ForEach with one activity per item and WaitAll takes 2N + 2 commits
+    // for N items, including the workflow's start and end.
+    [Fact]
+    [Trait("Spec", "E-12")]
+    public async Task ParallelForEach()
+    {
+        var definition = Workflow.Create<ItemsData>("BudgetParallelForEach")
+            .Step<WorkActivity>()
+            .ForEach(ctx => ctx.WorkflowData.Items, (body, _) => body.Step<WorkActivity>(),
+                setup => setup.Parallel())
+            .Build();
+
+        var store = new MeasuringStore();
+        using var services = Services(store);
+        var result = await Engine(services).RunAsync(definition, new ItemsData { Items = ["a", "b", "c"] });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        // 2N + 2 for the ForEach and the workflow, and two for the activity before it.
+        AssertBudget(store.Commits, store.MaxBytes, maxCommits: 2 * 3 + 2 + 2, maxBytes: 4900);
+    }
+
     [Fact]
     public async Task CaughtFailure()
     {
@@ -253,6 +274,11 @@ public sealed class CommitBudgetTests
     public sealed class BudgetData
     {
         public int Count { get; set; }
+    }
+
+    public sealed class ItemsData
+    {
+        public List<string> Items { get; set; } = [];
     }
 
     public sealed class WritingData

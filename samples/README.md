@@ -24,5 +24,8 @@ The Site project contains matching Vue designers under `src/activities/demo` and
 | `ChildApprovalRecipe` | A child workflow sends the request; the answer goes to the child and the parent continues |
 | `PriceLinesRecipe` | A step per order line with `ForEach`: each line sees the running total of the lines before it, and each line's total is kept in line order with `.Result(...)` and `Into` |
 | `InvoiceCustomersRecipe` | Nested lists: a `ForEach` over customers holds a `ForEach` over their lines, and the inner body reads both items |
+| `AnyApproverFromListRecipe` | Any one of a list of approvers with a parallel `ForEach`: a rejection keeps waiting, the first approval wins, the others are cancelled, and the decisions show who approved, rejected or was cancelled; an empty list or all rejections take the rejection path |
+| `EveryApproverFromListRecipe` | Every approver from a list, decisions kept in approver order; with a cap only that many requests are out at once; if asking one fails, the others are cancelled and nothing is stored |
+| `ChargeCustomersRecipe` | A child workflow per customer, no more than the cap at once, results in customer order |
 
 An answer that must not reach the wrong wait goes through `IWorkflowClient.ReplyAsync(token, answer)`. The token comes from `IActivityContext.Reply` in a request activity, or from `GetOpenWaitsAsync` for a wait without a request.

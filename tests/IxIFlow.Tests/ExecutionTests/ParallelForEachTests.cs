@@ -177,6 +177,42 @@ public sealed class ParallelForEachTests
         Assert.Equal(9, Assert.Single(data.Answers).Index);
     }
 
+    // Recipe 20 of spec D-17: the host dies after some items started. Another host continues the same
+    // items from the saved list, and an approver added to the source afterwards is never asked.
+    [Fact]
+    [Trait("Spec", "D-17")]
+    public async Task AnotherHostContinuesTheSavedListAfterTheFirstStops()
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        var outbox = new Outbox();
+        var definition = Workflow.Create<Approvals>("ContinuedFanOut")
+            .Step<Noop>()
+            .ForEach(_ => Source.Approvers,
+                (body, approver) => body
+                    .Request<Ask>("approval", step => step
+                        .Input(activity => activity.Name).From(ctx => ctx.Item(approver)))
+                    .WaitFor<Answer>("approval")
+                    .Result(ctx => ctx.PreviousStep.Approved),
+                setup => setup.Parallel(maxConcurrency: 2).Into(ctx => ctx.WorkflowData.Answers))
+            .Build();
+        Source.Approvers = ["ann", "bob", "cid"];
+        string instanceId;
+        using (var first = Services(store, outbox))
+            instanceId = (await Engine(first).RunAsync(definition, new Approvals())).InstanceId;
+        Source.Approvers = ["ann", "bob", "cid", "zed"];
+
+        using var second = Services(store, outbox);
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        foreach (var name in new[] { "ann", "bob" })
+            await Engine(second).ReplyAsync(outbox.TokenOf(name), new Answer { Approved = true });
+        var finished = await Engine(second).ReplyAsync(outbox.TokenOf("cid"), new Answer { Approved = false });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        Assert.Equal(["ann", "bob", "cid"], outbox.Names);
+        Assert.Equal([true, true, false], Assert.IsType<Approvals>(finished.WorkflowData).Answers.Select(item => item.Value));
+        Assert.Equal(instanceId, finished.InstanceId);
+    }
+
     [Fact]
     public void JoinOptionsNeedParallelAndItemsMayNotAllWriteOnePropertyWithoutACombiner()
     {
@@ -213,14 +249,22 @@ public sealed class ParallelForEachTests
         Assert.Equal(3, fingerprints.Distinct().Count());
     }
 
-    private static ServiceProvider Services()
+    private static ServiceProvider Services(IWorkflowStateRepository? store = null, Outbox? outbox = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton<Outbox>();
+        if (store != null)
+            services.AddSingleton(store);
+        services.AddSingleton(outbox ?? new Outbox());
         services.AddTransient<Ask>();
         services.AddIxIFlow();
         return services.BuildServiceProvider();
+    }
+
+    /// <summary>A list read from outside the workflow data, changed between hosts by one test.</summary>
+    private static class Source
+    {
+        public static List<string> Approvers { get; set; } = [];
     }
 
     private static IWorkflowClient Engine(IServiceProvider services) => services.GetRequiredService<IWorkflowClient>();
