@@ -756,6 +756,43 @@ public sealed class SagaHandlerTests
 
     [Fact]
     [Trait("Spec", "A-11")]
+    public async Task CancellingInsideAFinallyOfARetryHandlerUndoesTheKeptStepsOnceItIsDone()
+    {
+        using var services = Services();
+        var journal = services.GetRequiredService<Journal>();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var definition = Workflow.Create<ShopData>("FinallyInHandler")
+            .Step<ValidateOrder>()
+            .Saga(saga => saga
+                .Step<PackOrder>(step => step.CompensateWith<UnpackOrder>())
+                .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
+                .Step<ShipOrder>())
+            .OnError<ShippingFailed>(handler => handler
+                .WaitFor<Approval>("retry", configure: wait => wait
+                    .TimeoutAfter(TimeSpan.FromMilliseconds(100))
+                    .OnTimeout(path => path
+                        .Try(body => body.Step<InsureOrder>())
+                        .Finally(cleanup => cleanup.WaitFor<Approval>("cleanup"))))
+                .CompensateUpTo<ReserveStock>().ThenRetry(2))
+            .Build();
+        var started = await engine.RunAsync(definition, new ShopData());
+        while ((await engine.GetOpenWaitsAsync(new WaitQuery { InstanceId = started.InstanceId }))
+               .All(wait => wait.Key != "cleanup"))
+            await Task.Delay(20);
+
+        // The cancellation lets the Finally finish, then unwinds to the saga, which undoes what it kept.
+        await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
+        await engine.ResumeAsync(started.InstanceId, "cleanup", new Approval());
+        var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, finished.Status);
+        Assert.Equal(["PackOrder", "ReserveStock", "ShipOrder", "undo ReserveStock", "InsureOrder", "undo PackOrder"],
+            journal.Entries);
+    }
+
+    [Fact]
+    [Trait("Spec", "A-11")]
     public async Task ANestedHandlerFailingInsideARetryHandlerUndoesTheOuterKeptSteps()
     {
         using var services = Services();

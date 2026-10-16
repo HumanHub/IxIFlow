@@ -543,8 +543,10 @@ internal static class SagaScopeTransitions
     /// </summary>
     public static void PreserveCompensation(ContinuationState continuation)
     {
+        // A saga whose retry handler runs is not compensating: the cancellation unwinds to it once the cleanup
+        // inside its handler is done, and gives the retry up there.
         foreach (var state in continuation.Stack.Select(frame => frame.SagaState)
-                     .Where(item => item?.Phase == SagaPhase.Compensating))
+                     .Where(item => item?.Phase == SagaPhase.Compensating && !RunsRetryHandler(item)))
         {
             state!.IsCancellationCleanup = true;
             if (state.ErrorAction == SagaContinuationAction.Retry)
