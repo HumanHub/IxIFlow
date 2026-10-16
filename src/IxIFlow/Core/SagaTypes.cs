@@ -150,7 +150,6 @@ public class SagaErrorConfiguration
 {
     public CompensationStrategy CompensationStrategy { get; set; } = CompensationStrategy.CompensateAll;
     public SagaContinuationAction ContinuationAction { get; set; } = SagaContinuationAction.Terminate;
-    //public int RetryCount { get; set; } = 0;
     public RetryPolicy? RetryPolicy { get; set; } = new();
     public Type? CompensationTargetType { get; set; }
     public bool IgnoreCompensationErrors { get; set; }
