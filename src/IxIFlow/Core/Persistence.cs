@@ -70,6 +70,19 @@ public static class WorkflowStoreRules
                                 string.Equals(wait.Key, workflowEvent.Key, StringComparison.Ordinal)))
             .OrderBy(wait => wait.DeadlineUtc <= now);
 
+    /// <summary>
+    /// The completion a store appends to a parent's wait when the child it waits for is gone: deleted by an
+    /// operator before it ended, or missing when the parent asks it to cancel. The parent's invocation then
+    /// ends as the child's termination (D-17).
+    /// </summary>
+    public static ParentNotice ChildGone(string childInstanceId, string parentInstanceId, string parentWaitId) =>
+        new(parentInstanceId, parentWaitId, $"child-completed-{childInstanceId}", ChildCompleted.EventType,
+            JsonSerializer.Serialize(new ChildCompleted
+            {
+                ChildInstanceId = childInstanceId,
+                Status = WorkflowStatus.Terminated
+            }));
+
     /// <summary>Why the waits still open when an instance finishes are closed (D-33).</summary>
     public static WaitCloseReason FinalWaitCloseReason(WorkflowStatus status) =>
         status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut
@@ -203,7 +216,18 @@ public interface IWorkflowStateRepository : IWorkflowInbox
     Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId);
 
     /// <summary>
-    ///     Delete workflow instance
+    /// The child workflows a parent started (D-17), for operators. This fallback reads the instances that
+    /// share the parent's correlation ID; stores should override it with one query.
+    /// </summary>
+    async Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
+        await GetWorkflowInstanceAsync(parentInstanceId) is { } parent
+            ? (await GetWorkflowInstancesByCorrelationIdAsync(parent.CorrelationId))
+            .Where(instance => instance.ParentInstanceId == parentInstanceId).ToArray()
+            : [];
+
+    /// <summary>
+    /// Deletes an instance and its inbox, waits and receipts. A child whose parent still waits for it ends
+    /// that wait as terminated, in the same step (D-17).
     /// </summary>
     Task DeleteWorkflowInstanceAsync(string instanceId);
 }
@@ -558,19 +582,28 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 madeRunnable.Add(child.InstanceId);
             }
             foreach (var cancellation in commit.ChildCancellations)
+            {
                 if (RequestCancellation(cancellation.ChildInstanceId, cancellation.Reason, now) &&
                     !_acknowledgedCancellations.Contains(cancellation.ChildInstanceId))
                     madeRunnable.Add(cancellation.ChildInstanceId);
+                // A child that is gone will never answer; its parent's wait ends as its termination.
+                else if (!_instances.ContainsKey(cancellation.ChildInstanceId))
+                    Append(ToEvent(WorkflowStoreRules.ChildGone(cancellation.ChildInstanceId, commit.InstanceId,
+                        cancellation.ParentWaitId)), now);
+            }
             // The child's completion goes to its parent's inbox; whatever the parent's state, the child's
             // commit stands.
             if (commit.ParentNotice is { } notice &&
-                Append(new WorkflowEvent(notice.ParentInstanceId, notice.EventId, notice.EventType, notice.PayloadJson,
-                    TargetWaitId: notice.ParentWaitId), now) is { Status: EventAppendStatus.Stored, MadeRunnable: true })
+                Append(ToEvent(notice), now) is { Status: EventAppendStatus.Stored, MadeRunnable: true })
                 madeRunnable.Add(notice.ParentInstanceId);
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
                 PendingCancellation(commit.InstanceId), parked, unread, madeRunnable));
         }
     }
+
+    private static WorkflowEvent ToEvent(ParentNotice notice) =>
+        new(notice.ParentInstanceId, notice.EventId, notice.EventType, notice.PayloadJson,
+            TargetWaitId: notice.ParentWaitId);
 
     // Caller holds _claimLock.
     private bool Unread(CheckpointCommit commit) =>
@@ -773,10 +806,21 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
     }
 
+    public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId)
+    {
+        lock (_claimLock)
+            return Task.FromResult<IEnumerable<WorkflowInstance>>(_instances.Values
+                .Where(instance => instance.ParentInstanceId == parentInstanceId).Select(SnapshotStructured).ToArray());
+    }
+
     public Task DeleteWorkflowInstanceAsync(string instanceId)
     {
         lock (_claimLock)
         {
+            // A child its parent still waits for ends that wait as terminated.
+            if (_instances.TryGetValue(instanceId, out var deleted) && !IsTerminal(deleted.Status) &&
+                deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
+                Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
             _instances.TryRemove(instanceId, out _);
             // The lease record stays so a recreated instance never reuses an epoch; its crashes go.
             if (_leases.TryGetValue(instanceId, out var lease))

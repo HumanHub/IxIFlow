@@ -226,8 +226,11 @@ public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
 /// </summary>
 public sealed record ChildStart(string ChildInstanceId, string Payload, string ParentWaitId);
 
-/// <summary>A cancellation request a parent's commit writes for a child it no longer waits to finish normally.</summary>
-public sealed record ChildCancellation(string ChildInstanceId, CancellationReason Reason);
+/// <summary>
+/// A cancellation request a parent's commit writes for a child it no longer waits to finish normally, and the
+/// parent's wait for that child: if the child is gone, the store ends that wait as the child's termination.
+/// </summary>
+public sealed record ChildCancellation(string ChildInstanceId, CancellationReason Reason, string ParentWaitId);
 
 /// <summary>
 /// The completion a child's terminal commit appends to its parent's inbox, addressed to the parent's

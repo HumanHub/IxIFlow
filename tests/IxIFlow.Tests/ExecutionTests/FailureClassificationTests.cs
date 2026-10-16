@@ -44,8 +44,13 @@ public sealed class FailureClassificationTests
         // The child's terminal commit, which also tells its parent, fails: neither is lost.
         repository.FailCommit = instance => instance.WorkflowName == "ClassifiedTimedChild";
         time.Advance(TimeSpan.FromMinutes(11));
-        await RecoverOnceAsync(services, repository, time);
-        Assert.True(repository.FailedCommits > 0);
+        // The child's own timer, or the scan, runs it into the failing commit.
+        using (var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            while (repository.FailedCommits == 0)
+            {
+                await RecoverOnceAsync(services, repository, time);
+                await Task.Delay(20, patience.Token);
+            }
         Assert.Equal(WorkflowStatus.Suspended, (await repository.GetWorkflowInstanceAsync(parentId))!.Status);
         Assert.NotEqual(WorkflowStatus.Failed,
             Assert.Single(await repository.GetWorkflowInstancesByNameAsync("ClassifiedTimedChild")).Status);

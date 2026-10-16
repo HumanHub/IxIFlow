@@ -521,7 +521,7 @@ internal sealed class InstanceHost(
         var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
         var canRecover = instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
             instance?.Status == WorkflowStatus.Suspended &&
-            (cancellationReason != null || HasChildWait(instance) || await HasInboxWorkAsync(instanceId));
+            (cancellationReason != null || await HasInboxWorkAsync(instanceId));
         // Another run may have decided the event since the instance was read, so it is read again.
         if (!canRecover || !HasStructuredCheckpoint(instance))
             return forEvent && await ReadAsync(instanceId) is { } latest ? latest
@@ -616,11 +616,6 @@ internal sealed class InstanceHost(
     // A stopped instance is answered without reading its data, which may be what stopped it.
     private static WorkflowExecutionResult ReadResult(WorkflowInstance instance) =>
         ExecutionCheckpoint.StopOf(instance) is { } stop ? Stopped(instance, stop) : ExistingResult(instance);
-
-    private bool HasChildWait(WorkflowInstance instance) =>
-        HasStructuredCheckpoint(instance) &&
-        ExecutionCheckpoint.Read(instance.ExecutionStateJson).Waits.Any(wait =>
-            wait.ChildWorkflowId != null);
 
     private static WorkflowExecutionResult ExistingStart(WorkflowInstance existing, WorkflowDefinition definition,
         WorkflowScopeCatalog scopes)
@@ -819,7 +814,8 @@ internal sealed class InstanceHost(
 
         public void ObserveCancellation(CancellationReason reason) => owner?.ObserveCancellation(reason);
 
-        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step) => host._children.ResolveAsync(step);
+        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) =>
+            host._children.ResolveAsync(step, starting);
 
         public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
             string childInstanceId, string parentWaitId) =>

@@ -55,8 +55,11 @@ internal sealed class ChildCompleted
 /// </summary>
 internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersionRegistry registry, TimeProvider time)
 {
-    /// <summary>The definition an invocation step starts, registered under its name and version.</summary>
-    public async Task<WorkflowDefinition> ResolveAsync(WorkflowStep step)
+    /// <summary>
+    /// The definition an invocation step invokes. To start a child it must be active, as for a client's start,
+    /// and it is registered under its name and version, so any host can run the child.
+    /// </summary>
+    public async Task<WorkflowDefinition> ResolveAsync(WorkflowStep step, bool starting)
     {
         WorkflowDefinition definition;
         if (step.WorkflowType != null)
@@ -77,6 +80,12 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
         if (definition.WorkflowDataType == null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Workflow {definition.Name} has no data type");
+        if (!starting)
+            return definition;
+        var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
+        if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true && isActive is false)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Workflow {definition.Name} v{definition.Version} is deactivated");
         await registry.RegisterWorkflowAsync(definition);
         return definition;
     }

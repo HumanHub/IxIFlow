@@ -52,8 +52,11 @@ internal interface IExecutionHost
     /// <summary>A pending cancellation request learned from a commit reply.</summary>
     void ObserveCancellation(CancellationReason reason);
 
-    /// <summary>The definition an invocation step starts, registered so any host can run the child (D-17).</summary>
-    Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step);
+    /// <summary>
+    /// The definition an invocation step invokes. When <paramref name="starting"/>, it is checked to be active
+    /// and registered, so any host can run the child (D-17); a child already started is read as it is.
+    /// </summary>
+    Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting);
 
     /// <summary>
     /// The start of a child of <paramref name="definition"/> with <paramref name="data"/>, for this run's

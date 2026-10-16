@@ -489,10 +489,11 @@ public sealed class ActivityRecoveryTests
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition,
             new ChargeData { OrderId = "order-6" }));
         var parent = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended));
-        var recovered = await engine.RecoverAsync(parent.InstanceId);
 
-        // The parent waits for the child its commit started; recovering it starts no other.
-        Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
+        // The parent is saved waiting for the child its commit started: there is nothing to recover in it,
+        // and asking starts no other child.
+        await engine.RecoverAsync(parent.InstanceId);
+        Assert.Equal(WorkflowStatus.Suspended, (await store.GetWorkflowInstanceAsync(parent.InstanceId))!.Status);
         var child = Assert.Single(await ChildrenOfAsync(store, parent));
         await engine.RecoverAsync(child.InstanceId);
         var finished = await engine.AwaitAsync(parent.InstanceId, WorkflowAwaitCondition.Finished)

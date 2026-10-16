@@ -807,7 +807,8 @@ public sealed class StoreClockTests
 
         public Task<StoredWait?> ReadWaitAsync(string waitId) => Task.FromResult<StoredWait?>(null);
 
-        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step) => throw new NotSupportedException();
+        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) =>
+            throw new NotSupportedException();
 
         public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
             string childInstanceId, string parentWaitId) => throw new NotSupportedException();
