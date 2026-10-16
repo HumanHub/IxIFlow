@@ -124,6 +124,9 @@ internal sealed class DirectInstanceClient
         CancellationToken cancellationToken = default) =>
         ForInstanceAsync(instanceId, _runner.ResolveAsync(instanceId, invocationId, resolution, cancellationToken));
 
+    public Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
+        _runner.GetTraceAsync(instanceId);
+
     public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId)
     {
         try

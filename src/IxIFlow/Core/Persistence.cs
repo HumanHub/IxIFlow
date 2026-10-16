@@ -220,6 +220,12 @@ public interface IWorkflowStateRepository : IWorkflowInbox
     Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId);
 
     /// <summary>
+    /// The instance's trace entries after <paramref name="afterSequence"/>, in order, at most
+    /// <paramref name="limit"/> (G-01). Commits append them; deleting the instance deletes them.
+    /// </summary>
+    Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000);
+
+    /// <summary>
     /// The child workflows a parent started (D-17), for operators. This fallback reads the instances that
     /// share the parent's correlation ID; stores should override it with one query.
     /// </summary>
@@ -278,6 +284,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     private readonly Dictionary<string, long> _inboxReadThrough = new(StringComparer.Ordinal);
     // Each instance's waits by wait ID, so appends and reads touch only that instance's waits.
     private readonly Dictionary<string, Dictionary<string, StoredWait>> _waits = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<string>> _traces = new(StringComparer.Ordinal);
     private readonly HashSet<string> _acknowledgedCancellations = new();
     private readonly HashSet<string> _publishedCompletions = new();
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _completionClaims = new();
@@ -565,6 +572,12 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
             _instances[commit.InstanceId] = snapshot;
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
+            if (commit.TraceEntries.Count > 0)
+            {
+                if (!_traces.TryGetValue(commit.InstanceId, out var trace))
+                    _traces[commit.InstanceId] = trace = [];
+                trace.AddRange(commit.TraceEntries);
+            }
             if (snapshot.CancellationReason != null && _cancellations.ContainsKey(commit.InstanceId))
                 _acknowledgedCancellations.Add(commit.InstanceId);
             if (_leases.TryGetValue(commit.InstanceId, out var lease))
@@ -809,6 +822,19 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
     }
 
+    public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+        int limit = 1000)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(afterSequence);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        lock (_claimLock)
+            return Task.FromResult<IReadOnlyList<StoredTraceEntry>>(_traces.TryGetValue(instanceId, out var trace)
+                ? trace.Skip((int)Math.Min(afterSequence, trace.Count)).Take(limit)
+                    .Select((json, index) => new StoredTraceEntry(afterSequence + index + 1,
+                        JsonSerializer.Deserialize<ExecutionTraceEntry>(json)!)).ToArray()
+                : []);
+    }
+
     public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId)
     {
         lock (_claimLock)
@@ -836,6 +862,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             _inboxSequence.Remove(instanceId);
             _inboxReadThrough.Remove(instanceId);
             _waits.Remove(instanceId);
+            _traces.Remove(instanceId);
             foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
                 _commits.Remove(key);
         }

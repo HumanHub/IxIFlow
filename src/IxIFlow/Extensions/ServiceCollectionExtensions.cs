@@ -44,7 +44,6 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
         
         // Workflow tracing and monitoring
-        services.AddScoped<IWorkflowTracer, WorkflowTracer>();
         
         // Expression evaluation
         services.AddScoped<IExpressionEvaluator, ExpressionEvaluator>();
@@ -98,11 +97,6 @@ public static class ServiceCollectionExtensions
         if (options.UseCustomStateRepository != null)
         {
             services.Replace(ServiceDescriptor.Singleton(typeof(IWorkflowStateRepository), options.UseCustomStateRepository));
-        }
-
-        if (options.UseCustomTracer != null)
-        {
-            services.AddScoped(typeof(IWorkflowTracer), options.UseCustomTracer);
         }
 
         return services;
@@ -360,11 +354,6 @@ public class IxIFlowOptions
     /// implementations must support concurrent workflow calls.
     /// </summary>
     public Type? UseCustomStateRepository { get; set; }
-
-    /// <summary>
-    /// Custom workflow tracer implementation
-    /// </summary>
-    public Type? UseCustomTracer { get; set; }
 
     /// <summary>
     /// The largest checkpoint, in bytes of workflow data and execution state, that an instance may

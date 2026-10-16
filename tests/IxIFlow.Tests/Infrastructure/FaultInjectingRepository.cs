@@ -81,6 +81,9 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
         _inner.GetWorkflowInstancesByStatusAsync(status);
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
         _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+    public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+        int limit = 1000) =>
+        _inner.GetTraceAsync(instanceId, afterSequence, limit);
     public Task DeleteWorkflowInstanceAsync(string instanceId) => _inner.DeleteWorkflowInstanceAsync(instanceId);
 
     public Task<WorkflowInstance?> GetUnpublishedCompletionAsync(string instanceId) =>

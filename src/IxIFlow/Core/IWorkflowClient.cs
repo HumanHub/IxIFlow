@@ -152,6 +152,12 @@ public interface IWorkflowClient
     /// its registered definition; null when the instance does not exist.
     /// </summary>
     Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId);
+
+    /// <summary>
+    /// The instance's trace: what its runs recorded and committed, in order (G-01). A run's result carries the
+    /// entries of that run.
+    /// </summary>
+    Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId);
 }
 
 /// <summary>What <see cref="IWorkflowClient.AwaitAsync"/> waits for.</summary>

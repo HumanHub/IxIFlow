@@ -201,6 +201,21 @@ internal sealed class InstanceHost(
         return pendingActivities;
     }
 
+    /// <summary>The instance's whole trace, in the order its commits stored it (G-01).</summary>
+    public async Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        var trace = new List<ExecutionTraceEntry>();
+        for (long after = 0;;)
+        {
+            var page = await _store.GetTraceAsync(instanceId, after);
+            trace.AddRange(page.Select(entry => entry.Entry));
+            if (page.Count == 0)
+                return trace;
+            after = page[^1].Sequence;
+        }
+    }
+
     /// <summary>
     /// Where the instance's branches are, computed from its saved checkpoint and its registered definition; none
     /// for an instance that does not exist or has no structured checkpoint.
@@ -675,7 +690,7 @@ internal sealed class InstanceHost(
         WorkflowData = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType) is { } dataType
             ? JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
             : null,
-        TraceEntries = instance.ExecutionHistory.ToList(),
+        TraceEntries = [],
         ErrorMessage = instance.LastError,
         ErrorStackTrace = instance.LastErrorStackTrace
     };
@@ -783,7 +798,7 @@ internal sealed class InstanceHost(
     {
         InstanceId = instance.InstanceId,
         Status = WorkflowExecutionStatus.NeedsResolution,
-        TraceEntries = instance.ExecutionHistory.ToList(),
+        TraceEntries = [],
         ErrorMessage = stop.Describe()
     };
 

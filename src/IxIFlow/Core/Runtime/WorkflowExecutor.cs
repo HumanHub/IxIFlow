@@ -368,7 +368,7 @@ internal sealed class WorkflowExecutor
                     InstanceId = instance.InstanceId,
                     Status = WorkflowExecutionStatus.Running,
                     WorkflowData = checkpoint.RootData,
-                    TraceEntries = instance.ExecutionHistory.ToList(),
+                    TraceEntries = instance.Trace.Run.ToList(),
                     ErrorMessage = "The host stopped before the instance became idle; it continues when recovered",
                     ExecutionTime = Now - instance.StartedAt!.Value
                 };
@@ -415,7 +415,7 @@ internal sealed class WorkflowExecutor
                     _ => WorkflowExecutionStatus.Suspended
                 },
                 WorkflowData = checkpoint.RootData,
-                TraceEntries = instance.ExecutionHistory.ToList(),
+                TraceEntries = instance.Trace.Run.ToList(),
                 ErrorMessage = instance.Status switch
                 {
                     WorkflowStatus.NeedsResolution => checkpoint.Continuations
@@ -519,7 +519,7 @@ internal sealed class WorkflowExecutor
                 InstanceId = instance.InstanceId,
                 Status = cancelled ? WorkflowExecutionStatus.Cancelled : WorkflowExecutionStatus.Faulted,
                 WorkflowData = checkpoint.RootData,
-                TraceEntries = instance.ExecutionHistory.ToList(),
+                TraceEntries = instance.Trace.Run.ToList(),
                 ErrorMessage = ex.Message,
                 ErrorType = SerializedException.CatchType(ex).FullName,
                 ErrorStackTrace = ex.StackTrace
@@ -699,7 +699,7 @@ internal sealed class WorkflowExecutor
             InstanceId = instance.InstanceId,
             Status = WorkflowExecutionStatus.NeedsResolution,
             WorkflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, workflowData.GetType()),
-            TraceEntries = instance.ExecutionHistory.ToList(),
+            TraceEntries = instance.Trace.Run.ToList(),
             ErrorMessage = limit.Message,
             ExecutionTime = Now - instance.StartedAt!.Value
         };
@@ -710,7 +710,7 @@ internal sealed class WorkflowExecutor
         InstanceId = instance.InstanceId,
         Status = WorkflowExecutionStatus.Scheduled,
         WorkflowData = workflowData,
-        TraceEntries = instance.ExecutionHistory.ToList(),
+        TraceEntries = instance.Trace.Run.ToList(),
         ErrorMessage = $"The workflow instance waits for a retry at {until:O}; it continues then",
         ExecutionTime = Now - instance.StartedAt!.Value
     };
@@ -738,7 +738,7 @@ internal sealed class WorkflowExecutor
             InstanceId = instance.InstanceId,
             Status = WorkflowExecutionStatus.NeedsResolution,
             WorkflowData = workflowData,
-            TraceEntries = instance.ExecutionHistory.ToList(),
+            TraceEntries = instance.Trace.Run.ToList(),
             ErrorMessage = reason,
             ExecutionTime = Now - instance.StartedAt!.Value
         };

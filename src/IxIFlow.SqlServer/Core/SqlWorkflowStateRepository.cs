@@ -783,6 +783,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             commit.ExpectedRevision, commit.CommitId, PayloadHash = commit.ContentHash,
             snapshot.AcknowledgesCancellation
         }, ("RunnableAtUtc", runnableAt)), transaction);
+        await AppendTraceAsync(connection, transaction, commit);
         // The lease row is written only when something changes, so most commits touch only their
         // instance row; a write to a missing lease row would take range locks other claims need.
         // An idle owner that has not read every arrival keeps the lease and reads them.
@@ -1069,6 +1070,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             SELECT InstanceId FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowWaits WHERE InstanceId = @InstanceId;
+            DELETE FROM dbo.IxIFlowWorkflowTraces WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowEvents WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowCommits WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId;
@@ -1084,6 +1086,50 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             $"SELECT StateJson, RunnableAtUtc, Revision FROM dbo.IxIFlowWorkflowInstances WHERE {predicate}",
             new { Value = value });
         return rows.Select(row => row.Read()).ToArray();
+    }
+
+    // A commit's trace entries follow those already stored, numbered in order (G-01). The instance row is locked,
+    // so no other commit numbers entries at the same time.
+    private static async Task AppendTraceAsync(SqlConnection connection, SqlTransaction transaction,
+        CheckpointCommit commit)
+    {
+        if (commit.TraceEntries.Count == 0)
+            return;
+        var last = await connection.ExecuteScalarAsync<long>("""
+            SELECT ISNULL(MAX(Sequence), 0) FROM dbo.IxIFlowWorkflowTraces WHERE InstanceId = @InstanceId
+            """, new { commit.InstanceId }, transaction);
+        var offset = 0;
+        foreach (var batch in commit.TraceEntries.Chunk(StatementBatch))
+        {
+            var parameters = new DynamicParameters(new { commit.InstanceId });
+            var rows = new List<string>();
+            for (var index = 0; index < batch.Length; index++)
+            {
+                rows.Add($"(@InstanceId, @S{index}, @J{index})");
+                parameters.Add($"S{index}", last + offset + index + 1);
+                parameters.Add($"J{index}", batch[index]);
+            }
+            await connection.ExecuteAsync(
+                $"INSERT INTO dbo.IxIFlowWorkflowTraces (InstanceId, Sequence, EntryJson) VALUES {string.Join(", ", rows)}",
+                parameters, transaction);
+            offset += batch.Length;
+        }
+    }
+
+    public async Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+        int limit = 1000)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(afterSequence);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var rows = await connection.QueryAsync<(long Sequence, string EntryJson)>("""
+            SELECT TOP (@Limit) Sequence, EntryJson FROM dbo.IxIFlowWorkflowTraces
+            WHERE InstanceId = @InstanceId AND Sequence > @AfterSequence
+            ORDER BY Sequence
+            """, new { InstanceId = instanceId, AfterSequence = afterSequence, Limit = limit });
+        return rows.Select(row => new StoredTraceEntry(row.Sequence,
+            JsonSerializer.Deserialize<ExecutionTraceEntry>(row.EntryJson)!)).ToArray();
     }
 
     // The runnable time and the revision are kept in their columns: the store changes the runnable time
@@ -1207,6 +1253,13 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                     EXEC(N'CREATE INDEX IX_IxIFlowWorkflowEvents_Pending
                         ON dbo.IxIFlowWorkflowEvents (InstanceId, Sequence) WHERE Outcome = 0');
                 END
+                IF OBJECT_ID(N'dbo.IxIFlowWorkflowTraces', N'U') IS NULL
+                    CREATE TABLE dbo.IxIFlowWorkflowTraces (
+                        InstanceId NVARCHAR(100) NOT NULL,
+                        Sequence BIGINT NOT NULL,
+                        EntryJson NVARCHAR(MAX) NOT NULL,
+                        CONSTRAINT PK_IxIFlowWorkflowTraces PRIMARY KEY (InstanceId, Sequence)
+                    );
                 IF OBJECT_ID(N'dbo.IxIFlowWorkflowWaits', N'U') IS NULL
                 BEGIN
                     CREATE TABLE dbo.IxIFlowWorkflowWaits (

@@ -317,12 +317,12 @@ public class EngineContractRegressionTests
         var started = await engine.RunAsync(definition, new RegressionData(),
             new WorkflowOptions { EnableTracing = false });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        Assert.Empty((await repository.GetWorkflowInstanceAsync(started.InstanceId))!.ExecutionHistory);
+        Assert.Empty(await repository.GetTraceAsync(started.InstanceId));
 
         var completed = await engine.ResumeAsync(started.InstanceId, "approval",
             new RegressionApprovalEvent());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
-        Assert.Empty((await repository.GetWorkflowInstanceAsync(started.InstanceId))!.ExecutionHistory);
+        Assert.Empty(await repository.GetTraceAsync(started.InstanceId));
     }
 
     [Trait("Feature", "durability")]
