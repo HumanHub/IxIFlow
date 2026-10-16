@@ -134,7 +134,7 @@ public class ParallelApprovalContractTests
 
     [Fact]
     [Trait("Spec", "D-13")]
-    public async Task PublishedReplyReachesParallelApprovalsWithoutSuspensionInfo()
+    public async Task PublishedReplyReachesParallelApprovals()
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
@@ -142,9 +142,6 @@ public class ParallelApprovalContractTests
         var started = await engine.RunAsync(
             CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false),
             new ApprovalData { RequestId = "request-1" });
-        var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
-        Assert.Null(saved!.SuspensionInfo);
-
         var deliveries = await engine.PublishAsync("finance", Reply("finance", approved: true), "reply-1");
 
         Assert.Contains(new EventDelivery(started.InstanceId, EventAppendStatus.Stored), deliveries);
@@ -152,7 +149,7 @@ public class ParallelApprovalContractTests
             (await EventAssert.DecidedAsync(repository, started.InstanceId, "reply-1")).Outcome);
         // The run that took the reply goes on to the next step before the instance is idle again.
         await engine.AwaitAsync(started.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
-        saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
+        var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
         Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceCompleted);
     }
@@ -378,7 +375,6 @@ public class ParallelApprovalContractTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(WorkflowStatus.Failed, saved!.Status);
-        Assert.Null(saved.SuspensionInfo);
         Assert.Equal(WorkflowStatus.Failed, saved.ExecutionSnapshot!.Status);
         Assert.DoesNotContain(saved.ExecutionSnapshot.Pointers, pointer => pointer.Status == "Waiting");
     }

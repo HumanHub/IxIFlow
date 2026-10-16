@@ -794,7 +794,6 @@ internal sealed class InstanceHost(
         instance.Status = WorkflowStatus.NeedsResolution;
         instance.LastError = stop.Reason;
         instance.LastErrorStackTrace = null;
-        instance.SuspensionInfo = null;
         // Like the resource stop, this saves the last checkpoint plus a marker, so no limit applies.
         await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner, true), instance,
             checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
