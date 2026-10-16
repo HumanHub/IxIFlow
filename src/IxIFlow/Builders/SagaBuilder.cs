@@ -195,56 +195,6 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         // Return the current builder for chaining
         return this;
     }
-
-    
-    //public ISagaActivityBuilder<TWorkflowData, TNextActivity, TActivity> Step<TNextActivity>(
-    //    Action<ISagaActivitySetupBuilder<TWorkflowData, TNextActivity, TActivity>> configure)
-    //    where TNextActivity : class, IAsyncActivity
-    //{
-    //    var stepId = Guid.NewGuid().ToString();
-    //    var workflowStep = new WorkflowStep
-    //    {
-    //        Id = stepId,
-    //        Name = typeof(TNextActivity).Name,
-    //        StepType = WorkflowStepType.Activity,
-    //        ActivityType = typeof(TNextActivity),
-    //        WorkflowDataType = typeof(TWorkflowData),
-    //        PreviousStepDataType = typeof(TActivity),
-    //        InputMappings = [],
-    //        OutputMappings = [],
-    //        StepMetadata = new Dictionary<string, object>
-    //        {
-    //            ["IsSagaStep"] = true,
-    //            ["SagaStepOrder"] = _sagaSteps.Count
-    //        }
-    //    };
-
-    //    // Create saga step info for compensation tracking
-    //    var sagaStepInfo = new SagaStepInfo
-    //    {
-    //        StepId = stepId,
-    //        ActivityType = typeof(TNextActivity),
-    //        Order = _sagaSteps.Count,
-    //        CompensationActivities = []
-    //    };
-
-    //    // Create the setup builder
-    //    var setupBuilder = new SagaActivitySetupBuilder<TWorkflowData, TNextActivity, TActivity>(
-    //        workflowStep, sagaStepInfo);
-
-    //    // Configure the step
-    //    configure(setupBuilder);
-
-    //    // Add to collections
-    //    _steps.Add(workflowStep);
-    //    _sagaSteps.Add(sagaStepInfo);
-
-    //    // Create next activity builder for chaining
-    //    return new SagaActivityBuilder<TWorkflowData, TNextActivity, TActivity>(
-    //        _steps, _sagaSteps);
-    //}
-
-
 }
 
 /// <summary>

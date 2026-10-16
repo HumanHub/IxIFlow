@@ -6,7 +6,7 @@ namespace IxIFlow.Builders.Interfaces;
 /// <summary>
 ///     Builder for configuring activities within saga steps with access to previous step data
 /// </summary>
-public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData> //: ISagaBuilder<TWorkflowData, TPreviousStepData>
+public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     where TPreviousStepData : class
 {
     /// <summary>
