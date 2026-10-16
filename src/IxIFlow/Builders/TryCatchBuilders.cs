@@ -92,7 +92,8 @@ public sealed class CatchBuilder<TWorkflowData, TPreviousStepData>(
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
         configure(new WorkflowBuilder<TWorkflowData, TPreviousStepData>(tryStep.FinallySteps));
-        return new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, name, workflowVersion);
+        // This builder already continues the same steps, name and version.
+        return this;
     }
 }
 

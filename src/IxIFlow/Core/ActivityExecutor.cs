@@ -467,7 +467,7 @@ public class ActivityExecutor : IActivityExecutor
                         if (method != null)
                         {
                             var genericMethod = method.MakeGenericMethod(typeof(TWorkflowData), typeof(TPreviousStepData));
-                            evaluationContext = (object)genericMethod.Invoke(this, new object[] { workflowData, previousStepData })!;
+                            evaluationContext = (object)genericMethod.Invoke(this, new object?[] { workflowData, previousStepData })!;
                             _logger.LogTrace("Created CompensationContext: {ContextType}", evaluationContext.GetType().FullName);
                             if (mapping.CompensationSource == CompensationInputSource.PreviousStep)
                                 evaluationContext = compensationPreviousStep

@@ -36,7 +36,8 @@ internal sealed class InstanceHost(
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
-    public static bool HasStructuredCheckpoint(WorkflowInstance? instance) =>
+    public static bool HasStructuredCheckpoint(
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] WorkflowInstance? instance) =>
         instance != null && ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson);
 
     public async Task<WorkflowExecutionResult> CancelAsync(string instanceId,

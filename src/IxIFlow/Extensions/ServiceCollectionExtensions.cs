@@ -143,7 +143,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-            var definition = (WorkflowDefinition)buildMethod.Invoke(null, new object[] { workflow, name })!;
+            var definition = (WorkflowDefinition)buildMethod.Invoke(null, new object?[] { workflow, name })!;
             return new RegisteredWorkflowDefinition<TWorkflow>(definition);
         });
         services.AddSingleton(serviceProvider =>
@@ -253,7 +253,7 @@ public static class ServiceCollectionExtensions
             .MakeGenericMethod(typeof(TWorkflow), workflowDataType);
         
         var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-        return (WorkflowDefinition)buildMethod.Invoke(null, new object[] { workflow, null })!;
+        return (WorkflowDefinition)buildMethod.Invoke(null, new object?[] { workflow, null })!;
     }
 
     /// <summary>
