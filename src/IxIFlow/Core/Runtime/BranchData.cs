@@ -372,9 +372,13 @@ internal static class BranchData
     }
 
     // True when a value is still the one a restore would put back: the same object, or for a value type or
-    // a string, the same value. A type's own equality may call different data equal.
+    // a string, the same data as the serializer writes it. A type's own equality may call different data
+    // equal, so it is not asked.
     private static bool Same(object? current, object? old) =>
-        ReferenceEquals(current, old) || current is ValueType or string && Equals(current, old);
+        ReferenceEquals(current, old) ||
+        current is ValueType or string && old != null && current.GetType() == old.GetType() &&
+        JsonNode.DeepEquals(JsonSerializer.SerializeToNode(current, current.GetType(), Options),
+            JsonSerializer.SerializeToNode(old, old.GetType(), Options));
 
     // A property's value as JSON, as the property's own contract writes it: a contract of its own holding
     // just that property, with the property's converter and number handling and its owner's number
@@ -674,23 +678,36 @@ internal static class BranchData
             var value = Info(property.PropertyType);
             var populated = (property.ObjectCreationHandling ?? owner.PreferredPropertyObjectCreationHandling) ==
                             JsonObjectCreationHandling.Populate;
-            // The serializer populates a mutable collection it can create; an array or an immutable one it
-            // replaces, whatever the preference says.
+            // The serializer populates an existing mutable collection; an array, an immutable or frozen one, or
+            // a read-only view it replaces, whatever the preference says.
             if (populated && value.Kind is JsonTypeInfoKind.Enumerable or JsonTypeInfoKind.Dictionary &&
-                !value.Type.IsArray && value.CreateObject != null)
+                Populatable(value.Type))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"'{at}' is read back by adding to what its initializer put in it, so a parallel branch's copy " +
                     "would keep items the data no longer has; read it back whole");
-            if (property.Set != null || property.AssociatedParameter != null)
-                return;
-            if (value.Type.IsValueType || value.Kind == JsonTypeInfoKind.None ||
+            if (property.Set != null || property.AssociatedParameter != null ||
                 value.Kind == JsonTypeInfoKind.Object && populated && MergedInPlace(property))
                 return;
+            // A get-only auto-property holds state, which a copy reads back only through a constructor
+            // parameter; a scalar the type computes is not state.
+            var stored = property.AttributeProvider is PropertyInfo { DeclaringType: { } declaring } clr &&
+                         declaring.GetField($"<{clr.Name}>k__BackingField",
+                             BindingFlags.Instance | BindingFlags.NonPublic) != null;
+            if (!stored && (value.Type.IsValueType || value.Kind == JsonTypeInfoKind.None))
+                return;
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                $"'{at}' has no setter, so a parallel branch's copy would lose it or keep what its initializer " +
-                "put in it; give it a setter or a constructor parameter");
+                $"'{at}' has no setter and no constructor parameter the serializer uses, so a parallel branch's " +
+                "copy would lose it or keep what its initializer put in it; give it a setter, or a constructor " +
+                "parameter, marking that constructor [JsonConstructor] if the type has others");
         });
     }
+
+    private static bool Populatable(Type type) =>
+        !type.IsArray && type.Namespace is not ("System.Collections.Immutable" or "System.Collections.Frozen") &&
+        !(type.IsInterface && type.IsGenericType && type.GetGenericTypeDefinition() is var definition &&
+          (definition == typeof(IEnumerable<>) || definition == typeof(IReadOnlyCollection<>) ||
+           definition == typeof(IReadOnlyList<>) || definition == typeof(IReadOnlyDictionary<,>) ||
+           definition == typeof(IReadOnlySet<>)));
 
     /// <summary>The combiners a data type declares, for the fingerprint (spec E-05).</summary>
     public static string CombinerSignature(Type? dataType)
