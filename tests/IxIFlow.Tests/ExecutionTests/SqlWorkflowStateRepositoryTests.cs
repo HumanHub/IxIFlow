@@ -116,12 +116,7 @@ public class SqlWorkflowStateRepositoryTests
                 WorkflowVersion = 2,
                 Status = WorkflowStatus.Suspended,
                 CorrelationId = "correlation-1",
-                WorkflowDataJson = "{\"Value\":42}",
-                ExecutionSnapshot = new WorkflowExecutionSnapshot
-                {
-                    InstanceId = instanceId,
-                    Frames = [new ExecutionFrame { StepId = "try-1", Kind = "TryCatch" }]
-                }
+                WorkflowDataJson = "{\"Value\":42}"
             };
             await firstRepository.SaveWorkflowInstanceAsync(instance);
 
@@ -130,7 +125,6 @@ public class SqlWorkflowStateRepositoryTests
             Assert.NotNull(restored);
             Assert.Equal(WorkflowStatus.Suspended, restored.Status);
             Assert.Equal("{\"Value\":42}", restored.WorkflowDataJson);
-            Assert.Equal("try-1", Assert.Single(restored.ExecutionSnapshot!.Frames).StepId);
             Assert.Contains(await secondRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended),
                 candidate => candidate.InstanceId == instanceId);
 

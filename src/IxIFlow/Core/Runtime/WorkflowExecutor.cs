@@ -494,12 +494,6 @@ internal sealed class WorkflowExecutor
             instance.LastError = ex.Message;
             instance.LastErrorStackTrace = ex.StackTrace;
             instance.CompletedAt = Now;
-            if (instance.ExecutionSnapshot != null)
-            {
-                instance.ExecutionSnapshot.Status = instance.Status;
-                instance.ExecutionSnapshot.Pointers.Clear();
-                instance.ExecutionSnapshot.Frames.Clear();
-            }
             if (host.PersistsState)
             {
                 var scopes = new WorkflowScopeCatalog(definition);

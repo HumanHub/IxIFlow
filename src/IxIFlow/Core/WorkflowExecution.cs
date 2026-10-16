@@ -347,13 +347,11 @@ public class WorkflowInstance
     public List<ExecutionTraceEntry> ExecutionHistory { get; set; } = new();
 
     /// <summary>
-    ///     Structured execution snapshot for resume, replay, and debugging
-    /// </summary>
-    public WorkflowExecutionSnapshot? ExecutionSnapshot { get; set; }
 }
 
 /// <summary>
-///     Structured execution snapshot for durable resume and future debugger support
+/// Where an instance's branches are and which scopes they are in, computed from its saved checkpoint when
+/// asked through <see cref="IWorkflowClient.GetSnapshotAsync"/>; it is not stored.
 /// </summary>
 public class WorkflowExecutionSnapshot
 {
@@ -392,9 +390,7 @@ public class WorkflowExecutionSnapshot
     /// </summary>
     public Dictionary<string, string> Values { get; set; } = new();
 
-    /// <summary>
-    ///     When the snapshot was captured
-    /// </summary>
+    /// <summary>When the snapshot was computed from the saved checkpoint.</summary>
     public DateTime CapturedAtUtc { get; set; }
 }
 

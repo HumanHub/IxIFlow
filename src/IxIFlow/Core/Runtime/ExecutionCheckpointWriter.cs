@@ -111,10 +111,8 @@ internal static class ExecutionCheckpointWriter
                 ? instance.WorkflowDataJson
                 : BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData)));
             var stateJson = JsonSerializer.Serialize(checkpoint);
-            var snapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, now);
             instance.WorkflowDataJson = dataJson;
             instance.ExecutionStateJson = stateJson;
-            instance.ExecutionSnapshot = snapshot;
         }
         catch (Exception ex)
         {
@@ -130,17 +128,15 @@ internal static class ExecutionCheckpointWriter
     public sealed class CheckpointDataException(Exception inner) : Exception(
         $"The workflow state could not be checkpointed: {inner.Message}", inner);
 
-    private sealed record SavedForm(string WorkflowDataJson, string ExecutionStateJson,
-        WorkflowExecutionSnapshot? ExecutionSnapshot)
+    private sealed record SavedForm(string WorkflowDataJson, string ExecutionStateJson)
     {
         public static SavedForm Of(WorkflowInstance instance) => new(instance.WorkflowDataJson,
-            instance.ExecutionStateJson, instance.ExecutionSnapshot);
+            instance.ExecutionStateJson);
 
         public void RestoreTo(WorkflowInstance instance)
         {
             instance.WorkflowDataJson = WorkflowDataJson;
             instance.ExecutionStateJson = ExecutionStateJson;
-            instance.ExecutionSnapshot = ExecutionSnapshot;
         }
     }
 }

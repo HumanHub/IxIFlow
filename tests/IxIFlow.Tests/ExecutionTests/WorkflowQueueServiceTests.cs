@@ -811,6 +811,8 @@ public sealed class WorkflowQueueServiceTests
             throw new NotSupportedException();
         public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
             throw new NotSupportedException();
+        public Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId) =>
+            throw new NotSupportedException();
     }
 
     private sealed class FailingBus : IMessageBus

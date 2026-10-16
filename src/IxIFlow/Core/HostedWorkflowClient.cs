@@ -256,6 +256,9 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
     public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
         host.ReadAsync(client => client.GetPendingActivitiesAsync(instanceId));
 
+    public Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId) =>
+        host.ReadAsync(client => client.GetSnapshotAsync(instanceId));
+
     public async Task<WorkflowExecutionResult> AwaitAsync(string instanceId,
         WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle, CancellationToken cancellationToken = default)
     {

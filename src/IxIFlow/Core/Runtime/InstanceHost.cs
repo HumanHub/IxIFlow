@@ -201,6 +201,27 @@ internal sealed class InstanceHost(
         return pendingActivities;
     }
 
+    /// <summary>
+    /// Where the instance's branches are, computed from its saved checkpoint and its registered definition; none
+    /// for an instance that does not exist or has no structured checkpoint.
+    /// </summary>
+    public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+        if (instance == null || !HasStructuredCheckpoint(instance))
+            return null;
+        var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "The registered workflow definition is unavailable");
+        var scopes = new WorkflowScopeCatalog(definition);
+        var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+        if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "The registered workflow definition differs from the saved version");
+        return ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
+    }
+
     private static bool ChildIsActive(WorkflowInstance? child) =>
         child != null && child.Status is not (WorkflowStatus.Completed or
             WorkflowStatus.Failed or WorkflowStatus.Cancelled or
@@ -334,7 +355,6 @@ internal sealed class InstanceHost(
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Workflow {definition.Name} v{definition.Version} is deactivated");
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-            instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
             if (options.PersistState)
             {
                 await registry.RegisterWorkflowAsync(definition);

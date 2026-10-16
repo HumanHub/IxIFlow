@@ -124,6 +124,19 @@ internal sealed class DirectInstanceClient
         CancellationToken cancellationToken = default) =>
         ForInstanceAsync(instanceId, _runner.ResolveAsync(instanceId, invocationId, resolution, cancellationToken));
 
+    public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId)
+    {
+        try
+        {
+            return await _runner.GetSnapshotAsync(instanceId);
+        }
+        catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error))
+        {
+            error.At(instanceId);
+            throw;
+        }
+    }
+
     public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId)
     {
         try
