@@ -13,6 +13,21 @@ public interface IPaymentProvider
     Task<string> CreatePaymentAsync(decimal amount, string replyToken, CancellationToken cancellationToken);
 }
 
+/// <summary>Refunds a payment the provider created.</summary>
+public interface IPaymentRefunds
+{
+    Task RefundAsync(string reference, CancellationToken cancellationToken);
+}
+
+/// <summary>Reserves an order's stock.</summary>
+public interface IStock
+{
+    /// <summary>Reserves the order's items, or throws <see cref="StockUnavailable"/>.</summary>
+    Task ReserveAsync(string orderId, CancellationToken cancellationToken);
+}
+
+public sealed class StockUnavailable(string message) : Exception(message);
+
 /// <summary>Checks an order for fraud while its payment is pending.</summary>
 public interface IFraudChecks
 {
@@ -53,6 +68,22 @@ public sealed class CheckFraud(IFraudChecks checks) : IAsyncActivity
         Suspicious = await checks.IsSuspiciousAsync(OrderId, cancellationToken);
 }
 
+public sealed class RefundPayment(IPaymentRefunds refunds) : IAsyncActivity
+{
+    public string Reference { get; set; } = "";
+
+    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+        refunds.RefundAsync(Reference, cancellationToken);
+}
+
+public sealed class ReserveStock(IStock stock) : IAsyncActivity
+{
+    public string OrderId { get; set; } = "";
+
+    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+        stock.ReserveAsync(OrderId, cancellationToken);
+}
+
 public sealed class CancelPayment : IAsyncActivity
 {
     public bool Cancelled { get; set; }
@@ -87,5 +118,30 @@ public static class PaymentRecipe
                 .TimeoutAfter(paymentTimeout)
                 .OnTimeout(path => path.Step<CancelPayment>(step => step
                     .Output(activity => activity.Cancelled).To(ctx => ctx.WorkflowData.Cancelled))))
+            .Build();
+}
+
+/// <summary>
+/// Recipe 8, payment in a saga (spec D-17): the payment request is a saga step, refunded when a later
+/// step fails. Compensation closes the payment's wait, so the provider's callback for that payment is
+/// refused as cancelled. The saga's retry creates a new payment with a new token, which the old token
+/// cannot answer.
+/// </summary>
+public static class SagaPaymentRecipe
+{
+    public static WorkflowDefinition Definition() =>
+        Workflow.Create<Payment>("PaymentInASaga")
+            .Step<ValidateOrder>()
+            .Saga(saga => saga
+                .Request<CreatePayment>("payment", step => step
+                    .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
+                    .Output(activity => activity.Reference).To(ctx => ctx.WorkflowData.PaymentReference)
+                    .CompensateWith<RefundPayment>(refund => refund
+                        .Input(activity => activity.Reference).From(ctx => ctx.CurrentStep.Reference)))
+                .Step<ReserveStock>(step => step
+                    .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId))
+                .WaitFor<PaymentReceived>("payment", (received, _) => received.Status != "pending", wait => wait
+                    .Output(received => received.Status).To(ctx => ctx.WorkflowData.PaymentStatus)))
+            .OnError<StockUnavailable>(error => error.Compensate().ThenRetry(1))
             .Build();
 }

@@ -19,6 +19,20 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData> //: ISag
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
+    /// Runs a request activity (<see cref="IRequestActivity{TReply}"/>) as a saga step, whose answer the
+    /// saga takes with <c>WaitFor&lt;TReply&gt;(name)</c> later in the saga (D-33). The answer's wait opens
+    /// before the activity runs, and the activity sends <see cref="IActivityContext.Reply"/> with the
+    /// request. When compensation starts the wait closes, so a later answer is refused as cancelled; a
+    /// saga retry runs the request again with a new wait. A <paramref name="subject"/> says what the
+    /// request is about; an answer must carry the same one.
+    /// </summary>
+    ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(
+        string name,
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
+        where TActivity : class, IAsyncActivity;
+
+    /// <summary>
     /// Suspends workflow execution until a resume event is received
     /// </summary>
     /// <typeparam name="TResumeEvent">Type of the resume event</typeparam>

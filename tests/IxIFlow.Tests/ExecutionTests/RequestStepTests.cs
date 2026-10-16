@@ -235,6 +235,112 @@ public sealed class RequestStepTests
             .Step<StartActivity>().Request<StartActivity>("approval"));
     }
 
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task ARequestInASagaIsCompensatedAndALateAnswerIsRefusedAsCancelled()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("CompensatedRequest")
+            .Step<StartActivity>()
+            .Saga(saga => saga
+                .Request<RequestApproval>("approval", step => step
+                    .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
+                    .CompensateWith<WithdrawRequest>(withdraw => withdraw
+                        .Output(activity => activity.Withdrawn).To(ctx => ctx.WorkflowData.Withdrawn)))
+                .Step<FailingActivity>()
+                .WaitFor<ApprovalDecision>("approval", configure: wait => wait
+                    .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved)))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenContinue())
+            .WaitFor<OtherAnswer>("done")
+            .Build();
+
+        var started = await engine.RunAsync(definition, new OrderData { Amount = 10 });
+
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        Assert.True(Data(started).Withdrawn);
+        var late = await engine.ReplyAsync(Assert.Single(outbox.Sent).Token, new ApprovalDecision { Approved = true });
+        EventAssert.Rejected(late, EventRejection.WaitCancelled);
+        Assert.False(Data(late).Approved);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task ASagaRetrySendsANewRequestAndTheOldTokenCannotAnswerIt()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("RetriedRequest")
+            .Step<StartActivity>()
+            .Saga(saga => saga
+                .Request<RequestApproval>("approval", step => step
+                    .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount))
+                .Step<FailOnceActivity>()
+                .WaitFor<ApprovalDecision>("approval", configure: wait => wait
+                    .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved)))
+            .OnError<InvalidOperationException>(error => error.CompensateNone().ThenRetry(1))
+            .Build();
+
+        var started = await engine.RunAsync(definition, new OrderData { Amount = 10 });
+
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        Assert.Equal(2, outbox.Sent.Count);
+        var (first, second) = (outbox.Sent[0].Token, outbox.Sent[1].Token);
+        Assert.NotEqual(first, second);
+        EventAssert.Rejected(await engine.ReplyAsync(first, new ApprovalDecision { Approved = true }),
+            EventRejection.WaitCancelled);
+        var answered = await engine.ReplyAsync(second, new ApprovalDecision { Approved = true });
+        EventAssert.Consumed(answered);
+        Assert.Equal(WorkflowExecutionStatus.Success, answered.Status);
+        Assert.True(Data(answered).Approved);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task AnAnswerTakenBeforeASagaFailsIsNotTakenAgainByTheRetry()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("AnsweredThenRetried")
+            .Step<StartActivity>()
+            .Saga(saga => saga
+                .Request<RequestApproval>("approval", step => step
+                    .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount))
+                .WaitFor<ApprovalDecision>("approval", configure: wait => wait
+                    .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved))
+                .Step<FailOnceActivity>())
+            .OnError<InvalidOperationException>(error => error.CompensateNone().ThenRetry(1))
+            .Build();
+        await engine.RunAsync(definition, new OrderData { Amount = 10 });
+        var first = Assert.Single(outbox.Sent).Token;
+
+        // The answer completes the wait; the next step fails and the retry asks again.
+        var retried = await engine.ReplyAsync(first, new ApprovalDecision { Approved = true });
+
+        EventAssert.Consumed(retried);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, retried.Status);
+        Assert.Equal(2, outbox.Sent.Count);
+        EventAssert.Rejected(await engine.ReplyAsync(first, new ApprovalDecision { Approved = true }),
+            EventRejection.WaitAnswered);
+        var finished = await engine.ReplyAsync(outbox.Sent[1].Token, new ApprovalDecision { Approved = true });
+        EventAssert.Consumed(finished);
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public void ARequestInASagaNeedsItsWaitForInTheSaga()
+    {
+        EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<OrderData>("SagaWithoutWait")
+            .Step<StartActivity>()
+            .Saga(saga => saga.Request<RequestApproval>("approval"))
+            .WaitFor<ApprovalDecision>("approval")
+            .Build());
+    }
+
     private static OrderData Data(WorkflowExecutionResult result) => Assert.IsType<OrderData>(result.WorkflowData);
 
     private static ServiceProvider Services()
@@ -245,6 +351,8 @@ public sealed class RequestStepTests
         services.AddSingleton<StepGate>();
         services.AddTransient<RequestApproval>();
         services.AddTransient<GatedActivity>();
+        services.AddSingleton<Attempts>();
+        services.AddTransient<FailOnceActivity>();
         services.AddIxIFlow();
         return services.BuildServiceProvider();
     }
@@ -254,6 +362,7 @@ public sealed class RequestStepTests
         public decimal Amount { get; set; }
         public bool Approved { get; set; }
         public int Lines { get; set; }
+        public bool Withdrawn { get; set; }
     }
 
     public sealed class ApprovalDecision
@@ -290,6 +399,37 @@ public sealed class RequestStepTests
             outbox.Send(context.Reply!.Token, Amount);
             return Task.CompletedTask;
         }
+    }
+
+    public sealed class WithdrawRequest : IAsyncActivity
+    {
+        public bool Withdrawn { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Withdrawn = true;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class FailingActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("stock unavailable");
+    }
+
+    public sealed class Attempts
+    {
+        public int Count;
+    }
+
+    /// <summary>Fails on its first attempt in the test only.</summary>
+    public sealed class FailOnceActivity(Attempts attempts) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Interlocked.Increment(ref attempts.Count) == 1
+                ? throw new InvalidOperationException("first attempt")
+                : Task.CompletedTask;
     }
 
     public sealed class StartActivity : IAsyncActivity
