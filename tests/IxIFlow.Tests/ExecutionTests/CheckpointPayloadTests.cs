@@ -46,6 +46,57 @@ public sealed class CheckpointPayloadTests
         Assert.Equal("", read.ExecutionStateJson);
     }
 
+    [Theory]
+    [Trait("Spec", "A-08")]
+    [InlineData(63, true)]
+    [InlineData(64, false)]
+    public void AStateTooDeepToSitInsideItsInstanceIsWrittenEscapedAndReadsBack(int depth, bool raw)
+    {
+        var state = new string('[', depth) + new string(']', depth);
+        var instance = new WorkflowInstance { InstanceId = "deep", ExecutionStateJson = state };
+
+        var json = JsonSerializer.Serialize(instance);
+        var read = JsonSerializer.Deserialize<WorkflowInstance>(json)!;
+
+        Assert.Equal(raw, json.Contains("\"ExecutionStateJson\":[", StringComparison.Ordinal));
+        Assert.Equal(state, read.ExecutionStateJson);
+    }
+
+    [Theory]
+    [Trait("Spec", "A-08")]
+    [InlineData("{\"unclosed\":")]
+    [InlineData("{} trailing")]
+    [InlineData("  {\"Padded\":true}  ")]
+    [InlineData("[1, 2, 3]")]
+    [InlineData("null")]
+    [InlineData("42")]
+    public void AnyStateReadsBackAsTheTextItWas(string state)
+    {
+        var instance = new WorkflowInstance { InstanceId = "text", ExecutionStateJson = state };
+
+        var read = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!;
+
+        // Raw JSON keeps its content, though not the blanks around it.
+        Assert.Equal(state.Trim().StartsWith('{') && state.Trim().EndsWith('}') || state.StartsWith('[')
+            ? state.Trim() : state, read.ExecutionStateJson);
+    }
+
+    [Fact]
+    [Trait("Spec", "A-08")]
+    public void ALargeStateRoundTripsThroughACommit()
+    {
+        var items = string.Join(",", Enumerable.Range(0, 100_000).Select(index => $"{{\"Id\":\"item-{index}\"}}"));
+        var instance = new WorkflowInstance
+        {
+            InstanceId = "large", WorkflowName = "Large", ExecutionStateJson = $"{{\"Items\":[{items}]}}"
+        };
+
+        var commit = CheckpointCommit.Create(instance, 0, 0);
+
+        Assert.True(commit.Payload.Length > 1_000_000);
+        Assert.Equal(instance.ExecutionStateJson, commit.ReadInstance().ExecutionStateJson);
+    }
+
     [Fact]
     [Trait("Spec", "A-08")]
     public void ACommitCarriesWhatAStoreAppliesItByAndReadsAtItsNewRevision()
