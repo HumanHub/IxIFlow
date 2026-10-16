@@ -265,13 +265,14 @@ public sealed class ParallelDataContractTests
                 .Do(second => second.Step<Copy>(step => step
                     .Input(activity => activity.Value).From(_ => "second")
                     .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Second)))))
-            .Catch<JoinConflictException>(handler => handler.Step<Noop>())
+            .Catch<Exception>(handler => handler.Step<Noop>())
             .Build();
 
         var result = await Engine(services).RunAsync(definition, new Latching { Watched = true });
 
         // First latches once it is set, so it cannot be put back after Second is refused: the data is
-        // changed and no handler can be told it is not, so the instance fails as the engine's failure.
+        // changed and no handler can be told it is not, so even a Catch of every exception does not run,
+        // and the instance fails as the engine's failure.
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("could not put the workflow data back", result.ErrorMessage);
     }
@@ -301,6 +302,166 @@ public sealed class ParallelDataContractTests
         // Low=150 is valid beside High=200, which the merge also takes; at the fork High was 100.
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(["150-200"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-07")]
+    public async Task AReplacedValueIsPutBackEvenWhenItsTypeCallsTheTwoEqual()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Account>("EqualButReplaced")
+            .Step<Noop>()
+            .Try(attempt => attempt.Parallel(parallel => parallel
+                .Do(first => first.Step<Rebalance>(step => step
+                    .Output(activity => activity.Primary).To(ctx => ctx.WorkflowData.Primary)))
+                .Do(second => second.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "renamed")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Name)))))
+            .Catch<JoinConflictException>(handler => handler.Step<Record>(step => step
+                .Input(activity => activity.Value).From(ctx => $"caught {ctx.WorkflowData.Primary.Amount}")))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new Account { Sealed = true });
+
+        // The new entity has the old one's ID, so its type calls them equal; it is still put back.
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["caught 1"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-05")]
+    public async Task ACombinerInsideADictionarysValuesMergesItsBranches()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Regions>("CountsPerRegion")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Do(first => first.Step<SetNumber>(step => step
+                    .Input(activity => activity.Value).From(_ => 2)
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.ByRegion["east"].Count)))
+                .Do(second => second.Step<SetNumber>(step => step
+                    .Input(activity => activity.Value).From(_ => 3)
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.ByRegion["east"].Count))))
+            .Step<Record>(step => step
+                .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.ByRegion["east"].Count.ToString()))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new Regions());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["5"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-07")]
+    public async Task TheMergeIsAppliedInTheOrderTheReadBackValidatedIt()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Budget>("DeclarationOrder")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Do(first => first.Step<SetNumber>(step => step
+                    .Input(activity => activity.Value).From(_ => 8)
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Spent)))
+                .Do(second => second
+                    .Step<SetNumber>(step => step
+                        .Input(activity => activity.Value).From(_ => 10)
+                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Extra))
+                    .Step<SetNumber>(step => step
+                        .Input(activity => activity.Value).From(_ => 2)
+                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Base))))
+            .Step<Record>(step => step
+                .Input(activity => activity.Value)
+                .From(ctx => $"{ctx.WorkflowData.Base}+{ctx.WorkflowData.Extra}>={ctx.WorkflowData.Spent}"))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new Budget());
+
+        // Applied as declared, Base=2 and Extra=10 come before Spent=8, which fits; in the branches' order,
+        // Spent=8 then Base=2 would leave Base+Extra under Spent and be refused.
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["2+10>=8"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-05")]
+    public async Task ACombinedValueIsWrittenAsItsPropertyWritesIt()
+    {
+        using var services = Services();
+        var definition = Workflow.Create<Lenient>("OwnNumberHandling")
+            .Step<Noop>()
+            .Parallel(parallel => parallel
+                .Do(first => first.Step<SetTotals>(step => step
+                    .Input(activity => activity.Count).From(_ => 5)
+                    .Output(activity => activity.Totals).To(ctx => ctx.WorkflowData.Totals)))
+                .Do(second => second.Step<SetTotals>(step => step
+                    .Input(activity => activity.Count).From(_ => 7)
+                    .Output(activity => activity.Totals).To(ctx => ctx.WorkflowData.Totals))))
+            .Step<Record>(step => step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Totals.A.ToString()))
+            .Build();
+
+        var result = await Engine(services).RunAsync(definition, new Lenient());
+
+        // The data type writes its own numbers as strings; the totals inside it are written as numbers,
+        // as the serializer writes them, so the merge reads back.
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(["5"], services.GetRequiredService<Seen>().Values);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-04")]
+    public void AWriteThroughAPolymorphicValueIsCheckedInEveryTypeThatHasTheMember()
+    {
+        // Only the square's spec has a width: the write is valid although the circle's spec comes first.
+        Workflow.Create<Board>("WidthOfASquare").Step<Noop>()
+            .Parallel(parallel => parallel.WaitAny()
+                .Do(only => only.Step<SetNumber>(step => step
+                    .Input(activity => activity.Value).From(_ => 3)
+                    .Output(activity => activity.Value).To(ctx => ((SquareShape)ctx.WorkflowData.Shape).Spec.Width))))
+            .Build();
+        // A member one of the types does not serialize is refused: the cast is not kept, so the join
+        // could not tell which one the write is for.
+        Assert.Contains("not serialized with the workflow data in every type", Assert.Throws<WorkflowEngineException>(() =>
+            Workflow.Create<Board>("NoteOfASquare").Step<Noop>()
+                .Parallel(parallel => parallel.WaitAny()
+                    .Do(only => only.Step<Copy>(step => step
+                        .Input(activity => activity.Value).From(_ => "x")
+                        .Output(activity => activity.Value).To(ctx => ((SquareShape)ctx.WorkflowData.Shape).Spec.Note))))
+                .Build()).Message);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-04")]
+    public void AWriteIntoAWholeValueWithNoSetterIsRefusedInsideAListToo()
+    {
+        Assert.Contains("which a join sets whole but which has no setter", Assert.Throws<WorkflowEngineException>(() =>
+            Workflow.Create<PricedLines>("GetOnlyInsideAList").Step<Noop>()
+                .Parallel(parallel => parallel.WaitAny()
+                    .Do(only => only.Step<SetNumber>(step => step
+                        .Input(activity => activity.Value).From(_ => 3)
+                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Lines[0].Total.Amount))))
+                .Build()).Message);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-04")]
+    public void AWriteThroughSeveralIndexesIsCheckedThroughEach()
+    {
+        Workflow.Create<Grid>("CellName").Step<Noop>()
+            .Parallel(parallel => parallel.WaitAny()
+                .Do(only => only.Step<Copy>(step => step
+                    .Input(activity => activity.Value).From(_ => "x")
+                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Rows[0][0].Name))))
+            .Build();
+    }
+
+    [Fact]
+    [Trait("Spec", "E-01")]
+    public void AnArrayUnderAPopulatePreferenceIsReplacedSoItIsAllowed()
+    {
+        Workflow.Create<PreferPopulate>("ArrayUnderPopulate").Step<Noop>()
+            .Parallel(parallel => parallel.Do(only => only.Step<Noop>()))
+            .Build();
     }
 
     [Fact]
@@ -688,6 +849,128 @@ public sealed class ParallelDataContractTests
         public string Value { get; set; } = "";
     }
 
+    /// <summary>The name may not change once the account is sealed, which is not saved.</summary>
+    public sealed class Account
+    {
+        private string _name = "";
+
+        public Entity Primary { get; set; } = new(1, 1);
+
+        public string Name
+        {
+            get => _name;
+            set => _name = Sealed ? throw new InvalidOperationException("The account is sealed") : value;
+        }
+
+        [JsonIgnore]
+        public bool Sealed { get; set; }
+    }
+
+    /// <summary>Entities are equal when their IDs are, whatever their amounts.</summary>
+    public sealed class Entity(int id, int amount)
+    {
+        public int Id { get; } = id;
+        public int Amount { get; } = amount;
+        public override bool Equals(object? other) => other is Entity entity && entity.Id == Id;
+        public override int GetHashCode() => Id;
+    }
+
+    public sealed class Regions
+    {
+        public Dictionary<string, Row> ByRegion { get; set; } = new() { ["east"] = new Row() };
+    }
+
+    public sealed class Row
+    {
+        [Combine<Sum<int>>]
+        public int Count { get; set; }
+    }
+
+    /// <summary>What is spent may never exceed the base and the extra together.</summary>
+    public sealed class Budget
+    {
+        private int _base = 10;
+        private int _spent;
+
+        public int Base
+        {
+            get => _base;
+            set => _base = Spent <= value + Extra ? value : throw new ArgumentOutOfRangeException(nameof(Base));
+        }
+
+        public int Extra { get; set; }
+
+        public int Spent
+        {
+            get => _spent;
+            set => _spent = value <= Base + Extra ? value : throw new ArgumentOutOfRangeException(nameof(Spent));
+        }
+    }
+
+    [JsonNumberHandling(JsonNumberHandling.WriteAsString | JsonNumberHandling.AllowReadingFromString)]
+    public sealed class Lenient
+    {
+        public int Version { get; set; } = 1;
+
+        [Combine<FirstWins<Totals>>]
+        public Totals Totals { get; set; } = new();
+    }
+
+    public sealed class Board
+    {
+        public PolyShape Shape { get; set; } = new CircleShape();
+    }
+
+    [JsonPolymorphic]
+    [JsonDerivedType(typeof(CircleShape), "circle")]
+    [JsonDerivedType(typeof(SquareShape), "square")]
+    public abstract class PolyShape;
+
+    public sealed class CircleShape : PolyShape
+    {
+        public CircleSpec Spec { get; set; } = new();
+    }
+
+    public sealed class SquareShape : PolyShape
+    {
+        public SquareSpec Spec { get; set; } = new();
+    }
+
+    public sealed class CircleSpec
+    {
+        public int Radius { get; set; }
+
+        [JsonIgnore]
+        public string Note { get; set; } = "";
+    }
+
+    public sealed class SquareSpec
+    {
+        public int Width { get; set; }
+        public string Note { get; set; } = "";
+    }
+
+    public sealed class PricedLines
+    {
+        public List<PricedLine> Lines { get; set; } = [new()];
+    }
+
+    public sealed class PricedLine
+    {
+        public Money Total { get; } = new();
+    }
+
+    public sealed class Grid
+    {
+        public List<List<ScratchItem>> Rows { get; set; } = [];
+    }
+
+    [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+    public sealed class PreferPopulate
+    {
+        public int[] Values { get; set; } = [2];
+    }
+
     public sealed class Mapped
     {
         public string First { get; set; } = "";
@@ -845,6 +1128,29 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Map = Map.Add("b", 2);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class Rebalance : IAsyncActivity
+    {
+        public Entity Primary { get; set; } = new(0, 0);
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Primary = new Entity(1, 2);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class SetTotals : IAsyncActivity
+    {
+        public int Count { get; set; }
+        public Totals Totals { get; set; } = new();
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Totals = new Totals { A = Count, B = Count };
             return Task.CompletedTask;
         }
     }

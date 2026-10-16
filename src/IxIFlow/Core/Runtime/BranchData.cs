@@ -200,7 +200,8 @@ internal static class BranchData
         List<string> path = [];
         try
         {
-            foreach (var changed in merge.Paths)
+            // In the order the read-back set them: each object's properties as its contract declares them.
+            foreach (var changed in merge.Paths.OrderBy(item => DeclarationOrder(data.GetType(), item), PathOrder.Instance))
             {
                 path = changed;
                 if (path.Count == 0)
@@ -232,6 +233,41 @@ internal static class BranchData
         }
     }
 
+    // The position of each segment of a path among its owner's properties; a dictionary key keeps its place.
+    private static List<int> DeclarationOrder(Type type, List<string> path)
+    {
+        var order = new List<int>();
+        var info = Info(type);
+        foreach (var segment in path)
+        {
+            if (info.Kind == JsonTypeInfoKind.Dictionary)
+            {
+                order.Add(0);
+                info = Info(info.ElementType!);
+                continue;
+            }
+            var index = info.Properties.Select(property => property.Name).ToList().IndexOf(segment);
+            order.Add(index);
+            if (index < 0)
+                break;
+            info = Info(info.Properties[index].PropertyType);
+        }
+        return order;
+    }
+
+    private sealed class PathOrder : IComparer<List<int>>
+    {
+        public static readonly PathOrder Instance = new();
+
+        public int Compare(List<int>? one, List<int>? other)
+        {
+            for (var index = 0; index < Math.Min(one!.Count, other!.Count); index++)
+                if (one[index] != other[index])
+                    return one[index].CompareTo(other[index]);
+            return one.Count.CompareTo(other.Count);
+        }
+    }
+
     // Sets one changed path on the parent's object from the merged copy, at the first point where the
     // merged value is new or replaces a whole value. How to put the old value back is recorded first, so
     // a setter that changes its object and then refuses is undone too; a value that did not change is
@@ -257,7 +293,7 @@ internal static class BranchData
                 {
                     undo.Add(() =>
                     {
-                        if (dictionary.Contains(key) != existed || existed && !Equals(dictionary[key], old))
+                        if (dictionary.Contains(key) != existed || existed && !Same(dictionary[key], old))
                         {
                             if (existed)
                                 dictionary[key] = old;
@@ -288,7 +324,7 @@ internal static class BranchData
                     var get = property.Get;
                     undo.Add(() =>
                     {
-                        if (!Equals(get(owner), old))
+                        if (!Same(get(owner), old))
                             set(owner, old);
                     });
                     set(owner, value);
@@ -335,8 +371,14 @@ internal static class BranchData
             changes.Add(new DataChange { Path = path, Value = after?.ToJsonString() ?? "null" });
     }
 
-    // A property's value as JSON, as the property's own contract writes it: with its converter and its
-    // number handling, or its owner's.
+    // True when a value is still the one a restore would put back: the same object, or for a value type or
+    // a string, the same value. A type's own equality may call different data equal.
+    private static bool Same(object? current, object? old) =>
+        ReferenceEquals(current, old) || current is ValueType or string && Equals(current, old);
+
+    // A property's value as JSON, as the property's own contract writes it: a contract of its own holding
+    // just that property, with the property's converter and number handling and its owner's number
+    // handling, so the serializer applies them with its usual precedence and nothing else changes.
     private static JsonNode? PropertyJson(Type type, List<string> path, object? value)
     {
         var owner = Info(type);
@@ -346,17 +388,28 @@ internal static class BranchData
             if (property != null)
                 owner = Info(property.PropertyType);
             if (owner.Kind == JsonTypeInfoKind.Dictionary)
-                throw Missing(path);
+            {
+                // A key: the next segment is a property of the dictionary's values.
+                owner = Info(owner.ElementType!);
+                property = null;
+                continue;
+            }
             property = PropertyNamed(owner, segment) ?? throw Missing(path);
         }
-        var options = new JsonSerializerOptions(Options)
-        {
-            NumberHandling = property!.NumberHandling ?? owner.NumberHandling ?? Options.NumberHandling
-        };
-        if (property.CustomConverter != null)
-            options.Converters.Insert(0, property.CustomConverter);
-        return JsonSerializer.SerializeToNode(value, property.PropertyType, options);
+        if (property == null)
+            throw Missing(path);
+        var box = JsonTypeInfo.CreateJsonTypeInfo(typeof(PropertyBox), Options);
+        box.NumberHandling = owner.NumberHandling;
+        var single = box.CreateJsonPropertyInfo(property.PropertyType, property.Name);
+        single.Get = _ => value;
+        single.CustomConverter = property.CustomConverter;
+        single.NumberHandling = property.NumberHandling;
+        box.Properties.Add(single);
+        return JsonSerializer.SerializeToNode(new PropertyBox(), box)?[property.Name]?.DeepClone();
     }
+
+    // What PropertyJson serializes: an object whose only property it supplies.
+    private sealed class PropertyBox;
 
     // Lays a change over the JSON of the data it was made against.
     private static void Lay(JsonNode root, DataChange change)
@@ -474,35 +527,56 @@ internal static class BranchData
         var path = new List<string>();
         List<string>? unit = null;
         var decided = false;
-        foreach (var segment in target.Split('.'))
+        var segments = target.Split('.');
+        for (var position = 0; position < segments.Length; position++)
         {
-            var indexed = segment.EndsWith("[]", StringComparison.Ordinal);
-            var name = segment.Replace("[]", "", StringComparison.Ordinal);
-            var property = contracts.SelectMany(contract => contract.Properties)
-                               .FirstOrDefault(item => ClrName(item) == name && item.Get != null)
-                           ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                               $"{where()} writes '{target}', but '{name}' is not serialized with the workflow " +
-                               "data, so a join would drop the write");
+            var segment = segments[position];
+            var indexes = 0;
+            while (segment.EndsWith("[]", StringComparison.Ordinal))
+            {
+                segment = segment[..^2];
+                indexes++;
+            }
+            // A cast in the path is not kept, so every derived type that has the member must serialize it.
+            var matches = contracts.SelectMany(contract => contract.Properties
+                    .Where(item => ClrName(item) == segment).Select(item => (Contract: contract, Property: item)))
+                .ToList();
+            if (matches.Count == 0 || matches.Any(match => match.Property.Get == null))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"{where()} writes '{target}', but '{segment}' is not serialized with the workflow data" +
+                    (matches.Count > 1 ? " in every type it may be" : "") + ", so a join would drop the write");
+            var property = matches[0].Property;
+            var inside = position < segments.Length - 1 || indexes > 0;
+            // A value the join sets whole, written inside, must have a setter, wherever it is on the path.
+            foreach (var (_, match) in matches)
+                if (inside && match.Set == null && (match.CustomConverter != null || !PerMember(Info(match.PropertyType))))
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"{where()} writes '{target}', inside '{segment}', which a join sets whole but which has " +
+                        "no setter, so a join would drop the write");
             var value = Info(property.PropertyType);
             if (!decided)
             {
                 path.Add(property.Name);
                 if (property.CustomConverter != null || !PerMember(value))
-                {
-                    if (property.Set == null)
-                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                            $"{where()} writes '{target}', inside '{name}', which a join sets whole but which has " +
-                            "no setter, so a join would drop the write");
                     (unit, decided) = (path, true);
-                }
-                else if (indexed)
+                else if (indexes > 0)
                     (unit, decided) = (null, true);
             }
             // The rest of the path is checked too, through list items and polymorphic values; behind a
             // converter of its own the serializer decides, so nothing more can be checked.
-            if (property.CustomConverter != null || value.Kind == JsonTypeInfoKind.None)
+            contracts = [];
+            foreach (var (_, match) in matches)
+            {
+                if (match.CustomConverter != null)
+                    continue;
+                var next = Info(match.PropertyType);
+                for (var level = 0; level < indexes && next.ElementType != null; level++)
+                    next = Info(next.ElementType);
+                if (next.Kind != JsonTypeInfoKind.None)
+                    contracts.AddRange(Contracts(next));
+            }
+            if (contracts.Count == 0)
                 break;
-            contracts = Contracts(indexed && value.ElementType != null ? Info(value.ElementType) : value);
         }
         return decided ? unit : path;
     }
@@ -600,7 +674,10 @@ internal static class BranchData
             var value = Info(property.PropertyType);
             var populated = (property.ObjectCreationHandling ?? owner.PreferredPropertyObjectCreationHandling) ==
                             JsonObjectCreationHandling.Populate;
-            if (populated && value.Kind is JsonTypeInfoKind.Enumerable or JsonTypeInfoKind.Dictionary)
+            // The serializer populates a mutable collection it can create; an array or an immutable one it
+            // replaces, whatever the preference says.
+            if (populated && value.Kind is JsonTypeInfoKind.Enumerable or JsonTypeInfoKind.Dictionary &&
+                !value.Type.IsArray && value.CreateObject != null)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"'{at}' is read back by adding to what its initializer put in it, so a parallel branch's copy " +
                     "would keep items the data no longer has; read it back whole");
