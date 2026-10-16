@@ -427,6 +427,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             var child = new ContinuationState
             {
                 ParentJoinId = join.Id,
+                InheritedItems = ForEachTransitions.Inherited(scopes, parent),
                 Previous = parent.Previous,
                 RuntimePrevious = parent.RuntimePrevious,
                 Stack = [new ScopePosition { ScopeId = scopes.BranchScope(step, index) }]

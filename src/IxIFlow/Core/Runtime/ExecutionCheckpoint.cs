@@ -192,6 +192,10 @@ internal sealed class ContinuationState
     public ActivityInvocationState? PendingActivity { get; set; }
     public AcceptedWaitState? AcceptedWait { get; set; }
 
+    /// <summary>For a branch, the <c>ForEach</c> items in force where it was forked (D-34).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<InheritedItem>? InheritedItems { get; set; }
+
     /// <summary>When the continuation's retry is due, on the store's clock as the run last read it (D-35).</summary>
     public DateTime? RetryAfterUtc { get; set; }
 
@@ -329,24 +333,17 @@ internal sealed class ScopePosition
 }
 
 /// <summary>
-/// A <c>ForEach</c>'s list, saved once in item order as JSON of the item type, the next item to run, and
-/// the results of the items that ran (D-34). The step's definition gives the types.
+/// A <c>ForEach</c>'s list, saved once in item order as JSON of the item type, the next item to run, and,
+/// when the step stores results, the results of the items that ran (D-34). The step's definition gives
+/// the types.
 /// </summary>
 internal sealed class ForEachState
 {
     public List<string> Items { get; set; } = [];
     public int Next { get; set; }
-    public List<string?> Results { get; set; } = [];
 
-    [JsonIgnore]
-    private readonly Dictionary<int, object?> _read = new();
-
-    public object? Item(int index, Type type)
-    {
-        if (!_read.TryGetValue(index, out var value))
-            _read[index] = value = ForEachTransitions.Deserialize(Items[index], type);
-        return value;
-    }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string?>? Results { get; set; }
 }
 
 internal enum TryPhase

@@ -22,25 +22,23 @@ internal sealed class ForEachSetup<TWorkflowData>(WorkflowStep step) : IForEachS
         Expression<Func<WorkflowContext<TWorkflowData>, List<ItemResult<TResult>>>> target)
     {
         ArgumentNullException.ThrowIfNull(target);
-        if (target.Body is not MemberExpression { Member: PropertyInfo { SetMethod: not null } property } member)
+        var path = Core.Runtime.MemberPath.Of(target);
+        if (target.Body is not MemberExpression { Member: PropertyInfo { SetMethod: not null } property } member ||
+            path?.StartsWith(nameof(WorkflowContext<TWorkflowData>.WorkflowData) + ".", StringComparison.Ordinal) != true)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                $"A ForEach stores its results in a settable property: {target}");
+                $"A ForEach stores its results in a settable property of the workflow data, not of an item: {target}");
         var context = Expression.Parameter(typeof(WorkflowContext<TWorkflowData>), "context");
         var value = Expression.Parameter(typeof(List<ItemResult<TResult>>), "value");
-        var owner = new ParameterSwap(target.Parameters[0], context).Visit(member.Expression)!;
+        var owner = ReplaceParameterVisitor.Replace(member.Expression!, target.Parameters[0], context);
         var assign = Expression.Lambda<Action<WorkflowContext<TWorkflowData>, List<ItemResult<TResult>>>>(
             Expression.Assign(Expression.Property(owner, property), value), context, value).Compile();
         step.ResultType = typeof(TResult);
-        step.ForEachIntoPath = Core.Runtime.MemberPath.Of(target);
+        step.ForEachIntoPath = path;
+        step.ForEachIntoSignature = Core.Runtime.WorkflowExpressionSignature.Of(target);
         step.ForEachInto = (workflowContext, results) => assign(
             (WorkflowContext<TWorkflowData>)workflowContext,
             results.Select((result, index) => new ItemResult<TResult>(index, result.Status,
                 result.Value is TResult typed ? typed : default)).ToList());
         return this;
-    }
-
-    private sealed class ParameterSwap(ParameterExpression from, ParameterExpression to) : ExpressionVisitor
-    {
-        protected override Expression VisitParameter(ParameterExpression node) => node == from ? to : node;
     }
 }

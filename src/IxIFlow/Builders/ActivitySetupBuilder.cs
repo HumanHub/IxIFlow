@@ -338,7 +338,7 @@ public class ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : I
 
         // Create the property access expression by replacing the parameter
         var propertyAccess = Expression.Property(
-            ReplaceParameter(memberExpression.Expression, destination.Parameters[0], contextParameter),
+            ReplaceParameterVisitor.Replace(memberExpression.Expression!, destination.Parameters[0], contextParameter),
             propertyInfo
         );
 
@@ -350,26 +350,6 @@ public class ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : I
             Expression.Lambda<Action<WorkflowContext<TWorkflowData>, TProperty>>(assignment, contextParameter,
                 valueParameter);
         return lambda.Compile();
-    }
-
-    /// <summary>
-    ///     Replaces a parameter in an expression with a new parameter
-    /// </summary>
-    private Expression ReplaceParameter(Expression? expression, ParameterExpression oldParameter,
-        ParameterExpression newParameter)
-    {
-        if (expression == null) return newParameter;
-
-        if (expression == oldParameter)
-            return newParameter;
-
-        if (expression is MemberExpression memberExpr)
-            return Expression.MakeMemberAccess(
-                ReplaceParameter(memberExpr.Expression, oldParameter, newParameter),
-                memberExpr.Member
-            );
-
-        return expression;
     }
 
     private string GetPropertyName<T>(Expression<Func<TActivity, T>> propertyExpression)

@@ -55,29 +55,36 @@ internal interface IItemContext
 }
 
 /// <summary>
-/// The items in force where a context is made: the item and index of every <c>ForEach</c> body that
-/// encloses it, outermost to innermost.
+/// The items in force where a context is made: the index and saved JSON of the item of every
+/// <c>ForEach</c> body that encloses it. Items are read-only: every context reads its own copy, made
+/// when it first reads the item, so a change to one is seen by no other context and never saved.
 /// </summary>
 internal sealed class ItemValues
 {
-    private readonly IReadOnlyDictionary<ItemScope, (int Index, object? Value)> _values;
+    private readonly IReadOnlyDictionary<ItemScope, (int Index, string Json)> _values;
+    private readonly Dictionary<ItemScope, object?> _read = new(ReferenceEqualityComparer.Instance);
 
-    public static ItemValues None { get; } = new(new Dictionary<ItemScope, (int, object?)>());
+    public static ItemValues None { get; } = new(new Dictionary<ItemScope, (int, string)>());
 
-    public ItemValues(IReadOnlyDictionary<ItemScope, (int Index, object? Value)> values) => _values = values;
+    public ItemValues(IReadOnlyDictionary<ItemScope, (int Index, string Json)> values) => _values = values;
 
     public bool IsEmpty => _values.Count == 0;
 
-    /// <summary>Gives <paramref name="context"/> these items, when it is a workflow context, and returns it.</summary>
+    /// <summary>Gives <paramref name="context"/> its own copy of these items, when it is a workflow context, and returns it.</summary>
     public object On(object context)
     {
         if (context is IItemContext items)
-            items.Items = this;
+            items.Items = IsEmpty ? this : new ItemValues(_values);
         return context;
     }
 
-    public (int Index, object? Value) Of(ItemScope scope) =>
-        _values.TryGetValue(scope, out var value) ? value
-            : throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+    public (int Index, object? Value) Of(ItemScope scope)
+    {
+        if (!_values.TryGetValue(scope, out var saved))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"{scope} is read outside its ForEach body");
+        if (!_read.TryGetValue(scope, out var value))
+            _read[scope] = value = Runtime.ForEachTransitions.Deserialize(saved.Json, scope.ItemType, "item");
+        return (saved.Index, value);
+    }
 }
