@@ -391,6 +391,52 @@ public sealed class RequestStepTests
 
     [Fact]
     [Trait("Spec", "D-16")]
+    public async Task CancellingWhileABranchAwaitsResolutionClosesItsRequestsWait()
+    {
+        var store = new FaultInjectingRepository();
+        var outbox = new Outbox();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var definition = Workflow.Create<OrderData>("ResolutionThenCancel")
+            .Step<StartActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch
+                    .Request<RequestApproval>("approval")
+                    .Step<SetLinesActivity>(step => step
+                        .Output(activity => activity.Lines).To(ctx => ctx.WorkflowData.Lines))
+                    .WaitFor<ApprovalDecision>("approval"))
+                .Do(branch => branch.WaitFor<OtherAnswer>("other")))
+            .Build();
+        // The host dies as it saves the step after the request, which then awaits an operator while the
+        // other branch waits.
+        store.FailCommit = instance => instance.WorkflowDataJson.Contains("\"Lines\":7");
+        using (var first = HostOn(store, outbox))
+            await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new OrderData(), new WorkflowOptions { InstanceId = instanceId }));
+        store.FailCommit = _ => false;
+        using var second = HostOn(store, outbox);
+        var engine = second.GetRequiredService<IWorkflowClient>();
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, (await engine.RecoverAsync(instanceId)).Status);
+
+        await engine.CancelAsync(instanceId, new CancellationReason { ReasonCode = "withdrawn" });
+
+        EventAssert.Rejected(await engine.ReplyAsync(Assert.Single(outbox.Sent).Token,
+            new ApprovalDecision { Approved = true }), EventRejection.WaitCancelled);
+    }
+
+    private static ServiceProvider HostOn(IWorkflowStateRepository store, Outbox outbox)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(store);
+        services.AddSingleton(outbox);
+        services.AddTransient<RequestApproval>();
+        services.AddIxIFlow();
+        return services.BuildServiceProvider();
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
     public void ARequestInASagaNeedsItsWaitForInTheSaga()
     {
         EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<OrderData>("SagaWithoutWait")
@@ -502,6 +548,17 @@ public sealed class RequestStepTests
             Interlocked.Increment(ref attempts.Count) <= 2
                 ? throw new InvalidOperationException("not yet")
                 : Task.CompletedTask;
+    }
+
+    public sealed class SetLinesActivity : IAsyncActivity
+    {
+        public int Lines { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Lines = 7;
+            return Task.CompletedTask;
+        }
     }
 
     public sealed class StartActivity : IAsyncActivity
