@@ -155,7 +155,8 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// with <c>ctx.Item(item)</c> and its position with <c>ctx.Index(item)</c>, and may end with
     /// <see cref="Result{TResult}"/>; <paramref name="setup"/> names the handle and says where the results go.
     /// Items are read-only: outputs in the body write workflow data, through targets that are chains of
-    /// members, indexes and built-in casts, such as <c>ctx.WorkflowData.Rows[ctx.Index(item)].Value</c>.
+    /// members, indexes, element selectors such as <c>First(...)</c> and built-in casts, such as
+    /// <c>ctx.WorkflowData.Rows[ctx.Index(item)].Value</c>; any other target is a build error.
     /// </summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
@@ -164,8 +165,9 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
 
     /// <summary>
     /// Ends a <c>ForEach</c> body with the value it gives for its item, which the step's
-    /// <see cref="IForEachSetup{TWorkflowData}.Into{TResult}"/> stores. Only the last step of a
-    /// <c>ForEach</c> body can be a result.
+    /// <see cref="IForEachSetup{TWorkflowData}.Into{TResult}"/> stores. A result can only be the last step
+    /// of a <c>ForEach</c> body, or of a timeout branch that leaves the body: the branch of a wait directly
+    /// in the body, or directly in such a branch.
     /// </summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult> value);
