@@ -64,9 +64,11 @@ internal static class MemberPath
     private static bool Inside(string path, string owner) =>
         path.StartsWith(owner + ".", StringComparison.Ordinal) || path.StartsWith(owner + "[", StringComparison.Ordinal);
 
-    // The element selectors of Enumerable return an element of their source, so they write like an index.
+    // The element selectors of Enumerable return an element of their source, so they write like an index;
+    // an overload given its own default may return that default instead, so it does not count.
     private static bool IsElementSelector(MethodCallExpression call) =>
         call.Method.DeclaringType == typeof(Enumerable) && call.Arguments.Count > 0 &&
+        call.Method.GetParameters().All(parameter => parameter.Name != "defaultValue") &&
         call.Method.Name is nameof(Enumerable.First) or nameof(Enumerable.FirstOrDefault) or nameof(Enumerable.Single)
             or nameof(Enumerable.SingleOrDefault) or nameof(Enumerable.Last) or nameof(Enumerable.LastOrDefault)
             or nameof(Enumerable.ElementAt) or nameof(Enumerable.ElementAtOrDefault);
