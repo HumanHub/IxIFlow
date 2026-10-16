@@ -64,6 +64,22 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         return new SagaActivityBuilder<TWorkflowData, TActivity>(_steps, _sagaSteps);
     }
 
+    public ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(string name,
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
+        where TActivity : class, IAsyncActivity
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var replyType = RequestPairing.ReplyTypeOf(typeof(TActivity));
+        var next = Step(configure);
+        var step = _steps[^1];
+        step.RequestName = name;
+        step.ReplyType = replyType;
+        if (subject != null)
+            step.RequestSubject = context => subject((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
+        return next;
+    }
+
     public ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? resumeCondition = null,
