@@ -767,13 +767,6 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 return true;
             var cleanupBoundary = continuation.Stack.FindIndex(frame =>
                 frame.TryState?.Phase == TryPhase.Finally);
-            // A retry handler failing while its instance is cancelled still undoes the kept steps first.
-            var retryHandler = SagaScopeTransitions.RetryHandlerIndex(scopes, continuation);
-            if (retryHandler > cleanupBoundary)
-            {
-                SagaScopeTransitions.GiveUpAfterHandlerFailure(continuation, retryHandler, error);
-                return true;
-            }
             if (cleanupBoundary >= 0 &&
                 CaptureScopeFailure(scopes, checkpoint, continuation, error, cleanupBoundary))
                 return true;
