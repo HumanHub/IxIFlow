@@ -315,6 +315,7 @@ public class WorkflowInstance
     /// <summary>
     ///     Serialized execution state at suspension point (for resume operations)
     /// </summary>
+    [System.Text.Json.Serialization.JsonConverter(typeof(RawJsonText))]
     public string ExecutionStateJson { get; set; } = "";
 
     /// <summary>

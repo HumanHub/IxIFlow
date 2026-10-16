@@ -26,8 +26,12 @@ public static class WorkflowStoreRules
 
     /// <summary>True when an idle save leaves a cancellation request unacknowledged, so the instance must unwind now.</summary>
     public static bool UnwindsNow(WorkflowInstance instance, bool unacknowledgedCancellation) =>
-        unacknowledgedCancellation && instance.CancellationReason == null &&
-        instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
+        UnwindsNow(instance.Status, instance.CancellationReason != null, unacknowledgedCancellation);
+
+    public static bool UnwindsNow(WorkflowStatus status, bool acknowledgesCancellation,
+        bool unacknowledgedCancellation) =>
+        unacknowledgedCancellation && !acknowledgesCancellation &&
+        status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
 
     /// <summary>
     /// When an instance saved without a commit becomes runnable, with <paramref name="now"/> as the
@@ -477,7 +481,6 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     {
         ArgumentNullException.ThrowIfNull(commit);
         var snapshot = commit.ReadInstance();
-        snapshot.Revision = checked(commit.ExpectedRevision + 1);
         lock (_claimLock)
         {
             var key = (commit.InstanceId, commit.CommitId);
