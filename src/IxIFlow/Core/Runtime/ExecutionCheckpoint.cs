@@ -193,6 +193,8 @@ internal sealed class ContinuationState
     public SerializedValue? Previous { get; set; }
     public ActivityInvocationState? PendingActivity { get; set; }
     public AcceptedWaitState? AcceptedWait { get; set; }
+
+    /// <summary>When the continuation's retry is due, on the store's clock as the run last read it (D-35).</summary>
     public DateTime? RetryAfterUtc { get; set; }
 
     [JsonIgnore]

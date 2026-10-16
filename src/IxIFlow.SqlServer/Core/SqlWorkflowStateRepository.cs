@@ -645,16 +645,13 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
         // One store time for the whole commit, read with the instance row's lock: its deadlines, its
         // runnable time and its records (D-35).
-        var state = await connection.QuerySingleAsync<CommitState>("""
-            SELECT CAST(CASE WHEN instance.InstanceId IS NULL THEN 0 ELSE 1 END AS BIT) AS Found,
-                instance.Revision, instance.CancellationJson, instance.CancellationAcknowledged,
-                instance.InboxSequence, SYSUTCDATETIME() AS Now
-            FROM (SELECT 1 AS One) AS anchor
-            LEFT JOIN dbo.IxIFlowWorkflowInstances AS instance WITH (UPDLOCK, HOLDLOCK)
-                ON instance.InstanceId = @InstanceId
+        var current = await connection.QuerySingleOrDefaultAsync<CommitState>("""
+            SELECT Revision, CancellationJson, CancellationAcknowledged, InboxSequence, SYSUTCDATETIME() AS Now
+            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+            WHERE InstanceId = @InstanceId
             """, new { commit.InstanceId }, transaction);
-        var current = state.Found ? state : null;
-        var now = DateTime.SpecifyKind(state.Now, DateTimeKind.Utc);
+        var now = DateTime.SpecifyKind(current?.Now ?? await connection.ExecuteScalarAsync<DateTime>(
+            "SELECT SYSUTCDATETIME()", transaction: transaction), DateTimeKind.Utc);
         var currentRevision = current?.Revision ?? 0;
         var receipt = await connection.QuerySingleOrDefaultAsync<CommitReceipt>("""
             SELECT ExpectedRevision, Revision, PayloadHash FROM dbo.IxIFlowWorkflowCommits
@@ -927,7 +924,6 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
 
     private sealed class CommitState
     {
-        public bool Found { get; set; }
         public long Revision { get; set; }
         public string? CancellationJson { get; set; }
         public bool CancellationAcknowledged { get; set; }
