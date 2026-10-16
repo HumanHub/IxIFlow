@@ -75,7 +75,7 @@ public sealed class CheckpointCommit
         long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
-        ParentNotice? parentNotice)
+        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries)
     {
         Instance = instance;
         InstanceId = instance.InstanceId;
@@ -95,13 +95,14 @@ public sealed class CheckpointCommit
         ChildStarts = childStarts;
         ChildCancellations = childCancellations;
         ParentNotice = parentNotice;
+        TraceEntries = traceEntries;
         _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes(
             $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}{(stopped ? 1 : 0)}\n" +
             $"{inboxReadThrough?.ToString() ?? "-"}\n{wakeAfter?.Ticks.ToString() ?? "-"}\n" +
             $"{JsonSerializer.Serialize(settlements)}\n{JsonSerializer.Serialize(openedWaits)}\n" +
             $"{JsonSerializer.Serialize(armedWaits)}\n{JsonSerializer.Serialize(closedWaits)}\n" +
             $"{JsonSerializer.Serialize(childStarts)}\n{JsonSerializer.Serialize(childCancellations)}\n" +
-            $"{JsonSerializer.Serialize(parentNotice)}\n{payload}"));
+            $"{JsonSerializer.Serialize(parentNotice)}\n{JsonSerializer.Serialize(traceEntries)}\n{payload}"));
     }
 
     /// <summary>The longest timeout, delay or park a commit may carry.</summary>
@@ -119,6 +120,16 @@ public sealed class CheckpointCommit
 
     /// <summary>What a store reads from the instance to apply the commit, so it need not parse the payload.</summary>
     public CommittedInstance Instance { get; }
+
+    /// <summary>
+    /// The trace entries recorded since the last commit, as JSON, for the store to append to the instance's trace
+    /// in order (G-01).
+    /// </summary>
+    public IReadOnlyList<string> TraceEntries { get; }
+
+    /// <summary>The trace entries this commit carries.</summary>
+    public IReadOnlyList<ExecutionTraceEntry> ReadTraceEntries() =>
+        TraceEntries.Select(entry => JsonSerializer.Deserialize<ExecutionTraceEntry>(entry)!).ToArray();
 
     /// <summary>The execution epoch granted with the owner's lease; zero when the instance was never leased.</summary>
     public long Epoch { get; }
@@ -204,7 +215,7 @@ public sealed class CheckpointCommit
         IReadOnlyList<OpenedWait>? openedWaits = null, IReadOnlyList<ClosedWait>? closedWaits = null,
         IReadOnlyList<ArmedWait>? armedWaits = null, TimeSpan? wakeAfter = null, bool stopped = false,
         IReadOnlyList<ChildStart>? childStarts = null, IReadOnlyList<ChildCancellation>? childCancellations = null,
-        ParentNotice? parentNotice = null)
+        ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null)
     {
         ArgumentNullException.ThrowIfNull(instance);
         ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
@@ -309,7 +320,8 @@ public sealed class CheckpointCommit
         return new CheckpointCommit(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance), epoch, commitId,
             expectedRevision, clearsCrashCount, parks, Array.AsReadOnly(settled), inboxReadThrough,
             Array.AsReadOnly(opened), Array.AsReadOnly(armed), Array.AsReadOnly(closed), wakeAfter, stopped,
-            Array.AsReadOnly(started), Array.AsReadOnly(cancelled), parentNotice);
+            Array.AsReadOnly(started), Array.AsReadOnly(cancelled), parentNotice,
+            Array.AsReadOnly((traceEntries ?? []).Select(entry => JsonSerializer.Serialize(entry)).ToArray()));
     }
 
     private static void ValidateDuration(TimeSpan? duration, string parameter)

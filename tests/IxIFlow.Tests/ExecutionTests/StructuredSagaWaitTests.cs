@@ -1733,7 +1733,7 @@ public class StructuredSagaWaitTests
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
             var instance = commit.ReadInstance();
-            var handlerStarted = instance.ExecutionHistory.LastOrDefault() is
+            var handlerStarted = commit.ReadTraceEntries().LastOrDefault() is
             { EntryType: TraceEntryType.ActivityStarted, ActivityName: nameof(RecoverableHandlerActivity) };
             var result = await _inner.CommitWorkflowInstanceAsync(commit);
             if (handlerStarted && _lostAcknowledgments-- > 0)
@@ -1751,6 +1751,9 @@ public class StructuredSagaWaitTests
             _inner.GetWorkflowInstancesByStatusAsync(status);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
             _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+            int limit = 1000) =>
+            _inner.GetTraceAsync(instanceId, afterSequence, limit);
         public Task DeleteWorkflowInstanceAsync(string instanceId) =>
             _inner.DeleteWorkflowInstanceAsync(instanceId);
     }

@@ -134,7 +134,7 @@ internal sealed class ActivityAttempts(
                 startTrace.Metadata["DecidedBy"] = pending.Resolution.DecidedBy;
         }
         if (instance.TracingEnabled)
-            instance.ExecutionHistory.Add(startTrace);
+            instance.Trace.Add(startTrace);
         // Claiming the attempt is not progress: an activity that kills its owner keeps counting.
         await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
             clearsCrashCount: false);
@@ -357,7 +357,7 @@ internal sealed class ActivityAttempts(
             if (pending.Resolution.DecidedBy != null)
                 startTrace.Metadata["DecidedBy"] = pending.Resolution.DecidedBy;
         }
-        instance.ExecutionHistory.Add(startTrace);
+        instance.Trace.Add(startTrace);
     }
 
     public async Task SettleAsync(
@@ -486,7 +486,7 @@ internal sealed class ActivityAttempts(
         attempt.Observation = observation;
         running.Continuation.PendingActivity = null;
         if (instance.TracingEnabled)
-            instance.ExecutionHistory.Add(new ExecutionTraceEntry
+            instance.Trace.Add(new ExecutionTraceEntry
         {
             Timestamp = Now,
             EntryType = error == null ? TraceEntryType.ActivityCompleted : TraceEntryType.ActivityFailed,

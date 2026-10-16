@@ -29,8 +29,9 @@ internal static class ExecutionCheckpointWriter
         var size = CheckpointBytes(instance);
         if (enforceLimit && size > host.Limits.MaxCheckpointBytes)
         {
-            // The instance keeps the last checkpoint that was committed.
+            // The instance keeps the last checkpoint that was committed, and the trace only what that holds.
             lastCommitted.RestoreTo(instance);
+            instance.Trace.DiscardPending();
             throw new CheckpointLimitExceededException(size, host.Limits.MaxCheckpointBytes);
         }
 
@@ -46,7 +47,7 @@ internal static class ExecutionCheckpointWriter
             openedWaits: opened, closedWaits: closed, armedWaits: armed, wakeAfter: parkFor,
             stopped: checkpoint.OperatorStop != null, childStarts: checkpoint.ChildStarts.ToArray(),
             childCancellations: checkpoint.ChildCancellations.ToArray(),
-            parentNotice: ChildCompleted.NoticeOf(instance, checkpoint));
+            parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: instance.Trace.Pending);
         for (var attempt = 1; ; attempt++)
         {
             var reply = await host.CommitAsync(commit);
@@ -54,6 +55,7 @@ internal static class ExecutionCheckpointWriter
             {
                 case CheckpointReplyKind.Acknowledged:
                     instance.Revision = reply.Revision;
+                    instance.Trace.Committed();
                     checkpoint.ChildStarts.Clear();
                     checkpoint.ChildCancellations.Clear();
                     checkpoint.Inbox.Acknowledged(checkpoint, reply.UnreadEvents);

@@ -268,6 +268,8 @@ public sealed class WorkflowRecoveryServiceTests
             throw new NotSupportedException();
         public Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId) =>
             throw new NotSupportedException();
+        public Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
+            throw new NotSupportedException();
         public Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
             string invocationId, ActivityResolution resolution,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
@@ -354,6 +356,8 @@ public sealed class WorkflowRecoveryServiceTests
         public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
             throw new NotSupportedException();
         public Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId) =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
             throw new NotSupportedException();
         public Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
             string invocationId, ActivityResolution resolution,

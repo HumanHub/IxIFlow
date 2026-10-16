@@ -338,13 +338,15 @@ public class WorkflowInstance
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
 
-    /// <summary>Whether optional execution history entries are recorded.</summary>
+    /// <summary>Whether trace entries are recorded (G-01).</summary>
     public bool TracingEnabled { get; set; } = true;
 
     /// <summary>
-    ///     Execution history entries
+    /// The trace entries this run recorded, and how many of them its commits carried. The trace is not part of
+    /// the instance: each commit carries the entries since the last one to the store's trace (G-01).
     /// </summary>
-    public List<ExecutionTraceEntry> ExecutionHistory { get; set; } = new();
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal TraceBuffer Trace { get; } = new();
 
     /// <summary>
 }

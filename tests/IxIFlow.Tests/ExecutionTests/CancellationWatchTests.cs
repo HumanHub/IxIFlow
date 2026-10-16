@@ -305,6 +305,9 @@ public sealed class CancellationWatchTests
             throw new NotSupportedException();
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
             throw new NotSupportedException();
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+            int limit = 1000) =>
+            throw new NotSupportedException();
         public Task DeleteWorkflowInstanceAsync(string instanceId) => throw new NotSupportedException();
     }
 }
