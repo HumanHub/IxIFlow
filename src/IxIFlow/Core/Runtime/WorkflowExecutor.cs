@@ -461,6 +461,8 @@ internal sealed class WorkflowExecutor
             if (!cancelled)
                 checkpoint.UnhandledError ??= SerializedException.From(ex);
             instance.Status = cancelled ? WorkflowStatus.Cancelled : WorkflowStatus.Failed;
+            // A reply wait whose scope already ended, such as a saga abandoned in this pass, closed as cancelled.
+            checkpoint.CloseEndedRequests();
             checkpoint.RemoveWaits(_ => true, WaitCloseReason.InstanceFinished);
             checkpoint.Joins.Clear();
             foreach (var continuation in checkpoint.Continuations.Where(item =>

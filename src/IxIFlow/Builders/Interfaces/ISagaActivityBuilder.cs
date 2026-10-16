@@ -22,8 +22,10 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData> //: ISag
     /// Runs a request activity (<see cref="IRequestActivity{TReply}"/>) as a saga step, whose answer the
     /// saga takes with <c>WaitFor&lt;TReply&gt;(name)</c> later in the saga (D-33). The answer's wait opens
     /// before the activity runs, and the activity sends <see cref="IActivityContext.Reply"/> with the
-    /// request. When compensation starts the wait closes, so a later answer is refused as cancelled; a
-    /// saga retry runs the request again with a new wait. A <paramref name="subject"/> says what the
+    /// request. When the saga leaves its forward pass, to compensate, retry, continue or terminate, the
+    /// wait closes: an answer that arrives later is refused as cancelled, and one taken before but not yet
+    /// reached by the <c>WaitFor</c> is dropped. A saga retry runs the request again with a new wait. A
+    /// compensation runs whether or not the request was answered. A <paramref name="subject"/> says what the
     /// request is about; an answer must carry the same one.
     /// </summary>
     ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(
