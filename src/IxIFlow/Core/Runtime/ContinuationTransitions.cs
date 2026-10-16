@@ -478,7 +478,15 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         continuation.RetryAfterUtc = null;
         if (continuation.PendingActivity != null &&
             continuation.Status == ContinuationStatus.WaitingResolution)
+        {
+            // The branch unwinds once its activity is resolved, so a reply can no longer be taken (D-33),
+            // unless the activity belongs to cleanup that may still wait for one.
+            if (!TryScopeTransitions.IsInsideFinally(continuation) &&
+                !SagaScopeTransitions.IsInsideCompensation(continuation))
+                checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id && wait.IsReply,
+                    WaitCloseReason.Cancelled);
             return;
+        }
         if (TryScopeTransitions.IsInsideFinally(continuation) ||
             SagaScopeTransitions.IsInsideCompensation(continuation))
         {
