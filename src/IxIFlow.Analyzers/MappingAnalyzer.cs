@@ -157,14 +157,25 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                 case IReturnOperation { ReturnedValue: { } returned } when IsBuilder(returned.Type):
                     return null;
                 case IInvocationOperation { TargetMethod.Name: "From", Instance: { } instance } completion
-                    when engine.IsBuilderMethod(completion.TargetMethod) &&
-                         Resolved(instance) is IInvocationOperation { TargetMethod.Name: "Input", Instance: { } receiver } input &&
-                         engine.IsBuilderMethod(input.TargetMethod) &&
-                         Selected(input) is ({ } owner, { } name, _) &&
-                         SymbolEqualityComparer.Default.Equals(owner, activity) &&
-                         Root(engine, receiver) is IParameterReferenceOperation root &&
-                         SymbolEqualityComparer.Default.Equals(root.Parameter, setup.Symbol.Parameters.FirstOrDefault()):
-                    mapped.Add(name);
+                    when engine.IsBuilderMethod(completion.TargetMethod):
+                    if (Resolved(instance) is not IInvocationOperation { TargetMethod.Name: "Input", Instance: { } receiver } input ||
+                        !engine.IsBuilderMethod(input.TargetMethod) || Selected(input) is not ({ } owner, { } name, _))
+                        return null;
+                    if (!SymbolEqualityComparer.Default.Equals(owner, activity))
+                        break;
+                    // A mapping counts on the step's own builder, not on another lambda's; one whose builder cannot be
+                    // traced may be either.
+                    switch (Root(engine, receiver))
+                    {
+                        case IParameterReferenceOperation root
+                            when SymbolEqualityComparer.Default.Equals(root.Parameter, setup.Symbol.Parameters.FirstOrDefault()):
+                            mapped.Add(name);
+                            break;
+                        case IParameterReferenceOperation:
+                            break;
+                        default:
+                            return null;
+                    }
                     break;
             }
         }
@@ -235,7 +246,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         {
             operation = EngineSymbols.Unwrapped(operation);
             if (operation is not ILocalReferenceOperation reference ||
-                EngineSymbols.Initializer(reference) is not { } value)
+                EngineSymbols.Initializer(reference, default) is not { } value)
                 return operation;
             operation = value;
         }

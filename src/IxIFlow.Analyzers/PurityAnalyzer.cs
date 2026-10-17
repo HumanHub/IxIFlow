@@ -59,9 +59,12 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
                 !engine.TakesCode(argument.Parameter.Type))
                 continue;
             var value = EngineSymbols.Unwrapped(argument.Value);
-            if (value is ILocalReferenceOperation local && EngineSymbols.Initializer(local) is { } stored &&
-                EngineSymbols.Unwrapped(stored) is IAnonymousFunctionOperation or IMethodReferenceOperation)
+            for (var depth = 0; depth < 8 && value is ILocalReferenceOperation local &&
+                                EngineSymbols.Initializer(local, context.CancellationToken) is { } stored; depth++)
                 value = EngineSymbols.Unwrapped(stored);
+            // A destination is set, so only its lambda tells what runs; one kept elsewhere is left to the build.
+            if (destination && value is not IAnonymousFunctionOperation)
+                continue;
             foreach (var (use, member) in code.Uses(value, destination, context.CancellationToken))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureExpression, use.Syntax.GetLocation(),
                     ClockFix(engine, use, member), member));

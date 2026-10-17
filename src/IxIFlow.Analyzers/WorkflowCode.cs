@@ -205,9 +205,16 @@ internal sealed class WorkflowCode(Compilation compilation)
         foreach (var reference in method.DeclaringSyntaxReferences)
         {
             var syntax = reference.GetSyntax(cancellation);
-            // An implicit constructor's reference is its type, whose code is not the constructor's.
-            if (syntax is TypeDeclarationSyntax)
+            // A constructor declared on its type is a primary constructor, which runs the arguments it gives its base;
+            // the rest of the type's code is not the constructor's.
+            if (syntax is TypeDeclarationSyntax type)
+            {
+                if (type.ParameterList != null && type.BaseList != null)
+                    foreach (var call in type.BaseList.Types.OfType<PrimaryConstructorBaseTypeSyntax>())
+                        if (Model(reference.SyntaxTree).GetOperation(call, cancellation) is { } arguments)
+                            yield return arguments;
                 continue;
+            }
             if (Model(reference.SyntaxTree).GetOperation(syntax, cancellation) is { } body)
                 yield return body;
         }
@@ -245,17 +252,27 @@ internal sealed class WorkflowCode(Compilation compilation)
 
     /// <summary>
     /// The base constructor an instance constructor calls without saying so: an implicit constructor's, or that of an
-    /// explicit one without <c>base(...)</c> or <c>this(...)</c>, when the base type has a constructor that takes no
-    /// arguments.
+    /// explicit or primary one that names no base call. As the compiler binds it: the base constructor without
+    /// parameters, or else the only one whose parameters are all optional.
     /// </summary>
     public static IMethodSymbol? ImplicitBase(IMethodSymbol constructor, CancellationToken cancellation)
     {
         if (constructor.MethodKind != MethodKind.Constructor || constructor.IsStatic ||
             !constructor.IsImplicitlyDeclared && !constructor.DeclaringSyntaxReferences.All(reference =>
-                reference.GetSyntax(cancellation) is ConstructorDeclarationSyntax { Initializer: null }))
+                reference.GetSyntax(cancellation) switch
+                {
+                    ConstructorDeclarationSyntax declaration => declaration.Initializer == null,
+                    TypeDeclarationSyntax type => type.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>().Any() != true,
+                    _ => false
+                }))
             return null;
-        return constructor.ContainingType.BaseType?.InstanceConstructors
-            .FirstOrDefault(each => each.Parameters.All(parameter => parameter.IsOptional || parameter.IsParams));
+        var candidates = constructor.ContainingType.BaseType?.InstanceConstructors ?? [];
+        if (candidates.FirstOrDefault(each => each.Parameters.Length == 0) is { } parameterless)
+            return parameterless;
+        var optional = candidates
+            .Where(each => each.Parameters.All(parameter => parameter.IsOptional || parameter.IsParams))
+            .ToList();
+        return optional.Count == 1 ? optional[0] : null;
     }
 
     private static string? Named(ISymbol key, string? member) =>

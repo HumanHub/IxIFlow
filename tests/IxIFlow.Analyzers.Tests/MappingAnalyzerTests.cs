@@ -181,6 +181,12 @@ public sealed class MappingAnalyzerTests
                         Action later = () => step.Input(activity => activity.Amount).From(ctx => 3);
                         later();
                     })
+                    .Step<Marked>(step =>
+                    {
+                        IActivitySetupBuilder<Data, Marked, Marked> target;
+                        target = step;
+                        target.Input(activity => activity.Amount).From(ctx => 4);
+                    })
                     .Build();
 
                 private static void Configure<TPrevious>(IActivitySetupBuilder<Data, Marked, TPrevious> step)
