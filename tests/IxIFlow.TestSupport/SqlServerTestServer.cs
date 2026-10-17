@@ -5,21 +5,13 @@ namespace IxIFlow.Tests.Infrastructure;
 
 /// <summary>
 /// One SQL Server for the whole test run. Uses IXIFLOW_TEST_SQL_CONNECTION_STRING when it is set;
-/// otherwise starts a container through Testcontainers on first use.
+/// otherwise starts a container through Testcontainers on first use. Tests get their own databases on
+/// it, through <see cref="SqlTestDatabase{TTests}"/> or <see cref="CreateDatabaseAsync"/>.
 /// </summary>
 public static class SqlServerTestServer
 {
     private const string ExternalServerVariable = "IXIFLOW_TEST_SQL_CONNECTION_STRING";
-    private const string SharedDatabase = "IxIFlowTests";
     private static readonly Lazy<Task<string>> Server = new(StartAsync);
-    private static readonly Lazy<string> Shared = new(() =>
-        Task.Run(CreateSharedDatabaseAsync).GetAwaiter().GetResult());
-
-    /// <summary>
-    /// The shared test database for the whole run. With IXIFLOW_TEST_SQL_CONNECTION_STRING set,
-    /// that connection string is used as is; otherwise an IxIFlowTests database is created in the container.
-    /// </summary>
-    public static string ConnectionString => Shared.Value;
 
     /// <summary>Creates an empty database and returns a connection string for it.</summary>
     public static async Task<string> CreateDatabaseAsync(string prefix)
@@ -54,23 +46,6 @@ public static class SqlServerTestServer
         await command.ExecuteNonQueryAsync();
     }
 
-    private static async Task<string> CreateSharedDatabaseAsync()
-    {
-        var server = await Server.Value;
-        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ExternalServerVariable)))
-            return server;
-
-        await using (var connection = new SqlConnection(server))
-        {
-            await connection.OpenAsync();
-            await using var command = connection.CreateCommand();
-            command.CommandText = $"IF DB_ID('{SharedDatabase}') IS NULL CREATE DATABASE [{SharedDatabase}]";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        return new SqlConnectionStringBuilder(server) { InitialCatalog = SharedDatabase }.ConnectionString;
-    }
-
     private static async Task<string> StartAsync()
     {
         var external = Environment.GetEnvironmentVariable(ExternalServerVariable);
@@ -82,5 +57,34 @@ public static class SqlServerTestServer
         AppDomain.CurrentDomain.ProcessExit += (_, _) =>
             container.DisposeAsync().AsTask().GetAwaiter().GetResult();
         return container.GetConnectionString();
+    }
+}
+
+/// <summary>
+/// An empty database for one test class, created on first use and dropped when the run ends. Test
+/// classes run in parallel, and their hosts poll and claim whatever their store holds, so each class
+/// keeps its rows to itself.
+/// </summary>
+public static class SqlTestDatabase<TTests>
+{
+    private static readonly Lazy<string> Database = new(() => Task.Run(CreateAsync).GetAwaiter().GetResult());
+
+    public static string ConnectionString => Database.Value;
+
+    private static async Task<string> CreateAsync()
+    {
+        var connectionString = await SqlServerTestServer.CreateDatabaseAsync("IxIFlow_" + typeof(TTests).Name);
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            try
+            {
+                SqlServerTestServer.DropDatabaseAsync(connectionString).GetAwaiter().GetResult();
+            }
+            catch (Exception error) when (error is SqlException or InvalidOperationException)
+            {
+                // The container may already be gone; its databases go with it.
+            }
+        };
+        return connectionString;
     }
 }

@@ -45,7 +45,7 @@ public sealed class WorkflowDelayTests
     [Trait("Category", "SqlIntegration")]
     public async Task DueDelayRecoversFromSqlOnAnotherHost()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<WorkflowDelayTests>.ConnectionString;
         var repository = new SqlWorkflowStateRepository(connectionString);
         var definition = Workflow.Create<DelayData>("SqlDurableDelay")
             .Step<NoopActivity>()

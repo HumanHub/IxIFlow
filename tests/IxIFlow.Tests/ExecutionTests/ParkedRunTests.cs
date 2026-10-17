@@ -94,7 +94,7 @@ public sealed class ParkedRunTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "C-03")]
     public Task SqlStoreParksAtomically() =>
-        VerifyParking(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyParking(new SqlWorkflowStateRepository(SqlTestDatabase<ParkedRunTests>.ConnectionString));
 
     private static async Task VerifyParking(IWorkflowStateRepository store)
     {
@@ -144,7 +144,7 @@ public sealed class ParkedRunTests
     [Trait("Spec", "C-01")]
     [Trait("Spec", "C-05")]
     public Task SqlStoreKeepsOneRunnableTime() =>
-        VerifyRunnableTimes(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyRunnableTimes(new SqlWorkflowStateRepository(SqlTestDatabase<ParkedRunTests>.ConnectionString));
 
     private static async Task VerifyRunnableTimes(IWorkflowStateRepository store)
     {
