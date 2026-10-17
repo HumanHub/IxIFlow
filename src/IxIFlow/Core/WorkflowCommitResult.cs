@@ -348,7 +348,7 @@ public sealed class CheckpointCommit
         }
         // Only the parts that differ from those the instance was last stored with are written (A-08).
         var stored = Runtime.StoredCheckpoint.Of(instance);
-        var saved = instance.SavedParts;
+        var saved = instance.PartsAt(expectedRevision);
         var written = stored.Parts
             .Where(part => saved == null || !saved.TryGetValue(part.Key, out var json) || json != part.Value)
             .OrderBy(part => part.Key, StringComparer.Ordinal)
@@ -375,9 +375,7 @@ public sealed class CheckpointCommit
     /// </summary>
     public WorkflowInstance ReadTrunk()
     {
-        var instance = CheckpointParts.Summarize(Payload, null);
-        instance.Revision = checked(ExpectedRevision + 1);
-        return instance;
+        return CheckpointParts.Summarize(Payload, null, checked(ExpectedRevision + 1));
     }
 
     /// <summary>
@@ -402,18 +400,18 @@ public sealed class CheckpointCommit
 
     /// <summary>
     /// The whole committed instance, at its new revision: its trunk with the commit applied to
-    /// <paramref name="basedOn"/>'s parts, the instance as read at the revision the commit was based on. A commit that
-    /// replaces its parts needs none.
+    /// <paramref name="basedOn"/>'s parts, the instance as read before the commit. Applying a commit to parts that
+    /// already hold it changes nothing, so an instance read after the commit applied serves too. A commit that replaces
+    /// its parts needs none.
     /// </summary>
     public WorkflowInstance ReadInstance(WorkflowInstance? basedOn = null)
     {
-        if (!ReplacesParts && basedOn?.SavedParts == null)
+        var based = basedOn?.SavedParts;
+        if (!ReplacesParts && based == null)
             throw new InvalidOperationException(
                 "The commit writes only the parts that changed; read it with the instance it was based on");
-        var instance = CheckpointParts.Assemble(Payload, ApplyParts(basedOn?.SavedParts)
-            .Select(part => new CheckpointPart(part.Key, part.Value)));
-        instance.Revision = checked(ExpectedRevision + 1);
-        return instance;
+        return CheckpointParts.Assemble(Payload, ApplyParts(based)
+            .Select(part => new CheckpointPart(part.Key, part.Value)), checked(ExpectedRevision + 1));
     }
 }
 

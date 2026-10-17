@@ -37,6 +37,64 @@ public sealed class CheckpointPartsTests
     public Task ASqlServerReadNeverMixesTwoCommits() =>
         ReadsNeverMixTwoCommitsAsync(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
 
+    // Branches come back in the order they started, whatever their keys, so a join merges them in that order after
+    // a recovery as it would have without one.
+    [Fact]
+    public void BranchesAreAssembledInTheOrderTheyStarted()
+    {
+        var root = new ContinuationState { Status = ContinuationStatus.Joining, Stack = [new ScopePosition { ScopeId = "root" }] };
+        var join = new ParallelJoinState { StepId = "root/0", ParentContinuationId = root.Id };
+        // Their IDs sort against the order they started in.
+        var started = new[] { "z-first", "y-second", "x-third" };
+        var checkpoint = new ExecutionCheckpoint
+        {
+            DefinitionFingerprint = "branch-order",
+            BranchesStarted = 3,
+            Continuations = [root, .. started.Select((id, index) => new ContinuationState
+            {
+                Id = id, ParentJoinId = join.Id, Sequence = index + 1,
+                Stack = [new ScopePosition { ScopeId = "root/0/branch/0" }]
+            })],
+            Joins = [join]
+        };
+        var stored = StoredCheckpoint.Split(checkpoint, "{}");
+
+        // A store may give the parts back in key order.
+        var byKey = stored.Parts.OrderBy(part => part.Key, StringComparer.Ordinal)
+            .ToDictionary(part => part.Key, part => part.Value);
+
+        var assembled = ExecutionCheckpoint.Read(StoredCheckpoint.AssembleState(stored.Trunk, byKey));
+
+        Assert.Equal(started, assembled.Continuations.Skip(1).Select(item => item.Id));
+        Assert.Equal(started, Assert.Single(assembled.Joins).ChildContinuationIds);
+    }
+
+    // The parts an instance was read with belong to its revision: a commit made from the same object at a later
+    // revision, after another commit the engine did not acknowledge to it, writes every part rather than trusting them.
+    [Fact]
+    public async Task ACommitFromAnInstanceWhosePartsAreOutOfDateWritesThemAll()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var (state, _) = State(1, 2);
+        var instance = new WorkflowInstance
+        {
+            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "OutOfDate", Status = WorkflowStatus.Running,
+            ExecutionStateJson = state, WorkflowDataJson = "{\"Value\":\"A\"}"
+        };
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0));
+        var read = (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!;
+        read.WorkflowDataJson = "{\"Value\":\"B\"}";
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(read, 0, 1));
+
+        read.Revision = 2;
+        read.WorkflowDataJson = "{\"Value\":\"A\"}";
+        var commit = CheckpointCommit.Create(read, 0, 2);
+        await repository.CommitWorkflowInstanceAsync(commit);
+
+        Assert.True(commit.ReplacesParts);
+        Assert.Equal("{\"Value\":\"A\"}", (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.WorkflowDataJson);
+    }
+
     // A commit serializes only the branches marked as changed; the verifying mode the tests run with fails a commit
     // whose branch changed without a mark, and a marked branch is written again.
     [Fact]
@@ -201,11 +259,11 @@ public sealed class CheckpointPartsTests
                 instance.ExecutionStateJson = state.ExecutionStateJson;
                 instance.WorkflowDataJson = state.WorkflowDataJson;
                 instance.Revision = revision;
-                if (revision % 10 == 0)
-                    instance.SavedParts = null;
                 var commit = CheckpointCommit.Create(instance, 0, revision);
                 Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
-                instance.SavedParts = commit.StoredParts;
+                // The parts are known for the next revision, except before every tenth, which replaces them all.
+                if ((revision + 1) % 10 != 0)
+                    instance.Saved(commit.StoredParts, revision + 1);
             }
             stop.Cancel();
             await reader;

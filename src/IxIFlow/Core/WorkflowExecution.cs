@@ -353,7 +353,25 @@ public class WorkflowInstance
     /// known; a commit writes only the parts that differ, and deletes those that are gone (A-08).
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    internal IReadOnlyDictionary<string, string>? SavedParts { get; set; }
+    internal IReadOnlyDictionary<string, string>? SavedParts { get; private set; }
+
+    /// <summary>The revision <see cref="SavedParts"/> are stored at.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal long SavedPartsRevision { get; private set; }
+
+    /// <summary>Records the parts the instance is stored in at <paramref name="revision"/>.</summary>
+    internal void Saved(IReadOnlyDictionary<string, string> parts, long revision)
+    {
+        SavedParts = parts;
+        SavedPartsRevision = revision;
+    }
+
+    /// <summary>
+    /// The parts the instance is stored in at <paramref name="revision"/>, or null when they are not known for it, as
+    /// when the instance changed revision since it was read or last committed through the engine.
+    /// </summary>
+    internal IReadOnlyDictionary<string, string>? PartsAt(long revision) =>
+        SavedParts != null && SavedPartsRevision == revision ? SavedParts : null;
 
     /// <summary>The stored form the last preparation made of the instance's state and data.</summary>
     [System.Text.Json.Serialization.JsonIgnore]

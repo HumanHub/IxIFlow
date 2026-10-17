@@ -290,7 +290,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     private readonly Dictionary<string, long> _inboxSequence = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _inboxReadThrough = new(StringComparer.Ordinal);
     // Each instance's stored parts by key, beside its trunk in _instances, at its revision (A-08).
-    private readonly Dictionary<string, IReadOnlyDictionary<string, string>> _parts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, string>> _parts = new(StringComparer.Ordinal);
     // Each instance's waits by wait ID, so appends and reads touch only that instance's waits.
     private readonly Dictionary<string, Dictionary<string, StoredWait>> _waits = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<string>> _traces = new(StringComparer.Ordinal);
@@ -579,8 +579,13 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             }
             // An idle owner that has not read every arrival keeps the lease and reads them.
             var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
-            _parts[commit.InstanceId] = commit.ApplyParts(_parts.GetValueOrDefault(commit.InstanceId) ??
-                                                          new Dictionary<string, string>());
+            // A commit changes only the parts it names, in place.
+            if (commit.ReplacesParts || !_parts.TryGetValue(commit.InstanceId, out var parts))
+                _parts[commit.InstanceId] = parts = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var deleted in commit.DeletedParts)
+                parts.Remove(deleted);
+            foreach (var part in commit.Parts)
+                parts[part.Key] = part.Json;
             _instances[commit.InstanceId] = snapshot;
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (commit.TraceEntries.Count > 0)
@@ -829,7 +834,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             if (instance.Revision == 0 && !ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson))
                 return Task.FromResult<WorkflowInstance?>(instance);
             return Task.FromResult<WorkflowInstance?>(CheckpointParts.Summarize(JsonSerializer.Serialize(instance),
-                _parts.GetValueOrDefault(instanceId)?.GetValueOrDefault(CheckpointParts.DataKey)));
+                _parts.GetValueOrDefault(instanceId)?.GetValueOrDefault(CheckpointParts.DataKey), instance.Revision));
         }
     }
 
@@ -909,7 +914,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             return instance;
         return CheckpointParts.Assemble(JsonSerializer.Serialize(instance),
             (_parts.GetValueOrDefault(instance.InstanceId) ?? new Dictionary<string, string>())
-            .Select(part => new CheckpointPart(part.Key, part.Value)));
+            .Select(part => new CheckpointPart(part.Key, part.Value)), instance.Revision);
     }
 
     private static void ValidateLeaseArguments(string instanceId, string token, TimeSpan duration)

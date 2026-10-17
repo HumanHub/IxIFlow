@@ -57,7 +57,7 @@ internal static class ExecutionCheckpointWriter
             {
                 case CheckpointReplyKind.Acknowledged:
                     instance.Revision = reply.Revision;
-                    instance.SavedParts = commit.StoredParts;
+                    instance.Saved(commit.StoredParts, reply.Revision);
                     instance.Trace.Committed();
                     checkpoint.ChildStarts.Clear();
                     checkpoint.ChildCancellations.Clear();
@@ -123,7 +123,8 @@ internal static class ExecutionCheckpointWriter
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson
                 : BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData)));
-            var stored = StoredCheckpoint.Split(checkpoint, dataJson, instance.SavedParts, checkpoint.TakeMarks(),
+            var stored = StoredCheckpoint.Split(checkpoint, dataJson, instance.PartsAt(instance.Revision),
+                checkpoint.TakeMarks(),
                 verify);
             instance.WorkflowDataJson = dataJson;
             instance.ExecutionStateJson = stored.Trunk;
