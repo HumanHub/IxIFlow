@@ -23,6 +23,12 @@ public sealed class InboxStoreTests
     public Task SqlStoreAppendsEvents() =>
         VerifyAppend(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-02")]
+    public Task PostgreSqlStoreAppendsEvents() =>
+        VerifyAppend(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
+
     private static async Task VerifyAppend(IWorkflowStateRepository store)
     {
         var inbox = (IWorkflowInbox)store;
@@ -78,6 +84,12 @@ public sealed class InboxStoreTests
     [Trait("Spec", "D-04")]
     public Task SqlStoreSettlesEventsInTheCommit() =>
         VerifySettlement(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-04")]
+    public Task PostgreSqlStoreSettlesEventsInTheCommit() =>
+        VerifySettlement(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     private static async Task VerifySettlement(IWorkflowStateRepository store)
     {
@@ -145,6 +157,12 @@ public sealed class InboxStoreTests
     public Task SqlStoreDoesNotParkPastAnUnreadEvent() =>
         VerifyNoParkPastUnread(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-04")]
+    public Task PostgreSqlStoreDoesNotParkPastAnUnreadEvent() =>
+        VerifyNoParkPastUnread(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
+
     private static async Task VerifyNoParkPastUnread(IWorkflowStateRepository store)
     {
         var inbox = (IWorkflowInbox)store;
@@ -196,6 +214,12 @@ public sealed class InboxStoreTests
     public Task SqlStoreCloses() =>
         VerifyClosed(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-02")]
+    public Task PostgreSqlStoreCloses() =>
+        VerifyClosed(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
+
     private static async Task VerifyClosed(IWorkflowStateRepository store)
     {
         var inbox = (IWorkflowInbox)store;
@@ -238,6 +262,12 @@ public sealed class InboxStoreTests
     [Trait("Spec", "D-03")]
     public Task SqlStoreRefusesEventsNoWaitCanTake() =>
         VerifyRefusedOnArrival(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-03")]
+    public Task PostgreSqlStoreRefusesEventsNoWaitCanTake() =>
+        VerifyRefusedOnArrival(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     private static async Task VerifyRefusedOnArrival(IWorkflowStateRepository store)
     {
@@ -303,6 +333,12 @@ public sealed class InboxStoreTests
     [Trait("Spec", "D-03")]
     public Task SqlStoreOpensWaitsAtTheInboxSequence() =>
         VerifyWaitSequence(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-03")]
+    public Task PostgreSqlStoreOpensWaitsAtTheInboxSequence() =>
+        VerifyWaitSequence(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     private static async Task VerifyWaitSequence(IWorkflowStateRepository store)
     {
@@ -389,6 +425,12 @@ public sealed class InboxStoreTests
     [Trait("Spec", "D-04")]
     public Task SqlStoreSettlesALargeBacklogInOneCommit() =>
         VerifyLargeCommit(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-04")]
+    public Task PostgreSqlStoreSettlesALargeBacklogInOneCommit() =>
+        VerifyLargeCommit(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     // More events and waits than one SQL statement can carry parameters for.
     private static async Task VerifyLargeCommit(IWorkflowStateRepository store)
@@ -477,6 +519,12 @@ public sealed class InboxStoreTests
     public Task SqlStoreStartsAndCompletesChildrenInTheirCommits() =>
         VerifyChildren(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-06")]
+    public Task PostgreSqlStoreStartsAndCompletesChildrenInTheirCommits() =>
+        VerifyChildren(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
+
     // SQL Server stores a child's start as the parent's commit carries it, without reading and writing it again; the
     // child's revision and runnable time are in their columns.
     [SqlServerFact]
@@ -502,6 +550,41 @@ public sealed class InboxStoreTests
             await using var read = new Microsoft.Data.SqlClient.SqlCommand(
                 "SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId", connection);
             read.Parameters.AddWithValue("@InstanceId", childId);
+            Assert.Equal(payload, (string)(await read.ExecuteScalarAsync())!);
+            var child = (await store.GetWorkflowInstanceAsync(childId))!;
+            Assert.Equal(1, child.Revision);
+            Assert.NotNull(child.RunnableAtUtc);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(childId);
+            await store.DeleteWorkflowInstanceAsync(parentId);
+        }
+    }
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-06")]
+    public async Task PostgreSqlStoreKeepsAChildStartAsItsPayloadCarriesIt()
+    {
+        var store = new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString);
+        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
+        var childId = Guid.NewGuid().ToString("N");
+        var wait = $"{parentId}-child";
+        try
+        {
+            var parent = (await store.GetWorkflowInstanceAsync(parentId))!;
+            var payload = System.Text.Json.JsonSerializer.Serialize(Child(childId, parentId, wait));
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+                parent, 0, parent.Revision,
+                openedWaits: [new OpenedWait(wait, WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
+                childStarts: [new ChildStart(childId, payload, wait)]))).Status);
+
+            await using var connection = new Npgsql.NpgsqlConnection(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString);
+            await connection.OpenAsync();
+            await using var read = new Npgsql.NpgsqlCommand(
+                "SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId", connection);
+            read.Parameters.AddWithValue("InstanceId", childId);
             Assert.Equal(payload, (string)(await read.ExecuteScalarAsync())!);
             var child = (await store.GetWorkflowInstanceAsync(childId))!;
             Assert.Equal(1, child.Revision);

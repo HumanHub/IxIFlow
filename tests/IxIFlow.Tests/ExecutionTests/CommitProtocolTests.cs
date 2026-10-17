@@ -25,6 +25,11 @@ public sealed class CommitProtocolTests
     public Task SqlEpochsRiseAndFenceFormerOwners() =>
         VerifyEpochFencing(new SqlWorkflowStateRepository(SqlTestDatabase<CommitProtocolTests>.ConnectionString));
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public Task PostgreSqlEpochsRiseAndFenceFormerOwners() =>
+        VerifyEpochFencing(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CommitProtocolTests>.ConnectionString));
+
     [Fact]
     public Task MemoryStaleEpochAndRevisionConflictAreDistinct() =>
         VerifyDistinctResults(new InMemoryWorkflowStateRepository());
@@ -33,6 +38,11 @@ public sealed class CommitProtocolTests
     [Trait("Category", "SqlIntegration")]
     public Task SqlStaleEpochAndRevisionConflictAreDistinct() =>
         VerifyDistinctResults(new SqlWorkflowStateRepository(SqlTestDatabase<CommitProtocolTests>.ConnectionString));
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public Task PostgreSqlStaleEpochAndRevisionConflictAreDistinct() =>
+        VerifyDistinctResults(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CommitProtocolTests>.ConnectionString));
 
     [Fact]
     public async Task StoreRetryResendsTheSameCommit()

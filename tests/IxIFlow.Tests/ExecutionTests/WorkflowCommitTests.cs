@@ -87,6 +87,17 @@ public class WorkflowCommitTests
         await VerifyConflict(repository);
     }
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task PostgreSqlCommitHandlesConflictsAndLostAcknowledgments()
+    {
+        var repository = new PostgreSqlWorkflowStateRepository(
+            PostgreSqlTestDatabase<WorkflowCommitTests>.ConnectionString);
+        await VerifyFailureBeforeCommit(repository);
+        await VerifyLostAcknowledgment(repository);
+        await VerifyConflict(repository);
+    }
+
     private static async Task VerifyFailureBeforeCommit(IWorkflowStateRepository repository)
     {
         var instance = CreateInstance();
