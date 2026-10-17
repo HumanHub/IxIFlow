@@ -130,7 +130,7 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
         string parentWaitId, ExecutionLimits limits)
     {
         var now = time.GetUtcNow().UtcDateTime;
-        var (child, checkpoint, scopes) = InstanceHost.NewInstance(definition, data, new WorkflowOptions
+        var (child, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(definition, data, new WorkflowOptions
         {
             InstanceId = childId,
             CorrelationId = parent.CorrelationId,
