@@ -596,6 +596,10 @@ internal sealed class InstanceHost(
             return current?.Status == WorkflowStatus.Running
                 ? WorkflowExecutor.Busy(instanceId)
                 : Rejected(instanceId, "The workflow instance changed before recovery could start");
+        // How long the instance waited to be claimed, on the store's clock as this run last read it (D-39).
+        if (instance.RunnableAtUtc is { } runnableAt && checkpoint.Clock.ToStore(Now) - runnableAt is var waited &&
+            waited >= TimeSpan.Zero)
+            Telemetry.BacklogAge.Record(waited.TotalSeconds, Telemetry.Workflow(instance));
         // Only a claim of a running instance can see crashes: every commit that leaves Running
         // records progress and clears the count, and other entry points refuse running instances.
         if (owner.CrashCount >= _limits.MaxCrashes)

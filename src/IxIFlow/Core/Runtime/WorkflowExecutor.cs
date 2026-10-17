@@ -37,6 +37,10 @@ internal sealed class WorkflowExecutor
     {
         // Everything logged during the run carries its instance (G-03).
         using var logScope = _logger.BeginScope(LogScope.ForInstance(instance));
+        // A span for the run pass, and the host's count of active runs (D-39).
+        using var span = Telemetry.Source.StartActivity($"run {instance.WorkflowName}");
+        Telemetry.Tag(span, instance);
+        using var activeRun = Telemetry.Running(instance);
         checkpoint.RootData = workflowData;
         var inFlight = new Dictionary<string, RunningActivity>();
         // Set when a step hit a resource limit: the run starts nothing new and stops once its
