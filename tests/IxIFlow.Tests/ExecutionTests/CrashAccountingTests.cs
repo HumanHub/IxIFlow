@@ -19,16 +19,19 @@ public sealed class CrashAccountingTests
 {
     private static readonly TimeSpan Short = TimeSpan.FromMilliseconds(500);
 
+    // Long enough for a commit on a cold SQL Server connection under load; reclaims poll for the expiry.
+    private static readonly TimeSpan SqlLease = TimeSpan.FromSeconds(2);
+
     [Fact]
     public Task MemoryStoreCountsLeasesLostWhileRunning() =>
-        VerifyCrashCounting(new InMemoryWorkflowStateRepository());
+        VerifyCrashCounting(new InMemoryWorkflowStateRepository(), Short);
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlStoreCountsLeasesLostWhileRunning() =>
-        VerifyCrashCounting(new SqlWorkflowStateRepository(SqlTestDatabase<CrashAccountingTests>.ConnectionString));
+        VerifyCrashCounting(new SqlWorkflowStateRepository(SqlTestDatabase<CrashAccountingTests>.ConnectionString), SqlLease);
 
-    private static async Task VerifyCrashCounting(IWorkflowStateRepository repository)
+    private static async Task VerifyCrashCounting(IWorkflowStateRepository repository, TimeSpan lease)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         var instance = new WorkflowInstance
@@ -38,44 +41,44 @@ public sealed class CrashAccountingTests
         };
         try
         {
-            var first = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", Short))!;
+            var first = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease))!;
             Assert.Equal(0, first.CrashCount);
             await CommitAsync(repository, instance, first, clearsCrashCount: true);
 
             // The owner dies with the instance running: the next claim counts it.
-            var second = await ReclaimAfterExpiryAsync(repository, instanceId, "second");
+            var second = await ReclaimAfterExpiryAsync(repository, instanceId, "second", lease);
             Assert.Equal(1, second.CrashCount);
             // Claiming an activity is not progress; the next loss counts on top.
             await CommitAsync(repository, instance, second, clearsCrashCount: false);
-            var third = await ReclaimAfterExpiryAsync(repository, instanceId, "third");
+            var third = await ReclaimAfterExpiryAsync(repository, instanceId, "third", lease);
             Assert.Equal(2, third.CrashCount);
 
             // A released lease is not a crash.
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "third"));
-            var fourth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", Short))!;
+            var fourth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", lease))!;
             Assert.Equal(2, fourth.CrashCount);
 
             // Progress clears the count.
             await CommitAsync(repository, instance, fourth, clearsCrashCount: true);
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "fourth"));
-            var fifth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fifth", Short))!;
+            var fifth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fifth", lease))!;
             Assert.Equal(0, fifth.CrashCount);
 
             // An idle instance whose lease expires lost nothing in flight.
             instance.Status = WorkflowStatus.Suspended;
             await CommitAsync(repository, instance, fifth, clearsCrashCount: false);
-            var sixth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "sixth", Short))!;
-            var seventh = await ReclaimAfterExpiryAsync(repository, instanceId, "seventh");
+            var sixth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "sixth", lease))!;
+            var seventh = await ReclaimAfterExpiryAsync(repository, instanceId, "seventh", lease);
             Assert.Equal(0, sixth.CrashCount);
             Assert.Equal(0, seventh.CrashCount);
 
             // A recreated instance does not inherit crashes.
             instance.Status = WorkflowStatus.Running;
             await CommitAsync(repository, instance, seventh, clearsCrashCount: false);
-            var lost = await ReclaimAfterExpiryAsync(repository, instanceId, "lost");
+            var lost = await ReclaimAfterExpiryAsync(repository, instanceId, "lost", lease);
             Assert.Equal(1, lost.CrashCount);
             await repository.DeleteWorkflowInstanceAsync(instanceId);
-            Assert.Equal(0, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "recreated", Short))!
+            Assert.Equal(0, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "recreated", lease))!
                 .CrashCount);
         }
         finally
@@ -294,18 +297,30 @@ public sealed class CrashAccountingTests
         await Task.Delay(Short * 2);
     }
 
+    // Claims the instance as soon as the lease it had has expired, which is within one lease length of the call,
+    // since the lease was taken before it; a slow store is allowed three seconds more.
     private static async Task<ExecutionLeaseGrant> ReclaimAfterExpiryAsync(IWorkflowStateRepository repository,
-        string instanceId, string token)
+        string instanceId, string token, TimeSpan lease)
     {
-        await Task.Delay(Short * 2);
-        return (await repository.TryAcquireExecutionLeaseAsync(instanceId, token, Short))!;
+        var deadline = DateTime.UtcNow + lease + TimeSpan.FromSeconds(3);
+        while (true)
+        {
+            if (await repository.TryAcquireExecutionLeaseAsync(instanceId, token, lease) is { } grant)
+                return grant;
+            Assert.True(DateTime.UtcNow < deadline, "The lease did not expire on time");
+            await Task.Delay(50);
+        }
     }
 
     private static async Task CommitAsync(IWorkflowStateRepository repository, WorkflowInstance instance,
         ExecutionLeaseGrant grant, bool clearsCrashCount)
     {
-        var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, grant.Epoch,
-            instance.Revision, clearsCrashCount: clearsCrashCount));
+        var commit = CheckpointCommit.Create(instance, grant.Epoch, instance.Revision,
+            clearsCrashCount: clearsCrashCount);
+        var result = await repository.CommitWorkflowInstanceAsync(commit);
+        // A store that wrote nothing, for example as a deadlock victim, asks for the same commit again.
+        for (var attempt = 0; result.Status == WorkflowCommitStatus.Retry && attempt < 5; attempt++)
+            result = await repository.CommitWorkflowInstanceAsync(commit);
         Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
         instance.Revision = result.Revision;
     }
