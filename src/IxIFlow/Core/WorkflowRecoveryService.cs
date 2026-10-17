@@ -47,7 +47,7 @@ internal sealed class WorkflowRecoveryService(
         // A host claims only what it has slots for (D-10); the rest waits for the next pass or another host.
         int limit;
         using (var probe = scopes.CreateScope())
-            limit = probe.ServiceProvider.GetService<LocalWorkflowHost>()?.FreeSlots ?? _settings.Slots;
+            limit = probe.ServiceProvider.GetService<WorkflowHost>()?.FreeSlots ?? _settings.Slots;
         if (limit == 0)
             return Task.CompletedTask;
         HashSet<string> skipped;
