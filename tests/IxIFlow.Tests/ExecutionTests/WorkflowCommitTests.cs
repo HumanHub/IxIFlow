@@ -81,7 +81,7 @@ public class WorkflowCommitTests
     public async Task SqlCommitHandlesConflictsAndLostAcknowledgments()
     {
         var repository = new SqlWorkflowStateRepository(
-            SqlServerTestServer.ConnectionString);
+            SqlTestDatabase<WorkflowCommitTests>.ConnectionString);
         await VerifyFailureBeforeCommit(repository);
         await VerifyLostAcknowledgment(repository);
         await VerifyConflict(repository);
