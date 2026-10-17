@@ -166,6 +166,77 @@ public sealed class ActivityInputCopyTests
         Assert.Equal(0, probe.Appends);
     }
 
+    // A non-public type is read back by name, so a value of one behind an interface input keeps its type.
+    [Fact]
+    public async Task AnInputOfANonPublicTypeKeepsItsType()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+        var definition = Workflow.Create<ListData>("NonPublicInput")
+            .Step<ReadsLine>(step => step
+                .Input(activity => activity.Line).From(_ => new HiddenLine { Quantity = 4 })
+                .Output(activity => activity.Quantity).To(ctx => ctx.WorkflowData.Seen))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, Data());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(4, Assert.IsType<ListData>(result.WorkflowData).Seen);
+    }
+
+    // A converter on the input property applies to a value of a derived type: the value is saved under the declared
+    // type the converter is written for.
+    [Fact]
+    public async Task AConverterOnTheInputPropertyAppliesToADerivedValue()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+        var definition = Workflow.Create<ListData>("ConvertedInput")
+            .Step<TakesMoney>(step => step
+                .Input(activity => activity.Amount).From(_ => new TaggedMoney(250))
+                .Output(activity => activity.Cents).To(ctx => ctx.WorkflowData.Seen))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, Data());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(250, Assert.IsType<ListData>(result.WorkflowData).Seen);
+    }
+
+    // An exception input that cannot be restored is an invalid definition that names the input.
+    [Fact]
+    public async Task AnExceptionInputThatCannotBeRestoredIsAnInvalidDefinition()
+    {
+        var probe = new Probe();
+        using var services = Services(new InMemoryWorkflowStateRepository(), probe);
+        var definition = Workflow.Create<ListData>("UnrestorableExceptionInput")
+            .Step<TakesError>(step => step.Input(activity => activity.Error).From(_ => new HiddenStateException("kept")))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, Data());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("Activity input 'TakesError.Error' cannot be saved and read back", result.ErrorMessage);
+        Assert.Equal(0, probe.Appends);
+    }
+
+    // An activity given as an input whose saved form cannot be read back fails the run as an invalid definition; it
+    // is not an interruption that recovery would meet again.
+    [Fact]
+    public async Task AnActivityInputThatCannotBeReadBackIsAnInvalidDefinition()
+    {
+        var probe = new Probe();
+        using var services = Services(new InMemoryWorkflowStateRepository(), probe);
+        var definition = Workflow.Create<ListData>("UnreadableActivityInput")
+            .Step<TakesActivity>(step => step.Input(activity => activity.Other).From(_ => new Computes()))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, Data())
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("Activity input 'TakesActivity.Other' cannot be saved and read back", result.ErrorMessage);
+        Assert.Equal(0, probe.Appends);
+    }
+
     private static WorkflowDefinition Appending(string name, bool mapped) =>
         Workflow.Create<ListData>(name)
             .Step<AppendsToItsInput>(step =>
@@ -191,6 +262,8 @@ public sealed class ActivityInputCopyTests
         services.AddTransient<AppendThenFailOnce>();
         services.AddTransient<ChangesTheDataThenFailsOnce>();
         services.AddTransient<TakesFixed>();
+        services.AddTransient<TakesError>();
+        services.AddTransient<TakesActivity>();
         services.AddIxIFlow();
         return services.BuildServiceProvider();
     }
@@ -277,7 +350,9 @@ public sealed class ActivityInputCopyTests
 
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
-            SameObject = ReferenceEquals(context.RecoveryState, Items);
+            // The state is the list the activity runs on, and that list is a copy, not the data's.
+            SameObject = ReferenceEquals(context.RecoveryState, Items) &&
+                         !ReferenceEquals(Items, ((ListData)context.WorkflowData).Items);
             return Task.CompletedTask;
         }
 
@@ -308,6 +383,98 @@ public sealed class ActivityInputCopyTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             NoteWasNull = Sparse is { Note: null };
+            return Task.CompletedTask;
+        }
+    }
+
+    public interface ILine
+    {
+        int Quantity { get; }
+    }
+
+    internal sealed class HiddenLine : ILine
+    {
+        public int Quantity { get; set; }
+    }
+
+    public sealed class ReadsLine : IAsyncActivity
+    {
+        public ILine? Line { get; set; }
+        public int Quantity { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Quantity = Line!.Quantity;
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Read back only through <see cref="MoneyConverter"/>: its constructor's parameter names no property.</summary>
+    public class Money(int cents)
+    {
+        public int Value { get; } = cents;
+    }
+
+    public sealed class TaggedMoney(int cents) : Money(cents)
+    {
+        public string Tag { get; set; } = "tagged";
+    }
+
+    public sealed class MoneyConverter : JsonConverter<Money>
+    {
+        public override Money Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert,
+            System.Text.Json.JsonSerializerOptions options) => new(reader.GetInt32());
+
+        public override void Write(System.Text.Json.Utf8JsonWriter writer, Money value,
+            System.Text.Json.JsonSerializerOptions options) => writer.WriteNumberValue(value.Value);
+    }
+
+    public sealed class TakesMoney : IAsyncActivity
+    {
+        [JsonConverter(typeof(MoneyConverter))]
+        public Money? Amount { get; set; }
+        public int Cents { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Cents = Amount!.Value;
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Its constructor's parameter names no property, so it cannot be restored.</summary>
+    public sealed class HiddenStateException(string secret) : Exception("hidden state")
+    {
+        public string Code => secret;
+    }
+
+    public sealed class TakesError(Probe probe) : IAsyncActivity
+    {
+        public Exception? Error { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.Appended();
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>An activity with a computed property, which its saved form holds but nothing can set.</summary>
+    public sealed class Computes : IAsyncActivity
+    {
+        public int Twice => 2;
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    public sealed class TakesActivity(Probe probe) : IAsyncActivity
+    {
+        public Computes? Other { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.Appended();
             return Task.CompletedTask;
         }
     }
