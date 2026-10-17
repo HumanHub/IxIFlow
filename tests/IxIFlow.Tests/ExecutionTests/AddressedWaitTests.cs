@@ -4,6 +4,7 @@ using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -103,11 +104,14 @@ public sealed class AddressedWaitTests
     [Trait("Spec", "D-03")]
     public async Task AReplyAfterTheDeadlineIsRefusedAsTimedOut()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(
-            ApprovalWorkflow("ShortApproval", TimeSpan.FromMilliseconds(100)), new LoopData());
+            ApprovalWorkflow("ShortApproval", TimeSpan.FromMinutes(1)), new LoopData());
         var wait = Assert.Single(await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
+        // The host's timer runs the timeout once the deadline has passed.
+        time.Advance(TimeSpan.FromMinutes(2));
         await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
 
         // A screen still showing the wait gets the reason it closed, after the instance finished too.
@@ -122,13 +126,14 @@ public sealed class AddressedWaitTests
     [Trait("Spec", "D-03")]
     public async Task ATokenForAWaitThatTimedOutWhileTheInstanceRunsOnIsRefusedAsTimedOut()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<LoopData>("TimedOutWhileAnotherWaits")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
                 .Do(branch => branch.WaitFor<Approval>("approval", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(100))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path.Step<StartActivity>())))
                 .Do(branch => branch.WaitFor<Approval>("final")))
             .Build();
@@ -136,8 +141,13 @@ public sealed class AddressedWaitTests
         var expired = Assert.Single(
             await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId, Key: "approval")));
         // The host's timer closes the first wait; the other branch keeps the instance waiting.
+        time.Advance(TimeSpan.FromMinutes(2));
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while ((await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId, Key: "approval"))).Count > 0)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The timed-out wait was never closed");
             await Task.Delay(20);
+        }
         // The timeout's own pass may still be running; the reply is sent once the instance is idle again.
         await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Idle).WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -279,10 +289,12 @@ public sealed class AddressedWaitTests
 
     private static LoopData Data(WorkflowExecutionResult result) => Assert.IsType<LoopData>(result.WorkflowData);
 
-    private static ServiceProvider Services()
+    private static ServiceProvider Services(TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        if (time != null)
+            services.AddSingleton(time);
         services.AddSingleton<StepGate>();
         services.AddTransient<GatedActivity>();
         services.AddIxIFlow();
