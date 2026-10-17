@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Reflection;
 using Fluid;
+using Fluid.Values;
 
 namespace IxIFlow.Templates.Liquid;
 
@@ -22,7 +23,8 @@ internal static class LiquidModel
         while (pending.Count > 0)
         {
             var type = Unwrap(pending.Dequeue());
-            if (IsScalar(type) || type == typeof(object))
+            // Seen before a collection is opened, so a collection of itself is opened once.
+            if (IsScalar(type) || type == typeof(object) || !seen.Add(type))
                 continue;
             if (DictionaryValue(type) is { } value)
             {
@@ -34,8 +36,6 @@ internal static class LiquidModel
                 pending.Enqueue(element);
                 continue;
             }
-            if (!seen.Add(type))
-                continue;
             found.Add(type);
             foreach (var member in Members(type).Where(member => member.Readable))
                 pending.Enqueue(member.Type);
@@ -61,10 +61,44 @@ internal static class LiquidModel
         foreach (var property in properties)
         {
             if (property.GetIndexParameters().Length == 0 && property.GetMethod is { IsPublic: true })
-                yield return new ModelMember(property.Name, Unwrap(property.PropertyType), property.GetValue);
+            {
+                var declared = Unwrap(property.PropertyType);
+                yield return new ModelMember(property.Name, declared, target => AsDeclared(declared,
+                    property.GetValue(target)));
+            }
         }
         foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
-            yield return new ModelMember(field.Name, Unwrap(field.FieldType), field.GetValue);
+        {
+            var declared = Unwrap(field.FieldType);
+            yield return new ModelMember(field.Name, declared, target => AsDeclared(declared, field.GetValue(target)));
+        }
+    }
+
+    // A value read as its member's declared type has it: a member declared as a list of pairs, such as a read-only
+    // dictionary, is a list of pairs even when it holds a dictionary Fluid would read by key.
+    private static object? AsDeclared(Type declared, object? value)
+    {
+        if (value is not IDictionary || DictionaryValue(declared) != null || Element(declared) is not { } element)
+            return value;
+        var items = ((IEnumerable)value).Cast<object>().Where(element.IsInstanceOfType).ToArray();
+        var pairs = Array.CreateInstance(element, items.Length);
+        Array.Copy(items, pairs, items.Length);
+        return pairs;
+    }
+
+    /// <summary>
+    /// Whether a value of runtime type <paramref name="type"/> holds only readable values, when it is a collection or
+    /// a dictionary: Fluid opens a collection by what it holds at run time, whatever its member was declared as.
+    /// </summary>
+    public static bool HoldsReadable(Type type)
+    {
+        if (IsScalar(type))
+            return true;
+        if (typeof(IDictionary).IsAssignableFrom(type) || DictionaryValue(type) != null)
+            return DictionaryValue(type) is { } value && value != typeof(object) && Readable(value);
+        if (Element(type) is { } element)
+            return typeof(FluidValue).IsAssignableFrom(element) || Readable(element);
+        return true;
     }
 
     /// <summary>The member of <paramref name="type"/> named <paramref name="name"/>, readable or not.</summary>

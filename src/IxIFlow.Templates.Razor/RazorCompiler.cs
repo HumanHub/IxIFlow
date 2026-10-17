@@ -98,11 +98,11 @@ internal static class RazorCompiler
                 "A template derives from the base the engine gives it for its model; @inherits is not available")]);
         }
         if (!load)
-            return RazorCompilation.Succeeded(null);
+            return RazorCompilation.Validated();
         image.Position = 0;
         var context = new TemplateLoadContext(className, modelContext);
         var assembly = context.LoadFromStream(image);
-        return RazorCompilation.Succeeded(assembly.GetType($"{Namespace}.{className}", throwOnError: true)!);
+        return RazorCompilation.Loaded(assembly.GetType($"{Namespace}.{className}", throwOnError: true)!, context);
     }
 
     // @inherits would compile against another base than the model's, and fail only when rendered. The base the class
@@ -306,18 +306,27 @@ internal static class RazorCompiler
 /// <summary>A compiled template's class, or why it did not compile.</summary>
 internal sealed class RazorCompilation
 {
-    private RazorCompilation(Type? template, IReadOnlyList<TemplateDiagnostic> errors)
+    private RazorCompilation(Type? template, AssemblyLoadContext? context, IReadOnlyList<TemplateDiagnostic> errors)
     {
         Template = template;
+        Context = context;
         Errors = errors;
     }
 
     /// <summary>The compiled class, when the compilation was loaded.</summary>
     public Type? Template { get; }
 
+    /// <summary>
+    /// The context the class was loaded into. The compilation owns it: a collectible context nothing refers to is
+    /// finalized, and its finalizer unloads it.
+    /// </summary>
+    public AssemblyLoadContext? Context { get; }
+
     public IReadOnlyList<TemplateDiagnostic> Errors { get; }
 
-    public static RazorCompilation Succeeded(Type? template) => new(template, []);
+    public static RazorCompilation Validated() => new(null, null, []);
 
-    public static RazorCompilation Failed(IReadOnlyList<TemplateDiagnostic> errors) => new(null, errors);
+    public static RazorCompilation Loaded(Type template, AssemblyLoadContext context) => new(template, context, []);
+
+    public static RazorCompilation Failed(IReadOnlyList<TemplateDiagnostic> errors) => new(null, null, errors);
 }

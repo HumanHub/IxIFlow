@@ -66,21 +66,34 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
         if (parsed.Template == null)
             throw new TemplateRenderException(template, parsed.Error!.ToString());
         cancellationToken.ThrowIfCancellationRequested();
-        // The model's own members come through the member access strategy, like every other type's, so a model of a
-        // derived type shows no more than the type the template was published against.
-        var context = new TemplateContext(model, OptionsFor(typeof(TModel)), allowModelMembers: false)
-        {
-            CultureInfo = culture
-        };
+        var outer = LiquidValues.Culture.Value;
+        LiquidValues.Culture.Value = culture;
+        // Fluid compares and formats some values with the current culture, sort by a member among them.
+        var current = CultureInfo.CurrentCulture;
+        var currentUi = CultureInfo.CurrentUICulture;
+        CultureInfo.CurrentCulture = culture;
+        CultureInfo.CurrentUICulture = culture;
         try
         {
+            // The model's own members come through the member access strategy, like every other type's, so a model
+            // of a derived type shows no more than the type the template was published against.
+            var context = new TemplateContext(model, OptionsFor(typeof(TModel)), allowModelMembers: false)
+            {
+                CultureInfo = culture
+            };
             return await parsed.Template.RenderAsync(context,
                 template.Format == TemplateFormat.Html ? HtmlEncoder.Default : NullEncoder.Default);
         }
         catch (Exception error) when (error is FluidException or InvalidOperationException or FormatException
-                                          or ArgumentException)
+                                          or ArgumentException or InvalidCastException or OverflowException)
         {
             throw new TemplateRenderException(template, error.Message, error);
+        }
+        finally
+        {
+            LiquidValues.Culture.Value = outer;
+            CultureInfo.CurrentCulture = current;
+            CultureInfo.CurrentUICulture = currentUi;
         }
     }
 
@@ -112,6 +125,20 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
         options.ValueConverters.Add(new LiquidValues(reachable).Convert);
         // json serializes the object behind a value, every member of its runtime type included.
         options.Filters.Remove("json");
+        // Fluid's sum reads a member only from its own object values, not from the model's.
+        if (options.Filters.TryGetValue("sum", out var sum))
+            options.Filters.AddFilter("sum", (input, arguments, context) =>
+                arguments.Count == 0 ? sum(input, arguments, context) : SumOfMember(input, arguments, context));
+        // Fluid sorts by a member with the comparer of the culture the process started with; these sort by the
+        // render's culture.
+        foreach (var (name, order) in new[]
+                 { ("sort", CompareOptions.None), ("sort_natural", CompareOptions.IgnoreCase) })
+        {
+            if (!options.Filters.TryGetValue(name, out var sort))
+                continue;
+            options.Filters.AddFilter(name, (input, arguments, context) =>
+                arguments.Count == 0 ? sort(input, arguments, context) : SortByMember(input, arguments, context, order));
+        }
         foreach (var name in DateFilters)
         {
             if (!options.Filters.TryGetValue(name, out var filter))
@@ -128,6 +155,42 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
         }
         return options;
     });
+
+    private static async ValueTask<FluidValue> SortByMember(FluidValue input, FilterArguments arguments,
+        TemplateContext context, CompareOptions compare)
+    {
+        var member = arguments.At(0).ToStringValue();
+        var keyed = new List<(FluidValue Item, FluidValue Key)>();
+        foreach (var item in input.Enumerate(context))
+            keyed.Add((item, await item.GetValueAsync(member, context)));
+        var culture = context.CultureInfo.CompareInfo;
+        // Nil first, then numbers by value, then everything else by its text in the render's culture; a stable sort
+        // keeps equal items in their order.
+        return new ArrayValue(keyed
+            .OrderBy(entry => entry.Key.IsNil() ? 0 : entry.Key is NumberValue ? 1 : 2)
+            .ThenBy(entry => entry.Key is NumberValue number ? number.ToNumberValue() : 0)
+            .ThenBy(entry => entry.Key is NumberValue || entry.Key.IsNil() ? "" : entry.Key.ToStringValue(),
+                Comparer<string>.Create((left, right) => culture.Compare(left, right, compare)))
+            .Select(entry => entry.Item)
+            .ToArray());
+    }
+
+    private static async ValueTask<FluidValue> SumOfMember(FluidValue input, FilterArguments arguments,
+        TemplateContext context)
+    {
+        var member = arguments.At(0).ToStringValue();
+        var total = 0m;
+        foreach (var item in input.Enumerate(context))
+        {
+            total += item switch
+            {
+                ArrayValue => (await SumOfMember(item, arguments, context)).ToNumberValue(),
+                ObjectValueBase => (await item.GetValueAsync(member, context)).ToNumberValue(),
+                _ => 0
+            };
+        }
+        return NumberValue.Create(total);
+    }
 
     /// <summary>The filters that read text as a date, completing what it leaves out from the clock.</summary>
     internal static readonly string[] DateFilters = ["date", "format_date", "time_zone"];

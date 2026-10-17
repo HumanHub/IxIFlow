@@ -98,6 +98,9 @@ public sealed class TemplateEngineTests
         // Filters that unwrap a value get an object's empty text, not the object.
         Assert.Equal("[]", await engine.RenderAsync<Order>(Source("[{{ '{0}' | format_string: Customer }}]"), order,
             CultureInfo.InvariantCulture));
+        // Arithmetic on an object gets zero, as on anything that is not a number.
+        Assert.Equal("1", await engine.RenderAsync<Order>(Source("{{ Customer | plus: 1 }}"), order,
+            CultureInfo.InvariantCulture));
         // A model of a derived type shows only the members of the type the template was written against, and an
         // object writes no text of its own, so its ToString shows nothing either.
         Assert.Equal("[A-1][][]", await engine.RenderAsync<Order>(
@@ -128,22 +131,30 @@ public sealed class TemplateEngineTests
     {
         var engine = new LiquidTemplateEngine();
         var template = Source(
-            "{{ Local | date: '%Y-%m-%d %H:%M' }}|{{ Unspecified | date: '%Y-%m-%d %H:%M' }}|" +
+            "{{ Unspecified | date: '%Y-%m-%d %H:%M' }}|" +
             "{{ Utc | date: '%H:%M' }}|{{ Offset | date: '%H:%M %z' }}|{{ Duration }}|" +
-            "{{ '2026-03-04' | date: '%d.%m.' }}");
+            "{{ '2026-03-04' | date: '%d.%m.' }}|{{ Day | date: '%d.%m.%Y' }}|{{ Time }}");
         var schedule = new Schedule
         {
             Local = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Local),
             Unspecified = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Unspecified),
             Utc = new DateTime(2026, 1, 1, 9, 30, 0, DateTimeKind.Utc),
             Offset = new DateTimeOffset(2026, 1, 1, 8, 15, 0, TimeSpan.FromHours(2)),
-            Duration = TimeSpan.FromMinutes(90)
+            Duration = TimeSpan.FromMinutes(90),
+            Day = new DateOnly(2026, 3, 4),
+            Time = new TimeOnly(9, 30)
         };
 
         Assert.Empty(await engine.ValidateAsync(template, typeof(Schedule)));
-        // Neither kind of DateTime is shifted by the host's time zone, and a TimeSpan is a duration, not a date.
-        Assert.Equal("2026-01-01 12:00|2026-01-01 12:00|09:30|08:15 +0200|01:30:00|04.03.",
-            await engine.RenderAsync(template, schedule, CultureInfo.InvariantCulture));
+        // A DateTime is not shifted by the host's time zone, a TimeSpan is a duration, not a date, and a DateOnly is
+        // a date in every culture, not text read back by the culture's day and month order.
+        const string expected = "2026-01-01 12:00|09:30|08:15 +0200|01:30:00|04.03.|04.03.2026|09:30:00";
+        Assert.Equal(expected, await engine.RenderAsync(template, schedule, CultureInfo.InvariantCulture));
+        Assert.Equal(expected, await engine.RenderAsync(template, schedule, German));
+        // A local time comes back from a checkpoint as another host's local time, so it is refused.
+        var local = await Assert.ThrowsAsync<TemplateRenderException>(() =>
+            engine.RenderAsync(Source("{{ Local }}"), schedule, CultureInfo.InvariantCulture).AsTask());
+        Assert.Contains("kind Local", local.Message);
     }
 
     [Fact]
@@ -164,6 +175,9 @@ public sealed class TemplateEngineTests
                     .AsTask());
             Assert.Contains("has no clock", error.Message);
         }
+        // Text a variable was assigned is checked like text written in place.
+        Assert.Contains(await engine.ValidateAsync(Source("{% assign n = 'now' %}{{ n | date: '%Y' }}"), typeof(Order)),
+            diagnostic => diagnostic.Message.Contains("has no clock"));
     }
 
     [Fact]
@@ -175,8 +189,10 @@ public sealed class TemplateEngineTests
         Assert.Empty(await engine.ValidateAsync(Source("{{ Price }}"), typeof(Priced)));
         Assert.Contains(await engine.ValidateAsync(Source("{{ Price.Amount }}"), typeof(Priced)),
             diagnostic => diagnostic.Message.Contains("'Price' has no member 'Amount'"));
-        Assert.Equal("12.50 EUR", await engine.RenderAsync(Source("{{ Price }}"),
-            new Priced { Price = new Money(12.5m, "EUR") }, CultureInfo.InvariantCulture));
+        // It is formatted for the culture asked for, like a number.
+        var priced = new Priced { Price = new Money(12.5m, "EUR") };
+        Assert.Equal("12.50 EUR", await engine.RenderAsync(Source("{{ Price }}"), priced, CultureInfo.InvariantCulture));
+        Assert.Equal("12,50 EUR", await engine.RenderAsync(Source("{{ Price }}"), priced, German));
         // Fluid reads by key only a dictionary it can index; a read-only one is a list of pairs to it.
         Assert.Contains(await engine.ValidateAsync(Source("{{ Map.ana.Name }}"), typeof(Priced)),
             diagnostic => diagnostic.Message.Contains("'Map' has no member 'ana'"));
@@ -187,6 +203,55 @@ public sealed class TemplateEngineTests
         Assert.Empty(await engine.ValidateAsync(Source(
             "{% assign x = Customer %}{% if Total > 100 %}{% assign x = Number %}{% endif %}{{ x.Name }}"),
             typeof(Order)));
+    }
+
+    [Fact]
+    public async Task LiquidCollectionsReadAsTheirMembersAreDeclared()
+    {
+        var engine = new LiquidTemplateEngine();
+        var directory = new Directory
+        {
+            Bag = new Dictionary<string, object> { ["Password"] = "pw" },
+            People = new Dictionary<string, Customer> { ["ana"] = new() { Name = "Ana" } },
+            Root = [[], []]
+        };
+        var template = Source(
+            "[{% for pair in Bag %}{{ pair[0] }}={{ pair[1] }}{{ pair.Value }}{% endfor %}]" +
+            "[{% for pair in People %}{{ pair.Key }}:{{ pair.Value.Name }}{% endfor %}][{{ Root.size }}]");
+
+        // A model type that is a collection of itself is checked once.
+        Assert.Contains(await engine.ValidateAsync(template, typeof(Directory)),
+            diagnostic => diagnostic.Message.Contains("'Value' of pair cannot be read"));
+        // A read-only dictionary is a list of pairs, as declared, even when it holds a dictionary, and a pair whose
+        // value could be anything shows nothing of it: the one pair in Bag writes only the template's own '='.
+        Assert.Equal("[=][ana:Ana][2]", await engine.RenderAsync(template, directory, CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public async Task LiquidArrayFiltersReadTheModel()
+    {
+        var engine = new LiquidTemplateEngine();
+        var order = SampleOrder();
+        order.Lines = [new OrderLine { Sku = "z", Quantity = 2 }, new OrderLine { Sku = "ä", Quantity = 1 }];
+        var template = Source(
+            "{% assign sorted = Lines | sort: 'Sku' %}{% for line in sorted %}{{ line.Sku }}{% endfor %}|" +
+            "{{ Lines | sum: 'Quantity' }}|" +
+            "{% for line in Lines limit: 1 %}{{ line.Sku }}{% endfor %}{% for line in Lines offset: continue %}" +
+            "{{ line.Sku }}{% endfor %}");
+
+        Assert.Empty(await engine.ValidateAsync(template, typeof(Order)));
+        // Sorting compares in the culture asked for, not the host's: ä sorts after z in Swedish, before it in German.
+        var current = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("sv-SE");
+        try
+        {
+            Assert.Equal("äz|3|zä", await engine.RenderAsync(template, order, German));
+            Assert.Equal("zä|3|zä", await engine.RenderAsync(template, order, CultureInfo.GetCultureInfo("sv-SE")));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = current;
+        }
     }
 
     [Fact]
@@ -368,6 +433,8 @@ public sealed class TemplateEngineTests
         public DateTime Utc { get; set; }
         public DateTimeOffset Offset { get; set; }
         public TimeSpan Duration { get; set; }
+        public DateOnly Day { get; set; }
+        public TimeOnly Time { get; set; }
     }
 
     public readonly record struct Money(decimal Amount, string Currency) : IFormattable
@@ -395,6 +462,15 @@ public sealed class TemplateEngineTests
         public IEnumerator<KeyValuePair<string, Customer>> GetEnumerator() => _items.GetEnumerator();
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
+
+    public sealed class Directory
+    {
+        public IReadOnlyDictionary<string, object> Bag { get; set; } = new Dictionary<string, object>();
+        public IReadOnlyDictionary<string, Customer> People { get; set; } = new Dictionary<string, Customer>();
+        public Tree Root { get; set; } = [];
+    }
+
+    public sealed class Tree : List<Tree>;
 
     public sealed class Credentials
     {
