@@ -149,7 +149,7 @@ public sealed class WorkflowDeadlineTests
         using var services = new ServiceCollection()
             .AddLogging()
             .AddTransient<SeedActivity>()
-            .AddIxIFlow()
+            .AddIxIFlow().Services
             .AddSingleton<IWorkflowStateRepository>(repository)
             .BuildServiceProvider();
         var engine = services.GetRequiredService<IWorkflowClient>();
