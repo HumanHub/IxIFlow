@@ -853,16 +853,10 @@ public class SagaStepWithMultipleErrorsAsyncActivity : IAsyncActivity
 
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
-        // Get current attempt from activity context metadata (engine provides this)
-        var currentAttempt = 1; // Default if no metadata
-        var maxAttempts = 1; // Default if no metadata
+        // The engine's attempt number starts at 1; this scenario counts retries from 0.
+        var currentAttempt = context.Attempt.Number - 1;
 
-        if (context.Metadata.TryGetValue("CurrentAttempt", out var attempt))
-            currentAttempt = (int)attempt;
-        if (context.Metadata.TryGetValue("MaxAttempts", out var max))
-            maxAttempts = (int)max;
-
-        Console.WriteLine($"MULTI-ERROR STEP: Scenario '{TestScenario}', Engine Attempt {currentAttempt}/{maxAttempts}");
+        Console.WriteLine($"MULTI-ERROR STEP: Scenario '{TestScenario}', Engine Attempt {currentAttempt}");
 
         switch (TestScenario.ToLower())
         {

@@ -91,8 +91,10 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The slot count must be positive");
         if (options.DrainTimeout < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(configure), "The drain timeout cannot be negative");
+        if (string.IsNullOrWhiteSpace(options.HostName))
+            throw new ArgumentOutOfRangeException(nameof(configure), "The host name cannot be empty");
         services.Replace(ServiceDescriptor.Singleton(
-            new HostSettings(options.Slots, options.DrainTimeout, options.PollInterval)));
+            new HostSettings(options.Slots, options.DrainTimeout, options.PollInterval, options.HostName)));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -422,4 +424,10 @@ public class IxIFlowOptions
     /// them. Keep it below the application's shutdown timeout.
     /// </summary>
     public TimeSpan DrainTimeout { get; set; } = HostSettings.DefaultDrainTimeout;
+
+    /// <summary>
+    /// How this host names itself in the records it leaves, such as the attempts an activity sees (D-37). The default
+    /// is the process ID and machine name, <c>pid@machine</c>.
+    /// </summary>
+    public string HostName { get; set; } = HostSettings.DefaultName;
 }
