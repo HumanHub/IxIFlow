@@ -1,16 +1,14 @@
 using System.Globalization;
-using System.Runtime.Loader;
 using IxIFlow.Templates;
 using IxIFlow.Templates.Liquid;
-using IxIFlow.Templates.Razor;
 using Microsoft.Extensions.DependencyInjection;
 using static IxIFlow.Tests.TemplateTests.TemplateFixtures;
 
 namespace IxIFlow.Tests.TemplateTests;
 
 /// <summary>
-/// The Liquid engine (Fluid) reads only the model's members; the Razor engine compiles with Roslyn against the model.
-/// Both validate a template against its model when it is published (spec H-03).
+/// The Liquid engine (Fluid) reads only the model's members and validates a template against its model when it is
+/// published (spec H-03).
 /// </summary>
 [Trait("Feature", "templates")]
 [Trait("Spec", "H-03")]
@@ -259,176 +257,10 @@ public sealed class TemplateEngineTests
     public async Task EnginesKeyWhatTheyParseByTheContent()
     {
         var liquid = new LiquidTemplateEngine();
-        var razor = new RazorTemplateEngine();
 
         // The same key and version with other content is other text, whatever the engine has already seen.
         Assert.Equal("one", await liquid.RenderAsync(Source("one"), SampleOrder(), CultureInfo.InvariantCulture));
         Assert.Equal("two", await liquid.RenderAsync(Source("two"), SampleOrder(), CultureInfo.InvariantCulture));
-        Assert.Equal("one", await razor.RenderAsync(Source("one"), SampleOrder(), CultureInfo.InvariantCulture));
-        Assert.Equal("two", await razor.RenderAsync(Source("two"), SampleOrder(), CultureInfo.InvariantCulture));
-    }
-
-    [Fact]
-    public async Task RazorRendersTheModelInTheCultureAskedFor()
-    {
-        var engine = new RazorTemplateEngine();
-        var template = Source("""
-            @foreach (var line in Model.Lines)
-            {
-            <text>@line.Sku x@(line.Quantity);</text>
-            }
-            Total @Model.Total, formatted @Model.Total.ToString("N2"), for @Model.Customer.Name
-            """);
-
-        Assert.Empty(await engine.ValidateAsync(template, typeof(Order)));
-        var text = await engine.RenderAsync(template, SampleOrder(), German);
-
-        Assert.Equal("pen x2;ink x1;Total 2,5, formatted 2,50, for Ana", Normalize(text));
-    }
-
-    [Fact]
-    public async Task RazorEncodesValuesInHtmlTemplatesUnlessWrittenRaw()
-    {
-        var engine = new RazorTemplateEngine();
-        var order = SampleOrder();
-        order.Customer.Name = "<i>Ana</i>";
-
-        var html = await engine.RenderAsync(Source(
-            "<a href=\"mailto:@Model.Customer.Email\" title=\"@Model.Customer.Name\">@Model.Customer.Name</a>@Raw(\"<hr>\")",
-            TemplateFormat.Html), order, CultureInfo.InvariantCulture);
-        var text = await engine.RenderAsync(Source("@Model.Customer.Name"), order, CultureInfo.InvariantCulture);
-
-        Assert.Equal("<a href=\"mailto:ana@example.com\" title=\"&lt;i&gt;Ana&lt;/i&gt;\">&lt;i&gt;Ana&lt;/i&gt;</a><hr>",
-            html);
-        Assert.Equal("<i>Ana</i>", text);
-    }
-
-    [Fact]
-    public async Task RazorPublishingRejectsATemplateThatDoesNotCompileAgainstTheModel()
-    {
-        using var services = Services();
-
-        var error = await Assert.ThrowsAsync<TemplateValidationException>(() =>
-            services.PublishAsync<Order>("bad", 1, "razor", TemplateFormat.Text,
-                Base("Hello\n@Model.Customer.Nmae"), In("de", "Hallo @Model.Customer.Name")));
-
-        var diagnostic = Assert.Single(error.Diagnostics);
-        Assert.Contains("CS1061", diagnostic.Message);
-        Assert.Contains("Nmae", diagnostic.Message);
-        Assert.Equal(2, diagnostic.Line);
-        Assert.Equal("", error.Template.Culture);
-    }
-
-    [Fact]
-    public async Task RazorCompilesAgainstGenericAndNestedModelTypes()
-    {
-        var engine = new RazorTemplateEngine();
-        var template = Source("@Model.Count: @Model[0].Sku");
-        var lines = new List<OrderLine> { new() { Sku = "pen" } };
-
-        Assert.Empty(await engine.ValidateAsync(template, typeof(List<OrderLine>)));
-        Assert.Equal("1: pen", await engine.RenderAsync(template, lines, CultureInfo.InvariantCulture));
-    }
-
-    [Fact]
-    public async Task RazorWritesBooleanAndNullAttributesAsRazorDoes()
-    {
-        var engine = new RazorTemplateEngine();
-
-        var html = await engine.RenderAsync(Source(
-            "<input disabled=\"@(Model.Total > 100)\" checked=\"@(Model.Total > 1)\" title=\"@Model.Extra\" " +
-            "class=\"line @Model.Number\" alt=\" @(false)\" name=\" @(true)\" value=\"v @Model.Extra\" />",
-            TemplateFormat.Html), SampleOrder(), CultureInfo.InvariantCulture);
-
-        // Only a value with nothing before it decides whether its attribute is written; a null value elsewhere is
-        // left out with the text before it.
-        Assert.Equal("<input checked=\"checked\" class=\"line A-17\" alt=\" False\" name=\" True\" value=\"v\" />",
-            html);
-    }
-
-    [Fact]
-    public async Task RazorTemplatesDeriveFromTheModelsBase()
-    {
-        var engine = new RazorTemplateEngine();
-
-        var other = await engine.ValidateAsync(
-            Source("@inherits IxIFlow.Templates.Razor.RazorTemplate<object>\n@Model"), typeof(Order));
-        var same = await engine.ValidateAsync(Source(
-            "@using IxIFlow.Templates.Razor\n@using IxIFlow.Tests.TemplateTests\n" +
-            "@inherits RazorTemplate<TemplateFixtures.Order>\n@Model.Number"), typeof(Order));
-
-        Assert.Contains(other, diagnostic => diagnostic.Message.Contains("@inherits is not available"));
-        Assert.Empty(same);
-    }
-
-    [Fact]
-    public async Task RazorUnloadsTheLeastRecentlyRenderedTemplateBeyondItsLimit()
-    {
-        var engine = new RazorTemplateEngine(new RazorEngineOptions { MaxLoadedTemplates = 1 });
-        var first = Source($"@Model.Number {Guid.NewGuid():N}");
-        Assert.Equal("A-17", (await engine.RenderAsync(first, SampleOrder(), CultureInfo.InvariantCulture))[..4]);
-        var context = WeakContextOf(first);
-        var second = Source($"@Model.Number {Guid.NewGuid():N}");
-
-        await engine.RenderAsync(second, SampleOrder(), CultureInfo.InvariantCulture);
-        // The template rendered last stays loaded and is reused, not compiled again.
-        var kept = WeakContextOf(second);
-        await engine.RenderAsync(second, SampleOrder(), CultureInfo.InvariantCulture);
-        Assert.Same(kept.Target, WeakContextOf(second).Target);
-
-        for (var attempt = 0; attempt < 20 && context.IsAlive; attempt++)
-        {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-        }
-        Assert.False(context.IsAlive);
-        // Rendered again, it is compiled again.
-        Assert.Equal("A-17", (await engine.RenderAsync(first, SampleOrder(), CultureInfo.InvariantCulture))[..4]);
-    }
-
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    private static WeakReference WeakContextOf(TemplateSource template) =>
-        new(AssemblyLoadContext.All.Single(context => context.Name == "Template_" + template.Digest[..16]));
-
-    [Fact]
-    public async Task RazorCreatesTheTemplateInTheCultureAskedFor()
-    {
-        var text = await new RazorTemplateEngine().RenderAsync(
-            Source("@functions { readonly string total = (2.5m).ToString(); }@total"), SampleOrder(), German);
-
-        Assert.Equal("2,5", text.Trim());
-    }
-
-    [Fact]
-    public async Task RazorTemplateFailuresAreRenderFailures()
-    {
-        var engine = new RazorTemplateEngine();
-        var order = SampleOrder();
-        order.Customer = null!;
-
-        // The template's own code failing, in its body or in an initializer, fails the render like Liquid's do.
-        var body = await Assert.ThrowsAsync<TemplateRenderException>(() =>
-            engine.RenderAsync(Source("@Model.Customer.Name"), order, CultureInfo.InvariantCulture).AsTask());
-        var initializer = await Assert.ThrowsAsync<TemplateRenderException>(() => engine.RenderAsync(
-            Source("@functions { readonly int x = int.Parse(\"x\"); }@x"), order, CultureInfo.InvariantCulture)
-            .AsTask());
-
-        Assert.IsType<NullReferenceException>(body.InnerException);
-        Assert.IsType<FormatException>(initializer.InnerException);
-    }
-
-    [Fact]
-    public async Task RazorValidationLoadsNothing()
-    {
-        var engine = new RazorTemplateEngine();
-        var template = Source($"@Model.Number {Guid.NewGuid():N}");
-        var loaded = () =>
-            AssemblyLoadContext.All.Any(context => context.Name == "Template_" + template.Digest[..16]);
-
-        Assert.Empty(await engine.ValidateAsync(template, typeof(Order)));
-        Assert.False(loaded());
-        await engine.RenderAsync(template, SampleOrder(), CultureInfo.InvariantCulture);
-        Assert.True(loaded());
     }
 
     [Fact]
@@ -439,15 +271,12 @@ public sealed class TemplateEngineTests
         var engines = services.GetRequiredService<TemplateEngines>();
 
         Assert.IsType<LiquidTemplateEngine>(engines.Get("liquid"));
-        Assert.IsType<RazorTemplateEngine>(engines.Get("Razor"));
+        Assert.IsType<LiquidTemplateEngine>(engines.Get("Liquid"));
         Assert.Throws<TemplateNotFoundException>(() => engines.Get("handlebars"));
     }
 
     private static TemplateSource Source(string content, TemplateFormat format = TemplateFormat.Text) =>
         new("test", 1, TemplateVersion.BaseCulture, format, content);
-
-    private static string Normalize(string text) =>
-        string.Join("", text.Split('\n').Select(line => line.Trim()));
 
     public sealed class Schedule
     {
