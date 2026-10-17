@@ -15,11 +15,12 @@ namespace IxIFlow.Extensions;
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds IxIFlow workflow services to the service collection
+    /// Adds IxIFlow workflow services to the service collection. The builder it returns chooses the store, such as
+    /// <c>.UseSqlServer(connectionString)</c> from IxIFlow.SqlServer; without one, instances live in memory (D-21).
     /// </summary>
     /// <param name="services">The service collection to add services to</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddIxIFlow(this IServiceCollection services)
+    /// <returns>The builder, whose <see cref="IIxIFlowBuilder.Services"/> continues the service collection</returns>
+    public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services)
     {
         // Core workflow services
         services.TryAddSingleton(HostSettings.Default);
@@ -48,7 +49,7 @@ public static class ServiceCollectionExtensions
         
         // Expression evaluation
         services.AddScoped<IExpressionEvaluator, ExpressionEvaluator>();
-        return services;
+        return new IxIFlowBuilder(services);
     }
 
     /// <summary>
@@ -56,8 +57,8 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The service collection to add services to</param>
     /// <param name="configure">Configuration action for workflow options</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddIxIFlow(this IServiceCollection services, Action<IxIFlowOptions> configure)
+    /// <returns>The builder that chooses the store; its <see cref="IIxIFlowBuilder.Services"/> continues the collection</returns>
+    public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services, Action<IxIFlowOptions> configure)
     {
         var options = new IxIFlowOptions();
         configure(options);
@@ -105,7 +106,7 @@ public static class ServiceCollectionExtensions
             services.Replace(ServiceDescriptor.Singleton(typeof(IWorkflowStateRepository), options.UseCustomStateRepository));
         }
 
-        return services;
+        return new IxIFlowBuilder(services);
     }
 
     /// <summary>

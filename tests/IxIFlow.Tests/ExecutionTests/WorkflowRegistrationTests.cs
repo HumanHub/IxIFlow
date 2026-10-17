@@ -15,7 +15,7 @@ public sealed class WorkflowRegistrationTests
     [InlineData(true)]
     public void CustomNameIsPreservedWhenLookingUpRegisteredWorkflow(bool explicitDataType)
     {
-        var services = new ServiceCollection().AddLogging().AddIxIFlow();
+        var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         if (explicitDataType)
             services.RegisterWorkflow<NamedWorkflow, RegistrationData>("Customer approval");
         else
@@ -65,7 +65,7 @@ public sealed class WorkflowRegistrationTests
     [Fact]
     public async Task DeactivatingAWorkflowVersionKeepsExistingWaitsResumable()
     {
-        var services = new ServiceCollection().AddLogging().AddIxIFlow();
+        var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         services.RegisterWorkflow<NamedWorkflow>("Customer approval");
         using var provider = services.BuildServiceProvider();
         var definition = provider.GetWorkflowDefinition<NamedWorkflow>();
@@ -179,7 +179,7 @@ public sealed class WorkflowRegistrationTests
     [Fact]
     public async Task UnregisteredClassInvocationUsesTheWorkflowClassVersion()
     {
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow()
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services
             .BuildServiceProvider();
         var parent = IxIFlow.Builders.Workflow.Create<ParentData>("Unregistered class parent")
             .Step<RegistrationActivity>()
