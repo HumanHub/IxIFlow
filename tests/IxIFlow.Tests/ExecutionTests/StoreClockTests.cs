@@ -47,6 +47,7 @@ public sealed class StoreClockTests
         // Eleven on the store's clock: a host five minutes behind reads six, and the wait has timed out.
         clocks.Advance(TimeSpan.FromMinutes(2));
         await RecoverOnceAsync(services, clocks);
+        await FinishedAsync(services, started.InstanceId);
         var saved = await InstanceAsync(services, started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved.Status);
         Assert.Contains("\"Outcome\":\"timeout\"", saved.WorkflowDataJson);
@@ -68,6 +69,7 @@ public sealed class StoreClockTests
         Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(ApprovalEvent(started.InstanceId, "a1"))).Status);
         clocks.Advance(TimeSpan.FromMinutes(2));
         await RecoverOnceAsync(services, clocks);
+        await FinishedAsync(services, started.InstanceId);
 
         var saved = await InstanceAsync(services, started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved.Status);
@@ -97,6 +99,7 @@ public sealed class StoreClockTests
 
         clocks.Advance(TimeSpan.FromMinutes(4));
         await RecoverOnceAsync(services, clocks);
+        await FinishedAsync(services, started.InstanceId);
         var saved = await InstanceAsync(services, started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved.Status);
         Assert.Contains("after-delay", saved.WorkflowDataJson);
@@ -121,6 +124,7 @@ public sealed class StoreClockTests
         // An hour and a minute on the store's clock; the host's reads fifty-six minutes.
         clocks.Advance(TimeSpan.FromMinutes(2));
         await RecoverOnceAsync(services, clocks);
+        await FinishedAsync(services, started.InstanceId);
         Assert.Equal(WorkflowStatus.TimedOut, (await InstanceAsync(services, started.InstanceId)).Status);
     }
 
@@ -756,6 +760,11 @@ public sealed class StoreClockTests
 
     private static async Task<WorkflowInstance> InstanceAsync(IServiceProvider services, string instanceId) =>
         (await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(instanceId))!;
+
+    // The host's own timer may start a due run before the scan looks, and the scan leaves an instance that has an
+    // owner alone; so a test reads the store once the run has finished, whichever started it.
+    private static Task FinishedAsync(IServiceProvider services, string instanceId) =>
+        Engine(services).AwaitAsync(instanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
 
     private static Task RecoverOnceAsync(IServiceProvider services, Clocks clocks) =>
         RecoverOnceAsync(services, clocks.Host);
