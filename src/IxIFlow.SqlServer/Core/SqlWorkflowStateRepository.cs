@@ -835,6 +835,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             }, ("Now", now)), transaction);
             madeRunnable.Add(child.InstanceId);
         }
+        // Each event this commit appends to its own inbox takes the next sequence.
+        var inbox = new InboxRow { Status = snapshot.Status.ToString(), InboxSequence = current?.InboxSequence ?? 0 };
         foreach (var cancellation in commit.ChildCancellations)
         {
             var outcome = await connection.ExecuteScalarAsync<byte>("""
@@ -862,9 +864,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             {
                 var gone = ToEvent(WorkflowStoreRules.ChildGone(cancellation.ChildInstanceId, commit.InstanceId,
                     cancellation.ParentWaitId));
-                await AppendAsync(connection, transaction, gone, gone.ContentHash(),
-                    new InboxRow { Status = snapshot.Status.ToString(), InboxSequence = current?.InboxSequence ?? 0 },
-                    now);
+                var appended = await AppendAsync(connection, transaction, gone, gone.ContentHash(), inbox, now);
+                if (appended.Status == EventAppendStatus.Stored)
+                    inbox.InboxSequence = appended.Sequence;
             }
         }
         // The child's completion goes to its parent's inbox; whatever the parent's state, the child's

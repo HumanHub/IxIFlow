@@ -709,6 +709,13 @@ public sealed class InboxStoreTests
     public Task MemoryStoreGivesEachGoneChildItsOwnInboxPlace() =>
         VerifyGoneChildrenTakeTheirOwnPlaces(new InMemoryWorkflowStateRepository());
 
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "D-06")]
+    public Task SqlStoreGivesEachGoneChildItsOwnInboxPlace() =>
+        VerifyGoneChildrenTakeTheirOwnPlaces(
+            new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
+
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "D-06")]
