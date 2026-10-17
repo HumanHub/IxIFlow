@@ -1,21 +1,22 @@
 using System.Diagnostics.CodeAnalysis;
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace IxIFlow.Core.Runtime;
+namespace IxIFlow.Core;
 
 /// <summary>
-/// The in-process host (B-01 to B-03): work from the application and from recovery runs in at
-/// most <see cref="HostSettings.Slots"/> slots, each in its own scope. Work for one instance waits
+/// The host every workflow execution runs in (B-01 to B-03, D-02, D-16). <c>AddIxIFlow</c> registers it as a hosted
+/// service, and <see cref="IWorkflowClient"/> calls become its work. Work from the application and from recovery runs
+/// in at most <c>IxIFlowOptions.Slots</c> slots, each in its own scope. Work for one instance waits
 /// in that instance's queue without holding a slot. A call made from inside a slot, for example by
 /// an activity, runs inline in that slot instead of waiting for another. On stop the host drains:
 /// it accepts nothing new, cancels queued work, lets running instances reach their next commit,
 /// and cancels them after the drain timeout.
-/// Named LocalWorkflowHost until it takes the WorkflowHost name, free since C-19, and absorbs InstanceHost (D-16).
 /// </summary>
-internal sealed class LocalWorkflowHost : IHostedService, IDisposable
+public sealed partial class WorkflowHost : IHostedService, IDisposable
 {
     private static readonly AsyncLocal<RunContext?> CurrentRun = new();
 
@@ -51,14 +52,14 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     private ITimer? _timer;
     private DateTime? _armedFor;
 
-    public LocalWorkflowHost(IServiceScopeFactory scopes, HostSettings settings, TimeProvider? time = null,
-        ILogger<LocalWorkflowHost>? logger = null)
+    internal WorkflowHost(IServiceScopeFactory scopes, HostSettings settings, TimeProvider? time = null,
+        ILogger<WorkflowHost>? logger = null)
     {
         _scopes = scopes;
         _settings = settings;
         _slots = new SemaphoreSlim(settings.Slots, settings.Slots);
         _time = time ?? TimeProvider.System;
-        _logger = logger ?? NullLogger<LocalWorkflowHost>.Instance;
+        _logger = logger ?? NullLogger<WorkflowHost>.Instance;
         // The timer must not carry the context of whoever first scheduled something: its callbacks
         // would then look like calls from inside that run.
         using (ExecutionContext.SuppressFlow())
@@ -66,13 +67,13 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     }
 
     /// <summary>Slots not running anything now; the poll claims at most this many instances.</summary>
-    public int FreeSlots => _slots.CurrentCount;
+    internal int FreeSlots => _slots.CurrentCount;
 
     /// <summary>
     /// Resumes an instance at <paramref name="dueUtc"/>, the runnable time a run just saved for it.
     /// The latest saved time replaces the one before, which a later step may have made obsolete.
     /// </summary>
-    public void Schedule(string instanceId, DateTime dueUtc)
+    internal void Schedule(string instanceId, DateTime dueUtc)
     {
         lock (_lock)
         {
@@ -86,7 +87,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     /// Resumes an instance now, for example after a cancellation request, without touching the
     /// time saved for it.
     /// </summary>
-    public void WakeNow(string instanceId)
+    internal void WakeNow(string instanceId)
     {
         lock (_lock)
         {
@@ -112,7 +113,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     }
 
     /// <summary>Forgets an instance that has finished; nothing will be due for it.</summary>
-    public void Unschedule(string instanceId)
+    internal void Unschedule(string instanceId)
     {
         lock (_lock)
         {
@@ -206,13 +207,13 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     }
 
     /// <summary>True inside a slot, where client calls run inline.</summary>
-    public bool IsInsideRun => CurrentRun.Value?.IsOpen == true;
+    internal bool IsInsideRun => CurrentRun.Value?.IsOpen == true;
 
     /// <summary>
     /// Runs an operation inline when called from inside a run that is still open, and returns false
     /// otherwise. The run's scope stays alive until the operation ends, even if the run ends first.
     /// </summary>
-    public bool TryRunInline<T>(Func<DirectInstanceClient, RunControl, CancellationToken, Task<T>> operation,
+    internal bool TryRunInline<T>(Func<SlotClient, RunControl, CancellationToken, Task<T>> operation,
         CancellationToken cancellationToken, [NotNullWhen(true)] out Task<T>? run)
     {
         if (CurrentRun.Value is { } current && current.TryEnter())
@@ -226,7 +227,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
 
     // An inline call stops with its caller or with the host, whichever comes first.
     private async Task<T> RunInlineAsync<T>(RunContext current,
-        Func<DirectInstanceClient, RunControl, CancellationToken, Task<T>> operation,
+        Func<SlotClient, RunControl, CancellationToken, Task<T>> operation,
         CancellationToken cancellationToken)
     {
         try
@@ -244,7 +245,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     /// Watches for the next work item on <paramref name="instanceId"/> to finish on this host.
     /// Dispose the watch when done waiting.
     /// </summary>
-    public IDisposable WatchSettled(string instanceId, out Task settled)
+    internal IDisposable WatchSettled(string instanceId, out Task settled)
     {
         lock (_lock)
         {
@@ -270,8 +271,8 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     /// time, in order. The caller's token cancels the wait and the run itself. Called from inside a
     /// slot, the operation runs inline in that slot and scope.
     /// </summary>
-    public Task<T> RunAsync<T>(string? instanceId,
-        Func<DirectInstanceClient, RunControl, CancellationToken, Task<T>> operation,
+    internal Task<T> RunAsync<T>(string? instanceId,
+        Func<SlotClient, RunControl, CancellationToken, Task<T>> operation,
         CancellationToken cancellationToken)
     {
         // A run's context stays with activities that outlive it; once it is closed their calls queue.
@@ -301,12 +302,12 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     }
 
     /// <summary>Runs an operation that needs no slot, such as a read, in its own scope.</summary>
-    public async Task<T> ReadAsync<T>(Func<DirectInstanceClient, Task<T>> operation)
+    internal async Task<T> ReadAsync<T>(Func<SlotClient, Task<T>> operation)
     {
         if (TryRunInline((client, _, _) => operation(client), CancellationToken.None, out var inline))
             return await inline;
         await using var scope = _scopes.CreateAsyncScope();
-        return await operation(scope.ServiceProvider.GetRequiredService<DirectInstanceClient>());
+        return await operation(scope.ServiceProvider.GetRequiredService<SlotClient>());
     }
 
     // Runs the item on the thread pool, so no caller thread or lock holder executes instance code.
@@ -334,7 +335,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
                 control.OnScheduled(Schedule);
                 control.OnUnscheduled(Unschedule);
                 control.OnRunnable(WakeNow);
-                var client = scope.ServiceProvider.GetRequiredService<DirectInstanceClient>();
+                var client = scope.ServiceProvider.GetRequiredService<SlotClient>();
                 context = new RunContext(client, control);
                 CurrentRun.Value = context;
                 await item.RunAsync(client, control, stop.Token);
@@ -494,14 +495,14 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     /// The run a call is inside of. Calls enter it while it is open and keep its scope alive; once it
     /// is closed, new calls queue like any other.
     /// </summary>
-    private sealed class RunContext(DirectInstanceClient client, RunControl control)
+    private sealed class RunContext(SlotClient client, RunControl control)
     {
         private readonly object _lock = new();
         private int _inFlight;
         private bool _closed;
         private Func<ValueTask>? _release;
 
-        public DirectInstanceClient Client { get; } = client;
+        public SlotClient Client { get; } = client;
         public RunControl Control { get; } = control;
 
         public bool IsOpen
@@ -557,7 +558,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
         public int Watchers { get; set; }
     }
 
-    private sealed class SettledWatch(LocalWorkflowHost host, string instanceId, SettledSignal signal) : IDisposable
+    private sealed class SettledWatch(WorkflowHost host, string instanceId, SettledSignal signal) : IDisposable
     {
         private int _disposed;
 
@@ -585,7 +586,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
         /// <summary>Completes when the host has finished with the item, run or not.</summary>
         public TaskCompletionSource Done { get; } = NewSignal();
         public abstract bool IsSettled { get; }
-        public abstract Task RunAsync(DirectInstanceClient client, RunControl control, CancellationToken token);
+        public abstract Task RunAsync(SlotClient client, RunControl control, CancellationToken token);
         public abstract void Fail(Exception error);
         public abstract void Cancel();
         public abstract void Complete();
@@ -607,7 +608,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
     }
 
     private sealed class WorkItem<T>(string? instanceId,
-        Func<DirectInstanceClient, RunControl, CancellationToken, Task<T>> operation,
+        Func<SlotClient, RunControl, CancellationToken, Task<T>> operation,
         CancellationToken callerToken) : WorkItem(instanceId, callerToken)
     {
         private T? _result;
@@ -619,7 +620,7 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
 
         public override bool IsSettled => Completion.Task.IsCompleted;
 
-        public override async Task RunAsync(DirectInstanceClient client, RunControl control,
+        public override async Task RunAsync(SlotClient client, RunControl control,
             CancellationToken token)
         {
             _result = await operation(client, control, token);
@@ -648,64 +649,4 @@ internal sealed class LocalWorkflowHost : IHostedService, IDisposable
                 Completion.TrySetCanceled();
         }
     }
-}
-
-/// <summary>Signals between the local host and the runs in one work item's scope.</summary>
-internal sealed class RunControl
-{
-    private Action<string>? _accepted;
-    private Action<string>? _instanceKnown;
-    private Action<string, DateTime>? _scheduled;
-
-    /// <summary>Called whenever a run in this scope saves an instance that is runnable at a later time.</summary>
-    public void OnScheduled(Action<string, DateTime> scheduled) => _scheduled = scheduled;
-
-    public void Schedule(string instanceId, DateTime dueUtc) => _scheduled?.Invoke(instanceId, dueUtc);
-
-    private Action<string>? _unscheduled;
-
-    /// <summary>Called when a run in this scope finishes an instance, so nothing is due for it.</summary>
-    public void OnUnscheduled(Action<string> unscheduled) => _unscheduled = unscheduled;
-
-    public void Unschedule(string instanceId) => _unscheduled?.Invoke(instanceId);
-
-    private Action<string>? _runnable;
-
-    /// <summary>
-    /// Called for each other instance a commit in this scope made runnable now, such as a child it started
-    /// or a parent its completion woke (D-17), so the host runs it without waiting for its poll.
-    /// </summary>
-    public void OnRunnable(Action<string> runnable) => _runnable = runnable;
-
-    public void Runnable(string instanceId) => _runnable?.Invoke(instanceId);
-
-    /// <summary>Cancelled when the host drains; runs stop starting new steps.</summary>
-    public CancellationToken Drain { get; set; }
-
-    /// <summary>Called once, with the instance ID, when a start's initial checkpoint is committed.</summary>
-    public void OnAccepted(Action<string> accepted) => _accepted = accepted;
-
-    public void OnInstanceKnown(Action<string> instanceKnown) => _instanceKnown = instanceKnown;
-
-    // The first start in a scope is the work item's own; children start later in the same scope.
-    public void Accept(string instanceId)
-    {
-        Interlocked.Exchange(ref _instanceKnown, null)?.Invoke(instanceId);
-        Interlocked.Exchange(ref _accepted, null)?.Invoke(instanceId);
-    }
-}
-
-/// <summary>How many instances the host runs at once and how long it drains on stop.</summary>
-internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan PollInterval, string Name)
-{
-    /// <summary>How a host names itself when the application does not: its process ID and machine name.</summary>
-    public static string DefaultName { get; } = $"{Environment.ProcessId}@{Environment.MachineName}";
-
-    public const int DefaultSlots = 64;
-
-    public static TimeSpan DefaultDrainTimeout { get; } = TimeSpan.FromSeconds(20);
-
-    public static TimeSpan DefaultPollInterval { get; } = TimeSpan.FromSeconds(1);
-
-    public static HostSettings Default { get; } = new(DefaultSlots, DefaultDrainTimeout, DefaultPollInterval, DefaultName);
 }
