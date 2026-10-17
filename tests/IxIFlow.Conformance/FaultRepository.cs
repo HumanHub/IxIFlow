@@ -32,7 +32,8 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
 
     public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
-        var instance = commit.ReadInstance();
+        // The whole instance the commit saves: the commit applied to the instance it was based on.
+        var instance = commit.ReadInstance(commit.ReplacesParts ? null : await inner.GetWorkflowInstanceAsync(commit.InstanceId));
         if (FailCommit(instance))
             throw new IOException($"Injected commit failure for '{instance.InstanceId}'");
         var result = await inner.CommitWorkflowInstanceAsync(commit);
@@ -65,5 +66,8 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.GetWorkflowInstancesByStatusAsync(status);
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
         inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+    public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+        int limit = 1000) =>
+        inner.GetTraceAsync(instanceId, afterSequence, limit);
     public Task DeleteWorkflowInstanceAsync(string instanceId) => inner.DeleteWorkflowInstanceAsync(instanceId);
 }

@@ -37,7 +37,9 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
     public Func<string, bool> FailRead { get; set; } = _ => false;
 
     /// <summary>Commits that match fail with an IOException while this returns true.</summary>
-    public Func<WorkflowInstance, bool> FailCommit { get; set; } = _ => false;
+    public Func<WorkflowInstance, bool> FailCommit { get; set; } = NeverFail;
+
+    private static readonly Func<WorkflowInstance, bool> NeverFail = _ => false;
 
     public int FailedReads => Volatile.Read(ref _failedReads);
     public int FailedCommits => Volatile.Read(ref _failedCommits);
@@ -50,11 +52,14 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
         throw new IOException($"Injected read failure for '{instanceId}'");
     }
 
-    public virtual Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+    public virtual async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
-        var instance = commit.ReadInstance();
+        if (ReferenceEquals(FailCommit, NeverFail))
+            return await _inner.CommitWorkflowInstanceAsync(commit);
+        // The whole instance the commit saves: the commit applied to the instance it was based on.
+        var instance = commit.ReadInstance(commit.ReplacesParts ? null : await _inner.GetWorkflowInstanceAsync(commit.InstanceId));
         if (!FailCommit(instance))
-            return _inner.CommitWorkflowInstanceAsync(commit);
+            return await _inner.CommitWorkflowInstanceAsync(commit);
         Interlocked.Increment(ref _failedCommits);
         throw new IOException($"Injected commit failure for '{instance.InstanceId}'");
     }
@@ -81,6 +86,9 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
         _inner.GetWorkflowInstancesByStatusAsync(status);
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
         _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+    public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+        int limit = 1000) =>
+        _inner.GetTraceAsync(instanceId, afterSequence, limit);
     public Task DeleteWorkflowInstanceAsync(string instanceId) => _inner.DeleteWorkflowInstanceAsync(instanceId);
 
     public Task<WorkflowInstance?> GetUnpublishedCompletionAsync(string instanceId) =>

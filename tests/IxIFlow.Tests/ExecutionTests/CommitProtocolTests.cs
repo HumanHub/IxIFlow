@@ -178,7 +178,7 @@ public sealed class CommitProtocolTests
         public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
             Commits.Enqueue(commit);
-            var completes = commit.ReadInstance().Status == WorkflowStatus.Completed;
+            var completes = commit.ReadTrunk().Status == WorkflowStatus.Completed;
             if (completes && RetriesBeforeApply > 0)
             {
                 RetriesBeforeApply--;

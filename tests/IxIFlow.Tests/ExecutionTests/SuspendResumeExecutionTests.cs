@@ -456,11 +456,11 @@ public class SuspendResumeExecutionTests
 
         Assert.False(startResult.IsSuccess);
 
-        var instance = await _stateRepository.GetWorkflowInstanceAsync(startResult.InstanceId);
-        Assert.NotNull(instance);
-        Assert.NotNull(instance!.ExecutionSnapshot);
-        Assert.Single(instance.ExecutionSnapshot.Pointers);
-        Assert.Contains(instance.ExecutionSnapshot.Frames, frame => frame.Kind == WorkflowStepType.TryCatch.ToString());
+        Assert.NotNull(await _stateRepository.GetWorkflowInstanceAsync(startResult.InstanceId));
+        var snapshot = await _workflowEngine.GetSnapshotAsync(startResult.InstanceId);
+        Assert.NotNull(snapshot);
+        Assert.Single(snapshot.Pointers);
+        Assert.Contains(snapshot.Frames, frame => frame.Kind == WorkflowStepType.TryCatch.ToString());
     }
 
     [Fact]

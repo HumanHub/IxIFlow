@@ -73,6 +73,11 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
         Guard(() => _store.ReleaseExecutionLeaseAsync(instanceId, token),
             $"Releasing the execution lease of workflow instance '{instanceId}'");
 
+    public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+        int limit = 1000) =>
+        Guard(() => _store.GetTraceAsync(instanceId, afterSequence, limit),
+            $"Reading the trace of workflow instance '{instanceId}'");
+
     public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
         Guard(() => _store.GetChildInstancesAsync(parentInstanceId),
             $"Reading the children of workflow instance '{parentInstanceId}'");
@@ -83,6 +88,10 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
 
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
         Guard(() => _store.GetWorkflowInstanceAsync(instanceId),
+            $"Reading workflow instance '{instanceId}'");
+
+    public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
+        Guard(() => _store.GetWorkflowInstanceSummaryAsync(instanceId),
             $"Reading workflow instance '{instanceId}'");
 
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>

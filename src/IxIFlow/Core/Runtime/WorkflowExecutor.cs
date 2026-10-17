@@ -99,6 +99,7 @@ internal sealed class WorkflowExecutor
                     item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id));
                 if (unwinding != null)
                 {
+                    checkpoint.Touch(unwinding);
                     var unwindBoundary = EffectBoundary.Of(checkpoint);
                     if (unwinding.PendingActivity != null)
                     {
@@ -173,6 +174,7 @@ internal sealed class WorkflowExecutor
                         waitingForActivity.Remove(runnable.Id);
                     if (runnable == null)
                         break;
+                    checkpoint.Touch(runnable);
                     runnable.RetryAfterUtc = null;
 
                     var position = runnable.Stack[^1];
@@ -242,7 +244,7 @@ internal sealed class WorkflowExecutor
                 if (checkpoint.Continuations.Any(item =>
                         item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id)) ||
                     checkpoint.Joins.Any(item => item.IsCompleting &&
-                        checkpoint.Continuations.Where(child => item.ChildContinuationIds.Contains(child.Id))
+                        checkpoint.BranchesOf(item)
                             .All(child => child.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)))
                     continue;
                 if (_transitions.MayBeDue(checkpoint))
@@ -368,7 +370,7 @@ internal sealed class WorkflowExecutor
                     InstanceId = instance.InstanceId,
                     Status = WorkflowExecutionStatus.Running,
                     WorkflowData = checkpoint.RootData,
-                    TraceEntries = instance.ExecutionHistory.ToList(),
+                    TraceEntries = instance.Trace.Run.ToList(),
                     ErrorMessage = "The host stopped before the instance became idle; it continues when recovered",
                     ExecutionTime = Now - instance.StartedAt!.Value
                 };
@@ -415,7 +417,7 @@ internal sealed class WorkflowExecutor
                     _ => WorkflowExecutionStatus.Suspended
                 },
                 WorkflowData = checkpoint.RootData,
-                TraceEntries = instance.ExecutionHistory.ToList(),
+                TraceEntries = instance.Trace.Run.ToList(),
                 ErrorMessage = instance.Status switch
                 {
                     WorkflowStatus.NeedsResolution => checkpoint.Continuations
@@ -461,7 +463,15 @@ internal sealed class WorkflowExecutor
         {
             // Activity outcomes after the last checkpoint are not kept; recovery re-derives them.
             await AbandonInFlightAsync(inFlight);
-            return await StopAtLimitAsync(definition, instance, checkpoint.RootData, host, limit);
+            return await StopForOperatorAsync(definition, instance, checkpoint.RootData, host,
+                OperatorStopKind.ResourceLimit, limit.Message);
+        }
+        catch (CheckpointVerificationException unverified)
+        {
+            // An engine fault, not the workflow's: the last checkpoint is kept, as at a limit.
+            await AbandonInFlightAsync(inFlight);
+            return await StopForOperatorAsync(definition, instance, checkpoint.RootData, host,
+                OperatorStopKind.Verification, unverified.Message);
         }
         catch (WorkflowEngineException ex) when (WorkflowEngineException.IsEngineFailure(ex) && ex.IsInterruption)
         {
@@ -485,6 +495,8 @@ internal sealed class WorkflowExecutor
             instance.Status = cancelled ? WorkflowStatus.Cancelled : WorkflowStatus.Failed;
             // A reply wait whose scope already ended, such as a saga abandoned in this pass, closed as cancelled.
             checkpoint.CloseEndedRequests();
+            // A run that fails ends every branch.
+            checkpoint.TouchAll();
             ContinuationTransitions.AbandonChildren(checkpoint);
             checkpoint.RemoveWaits(_ => true, WaitCloseReason.InstanceFinished);
             checkpoint.Joins.Clear();
@@ -494,12 +506,6 @@ internal sealed class WorkflowExecutor
             instance.LastError = ex.Message;
             instance.LastErrorStackTrace = ex.StackTrace;
             instance.CompletedAt = Now;
-            if (instance.ExecutionSnapshot != null)
-            {
-                instance.ExecutionSnapshot.Status = instance.Status;
-                instance.ExecutionSnapshot.Pointers.Clear();
-                instance.ExecutionSnapshot.Frames.Clear();
-            }
             if (host.PersistsState)
             {
                 var scopes = new WorkflowScopeCatalog(definition);
@@ -512,7 +518,7 @@ internal sealed class WorkflowExecutor
                 {
                     // A terminal failure cannot resume. Retain the last committed data and the
                     // execution history even if live state cannot be serialized or is over the limit.
-                    checkpoint.Continuations.Clear();
+                    checkpoint.RemoveContinuations(_ => true);
                     checkpoint.UnhandledError = null;
                     // The failure record is the last committed data without continuations; it is
                     // not held to the limit, so a failure is never lost.
@@ -525,7 +531,7 @@ internal sealed class WorkflowExecutor
                 InstanceId = instance.InstanceId,
                 Status = cancelled ? WorkflowExecutionStatus.Cancelled : WorkflowExecutionStatus.Faulted,
                 WorkflowData = checkpoint.RootData,
-                TraceEntries = instance.ExecutionHistory.ToList(),
+                TraceEntries = instance.Trace.Run.ToList(),
                 ErrorMessage = ex.Message,
                 ErrorType = SerializedException.CatchType(ex).FullName,
                 ErrorStackTrace = ex.StackTrace
@@ -590,6 +596,7 @@ internal sealed class WorkflowExecutor
                 {
                     checkpoint.UnhandledError = SerializedException.From(error);
                     checkpoint.RuntimeUnhandledError = error;
+                    checkpoint.Touch(activity.Continuation);
                     activity.Continuation.Status = ContinuationStatus.Completed;
                 }
             }
@@ -683,18 +690,18 @@ internal sealed class WorkflowExecutor
         }
     }
 
-    // A checkpoint over the limit is never saved. The instance keeps its last checkpoint and
-    // stops at NeedsResolution until an operator raises the limit and releases it, or cancels it (D-28).
-    private async Task<WorkflowExecutionResult> StopAtLimitAsync(WorkflowDefinition definition,
-        WorkflowInstance instance, object workflowData, IExecutionHost host, CheckpointLimitExceededException limit)
+    // A checkpoint over the limit, or one that fails verification, is never saved. The instance keeps its last
+    // checkpoint and stops at NeedsResolution until an operator releases it, or cancels it (D-28, A-08).
+    private async Task<WorkflowExecutionResult> StopForOperatorAsync(WorkflowDefinition definition,
+        WorkflowInstance instance, object workflowData, IExecutionHost host, OperatorStopKind kind, string reason)
     {
-        var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+        var checkpoint = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
         checkpoint.OperatorStop = new OperatorStopState
         {
-            Kind = OperatorStopKind.ResourceLimit, Reason = limit.Message, StoppedAtUtc = Now
+            Kind = kind, Reason = reason, StoppedAtUtc = Now
         };
         instance.Status = WorkflowStatus.NeedsResolution;
-        instance.LastError = limit.Message;
+        instance.LastError = reason;
         instance.CompletedAt = null;
         // The stop saves the last committed checkpoint plus a small marker, so it is not held to the
         // limit; otherwise a checkpoint just under the limit could never stop.
@@ -705,8 +712,8 @@ internal sealed class WorkflowExecutor
             InstanceId = instance.InstanceId,
             Status = WorkflowExecutionStatus.NeedsResolution,
             WorkflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, workflowData.GetType()),
-            TraceEntries = instance.ExecutionHistory.ToList(),
-            ErrorMessage = limit.Message,
+            TraceEntries = instance.Trace.Run.ToList(),
+            ErrorMessage = reason,
             ExecutionTime = Now - instance.StartedAt!.Value
         };
     }
@@ -716,7 +723,7 @@ internal sealed class WorkflowExecutor
         InstanceId = instance.InstanceId,
         Status = WorkflowExecutionStatus.Scheduled,
         WorkflowData = workflowData,
-        TraceEntries = instance.ExecutionHistory.ToList(),
+        TraceEntries = instance.Trace.Run.ToList(),
         ErrorMessage = $"The workflow instance waits for a retry at {until:O}; it continues then",
         ExecutionTime = Now - instance.StartedAt!.Value
     };
@@ -744,7 +751,7 @@ internal sealed class WorkflowExecutor
             InstanceId = instance.InstanceId,
             Status = WorkflowExecutionStatus.NeedsResolution,
             WorkflowData = workflowData,
-            TraceEntries = instance.ExecutionHistory.ToList(),
+            TraceEntries = instance.Trace.Run.ToList(),
             ErrorMessage = reason,
             ExecutionTime = Now - instance.StartedAt!.Value
         };

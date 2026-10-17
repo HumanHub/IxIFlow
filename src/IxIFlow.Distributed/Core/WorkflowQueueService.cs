@@ -291,7 +291,7 @@ public class WorkflowQueueService : BackgroundService
             if (options.InstanceId != null && options.InstanceId != command.InstanceId)
                 throw new InvalidOperationException("The command and workflow options have different instance IDs");
             options.InstanceId = command.InstanceId;
-            if (await repository.GetWorkflowInstanceAsync(command.InstanceId) == null)
+            if (await repository.GetWorkflowInstanceSummaryAsync(command.InstanceId) == null)
             {
                 await _messageBus.PublishAsync(new WorkflowExecutionStartedEvent
                 {
@@ -305,7 +305,7 @@ public class WorkflowQueueService : BackgroundService
                 definition, workflowData, options, cancellationToken);
             if (result.Status == WorkflowExecutionStatus.Running)
             {
-                var saved = await repository.GetWorkflowInstanceAsync(command.InstanceId);
+                var saved = await repository.GetWorkflowInstanceSummaryAsync(command.InstanceId);
                 if (saved?.Status != WorkflowStatus.Running)
                     result = await workflowEngine.RunAsync(
                         definition, workflowData, options, cancellationToken);
@@ -357,7 +357,7 @@ public class WorkflowQueueService : BackgroundService
             // The command ID is the event ID, so a redelivered command is the same event (D-33). A
             // resume that arrives before its execute command waits for it.
             if (!IsExpired(command.QueuedAt) &&
-                await repository.GetWorkflowInstanceAsync(command.InstanceId) == null)
+                await repository.GetWorkflowInstanceSummaryAsync(command.InstanceId) == null)
                 throw new WorkflowInstanceBusyException(
                     $"Resume for '{command.InstanceId}' arrived before its execute command",
                     TimeSpan.FromSeconds(10));

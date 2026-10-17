@@ -1472,7 +1472,7 @@ public sealed class ExecutionLeaseContractTests
                 inner.ReleaseExecutionLeaseAsync(id, token);
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            var instance = commit.ReadTrunk();
             if (instance.Status == WorkflowStatus.Completed &&
                 Interlocked.Exchange(ref CancelBeforeTerminalCommit, 0) > 0)
                 await inner.RequestCancellationAsync(instance.InstanceId,
@@ -1491,6 +1491,9 @@ public sealed class ExecutionLeaseContractTests
             inner.GetWorkflowInstancesByStatusAsync(status);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string id) =>
             inner.GetWorkflowInstancesByCorrelationIdAsync(id);
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+            int limit = 1000) =>
+            inner.GetTraceAsync(instanceId, afterSequence, limit);
         public Task DeleteWorkflowInstanceAsync(string id) => inner.DeleteWorkflowInstanceAsync(id);
     }
 }

@@ -137,10 +137,11 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
             ParentInstanceId = parent.InstanceId
         }, now);
         child.ParentWaitId = parentWaitId;
-        ExecutionCheckpointWriter.Prepare(child, checkpoint, data, scopes, now);
-        var size = ExecutionCheckpointWriter.CheckpointBytes(child);
+        var size = ExecutionCheckpointWriter.Prepare(child, checkpoint, data, scopes, now).Bytes;
         if (size > limits.MaxCheckpointBytes)
             throw new CheckpointLimitExceededException(size, limits.MaxCheckpointBytes);
+        // The store saves a child's start whole, as one instance with no parts.
+        child.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         return new ChildStart(childId, JsonSerializer.Serialize(child), parentWaitId);
     }
 }

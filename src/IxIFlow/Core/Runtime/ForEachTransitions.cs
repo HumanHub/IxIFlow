@@ -117,12 +117,15 @@ internal static class ForEachTransitions
     public static void StartItem(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState parent, ParallelJoinState join, WorkflowStep step, ForEachState state, string snapshot)
     {
+        // The cursor is on the parent's frame.
+        checkpoint.Touch(parent);
         var index = state.Next++;
         var inherited = Inherited(scopes, parent) ?? [];
         inherited.Add(new InheritedItem { StepId = scopes.Id(step), Index = index, Item = state.Items[index] });
         var child = new ContinuationState
         {
             ParentJoinId = join.Id,
+            Sequence = ++checkpoint.BranchesStarted,
             Data = BranchData.Copy(snapshot, checkpoint.DataOf(parent).GetType()),
             InheritedItems = inherited,
             Previous = parent.RuntimePrevious != null ? SerializedValue.From(parent.RuntimePrevious) : parent.Previous,
@@ -144,9 +147,10 @@ internal static class ForEachTransitions
             scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
             return;
         var state = StateOf(checkpoint, join, step);
+        // The finished items and the results are on the parent's frame.
+        checkpoint.TouchOwner(join.ParentContinuationId);
         state.Finished ??= [];
-        if (!state.Finished.Contains(index))
-            state.Finished.Add(index);
+        state.Finished.Add(index);
         if (state.Results != null)
             state.Results[index] = finished.ForEachResult ?? throw NoResult(step);
     }

@@ -18,26 +18,24 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var json = await connection.QuerySingleOrDefaultAsync<string>("""
-            SELECT StateJson FROM dbo.IxIFlowWorkflowInstances
-            WHERE InstanceId = @InstanceId
-              AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
-              AND CompletionPublished = 0
+        var row = await connection.QuerySingleOrDefaultAsync<StoredRow>($"""
+            SELECT {RowColumns} FROM dbo.IxIFlowWorkflowInstances
+            WHERE InstanceId = @InstanceId {UnpublishedCompletion}
             """, new { InstanceId = instanceId });
-        return json == null ? null : Deserialize(json);
+        return row == null ? null
+            : (await AssembleAsync(connection, [row], UnpublishedCompletion, null)).SingleOrDefault();
     }
 
     public async Task<IEnumerable<WorkflowInstance>> GetUnpublishedCompletionsAsync()
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<string>("""
-            SELECT TOP (100) StateJson FROM dbo.IxIFlowWorkflowInstances
-            WHERE Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
-              AND CompletionPublished = 0
+        var rows = await connection.QueryAsync<StoredRow>($"""
+            SELECT TOP (100) {RowColumns} FROM dbo.IxIFlowWorkflowInstances
+            WHERE 1 = 1 {UnpublishedCompletion}
             ORDER BY InstanceId
             """);
-        return rows.Select(Deserialize).ToArray();
+        return await AssembleAsync(connection, rows.ToArray(), UnpublishedCompletion, null);
     }
 
     public async Task<IEnumerable<WorkflowInstance>> ClaimUnpublishedCompletionsAsync(
@@ -48,7 +46,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             throw new ArgumentOutOfRangeException(nameof(duration));
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<string>("""
+        var rows = await connection.QueryAsync<StoredRow>("""
             ;WITH pending AS (
                 SELECT TOP (100) InstanceId
                 FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, READPAST, ROWLOCK)
@@ -61,12 +59,15 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             UPDATE instance
             SET CompletionClaimToken = @Token,
                 CompletionClaimUntil = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME())
-            OUTPUT inserted.StateJson
+            OUTPUT inserted.InstanceId, inserted.StateJson, inserted.RunnableAtUtc, inserted.Revision,
+                inserted.Incarnation
             FROM dbo.IxIFlowWorkflowInstances AS instance
             INNER JOIN pending ON pending.InstanceId = instance.InstanceId;
             """, new { InstanceId = instanceId, Token = token,
                 Milliseconds = (int)Math.Ceiling(duration.TotalMilliseconds) });
-        return rows.Select(Deserialize).ToArray();
+        // An instance read again is still one this claim holds.
+        return await AssembleAsync(connection, rows.ToArray(),
+            UnpublishedCompletion + " AND CompletionClaimToken = @Token", new { Token = token });
     }
 
     public async Task<bool> MarkCompletionPublishedAsync(string instanceId, long revision, string token)
@@ -582,7 +583,10 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             throw new InvalidOperationException("Revisioned instances require an atomic commit");
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
+        // The instance is saved whole, so any parts it was stored in go.
         await connection.ExecuteAsync("""
+            DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId
+                AND EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId AND Revision = 0);
             MERGE dbo.IxIFlowWorkflowInstances WITH (HOLDLOCK) AS target
             USING (SELECT @InstanceId AS InstanceId) AS source
             ON target.InstanceId = source.InstanceId
@@ -612,14 +616,10 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
         ArgumentNullException.ThrowIfNull(commit);
-        var snapshot = commit.ReadInstance();
-        snapshot.Revision = checked(commit.ExpectedRevision + 1);
-        var json = JsonSerializer.Serialize(snapshot);
-
         await EnsureSchemaAsync();
         try
         {
-            return await CommitAsync(commit, snapshot, json);
+            return await CommitAsync(commit);
         }
         catch (SqlException error) when (error.Number is DeadlockVictim or LockTimeout)
         {
@@ -631,9 +631,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     private const int DeadlockVictim = 1205;
     private const int LockTimeout = 1222;
 
-    private async Task<WorkflowCommitResult> CommitAsync(CheckpointCommit commit, WorkflowInstance snapshot,
-        string json)
+    // The payload is stored as the commit carries it; the revision and runnable time live in their columns
+    // and are set on the instance when it is read.
+    private async Task<WorkflowCommitResult> CommitAsync(CheckpointCommit commit)
     {
+        var snapshot = commit.Instance;
+        var revision = checked(commit.ExpectedRevision + 1);
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
         // A child's terminal commit appends to its parent's inbox. Rows are locked parent first, as a
@@ -694,7 +697,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision);
         }
         if (currentRevision != commit.ExpectedRevision ||
-            (current?.CancellationJson != null && snapshot.CancellationReason == null &&
+            (current?.CancellationJson != null && !snapshot.AcknowledgesCancellation &&
              snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut))
         {
             await transaction.CommitAsync();
@@ -747,7 +750,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await ApplyWaitChangesAsync(connection, transaction, commit, current?.InboxSequence ?? 0, now);
         // An idle instance is next due at the earliest deadline of its open waits (D-31, D-35).
         var runnableNow = (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
-            WorkflowStoreRules.UnwindsNow(snapshot, unacknowledged);
+            WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.AcknowledgesCancellation, unacknowledged);
         var earliestDeadline = !runnableNow && !commit.Stopped &&
                                snapshot.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution
             ? await connection.ExecuteScalarAsync<DateTime?>("""
@@ -755,7 +758,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 WHERE InstanceId = @InstanceId AND CloseReason IS NULL
                 """, new { commit.InstanceId }, transaction)
             : null;
-        snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit, runnableNow, now,
+        var runnableAt = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit, runnableNow, now,
             earliestDeadline);
         await connection.ExecuteAsync("""
             MERGE dbo.IxIFlowWorkflowInstances AS target
@@ -780,10 +783,12 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             snapshot.InstanceId, snapshot.WorkflowName, snapshot.CorrelationId,
             Status = snapshot.Status.ToString(),
             commit.InboxReadThrough,
-            StateJson = json, snapshot.Revision,
+            StateJson = commit.Payload, Revision = revision,
             commit.ExpectedRevision, commit.CommitId, PayloadHash = commit.ContentHash,
-            AcknowledgesCancellation = snapshot.CancellationReason != null
-        }, ("RunnableAtUtc", snapshot.RunnableAtUtc)), transaction);
+            snapshot.AcknowledgesCancellation
+        }, ("RunnableAtUtc", runnableAt)), transaction);
+        await ApplyPartsAsync(connection, transaction, commit);
+        await AppendTraceAsync(connection, transaction, commit);
         // The lease row is written only when something changes, so most commits touch only their
         // instance row; a write to a missing lease row would take range locks other claims need.
         // An idle owner that has not read every arrival keeps the lease and reads them.
@@ -873,7 +878,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 madeRunnable.Add(completion.ParentInstanceId);
         }
         await transaction.CommitAsync();
-        return new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
+        return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,
             ReadReason(current?.CancellationJson), parked, unread, madeRunnable);
     }
 
@@ -1009,10 +1014,124 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var row = await connection.QuerySingleOrDefaultAsync<StoredRow>(
-            "SELECT StateJson, RunnableAtUtc FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId",
-            new { InstanceId = instanceId });
-        return row == null ? null : row.Read();
+        return await ReadAtOneRevisionAsync(connection, instanceId, wholly: true, "", null);
+    }
+
+    public async Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId)
+    {
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        return await ReadAtOneRevisionAsync(connection, instanceId, wholly: false, "", null);
+    }
+
+    private const int MaxReadAttempts = 20;
+
+    // An instance row's columns as a read takes them. Its revision changes with every commit, and its incarnation with
+    // every insert, so together they never repeat for an ID, not even when the instance is deleted and created again;
+    // inbox appends, cancellation requests and claims change neither.
+    private const string RowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation";
+
+    private const string UnpublishedCompletion =
+        "AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut') AND CompletionPublished = 0";
+
+    // The row, then its parts, then its revision and incarnation again: when they moved, a commit, or a delete and a
+    // new instance with the same ID, may have changed the parts after the row was read, and the read starts again. The reads hold
+    // no lock between statements; under row versioning they take none. A summary reads only the data part.
+    // <paramref name="filter"/> is the condition the row was selected by, which a row read again must still meet.
+    private static async Task<WorkflowInstance?> ReadAtOneRevisionAsync(SqlConnection connection, string instanceId,
+        bool wholly, string filter, object? filterValues)
+    {
+        var parameters = new DynamicParameters(new { InstanceId = instanceId, CheckpointParts.DataKey });
+        if (filterValues != null)
+            parameters.AddDynamicParams(filterValues);
+        for (var attempt = 1; ; attempt++)
+        {
+            StoredRow? row;
+            StoredPart[] parts;
+            StoredStamp? stamp;
+            using (var read = await connection.QueryMultipleAsync($"""
+                SELECT {RowColumns} FROM dbo.IxIFlowWorkflowInstances
+                WHERE InstanceId = @InstanceId {filter};
+                SELECT InstanceId, PartKey, Json FROM dbo.IxIFlowWorkflowParts
+                WHERE InstanceId = @InstanceId {(wholly ? "" : "AND PartKey = @DataKey")};
+                SELECT InstanceId, Revision, Incarnation FROM dbo.IxIFlowWorkflowInstances
+                WHERE InstanceId = @InstanceId;
+                """, parameters))
+            {
+                row = await read.ReadSingleOrDefaultAsync<StoredRow>();
+                parts = (await read.ReadAsync<StoredPart>()).ToArray();
+                stamp = await read.ReadSingleOrDefaultAsync<StoredStamp>();
+            }
+            if (row == null)
+                return null;
+            if (stamp != null && row.Same(stamp))
+                return wholly ? row.Read(parts) : row.Summarize(parts.SingleOrDefault()?.Json);
+            if (attempt == MaxReadAttempts)
+                throw new InvalidOperationException(
+                    $"Workflow instance '{instanceId}' changed in each of {MaxReadAttempts} reads");
+            // A commit is in progress; reading again at once would most likely meet the next one.
+            await Task.Delay(Random.Shared.Next(1, 5 * attempt));
+        }
+    }
+
+    // Each row with the parts stored with it. The parts, revisions and incarnations are read after the rows; a row
+    // that moved since is read again on its own, and kept only if it still meets <paramref name="filter"/>, the condition
+    // it was selected by, so no instance mixes two commits or is listed for a state it has left.
+    private static async Task<WorkflowInstance[]> AssembleAsync(SqlConnection connection, IReadOnlyList<StoredRow> rows,
+        string filter, object? filterValues)
+    {
+        var instances = new List<WorkflowInstance>();
+        foreach (var batch in rows.Chunk(StatementBatch))
+        {
+            ILookup<string, StoredPart> parts;
+            Dictionary<string, StoredStamp> stamps;
+            using (var read = await connection.QueryMultipleAsync("""
+                SELECT InstanceId, PartKey, Json FROM dbo.IxIFlowWorkflowParts WHERE InstanceId IN @Ids;
+                SELECT InstanceId, Revision, Incarnation FROM dbo.IxIFlowWorkflowInstances
+                WHERE InstanceId IN @Ids;
+                """, new { Ids = batch.Select(row => row.InstanceId).ToArray() }))
+            {
+                parts = (await read.ReadAsync<StoredPart>()).ToLookup(part => part.InstanceId, StringComparer.Ordinal);
+                stamps = (await read.ReadAsync<StoredStamp>())
+                    .ToDictionary(stored => stored.InstanceId, StringComparer.Ordinal);
+            }
+            foreach (var row in batch)
+                if (stamps.TryGetValue(row.InstanceId, out var stamp) && row.Same(stamp))
+                    instances.Add(row.Read(parts[row.InstanceId]));
+                else if (await ReadAtOneRevisionAsync(connection, row.InstanceId, wholly: true, filter, filterValues)
+                         is { } moved)
+                    instances.Add(moved);
+        }
+        return instances.ToArray();
+    }
+
+    // A commit deletes the parts it removes and those it rewrites, then inserts what it writes (A-08); a commit that
+    // replaces its parts deletes them all first.
+    private static async Task ApplyPartsAsync(SqlConnection connection, SqlTransaction transaction,
+        CheckpointCommit commit)
+    {
+        if (commit.ReplacesParts)
+            await connection.ExecuteAsync("DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId",
+                new { commit.InstanceId }, transaction);
+        else
+            foreach (var keys in commit.DeletedParts.Concat(commit.Parts.Select(part => part.Key)).Chunk(StatementBatch))
+                await connection.ExecuteAsync("""
+                    DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId AND PartKey IN @Keys
+                    """, new { commit.InstanceId, Keys = keys }, transaction);
+        foreach (var batch in commit.Parts.Chunk(StatementBatch))
+        {
+            var parameters = new DynamicParameters(new { commit.InstanceId });
+            var rows = new List<string>();
+            for (var index = 0; index < batch.Length; index++)
+            {
+                rows.Add($"(@InstanceId, @K{index}, @J{index})");
+                parameters.Add($"K{index}", batch[index].Key);
+                parameters.Add($"J{index}", batch[index].Json, DbType.String, size: -1);
+            }
+            await connection.ExecuteAsync($"""
+                INSERT INTO dbo.IxIFlowWorkflowParts (InstanceId, PartKey, Json) VALUES {string.Join(", ", rows)}
+                """, parameters, transaction);
+        }
     }
 
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
@@ -1070,6 +1189,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             SELECT InstanceId FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowWaits WHERE InstanceId = @InstanceId;
+            DELETE FROM dbo.IxIFlowWorkflowTraces WHERE InstanceId = @InstanceId;
+            DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowEvents WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowCommits WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId;
@@ -1082,23 +1203,90 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var rows = await connection.QueryAsync<StoredRow>(
-            $"SELECT StateJson, RunnableAtUtc FROM dbo.IxIFlowWorkflowInstances WHERE {predicate}",
-            new { Value = value });
-        return rows.Select(row => row.Read()).ToArray();
+            $"SELECT {RowColumns} FROM dbo.IxIFlowWorkflowInstances WHERE {predicate}", new { Value = value });
+        return await AssembleAsync(connection, rows.ToArray(), $"AND {predicate}", new { Value = value });
     }
 
-    // The runnable time is kept in its column, which the store may change without rewriting the state.
+    // A commit's trace entries follow those already stored, numbered in order (G-01). The instance row is locked,
+    // so no other commit numbers entries at the same time.
+    private static async Task AppendTraceAsync(SqlConnection connection, SqlTransaction transaction,
+        CheckpointCommit commit)
+    {
+        if (commit.TraceEntries.Count == 0)
+            return;
+        var last = await connection.ExecuteScalarAsync<long>("""
+            SELECT ISNULL(MAX(Sequence), 0) FROM dbo.IxIFlowWorkflowTraces WHERE InstanceId = @InstanceId
+            """, new { commit.InstanceId }, transaction);
+        var offset = 0;
+        foreach (var batch in commit.TraceEntries.Chunk(StatementBatch))
+        {
+            var parameters = new DynamicParameters(new { commit.InstanceId });
+            var rows = new List<string>();
+            for (var index = 0; index < batch.Length; index++)
+            {
+                rows.Add($"(@InstanceId, @S{index}, @J{index})");
+                parameters.Add($"S{index}", last + offset + index + 1);
+                parameters.Add($"J{index}", batch[index]);
+            }
+            await connection.ExecuteAsync(
+                $"INSERT INTO dbo.IxIFlowWorkflowTraces (InstanceId, Sequence, EntryJson) VALUES {string.Join(", ", rows)}",
+                parameters, transaction);
+            offset += batch.Length;
+        }
+    }
+
+    public async Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+        int limit = 1000)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(afterSequence);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var rows = await connection.QueryAsync<(long Sequence, string EntryJson)>("""
+            SELECT TOP (@Limit) Sequence, EntryJson FROM dbo.IxIFlowWorkflowTraces
+            WHERE InstanceId = @InstanceId AND Sequence > @AfterSequence
+            ORDER BY Sequence
+            """, new { InstanceId = instanceId, AfterSequence = afterSequence, Limit = limit });
+        return rows.Select(row => new StoredTraceEntry(row.Sequence,
+            JsonSerializer.Deserialize<ExecutionTraceEntry>(row.EntryJson)!)).ToArray();
+    }
+
+    // The runnable time and the revision are kept in their columns: the store changes the runnable time
+    // without rewriting the state, and a commit stores its payload as it came, without its new revision.
     private sealed class StoredRow
     {
+        public string InstanceId { get; set; } = "";
         public string StateJson { get; set; } = "";
         public DateTime? RunnableAtUtc { get; set; }
+        public long Revision { get; set; }
+        public Guid Incarnation { get; set; }
 
-        public WorkflowInstance Read()
+        public bool Same(StoredStamp stamp) => stamp.Revision == Revision && stamp.Incarnation == Incarnation;
+
+        public WorkflowInstance Read(IEnumerable<StoredPart> parts) => Runnable(CheckpointParts.Assemble(StateJson,
+            parts.Select(part => new CheckpointPart(part.PartKey, part.Json)), Revision));
+
+        public WorkflowInstance Summarize(string? data) => Runnable(CheckpointParts.Summarize(StateJson, data, Revision));
+
+        private WorkflowInstance Runnable(WorkflowInstance instance)
         {
-            var instance = Deserialize(StateJson);
             instance.RunnableAtUtc = RunnableAtUtc;
             return instance;
         }
+    }
+
+    private sealed class StoredPart
+    {
+        public string InstanceId { get; set; } = "";
+        public string PartKey { get; set; } = "";
+        public string Json { get; set; } = "";
+    }
+
+    private sealed class StoredStamp
+    {
+        public string InstanceId { get; set; } = "";
+        public long Revision { get; set; }
+        public Guid Incarnation { get; set; }
     }
 
     private async Task<SqlConnection> OpenConnectionAsync()
@@ -1177,6 +1365,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                     ALTER TABLE dbo.IxIFlowWorkflowInstances
                         ADD InboxReadThrough BIGINT NOT NULL
                             CONSTRAINT DF_IxIFlowWorkflowInstances_InboxReadThrough DEFAULT 0;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'Incarnation') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD Incarnation UNIQUEIDENTIFIER NOT NULL
+                        CONSTRAINT DF_IxIFlowWorkflowInstances_Incarnation DEFAULT NEWID();
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'ParentInstanceId') IS NULL
                 BEGIN
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD ParentInstanceId NVARCHAR(100) NULL;
@@ -1205,6 +1396,20 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                     EXEC(N'CREATE INDEX IX_IxIFlowWorkflowEvents_Pending
                         ON dbo.IxIFlowWorkflowEvents (InstanceId, Sequence) WHERE Outcome = 0');
                 END
+                IF OBJECT_ID(N'dbo.IxIFlowWorkflowParts', N'U') IS NULL
+                    CREATE TABLE dbo.IxIFlowWorkflowParts (
+                        InstanceId NVARCHAR(100) NOT NULL,
+                        PartKey NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                        Json NVARCHAR(MAX) NOT NULL,
+                        CONSTRAINT PK_IxIFlowWorkflowParts PRIMARY KEY (InstanceId, PartKey)
+                    );
+                IF OBJECT_ID(N'dbo.IxIFlowWorkflowTraces', N'U') IS NULL
+                    CREATE TABLE dbo.IxIFlowWorkflowTraces (
+                        InstanceId NVARCHAR(100) NOT NULL,
+                        Sequence BIGINT NOT NULL,
+                        EntryJson NVARCHAR(MAX) NOT NULL,
+                        CONSTRAINT PK_IxIFlowWorkflowTraces PRIMARY KEY (InstanceId, Sequence)
+                    );
                 IF OBJECT_ID(N'dbo.IxIFlowWorkflowWaits', N'U') IS NULL
                 BEGIN
                     CREATE TABLE dbo.IxIFlowWorkflowWaits (
@@ -1313,10 +1518,6 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             _schemaLock.Release();
         }
     }
-
-    private static WorkflowInstance Deserialize(string json) =>
-        JsonSerializer.Deserialize<WorkflowInstance>(json)
-        ?? throw new InvalidOperationException("A stored workflow instance could not be deserialized");
 
     private static int LeaseMilliseconds(string instanceId, string token, TimeSpan duration)
     {
