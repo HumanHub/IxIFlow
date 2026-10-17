@@ -24,7 +24,7 @@ public static class CheckpointParts
     {
         ArgumentNullException.ThrowIfNull(payload);
         ArgumentNullException.ThrowIfNull(parts);
-        var stored = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        var stored = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var part in parts)
             stored.Add(part.Key, part.Json);
         var instance = Read(payload);

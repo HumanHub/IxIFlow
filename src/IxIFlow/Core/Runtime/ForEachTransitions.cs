@@ -117,6 +117,8 @@ internal static class ForEachTransitions
     public static void StartItem(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState parent, ParallelJoinState join, WorkflowStep step, ForEachState state, string snapshot)
     {
+        // The cursor is on the parent's frame.
+        checkpoint.Touch(parent);
         var index = state.Next++;
         var inherited = Inherited(scopes, parent) ?? [];
         inherited.Add(new InheritedItem { StepId = scopes.Id(step), Index = index, Item = state.Items[index] });
@@ -145,6 +147,8 @@ internal static class ForEachTransitions
             scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
             return;
         var state = StateOf(checkpoint, join, step);
+        // The finished items and the results are on the parent's frame.
+        checkpoint.TouchOwner(join.ParentContinuationId);
         state.Finished ??= [];
         state.Finished.Add(index);
         if (state.Results != null)

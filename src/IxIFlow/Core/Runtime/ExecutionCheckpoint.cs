@@ -131,7 +131,12 @@ internal sealed class ExecutionCheckpoint
     {
         var deadlines = page.Deadlines ?? new Dictionary<string, DateTime>();
         foreach (var wait in Waits.Where(wait => wait.TableKind is not WaitKind.Child))
-            wait.DeadlineUtc = deadlines.TryGetValue(wait.Id, out var deadline) ? deadline : null;
+        {
+            var read = deadlines.TryGetValue(wait.Id, out var deadline) ? deadline : (DateTime?)null;
+            if (wait.DeadlineUtc != read)
+                TouchOwner(wait.ContinuationId);
+            wait.DeadlineUtc = read;
+        }
         if (ExecutionTimerId != null)
             ExecutionDeadlineUtc = deadlines.TryGetValue(ExecutionTimerId, out var execution) ? execution : null;
     }
@@ -160,6 +165,40 @@ internal sealed class ExecutionCheckpoint
             return RootData;
         return continuation.Data ??= BranchData.Rebuild(DataOf(ForkParent(continuation)),
             continuation.DataChanges ?? []);
+    }
+
+    // The branches whose stored parts may have changed since a commit last took the marks, or null for all of them:
+    // a run starts with every branch marked, so whatever a host changed before it is written (A-08).
+    private HashSet<string>? _marked;
+
+    /// <summary>The branches' IDs while a split writes the trunk, so it finds them once.</summary>
+    [JsonIgnore]
+    internal HashSet<string>? SplitBranches { get; set; }
+
+    /// <summary>Marks the stored part of <paramref name="continuation"/>, and of what it owns, as changed.</summary>
+    public void Touch(ContinuationState continuation) => _marked?.Add(continuation.Id);
+
+    /// <summary>Marks the stored part of the continuation with <paramref name="continuationId"/> as changed.</summary>
+    public void TouchOwner(string continuationId) => _marked?.Add(continuationId);
+
+    /// <summary>Marks every branch as changed.</summary>
+    public void TouchAll() => _marked = null;
+
+    /// <summary>The marks a commit's split writes by; the checkpoint starts marking again from none.</summary>
+    public PartMarks TakeMarks()
+    {
+        var taken = new PartMarks(_marked);
+        _marked = new HashSet<string>(StringComparer.Ordinal);
+        return taken;
+    }
+
+    /// <summary>Gives back marks a commit took but did not save, so the next commit writes those parts.</summary>
+    public void RestoreMarks(PartMarks marks)
+    {
+        if (marks.Ids == null)
+            _marked = null;
+        else
+            _marked?.UnionWith(marks.Ids);
     }
 
     /// <summary>A join's branches, in the order they started, found by ID rather than by scanning for each.</summary>
@@ -194,6 +233,7 @@ internal sealed class ExecutionCheckpoint
                 var changes = BranchData.Changes(baselineNode, branch.Data!, baseline.GetType());
                 branch.DataChanges = changes.Count == 0 ? null : changes;
                 branch.DataChanged = false;
+                Touch(branch);
             }
         }
     }
@@ -216,7 +256,12 @@ internal sealed class ExecutionCheckpoint
             .ToHashSet(StringComparer.Ordinal);
         RemoveWaits(wait => wait.IsReply && !live.Contains(wait.ScopeActivationId ?? "") && !kept.Contains(wait.Id),
             WaitCloseReason.Cancelled);
-        BoundReplies.RemoveAll(reply => !live.Contains(reply.ScopeActivationId) && !kept.Contains(reply.WaitId));
+        foreach (var reply in BoundReplies.Where(reply => !live.Contains(reply.ScopeActivationId) && !kept.Contains(reply.WaitId))
+                     .ToArray())
+        {
+            BoundReplies.Remove(reply);
+            TouchOwner(reply.ContinuationId);
+        }
     }
 
     /// <summary>Removes the waits that match and records why each one closed, for the next commit (D-33).</summary>
@@ -225,8 +270,16 @@ internal sealed class ExecutionCheckpoint
         foreach (var wait in Waits.Where(match).ToArray())
         {
             Waits.Remove(wait);
+            TouchOwner(wait.ContinuationId);
             Inbox.Closed(wait.Id, reason);
         }
+    }
+
+    /// <summary>Adds a wait, which belongs to its continuation's stored part.</summary>
+    public void AddWait(WaitState wait)
+    {
+        Waits.Add(wait);
+        TouchOwner(wait.ContinuationId);
     }
 
     /// <summary>The operator stop of a saved instance, read without its workflow data.</summary>
@@ -451,6 +504,14 @@ internal sealed class ScopePosition
     public object? RuntimeEntryPrevious { get; set; }
 }
 
+/// <summary>The branches a commit writes: those marked as changed, or all of them.</summary>
+internal sealed record PartMarks(HashSet<string>? Ids)
+{
+    public static PartMarks All { get; } = new((HashSet<string>?)null);
+
+    public bool Has(string continuationId) => Ids == null || Ids.Contains(continuationId);
+}
+
 /// <summary>
 /// A <c>ForEach</c>'s list, saved once in item order as JSON of the item type, the next item to run, and,
 /// when the step stores results, the results of the items that ran (D-34). The step's definition gives
@@ -458,6 +519,9 @@ internal sealed class ScopePosition
 /// </summary>
 internal sealed class ForEachState
 {
+    /// <summary>This run of the step, which names its list and results where they are stored (A-08).</summary>
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
     public List<string> Items { get; set; } = [];
     public int Next { get; set; }
 

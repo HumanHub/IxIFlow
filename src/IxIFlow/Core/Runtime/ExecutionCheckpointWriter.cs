@@ -24,11 +24,15 @@ internal static class ExecutionCheckpointWriter
             return false;
         var lastCommitted = SavedForm.Of(instance);
         checkpoint.CloseEndedRequests();
-        var size = Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData).Bytes;
+        var stored = Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData,
+            host.Limits.VerifyCheckpointParts);
+        var size = stored.Bytes;
         if (enforceLimit && size > host.Limits.MaxCheckpointBytes)
         {
-            // The instance keeps the last checkpoint that was committed, and the trace only what that holds.
+            // The instance keeps the last checkpoint that was committed, and the trace only what that holds; what
+            // changed since stays marked.
             lastCommitted.RestoreTo(instance);
+            checkpoint.RestoreMarks(stored.Marks);
             instance.Trace.DiscardPending();
             throw new CheckpointLimitExceededException(size, host.Limits.MaxCheckpointBytes);
         }
@@ -96,7 +100,10 @@ internal static class ExecutionCheckpointWriter
             return;
         foreach (var wait in checkpoint.Waits)
             if (timeouts.TryGetValue(wait.Id, out var timeout))
+            {
                 wait.DeadlineUtc = storeNow + timeout;
+                checkpoint.TouchOwner(wait.ContinuationId);
+            }
         if (checkpoint.ExecutionTimerId is { } timer && timeouts.TryGetValue(timer, out var execution))
             checkpoint.ExecutionDeadlineUtc = storeNow + execution;
     }
@@ -106,7 +113,8 @@ internal static class ExecutionCheckpointWriter
     /// stored in as <see cref="WorkflowInstance.Stored"/>.
     /// </summary>
     public static StoredCheckpoint Prepare(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
-        object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false)
+        object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false,
+        bool verify = false)
     {
         try
         {
@@ -115,7 +123,8 @@ internal static class ExecutionCheckpointWriter
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson
                 : BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData)));
-            var stored = StoredCheckpoint.Split(checkpoint, dataJson);
+            var stored = StoredCheckpoint.Split(checkpoint, dataJson, instance.SavedParts, checkpoint.TakeMarks(),
+                verify);
             instance.WorkflowDataJson = dataJson;
             instance.ExecutionStateJson = stored.Trunk;
             instance.Stored = stored;

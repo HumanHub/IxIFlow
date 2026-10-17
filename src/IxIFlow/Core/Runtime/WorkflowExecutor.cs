@@ -99,6 +99,7 @@ internal sealed class WorkflowExecutor
                     item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id));
                 if (unwinding != null)
                 {
+                    checkpoint.Touch(unwinding);
                     var unwindBoundary = EffectBoundary.Of(checkpoint);
                     if (unwinding.PendingActivity != null)
                     {
@@ -173,6 +174,7 @@ internal sealed class WorkflowExecutor
                         waitingForActivity.Remove(runnable.Id);
                     if (runnable == null)
                         break;
+                    checkpoint.Touch(runnable);
                     runnable.RetryAfterUtc = null;
 
                     var position = runnable.Stack[^1];
@@ -485,6 +487,8 @@ internal sealed class WorkflowExecutor
             instance.Status = cancelled ? WorkflowStatus.Cancelled : WorkflowStatus.Failed;
             // A reply wait whose scope already ended, such as a saga abandoned in this pass, closed as cancelled.
             checkpoint.CloseEndedRequests();
+            // A run that fails ends every branch.
+            checkpoint.TouchAll();
             ContinuationTransitions.AbandonChildren(checkpoint);
             checkpoint.RemoveWaits(_ => true, WaitCloseReason.InstanceFinished);
             checkpoint.Joins.Clear();
@@ -584,6 +588,7 @@ internal sealed class WorkflowExecutor
                 {
                     checkpoint.UnhandledError = SerializedException.From(error);
                     checkpoint.RuntimeUnhandledError = error;
+                    checkpoint.Touch(activity.Continuation);
                     activity.Continuation.Status = ContinuationStatus.Completed;
                 }
             }

@@ -351,6 +351,7 @@ public sealed class CheckpointCommit
         var saved = instance.SavedParts;
         var written = stored.Parts
             .Where(part => saved == null || !saved.TryGetValue(part.Key, out var json) || json != part.Value)
+            .OrderBy(part => part.Key, StringComparer.Ordinal)
             .Select(part => new CheckpointPart(part.Key, part.Value)).ToArray();
         var deleted = saved == null ? [] : saved.Keys.Where(key => !stored.Parts.ContainsKey(key))
             .Order(StringComparer.Ordinal).ToArray();
@@ -385,7 +386,7 @@ public sealed class CheckpointCommit
     /// </summary>
     public IReadOnlyDictionary<string, string> ApplyParts(IReadOnlyDictionary<string, string>? stored)
     {
-        var parts = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        var parts = new Dictionary<string, string>(StringComparer.Ordinal);
         if (!ReplacesParts)
         {
             ArgumentNullException.ThrowIfNull(stored);
