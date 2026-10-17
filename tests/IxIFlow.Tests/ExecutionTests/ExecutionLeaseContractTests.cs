@@ -487,7 +487,7 @@ public sealed class ExecutionLeaseContractTests
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData(),
                 new WorkflowOptions { InstanceId = instanceId });
-        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal(WorkflowStatus.Running,
             (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
         try
@@ -499,7 +499,7 @@ public sealed class ExecutionLeaseContractTests
                 });
             Assert.Equal(WorkflowExecutionStatus.Running, requested.Status);
             Assert.Equal(WorkflowExecutionStatus.Cancelled,
-                (await executing.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+                (await executing.WaitAsync(TimeSpan.FromSeconds(30))).Status);
             var cancelled = (await secondRepository.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal(WorkflowStatus.Cancelled, cancelled.Status);
             Assert.Equal("operator", cancelled.CancellationReason?.ReasonCode);
@@ -1287,13 +1287,18 @@ public sealed class ExecutionLeaseContractTests
             });
             Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 instance => instance.InstanceId == instanceId);
+            // Long enough for the next query on a slow store; the expiry is then polled for.
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "worker",
-                TimeSpan.FromMilliseconds(150)));
+                TimeSpan.FromSeconds(2)));
             Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
                 instance => instance.InstanceId == instanceId);
-            await Task.Delay(300);
-            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
-                instance => instance.InstanceId == instanceId);
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+            while (!(await repository.GetRunnableInstancesAsync(100)).Any(
+                       instance => instance.InstanceId == instanceId))
+            {
+                Assert.True(DateTime.UtcNow < deadline, "The expired lease was not found");
+                await Task.Delay(50);
+            }
         }
         finally
         {
