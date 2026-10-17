@@ -106,7 +106,7 @@ public static class ServiceCollectionExtensions
             services.Replace(ServiceDescriptor.Singleton(typeof(IWorkflowStateRepository), options.UseCustomStateRepository));
         }
 
-        return new IxIFlowBuilder(services);
+        return new IxIFlowBuilder(services, options.UseCustomStateRepository?.Name);
     }
 
     /// <summary>

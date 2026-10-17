@@ -22,6 +22,21 @@ internal static class OperatorTrace
                 Metadata = reason.Metadata
             };
 
+    /// <summary>
+    /// Applies a cancellation request to a run: it is traced with who made it, recorded on the instance, and the root
+    /// unwinds. Every path that applies a request goes through here, so each is traced once.
+    /// </summary>
+    public static void ApplyCancellation(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
+        CancellationReason reason, DateTime now)
+    {
+        Cancellation(instance, reason, now);
+        instance.CancellationReason = reason;
+        checkpoint.CancellationRequested = true;
+        checkpoint.UnhandledError = null;
+        checkpoint.RuntimeUnhandledError = null;
+        ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
+    }
+
     public static void Cancellation(WorkflowInstance instance, CancellationReason reason, DateTime now)
     {
         var entry = Entry(TraceEntryType.CancellationRequested, reason.RequestedBy, now);

@@ -10,9 +10,24 @@ public interface IIxIFlowBuilder
 {
     /// <summary>The service collection IxIFlow was added to, to go on registering other services.</summary>
     IServiceCollection Services { get; }
+
+    /// <summary>
+    /// Records that a store was chosen, naming it, and refuses a second choice: two would silently end on the last.
+    /// For a store package's <c>Use...</c> method.
+    /// </summary>
+    void ChooseStore(string store);
 }
 
-internal sealed class IxIFlowBuilder(IServiceCollection services) : IIxIFlowBuilder
+internal sealed class IxIFlowBuilder(IServiceCollection services, string? chosenStore = null) : IIxIFlowBuilder
 {
+    private string? _store = chosenStore;
+
     public IServiceCollection Services { get; } = services;
+
+    public void ChooseStore(string store)
+    {
+        if (_store != null)
+            throw new InvalidOperationException($"IxIFlow already uses {_store} as its store; choose one store");
+        _store = store;
+    }
 }
