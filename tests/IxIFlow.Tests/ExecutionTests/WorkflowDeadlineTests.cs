@@ -131,7 +131,7 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task InstanceDeadlineInterruptsAnActiveActivity()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var blocking = services.GetRequiredService<BlockingProbe>();
@@ -139,9 +139,12 @@ public sealed class WorkflowDeadlineTests
             .Step<BlockingActivity>()
             .Build();
 
+        var deadline = time.GetUtcNow() + TimeSpan.FromSeconds(5);
         var execution = engine.RunAsync(definition, new ApprovalData(),
             new WorkflowOptions { ExecutionTimeout = TimeSpan.FromSeconds(5) });
         await blocking.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        // The run waits for its activity and for the deadline's timer; only that timer can wake it.
+        await time.WaitForTimerDueAtAsync(deadline);
         // One step, shorter than a lease renewal, while the run holds its lease.
         time.Advance(TimeSpan.FromSeconds(6));
         var result = await execution.WaitAsync(TimeSpan.FromSeconds(3));
@@ -261,7 +264,7 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task WholeInstanceTimeoutRunsFinally()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         using var services = Services(time);
         var blocking = services.GetRequiredService<BlockingProbe>();
         var definition = Workflow.Create<ApprovalData>("TimeoutFinally")
@@ -271,10 +274,13 @@ public sealed class WorkflowDeadlineTests
                 .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After)))
             .Build();
 
+        var deadline = time.GetUtcNow() + TimeSpan.FromSeconds(5);
         var execution = services.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new ApprovalData(),
                 new WorkflowOptions { ExecutionTimeout = TimeSpan.FromSeconds(5) });
         await blocking.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        // The run waits for its activity and for the deadline's timer; only that timer can wake it.
+        await time.WaitForTimerDueAtAsync(deadline);
         // One step, shorter than a lease renewal, while the run holds its lease.
         time.Advance(TimeSpan.FromSeconds(6));
         var result = await execution.WaitAsync(TimeSpan.FromSeconds(3));
