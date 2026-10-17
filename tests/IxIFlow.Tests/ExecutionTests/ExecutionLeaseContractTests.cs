@@ -37,7 +37,8 @@ public sealed class ExecutionLeaseContractTests
     public Task MemoryFormerOwnerCannotCommitAfterTakeover()
     {
         var time = new FakeTimeProvider();
-        return VerifyFencing(new InMemoryWorkflowStateRepository(time), time);
+        return VerifyFencing(new InMemoryWorkflowStateRepository(time), TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(300), time);
     }
 
     [Fact]
@@ -103,9 +104,11 @@ public sealed class ExecutionLeaseContractTests
     public Task SqlRenewalKeepsTheOwner() => VerifyRenewal(SqlRepository(), TimeSpan.FromSeconds(3),
         TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
 
+    // A lease long enough for the first commit on a cold store connection; the takeover waits it out.
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlFormerOwnerCannotCommitAfterTakeover() => VerifyFencing(SqlRepository());
+    public Task SqlFormerOwnerCannotCommitAfterTakeover() => VerifyFencing(SqlRepository(), TimeSpan.FromSeconds(1),
+        TimeSpan.FromMilliseconds(1_200));
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
@@ -1187,13 +1190,14 @@ public sealed class ExecutionLeaseContractTests
         }
     }
 
-    private static async Task VerifyFencing(IWorkflowStateRepository repository, FakeTimeProvider? time = null)
+    // The first owner holds its lease for the given length; the second takes over once takeoverAfter has passed.
+    private static async Task VerifyFencing(IWorkflowStateRepository repository, TimeSpan lease,
+        TimeSpan takeoverAfter, FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            var firstEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromMilliseconds(100));
+            var firstEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease);
             Assert.NotNull(firstEpoch);
             var oldOwner = new WorkflowInstance
             {
@@ -1205,7 +1209,7 @@ public sealed class ExecutionLeaseContractTests
             var initial = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 0, "initial"));
             Assert.Equal(WorkflowCommitStatus.Applied, initial.Status);
-            await PassAsync(time, TimeSpan.FromMilliseconds(300));
+            await PassAsync(time, takeoverAfter);
             var secondEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5));
             Assert.NotNull(secondEpoch);
