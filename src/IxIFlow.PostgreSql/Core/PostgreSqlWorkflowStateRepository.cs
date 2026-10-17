@@ -41,11 +41,13 @@ public sealed class PostgreSqlWorkflowStateRepository :
         ownership.MaxPoolSize = ownershipPoolSize;
         ownership.MinPoolSize = Math.Min(ownership.MinPoolSize, ownershipPoolSize);
         _ownershipConnectionString = ownership.ConnectionString;
-        // The listening connection is never pooled, so a broken one is not handed out again, and it sends keepalives,
-        // so a connection that died silently fails its wait instead of listening to nothing.
+        // The listening connection is never pooled, so a broken one is not handed out again, nor multiplexed, which
+        // cannot wait for notifications. It sends keepalives, so a connection that died silently fails its wait instead
+        // of listening to nothing.
         var listener = new NpgsqlConnectionStringBuilder(connectionString);
         listener.ApplicationName = (listener.ApplicationName ?? "") + " IxIFlow wake-ups";
         listener.Pooling = false;
+        listener.Multiplexing = false;
         if (listener.KeepAlive == 0)
             listener.KeepAlive = 30;
         _listenerConnectionString = listener.ConnectionString;
@@ -297,13 +299,12 @@ public sealed class PostgreSqlWorkflowStateRepository :
     {
         await using var connection = await OpenOwnershipConnectionAsync();
         await using var transaction = await connection.BeginTransactionAsync();
-        // The instance row is locked before the lease row, in the same order as a commit.
-        var running = await connection.ExecuteScalarAsync<int>("""
-            SELECT count(*) FROM (
-                SELECT 1 FROM ixiflow_workflow_instances
-                WHERE instance_id = @InstanceId AND status = 'Running'
-                FOR UPDATE) AS instance
-            """, new { InstanceId = instanceId }, transaction) > 0;
+        // The instance row is locked before the lease row, in the same order as a commit, whatever its status:
+        // a commit made without a lease holds it while it checks that nobody holds the lease, so no lease is
+        // granted until it is applied.
+        var running = await connection.QuerySingleOrDefaultAsync<string>("""
+            SELECT status FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE
+            """, new { InstanceId = instanceId }, transaction) == "Running";
         // The lease row outlives its lease, so a later owner always gets a higher epoch. A lease that
         // expired without release while the instance was running lost work in flight: one more crash.
         // A claim racing this one waits for it and then finds the lease taken.
@@ -663,7 +664,7 @@ public sealed class PostgreSqlWorkflowStateRepository :
             DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId
                 AND EXISTS (SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId AND revision = 0)
             """, new { instance.InstanceId }, transaction);
-        var saved = await connection.QuerySingleOrDefaultAsync<int?>("""
+        var due = await connection.QuerySingleOrDefaultAsync<bool?>("""
             INSERT INTO ixiflow_workflow_instances AS target
                 (instance_id, workflow_name, status, correlation_id, runnable_at_utc, state_json)
             VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
@@ -673,7 +674,7 @@ public sealed class PostgreSqlWorkflowStateRepository :
                 correlation_id = excluded.correlation_id, runnable_at_utc = excluded.runnable_at_utc,
                 state_json = excluded.state_json
             WHERE target.revision = 0
-            RETURNING 1
+            RETURNING COALESCE(runnable_at_utc <= clock_timestamp(), false)
             """, new
         {
             instance.InstanceId,
@@ -684,9 +685,10 @@ public sealed class PostgreSqlWorkflowStateRepository :
             RunnableNow = runnableNow,
             StateJson = JsonSerializer.Serialize(instance)
         }, transaction);
-        if (saved == null)
+        if (due == null)
             throw new InvalidOperationException("Revisioned instances require an atomic commit");
-        if (runnableNow)
+        // A save that leaves the instance due wakes listening hosts; their claims decide who runs it.
+        if (due.Value)
             await NotifyRunnableAsync(connection, transaction);
         await transaction.CommitAsync();
     }
@@ -701,14 +703,18 @@ public sealed class PostgreSqlWorkflowStateRepository :
         }
         catch (PostgresException error) when (error.SqlState is PostgresErrorCodes.DeadlockDetected
                                                   or PostgresErrorCodes.SerializationFailure
-                                                  or PostgresErrorCodes.LockNotAvailable
-                                                  or PostgresErrorCodes.UniqueViolation)
+                                                  or PostgresErrorCodes.LockNotAvailable ||
+                                              error is { SqlState: PostgresErrorCodes.UniqueViolation,
+                                                  ConstraintName: InstanceKey })
         {
-            // The transaction was rolled back, so nothing was written. A unique key is violated only by a
-            // transaction that created the same row first, such as the instance itself, and a retry sees it.
+            // The transaction was rolled back, so nothing was written. An instance's key is violated only when
+            // another transaction created the same instance, or a child with the same ID, while this one ran;
+            // a retry sees it.
             return new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0);
         }
     }
+
+    private const string InstanceKey = "ixiflow_workflow_instances_pkey";
 
     // The payload is stored as the commit carries it; the revision and runnable time live in their columns
     // and are set on the instance when it is read.
@@ -912,6 +918,9 @@ public sealed class PostgreSqlWorkflowStateRepository :
             }, transaction);
             madeRunnable.AddRange(children.Select(child => child.Child.InstanceId));
         }
+        // Each event this commit appends to its own inbox takes the next sequence.
+        var inbox = new InboxRow { Status = snapshot.Status.ToString(), InboxSequence = current?.InboxSequence ?? 0 };
+        var woken = false;
         foreach (var cancellation in commit.ChildCancellations)
         {
             var outcome = await RequestCancellationAsync(connection, transaction, cancellation.ChildInstanceId,
@@ -923,9 +932,10 @@ public sealed class PostgreSqlWorkflowStateRepository :
             {
                 var gone = ToEvent(WorkflowStoreRules.ChildGone(cancellation.ChildInstanceId, commit.InstanceId,
                     cancellation.ParentWaitId));
-                await AppendAsync(connection, transaction, gone, gone.ContentHash(),
-                    new InboxRow { Status = snapshot.Status.ToString(), InboxSequence = current?.InboxSequence ?? 0 },
-                    now);
+                var appended = await AppendAsync(connection, transaction, gone, gone.ContentHash(), inbox, now);
+                if (appended.Status == EventAppendStatus.Stored)
+                    inbox.InboxSequence = appended.Sequence;
+                woken |= appended.MadeRunnable;
             }
         }
         // The child's completion goes to its parent's inbox; whatever the parent's state, the child's
@@ -937,9 +947,9 @@ public sealed class PostgreSqlWorkflowStateRepository :
                 { Status: EventAppendStatus.Stored, MadeRunnable: true })
                 madeRunnable.Add(completion.ParentInstanceId);
         }
-        // Other hosts hear of what this commit made claimable: other instances, and this one when it lets go
-        // of an instance that is due.
-        if (madeRunnable.Count > 0 || (releases && runnableAt <= now))
+        // Other hosts hear of what this commit made claimable: other instances, and this one when it is due
+        // and nobody holds it, because the commit let it go, was made without a lease, or woke it with an event.
+        if (madeRunnable.Count > 0 || woken || (runnableAt <= now && (releases || commit.Epoch == 0)))
             await NotifyRunnableAsync(connection, transaction);
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,
@@ -1181,11 +1191,6 @@ public sealed class PostgreSqlWorkflowStateRepository :
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        // The lease row stays so a recreated instance never reuses an epoch; its crashes go.
-        await connection.ExecuteAsync("""
-            UPDATE ixiflow_workflow_leases SET expires_at_utc = '-infinity', crash_count = 0
-            WHERE instance_id = @InstanceId
-            """, new { InstanceId = instanceId });
         await using var transaction = await connection.BeginTransactionAsync();
         // A child its parent still waits for ends that wait as terminated. The parent's row is locked before
         // the child's, as a child's terminal commit locks them.
@@ -1202,15 +1207,19 @@ public sealed class PostgreSqlWorkflowStateRepository :
             if ((await AppendAsync(connection, transaction, gone, gone.ContentHash(), parent, now)).MadeRunnable)
                 await NotifyRunnableAsync(connection, transaction);
         }
-        // The instance row is locked first, as commits and appends lock it, and its rows in the other tables
-        // are deleted by key.
+        // The instance row is locked first, as commits and appends lock it, then the lease row, as claims lock
+        // them. The lease row stays so a recreated instance never reuses an epoch; its crashes go. The rows in
+        // the other tables are deleted by key in one statement, which reads one snapshot: an instance whose first
+        // commit lands meanwhile, with no row to lock yet, is deleted whole or not at all.
         await connection.ExecuteAsync("""
             SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE;
-            DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
-            DELETE FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId;
-            DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId;
-            DELETE FROM ixiflow_workflow_events WHERE instance_id = @InstanceId;
-            DELETE FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId;
+            UPDATE ixiflow_workflow_leases SET expires_at_utc = '-infinity', crash_count = 0
+            WHERE instance_id = @InstanceId;
+            WITH waits AS (DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId),
+                traces AS (DELETE FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId),
+                parts AS (DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId),
+                events AS (DELETE FROM ixiflow_workflow_events WHERE instance_id = @InstanceId),
+                commits AS (DELETE FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId)
             DELETE FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId;
             """, new { InstanceId = instanceId }, transaction);
         await transaction.CommitAsync();

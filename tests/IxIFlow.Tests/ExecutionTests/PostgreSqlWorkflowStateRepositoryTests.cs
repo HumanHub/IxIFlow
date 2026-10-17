@@ -1,3 +1,4 @@
+using System.Text.Json;
 using IxIFlow.Core;
 using IxIFlow.Tests.Infrastructure;
 
@@ -128,6 +129,132 @@ public class PostgreSqlWorkflowStateRepositoryTests
             """, connection);
         count.Parameters.AddWithValue("InstanceId", instanceId);
         return (long)(await count.ExecuteScalarAsync())!;
+    }
+
+    // Each transaction that leaves an instance due with nobody holding it notifies listening hosts once, and the
+    // steps that set the cases up notify nobody (C-13).
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "C-13")]
+    public async Task EveryWayAnInstanceBecomesClaimableNotifiesListeners()
+    {
+        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
+        var repository = new PostgreSqlWorkflowStateRepository(connectionString);
+        await using var notifications = await Notifications.ListenAsync(connectionString);
+        var ids = new List<string>();
+        var reason = new CancellationReason { ReasonCode = "operator" };
+        WorkflowInstance Instance(WorkflowStatus status, string? parentId = null, string? parentWaitId = null)
+        {
+            var instance = new WorkflowInstance
+            {
+                InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Notified", Status = status,
+                WorkflowDataJson = "{}", ParentInstanceId = parentId, ParentWaitId = parentWaitId
+            };
+            ids.Add(instance.InstanceId);
+            return instance;
+        }
+        try
+        {
+            // Saves of a running instance and of an idle one whose time has passed.
+            await notifications.ExpectAsync(() => repository.SaveWorkflowInstanceAsync(Instance(WorkflowStatus.Running)));
+            var due = Instance(WorkflowStatus.Suspended);
+            due.RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1);
+            await notifications.ExpectAsync(() => repository.SaveWorkflowInstanceAsync(due));
+
+            // A cancellation request and an event for idle instances.
+            var idle = Instance(WorkflowStatus.Suspended);
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(idle, 0, 0,
+                openedWaits: [new OpenedWait("approval", WaitKind.Event, "approval", "Approval", null)]));
+            await notifications.ExpectAsync(() => repository.RequestCancellationAsync(idle.InstanceId, reason));
+            var waiting = Instance(WorkflowStatus.Suspended);
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(waiting, 0, 0,
+                openedWaits: [new OpenedWait("approval", WaitKind.Event, "approval", "Approval", null)]));
+            await notifications.ExpectAsync(() => repository.AppendEventAsync(
+                new WorkflowEvent(waiting.InstanceId, "event-1", "Approval", "{}", Key: "approval")));
+
+            // A running instance committed without a lease, and the release of a lease on a due instance.
+            var unleased = Instance(WorkflowStatus.Running);
+            await notifications.ExpectAsync(() => repository.CommitWorkflowInstanceAsync(
+                CheckpointCommit.Create(unleased, 0, 0)));
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(unleased.InstanceId, "owner",
+                TimeSpan.FromMinutes(1)));
+            await notifications.ExpectAsync(() => repository.ReleaseExecutionLeaseAsync(unleased.InstanceId, "owner"));
+
+            // A child's start, then its completion, which wakes its parent.
+            var parent = Instance(WorkflowStatus.Suspended);
+            var child = Instance(WorkflowStatus.Running, parent.InstanceId, "child");
+            await notifications.ExpectAsync(() => repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+                parent, 0, 0, openedWaits: [new OpenedWait("child", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
+                childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child")])));
+            var grant = (await repository.TryAcquireExecutionLeaseAsync(child.InstanceId, "child-owner",
+                TimeSpan.FromMinutes(1)))!;
+            child.Status = WorkflowStatus.Completed;
+            await notifications.ExpectAsync(() => repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+                child, grant.Epoch, 1, parentNotice: new ParentNotice(parent.InstanceId, "child",
+                    $"completed-{child.InstanceId}", "IxIFlow.ChildCompleted", "{}"))));
+
+            // A child that is gone when its idle parent asks it to cancel.
+            var orphaned = Instance(WorkflowStatus.Suspended);
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(orphaned, 0, 0,
+                openedWaits: [new OpenedWait("missing", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)]));
+            orphaned.Revision = 1;
+            await notifications.ExpectAsync(() => repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+                orphaned, 0, 1, childCancellations: [new ChildCancellation("missing-child", reason, "missing")])));
+        }
+        finally
+        {
+            foreach (var id in ids)
+                await repository.DeleteWorkflowInstanceAsync(id);
+        }
+    }
+
+    /// <summary>Listens to the store's channel the way a host does, and counts what it hears.</summary>
+    private sealed class Notifications : IAsyncDisposable
+    {
+        private readonly Npgsql.NpgsqlConnection _connection;
+        private int _heard;
+        private int _expected;
+
+        private Notifications(Npgsql.NpgsqlConnection connection) => _connection = connection;
+
+        public static async Task<Notifications> ListenAsync(string connectionString)
+        {
+            var connection = new Npgsql.NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+            var notifications = new Notifications(connection);
+            connection.Notification += (_, notification) =>
+            {
+                if (notification.Channel == PostgreSqlWorkflowStateRepository.RunnableChannel)
+                    Interlocked.Increment(ref notifications._heard);
+            };
+            await using var listen = new Npgsql.NpgsqlCommand(
+                $"LISTEN {PostgreSqlWorkflowStateRepository.RunnableChannel}", connection);
+            await listen.ExecuteNonQueryAsync();
+            return notifications;
+        }
+
+        // Nothing was heard since the last step, then the step is heard exactly once.
+        public async Task ExpectAsync(Func<Task> step)
+        {
+            while (await _connection.WaitAsync(50))
+            {
+            }
+            Assert.Equal(_expected, Volatile.Read(ref _heard));
+            await step();
+            _expected++;
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (Volatile.Read(ref _heard) < _expected)
+            {
+                Assert.True(DateTime.UtcNow < deadline, "The step notified nobody");
+                await _connection.WaitAsync(100);
+            }
+            while (await _connection.WaitAsync(50))
+            {
+            }
+            Assert.Equal(_expected, Volatile.Read(ref _heard));
+        }
+
+        public ValueTask DisposeAsync() => _connection.DisposeAsync();
     }
 
     [PostgreSqlFact]
