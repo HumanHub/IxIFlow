@@ -711,7 +711,7 @@ public sealed partial class WorkflowHost
             {
                 var result = await _executor.RunAsync(definition, instance, checkpoint, workflowData,
                     new HostedRun(this, instance, owner, persistState, canPark: depth == 1), cancellationToken);
-                // The local host resumes what it saved with a runnable time, on time (C-12), and forgets
+                // The host resumes what it saved with a runnable time, on time (C-12), and forgets
                 // what has finished.
                 if (persistState && checkpoint.LocalWakeUtc is { } due &&
                     result.Status is WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended or
@@ -829,14 +829,14 @@ public sealed partial class WorkflowHost
         }
 
         /// <summary>The host side of one run: the instance's lease, its saved state and its children.</summary>
-        private sealed class HostedRun(InstanceOperations host, WorkflowInstance instance, WorkflowExecutionLease? owner,
+        private sealed class HostedRun(InstanceOperations operations, WorkflowInstance instance, WorkflowExecutionLease? owner,
             bool persistState, bool canPark = false) : IExecutionHost
         {
             public bool PersistsState => persistState;
             public bool CanPark => canPark && persistState && owner != null;
-            public CancellationToken Drain => host._control.Drain;
+            public CancellationToken Drain => operations._control.Drain;
             public long Epoch => owner?.Epoch ?? 0;
-            public ExecutionLimits Limits => host._limits;
+            public ExecutionLimits Limits => operations._limits;
             public Task? OwnershipLoss => owner?.Loss;
             public Task<CancellationReason>? CancellationSignal => owner?.Cancellation;
             public long ObservedInboxSequence => owner?.InboxSequence ?? 0;
@@ -848,22 +848,22 @@ public sealed partial class WorkflowHost
             public void ThrowIfOwnershipLost() => owner?.ThrowIfLost();
 
             public Task<CheckpointReply> CommitAsync(CheckpointCommit commit) =>
-                host.CommitAsync(instance, commit, Epoch);
+                operations.CommitAsync(instance, commit, Epoch);
 
             public void ObserveCancellation(CancellationReason reason) => owner?.ObserveCancellation(reason);
 
             public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) =>
-                host._children.ResolveAsync(step, starting);
+                operations._children.ResolveAsync(step, starting);
 
             public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
                 string childInstanceId, string parentWaitId) =>
-                host._children.Start(definition, data, parent, childInstanceId, parentWaitId, host._limits);
+                operations._children.Start(definition, data, parent, childInstanceId, parentWaitId, operations._limits);
 
             public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) =>
-                host._store.GetPendingEventsAsync(instance.InstanceId, afterSequence, limit);
+                operations._store.GetPendingEventsAsync(instance.InstanceId, afterSequence, limit);
 
             public Task<StoredWait?> ReadWaitAsync(string waitId) =>
-                host._store.GetWaitAsync(instance.InstanceId, waitId);
+                operations._store.GetWaitAsync(instance.InstanceId, waitId);
         }
     }
 }

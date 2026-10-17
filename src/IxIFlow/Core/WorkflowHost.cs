@@ -427,6 +427,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             Dispatch(next);
     }
 
+    /// <summary>Does nothing: the host takes work as soon as it is created.</summary>
     public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     /// <summary>
@@ -459,6 +460,10 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         }
     }
 
+    /// <summary>
+    /// Stops at once, cancelling running instances without letting them reach their next commit. Call
+    /// <see cref="StopAsync"/> first to drain; a generic host does.
+    /// </summary>
     public void Dispose()
     {
         StopAccepting();
