@@ -1,0 +1,13 @@
+; Unshipped analyzer release
+; https://github.com/dotnet/roslyn-analyzers/blob/main/src/Microsoft.CodeAnalysis.Analyzers/ReleaseTrackingAnalyzers.Help.md
+
+### New Rules
+
+Rule ID | Category | Severity | Notes
+--------|----------|----------|-------
+IXIF0001 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0002 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0003 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0004 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0101 | IxIFlow.Purity | Error | PurityAnalyzer
+IXIF0102 | IxIFlow.Purity | Error | PurityAnalyzer

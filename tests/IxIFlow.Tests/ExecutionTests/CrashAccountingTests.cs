@@ -35,6 +35,11 @@ public sealed class CrashAccountingTests
     public Task SqlStoreCountsLeasesLostWhileRunning() =>
         VerifyCrashCounting(new SqlWorkflowStateRepository(SqlTestDatabase<CrashAccountingTests>.ConnectionString), SqlLease);
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public Task PostgreSqlStoreCountsLeasesLostWhileRunning() =>
+        VerifyCrashCounting(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CrashAccountingTests>.ConnectionString), SqlLease);
+
     // On a fake clock a lease expires by advancing it; on SQL Server's clock the claims poll for the expiry.
     private static async Task VerifyCrashCounting(IWorkflowStateRepository repository, TimeSpan lease,
         FakeTimeProvider? time = null)

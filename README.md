@@ -31,6 +31,7 @@ Local execution uses the `IxIFlow` package. The solution also contains:
 | `IxIFlow.Abstractions` | Activity contract and metadata attributes, for activity packages |
 | `IxIFlow.Distributed` | Host, coordinator, and queue service contracts |
 | `IxIFlow.SqlServer` | SQL Server state repository, host registry, and message bus |
+| `IxIFlow.PostgreSql` | PostgreSQL state repository, chosen with `.UsePostgreSql(connectionString)`, with `LISTEN`/`NOTIFY` wake-ups |
 | `IxIFlow.Authoring` | YAML workflow documents compiled to definitions (preview), and the activity package catalog |
 
 ## Quick Start
