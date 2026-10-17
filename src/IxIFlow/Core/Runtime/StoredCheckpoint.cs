@@ -61,8 +61,8 @@ internal sealed class StoredCheckpoint
             var whole = Build(checkpoint, dataJson, null, PartMarks.All);
             foreach (var key in whole.Parts.Keys.Union(stored.Parts.Keys))
                 if (whole.Parts.GetValueOrDefault(key) != stored.Parts.GetValueOrDefault(key))
-                    throw new InvalidOperationException(
-                        $"The stored part '{key}' of the checkpoint changed without being marked");
+                    throw new CheckpointVerificationException(
+                        $"the stored part '{key}' of the checkpoint changed without being marked");
         }
         return stored;
     }
@@ -170,6 +170,12 @@ internal sealed class StoredCheckpoint
             checkpoint.Waits.AddRange(branch.Waits ?? []);
             checkpoint.BoundReplies.AddRange(branch.BoundReplies ?? []);
         }
+        // Finished-item chunks by their ForEach, found in one pass over the parts.
+        var chunks = parts.Where(part => part.Key.StartsWith("b/", StringComparison.Ordinal))
+            .Select(part => (Key: part.Key.Split('/'), part.Value))
+            .ToLookup(part => part.Key[1], part => (Chunk: int.Parse(part.Key[2],
+                System.Globalization.CultureInfo.InvariantCulture), Bits: JsonSerializer.Deserialize<string>(part.Value)!),
+                StringComparer.Ordinal);
         foreach (var frame in checkpoint.Continuations.SelectMany(continuation => continuation.Stack))
         {
             if (frame.ForEach is not { } state)
@@ -180,12 +186,8 @@ internal sealed class StoredCheckpoint
             for (var index = 0; index < (state.Results?.Count ?? 0); index++)
                 state.Results![index] = parts.GetValueOrDefault(ResultKey(state.Id, index));
             if (state.Finished is { } finished)
-            {
-                var prefix = FinishedKey(state.Id, 0)[..^1];
-                foreach (var (key, json) in parts.Where(part => part.Key.StartsWith(prefix, StringComparison.Ordinal)))
-                    finished.AddChunk(int.Parse(key[prefix.Length..], System.Globalization.CultureInfo.InvariantCulture),
-                        JsonSerializer.Deserialize<string>(json)!);
-            }
+                foreach (var (chunk, bits) in chunks[state.Id])
+                    finished.AddChunk(chunk, bits);
         }
         checkpoint.StoredTrunk = false;
         return JsonSerializer.Serialize(checkpoint);
@@ -292,3 +294,10 @@ internal sealed class StoredCheckpoint
         public List<BoundReplyState>? BoundReplies { get; set; }
     }
 }
+
+/// <summary>
+/// A commit's parts differ from those serializing everything gives: a transition changed a branch without marking it
+/// (A-08). The commit is not saved, and the instance stops for an operator with its last checkpoint.
+/// </summary>
+internal sealed class CheckpointVerificationException(string reason) : Exception(
+    $"The checkpoint could not be verified: {reason}");

@@ -355,23 +355,25 @@ public class WorkflowInstance
     [System.Text.Json.Serialization.JsonIgnore]
     internal IReadOnlyDictionary<string, string>? SavedParts { get; private set; }
 
-    /// <summary>The revision <see cref="SavedParts"/> are stored at.</summary>
-    [System.Text.Json.Serialization.JsonIgnore]
-    internal long SavedPartsRevision { get; private set; }
+    // The instance and the revision SavedParts are stored at.
+    private string? _savedPartsInstanceId;
+    private long _savedPartsRevision;
 
     /// <summary>Records the parts the instance is stored in at <paramref name="revision"/>.</summary>
     internal void Saved(IReadOnlyDictionary<string, string> parts, long revision)
     {
         SavedParts = parts;
-        SavedPartsRevision = revision;
+        _savedPartsInstanceId = InstanceId;
+        _savedPartsRevision = revision;
     }
 
     /// <summary>
-    /// The parts the instance is stored in at <paramref name="revision"/>, or null when they are not known for it, as
-    /// when the instance changed revision since it was read or last committed through the engine.
+    /// The parts the instance is stored in at <paramref name="revision"/>, or null when they are not known for it: the
+    /// object changed revision, or names another instance, since it was read or last committed through the engine.
     /// </summary>
     internal IReadOnlyDictionary<string, string>? PartsAt(long revision) =>
-        SavedParts != null && SavedPartsRevision == revision ? SavedParts : null;
+        SavedParts != null && _savedPartsRevision == revision && _savedPartsInstanceId == InstanceId
+            ? SavedParts : null;
 
     /// <summary>The stored form the last preparation made of the instance's state and data.</summary>
     [System.Text.Json.Serialization.JsonIgnore]

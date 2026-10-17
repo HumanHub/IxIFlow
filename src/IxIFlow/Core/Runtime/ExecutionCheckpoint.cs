@@ -8,7 +8,11 @@ namespace IxIFlow.Core.Runtime;
 internal sealed class ExecutionCheckpoint
 {
     public string Runtime { get; set; } = "structured-v2";
-    public int SchemaVersion { get; set; } = 2;
+    /// <summary>
+    /// The form the checkpoint is saved in; 3 is the trunk and parts of A-08. A checkpoint in another form is refused
+    /// as unsupported rather than read wrongly.
+    /// </summary>
+    public int SchemaVersion { get; set; } = 3;
     public string DefinitionFingerprint { get; set; } = "";
     public List<ContinuationState> Continuations { get; set; } = [];
     public List<ParallelJoinState> Joins { get; set; } = [];
@@ -117,7 +121,7 @@ internal sealed class ExecutionCheckpoint
     public static ExecutionCheckpoint ReadTrunk(string json)
     {
         var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(json);
-        if (checkpoint?.Runtime != "structured-v2" || checkpoint.SchemaVersion != 2)
+        if (checkpoint?.Runtime != "structured-v2" || checkpoint.SchemaVersion != 3)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 "Unsupported execution checkpoint version");
         return checkpoint;
@@ -269,12 +273,13 @@ internal sealed class ExecutionCheckpoint
             .ToHashSet(StringComparer.Ordinal);
         RemoveWaits(wait => wait.IsReply && !live.Contains(wait.ScopeActivationId ?? "") && !kept.Contains(wait.Id),
             WaitCloseReason.Cancelled);
-        foreach (var reply in BoundReplies.Where(reply => !live.Contains(reply.ScopeActivationId) && !kept.Contains(reply.WaitId))
-                     .ToArray())
+        BoundReplies.RemoveAll(reply =>
         {
-            BoundReplies.Remove(reply);
+            if (live.Contains(reply.ScopeActivationId) || kept.Contains(reply.WaitId))
+                return false;
             TouchOwner(reply.ContinuationId);
-        }
+            return true;
+        });
     }
 
     /// <summary>Removes the waits that match and records why each one closed, for the next commit (D-33).</summary>
@@ -323,6 +328,9 @@ internal sealed class OperatorStopState
     {
         OperatorStopKind.Quarantine =>
             $"The workflow instance is quarantined: {Reason}. Release it to run it again, or cancel it",
+        OperatorStopKind.Verification =>
+            $"The workflow instance is stopped because the engine could not verify a commit ({Reason}); its last " +
+            "checkpoint is kept. Release it to run it again, or cancel it",
         _ => $"The workflow instance is stopped at a resource limit ({Reason}); " +
             "raise the limit and release it, or cancel it"
     };
@@ -331,7 +339,10 @@ internal sealed class OperatorStopState
 internal enum OperatorStopKind
 {
     ResourceLimit,
-    Quarantine
+    Quarantine,
+
+    /// <summary>A commit failed the checkpoint parts' verification (A-08), which points at an engine fault.</summary>
+    Verification
 }
 
 internal enum ContinuationStatus
