@@ -42,6 +42,7 @@ internal sealed class StoredCheckpoint
     public static string BranchKey(string continuationId) => $"c/{continuationId}";
     public static string ListKey(string forEachId) => $"f/{forEachId}";
     public static string ResultKey(string forEachId, int index) => $"r/{forEachId}/{index}";
+    public static string FinishedKey(string forEachId, int chunk) => $"b/{forEachId}/{chunk}";
 
     /// <summary>
     /// Splits a checkpoint and its workflow data into the trunk and parts it is stored as. The trunk and the data are
@@ -113,6 +114,10 @@ internal sealed class StoredCheckpoint
             for (var index = 0; index < (state.Results?.Count ?? 0); index++)
                 if (state.Results![index] is { } result)
                     parts[ResultKey(state.Id, index)] = saved?.GetValueOrDefault(ResultKey(state.Id, index)) ?? result;
+            // The finished items are written in chunks every time: each is small, and a commit stores only those
+            // that changed.
+            foreach (var (chunk, bits) in state.Finished?.Chunks() ?? [])
+                parts[FinishedKey(state.Id, chunk)] = JsonSerializer.Serialize(bits);
         }
         return new StoredCheckpoint(trunk, parts, marks);
     }
@@ -174,6 +179,13 @@ internal sealed class StoredCheckpoint
                 : throw new InvalidOperationException($"The saved list of ForEach '{state.Id}' is missing");
             for (var index = 0; index < (state.Results?.Count ?? 0); index++)
                 state.Results![index] = parts.GetValueOrDefault(ResultKey(state.Id, index));
+            if (state.Finished is { } finished)
+            {
+                var prefix = FinishedKey(state.Id, 0)[..^1];
+                foreach (var (key, json) in parts.Where(part => part.Key.StartsWith(prefix, StringComparison.Ordinal)))
+                    finished.AddChunk(int.Parse(key[prefix.Length..], System.Globalization.CultureInfo.InvariantCulture),
+                        JsonSerializer.Deserialize<string>(json)!);
+            }
         }
         checkpoint.StoredTrunk = false;
         return JsonSerializer.Serialize(checkpoint);
@@ -236,12 +248,26 @@ internal sealed class StoredCheckpoint
                         break;
                 }
         }
+        else if (type.Type == typeof(WaitState))
+        {
+            // A wait's deadline is the store's (D-35): a run reads it with its inbox before it looks at it, so a
+            // stamp that replaces the run's estimate does not rewrite the branch that holds the wait.
+            var deadline = type.Properties.Single(property => property.Name == nameof(WaitState.DeadlineUtc));
+            type.Properties.Remove(deadline);
+        }
         else if (type.Type == typeof(ForEachState))
         {
             foreach (var property in type.Properties
-                         .Where(property => property.Name is nameof(ForEachState.Items) or nameof(ForEachState.Results))
+                         .Where(property => property.Name is nameof(ForEachState.Items) or nameof(ForEachState.Results)
+                             or nameof(ForEachState.Finished))
                          .ToArray())
                 type.Properties.Remove(property);
+            // The finished items are in chunk parts; the frame says only whether it keeps them.
+            var finished = type.CreateJsonPropertyInfo(typeof(bool?), "FinishedInParts");
+            finished.Get = value => ((ForEachState)value).Finished != null ? true : null;
+            finished.Set = (value, kept) => ((ForEachState)value).Finished = kept is true ? new ItemSet() : null;
+            finished.ShouldSerialize = (_, kept) => kept != null;
+            type.Properties.Add(finished);
             var count = type.CreateJsonPropertyInfo(typeof(int?), "ResultCount");
             count.Get = value => ((ForEachState)value).Results?.Count;
             count.Set = (value, results) => ((ForEachState)value).Results =

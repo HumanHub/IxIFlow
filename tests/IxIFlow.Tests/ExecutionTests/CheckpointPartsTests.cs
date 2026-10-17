@@ -37,6 +37,53 @@ public sealed class CheckpointPartsTests
     public Task ASqlServerReadNeverMixesTwoCommits() =>
         ReadsNeverMixTwoCommitsAsync(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
 
+    // The finished items of a parallel ForEach are stored in chunks of a fixed number of items, so an item finishing
+    // rewrites one small part however long the list is, and they read back whole.
+    [Fact]
+    public void FinishedItemsAreStoredInChunksAndAnItemChangesOne()
+    {
+        var root = new ContinuationState { Status = ContinuationStatus.Joining, Stack = [new ScopePosition { ScopeId = "root" }] };
+        var state = new ForEachState
+        {
+            Items = Enumerable.Range(0, 2_000).Select(index => $"{index}").ToList(), Finished = [3, 600, 1_500]
+        };
+        root.Stack[0].ForEach = state;
+        var checkpoint = new ExecutionCheckpoint { DefinitionFingerprint = "finished-chunks", Continuations = [root] };
+        var before = StoredCheckpoint.Split(checkpoint, "{}");
+
+        state.Finished.Add(700);
+        var after = StoredCheckpoint.Split(checkpoint, "{}");
+
+        Assert.Equal([StoredCheckpoint.FinishedKey(state.Id, 1)],
+            after.Parts.Where(part => before.Parts.GetValueOrDefault(part.Key) != part.Value).Select(part => part.Key));
+        Assert.DoesNotContain("Finished\":", after.Trunk);
+        var assembled = ExecutionCheckpoint.Read(StoredCheckpoint.AssembleState(after.Trunk, after.Parts));
+        Assert.Equal([3, 600, 700, 1_500], assembled.Continuations[0].Stack[0].ForEach!.Finished!);
+    }
+
+    // A wait's deadline is the store's: the branch that holds the wait is stored without it, so the store's stamp
+    // replacing the run's estimate does not change the branch's part.
+    [Fact]
+    public void ABranchIsStoredWithoutItsWaitsDeadlines()
+    {
+        var (state, data) = State(1, 1);
+        var checkpoint = ExecutionCheckpoint.Read(state);
+        var branch = checkpoint.Continuations[1];
+        checkpoint.Waits.Add(new WaitState
+        {
+            ContinuationId = branch.Id, StepId = "root/0/branch/0/0", Key = "approval", EventType = "Approval",
+            Timeout = TimeSpan.FromHours(1), DeadlineUtc = new DateTime(2026, 10, 16, 12, 0, 0, DateTimeKind.Utc)
+        });
+        var saved = StoredCheckpoint.Split(checkpoint, data, marks: checkpoint.TakeMarks()).Parts;
+
+        checkpoint.Waits[0].DeadlineUtc = checkpoint.Waits[0].DeadlineUtc!.Value.AddMilliseconds(40);
+        var stamped = StoredCheckpoint.Split(checkpoint, data, saved, checkpoint.TakeMarks(), verify: true);
+
+        Assert.DoesNotContain("DeadlineUtc", saved[StoredCheckpoint.BranchKey(branch.Id)]);
+        Assert.Same(saved[StoredCheckpoint.BranchKey(branch.Id)], stamped.Parts[StoredCheckpoint.BranchKey(branch.Id)]);
+        Assert.Contains("\"Timeout\"", saved[StoredCheckpoint.BranchKey(branch.Id)]);
+    }
+
     // Branches come back in the order they started, whatever their keys, so a join merges them in that order after
     // a recovery as it would have without one.
     [Fact]

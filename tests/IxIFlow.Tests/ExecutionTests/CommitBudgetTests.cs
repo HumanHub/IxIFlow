@@ -147,9 +147,10 @@ public sealed class CommitBudgetTests
         Assert.All(perItem, commit => Assert.Equal(0, commit.PartsDeleted));
         Assert.True(perItem.Max(commit => commit.Bytes) <= ItemCommitCeiling,
             $"An item's commit carried {perItem.Max(commit => commit.Bytes)} bytes; the ceiling is {ItemCommitCeiling}");
-        // A commit writes the branches that moved: at most one whose activity ended and one whose activity started.
-        Assert.True(perItem.Max(commit => commit.PartsWritten) <= 2,
-            $"An item's commit wrote {perItem.Max(commit => commit.PartsWritten)} parts; only the branches that moved");
+        // A commit writes what moved: at most one branch whose activity ended, one whose activity started, and the
+        // chunk of finished items the ending one is in.
+        Assert.True(perItem.Max(commit => commit.PartsWritten) <= 3,
+            $"An item's commit wrote {perItem.Max(commit => commit.PartsWritten)} parts; only what moved");
         Assert.True(store.TotalBytes <= BytesPerItem * items,
             $"{store.TotalBytes} bytes written in all; the ceiling is {BytesPerItem} per item");
     }

@@ -100,10 +100,7 @@ internal static class ExecutionCheckpointWriter
             return;
         foreach (var wait in checkpoint.Waits)
             if (timeouts.TryGetValue(wait.Id, out var timeout))
-            {
                 wait.DeadlineUtc = storeNow + timeout;
-                checkpoint.TouchOwner(wait.ContinuationId);
-            }
         if (checkpoint.ExecutionTimerId is { } timer && timeouts.TryGetValue(timer, out var execution))
             checkpoint.ExecutionDeadlineUtc = storeNow + execution;
     }
