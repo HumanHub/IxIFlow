@@ -5,7 +5,6 @@ using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -312,7 +311,7 @@ public sealed class LocalHostTests
     [Trait("Spec", "B-10")]
     public async Task OneWatchReadsCancellationForAllRunningInstances()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         var store = new CountingStore(time);
         using var services = Services(store, slots: 8, time);
         var gate = Gate(services);
@@ -321,19 +320,19 @@ public sealed class LocalHostTests
             .ToArray();
         await gate.WaitForRunningAsync(5);
 
-        // One second in steps of the watch's 250 ms interval, each followed by the read it brings.
+        // One second in steps of the watch's 250 ms interval. The watch sets its timer after each read, so
+        // the count starts once it waits for its next read, and each step waits until the read it brought
+        // is done and the timer set again.
+        var interval = TimeSpan.FromMilliseconds(250);
+        await time.WaitForTimerDueAtAsync(time.GetUtcNow() + interval);
+        Assert.True(store.BatchCancellationReads >= 1);
         var singleBefore = store.CancellationReads;
         var batchBefore = store.BatchCancellationReads;
         for (var step = 1; step <= 4; step++)
         {
-            time.Advance(TimeSpan.FromMilliseconds(250));
-            var deadline = DateTime.UtcNow + Patience;
-            while (store.BatchCancellationReads - batchBefore < step)
-            {
-                Assert.True(DateTime.UtcNow < deadline, $"The watch did not read after step {step}");
-                await Task.Delay(5);
-            }
-            await Task.Delay(5);
+            var timersBefore = time.Armed;
+            time.Advance(interval);
+            await time.WaitForTimerDueAtAsync(time.GetUtcNow() + interval, timersBefore, Patience);
         }
         var single = store.CancellationReads - singleBefore;
         var batches = store.BatchCancellationReads - batchBefore;
