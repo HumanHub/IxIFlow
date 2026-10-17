@@ -15,11 +15,12 @@ namespace IxIFlow.Extensions;
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds IxIFlow workflow services to the service collection
+    /// Adds IxIFlow workflow services to the service collection. The builder it returns chooses the store, such as
+    /// <c>.UseSqlServer(connectionString)</c> from IxIFlow.SqlServer; without one, instances live in memory (D-21).
     /// </summary>
     /// <param name="services">The service collection to add services to</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddIxIFlow(this IServiceCollection services)
+    /// <returns>The builder, whose <see cref="IIxIFlowBuilder.Services"/> continues the service collection</returns>
+    public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services)
     {
         // Core workflow services
         services.TryAddSingleton(HostSettings.Default);
@@ -38,6 +39,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(InProcessInstanceGate.Shared);
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(ExecutionLimits.Default);
+        services.TryAddSingleton(new ClientActor(null));
         
         // Workflow state and persistence
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
@@ -47,7 +49,7 @@ public static class ServiceCollectionExtensions
         
         // Expression evaluation
         services.AddScoped<IExpressionEvaluator, ExpressionEvaluator>();
-        return services;
+        return new IxIFlowBuilder(services);
     }
 
     /// <summary>
@@ -55,8 +57,8 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <param name="services">The service collection to add services to</param>
     /// <param name="configure">Configuration action for workflow options</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection AddIxIFlow(this IServiceCollection services, Action<IxIFlowOptions> configure)
+    /// <returns>The builder that chooses the store; its <see cref="IIxIFlowBuilder.Services"/> continues the collection</returns>
+    public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services, Action<IxIFlowOptions> configure)
     {
         var options = new IxIFlowOptions();
         configure(options);
@@ -91,8 +93,12 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The slot count must be positive");
         if (options.DrainTimeout < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(configure), "The drain timeout cannot be negative");
+        if (string.IsNullOrWhiteSpace(options.HostName))
+            throw new ArgumentOutOfRangeException(nameof(configure), "The host name cannot be empty");
         services.Replace(ServiceDescriptor.Singleton(
-            new HostSettings(options.Slots, options.DrainTimeout, options.PollInterval)));
+            new HostSettings(options.Slots, options.DrainTimeout, options.PollInterval, options.HostName)));
+        services.Replace(ServiceDescriptor.Singleton(
+            new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -100,7 +106,7 @@ public static class ServiceCollectionExtensions
             services.Replace(ServiceDescriptor.Singleton(typeof(IWorkflowStateRepository), options.UseCustomStateRepository));
         }
 
-        return services;
+        return new IxIFlowBuilder(services, options.UseCustomStateRepository?.Name);
     }
 
     /// <summary>
@@ -422,4 +428,18 @@ public class IxIFlowOptions
     /// them. Keep it below the application's shutdown timeout.
     /// </summary>
     public TimeSpan DrainTimeout { get; set; } = HostSettings.DefaultDrainTimeout;
+
+    /// <summary>
+    /// How this host names itself in the records it leaves, such as the attempts an activity sees (D-37). The default
+    /// is the process ID and machine name, <c>pid@machine</c>.
+    /// </summary>
+    public string HostName { get; set; } = HostSettings.DefaultName;
+
+    /// <summary>
+    /// Who this application's operator calls are recorded as when a call names nobody: a plain string the engine
+    /// stores and never checks, such as <c>"orders-service"</c> (D-38). A call that acts for a user names them
+    /// instead: <see cref="CancellationReason.RequestedBy"/>, the resolution's <c>decidedBy</c>, or the release's
+    /// actor. Deciding who may call is the application's job.
+    /// </summary>
+    public string? Actor { get; set; }
 }

@@ -217,12 +217,12 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
             (client, _, token) => client.RecoverAsync(instanceId, token), cancellationToken);
     }
 
-    public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId,
+    public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId, string? actor = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         return UntilIdleAsync(host.RunAsync(instanceId,
-            (client, _, token) => client.ReleaseAsync(instanceId, token), cancellationToken),
+            (client, _, token) => client.ReleaseAsync(instanceId, actor, token), cancellationToken),
             cancellationToken);
     }
 

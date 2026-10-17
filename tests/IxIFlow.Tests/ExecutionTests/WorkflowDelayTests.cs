@@ -5,6 +5,7 @@ using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -14,12 +15,13 @@ public sealed class WorkflowDelayTests
     [Fact]
     public async Task WaitAllJoinsAnImmediateBranchAndADelayedBranch()
     {
-        var repository = new InMemoryWorkflowStateRepository();
-        using var services = Services(repository);
+        var time = new FakeTimeProvider();
+        var repository = new InMemoryWorkflowStateRepository(time);
+        using var services = Services(repository, time);
         var definition = Workflow.Create<DelayData>("ParallelDelay")
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
-                .Do(branch => branch.Delay(TimeSpan.FromMilliseconds(300)))
+                .Do(branch => branch.Delay(TimeSpan.FromMinutes(1)))
                 .Do(branch => branch.Step<NoopActivity>()))
             .Step<MarkActivity>()
             .Build();
@@ -29,11 +31,12 @@ public sealed class WorkflowDelayTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.Equal(0, Assert.IsType<DelayData>(started.WorkflowData).Runs);
 
-        await Task.Delay(500);
+        time.Advance(TimeSpan.FromMinutes(2));
         using var scanner = new WorkflowRecoveryService(
             services.GetRequiredService<IServiceScopeFactory>(), repository,
-            NullLogger<WorkflowRecoveryService>.Instance);
+            NullLogger<WorkflowRecoveryService>.Instance, time);
         await scanner.RecoverOnceAsync(CancellationToken.None);
+        await FinishedAsync(services, started.InstanceId);
 
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
@@ -88,14 +91,15 @@ public sealed class WorkflowDelayTests
     [Fact]
     public async Task DelayParksWithoutAResumeEventAndCompletesAfterRestart()
     {
-        var repository = new InMemoryWorkflowStateRepository();
+        var time = new FakeTimeProvider();
+        var repository = new InMemoryWorkflowStateRepository(time);
         var definition = Workflow.Create<DelayData>("DurableDelay")
             .Step<NoopActivity>()
-            .Delay(TimeSpan.FromMilliseconds(500))
+            .Delay(TimeSpan.FromMinutes(1))
             .Step<MarkActivity>()
             .Build();
         string instanceId;
-        using (var firstProvider = Services(repository))
+        using (var firstProvider = Services(repository, time))
         {
             var started = await firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new DelayData());
@@ -104,16 +108,16 @@ public sealed class WorkflowDelayTests
             instanceId = started.InstanceId;
         }
 
-        using var secondProvider = Services(repository);
+        using var secondProvider = Services(repository, time);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(definition);
         var rejected = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "delay", new object());
         EventAssert.Rejected(rejected, EventRejection.NoOpenWait);
-        await Task.Delay(650);
+        time.Advance(TimeSpan.FromMinutes(2));
         using var scanner = new WorkflowRecoveryService(
             secondProvider.GetRequiredService<IServiceScopeFactory>(), repository,
-            NullLogger<WorkflowRecoveryService>.Instance);
+            NullLogger<WorkflowRecoveryService>.Instance, time);
         await scanner.RecoverOnceAsync(CancellationToken.None);
 
         var saved = await repository.GetWorkflowInstanceAsync(instanceId);
@@ -125,22 +129,24 @@ public sealed class WorkflowDelayTests
     [Fact]
     public async Task ExecutionTimeoutStopsAWaitingDelay()
     {
-        var repository = new InMemoryWorkflowStateRepository();
-        using var services = Services(repository);
+        var time = new FakeTimeProvider();
+        var repository = new InMemoryWorkflowStateRepository(time);
+        using var services = Services(repository, time);
         var definition = Workflow.Create<DelayData>("TimedDelay")
             .Step<NoopActivity>()
-            .Delay(TimeSpan.FromSeconds(1))
+            .Delay(TimeSpan.FromMinutes(2))
             .Step<MarkActivity>()
             .Build();
         var started = await services.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new DelayData(),
-                new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(500) });
+                new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMinutes(1) });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        await Task.Delay(650);
+        time.Advance(TimeSpan.FromSeconds(90));
         using var scanner = new WorkflowRecoveryService(
             services.GetRequiredService<IServiceScopeFactory>(), repository,
-            NullLogger<WorkflowRecoveryService>.Instance);
+            NullLogger<WorkflowRecoveryService>.Instance, time);
         await scanner.RecoverOnceAsync(CancellationToken.None);
+        await FinishedAsync(services, started.InstanceId);
 
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.TimedOut, saved!.Status);
@@ -148,16 +154,25 @@ public sealed class WorkflowDelayTests
             saved.WorkflowDataJson)!.Runs);
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository repository)
+    private static ServiceProvider Services(IWorkflowStateRepository repository, TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        if (time != null)
+            services.AddSingleton(time);
         services.AddIxIFlow();
         services.AddSingleton(repository);
         services.AddTransient<NoopActivity>();
         services.AddTransient<MarkActivity>();
         return services.BuildServiceProvider();
     }
+
+    // The host's own timer wakes the instance as the clock moves, so the scan may find it already taken;
+    // either way it finishes.
+    private static Task<WorkflowExecutionResult> FinishedAsync(IServiceProvider services, string instanceId) =>
+        services.GetRequiredService<IWorkflowClient>()
+            .AwaitAsync(instanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10));
 
     public sealed class DelayData { public int Runs { get; set; } }
 

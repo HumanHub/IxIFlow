@@ -6,6 +6,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -16,7 +17,8 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task ApprovalBeforeDeadlineRunsOnlyTheReceivedPath()
     {
-        using var services = Services();
+        // The clock never moves, so the deadline cannot pass before the approval.
+        using var services = Services(new FakeTimeProvider());
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(ApprovalWorkflow("ApprovedInTime"),
             new ApprovalData());
@@ -32,13 +34,15 @@ public sealed class WorkflowDeadlineTests
     [Trait("Spec", "C-12")]
     public async Task WaitDeadlineRunsTimeoutPathAndSkipsReceivedPath()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(ApprovalWorkflow("ApprovalTimedOut"),
             new ApprovalData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         // The host resumes the instance when its deadline passes (C-12).
+        time.Advance(TimeSpan.FromMinutes(2));
         var result = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(Patience);
 
@@ -51,16 +55,17 @@ public sealed class WorkflowDeadlineTests
     {
         // The host that saved the deadline is gone, so the deadline is still unprocessed when a
         // late approval reaches another host.
-        var repository = new InMemoryWorkflowStateRepository();
+        var time = new FakeTimeProvider();
+        var repository = new InMemoryWorkflowStateRepository(time);
         string instanceId;
-        using (var first = Services(repository))
+        using (var first = Services(time, repository))
             instanceId = (await first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(ApprovalWorkflow("LateApproval"), new ApprovalData())).InstanceId;
-        using var services = Services(repository);
+        using var services = Services(time, repository);
         await services.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(ApprovalWorkflow("LateApproval"));
         var engine = services.GetRequiredService<IWorkflowClient>();
-        await Task.Delay(160);
+        time.Advance(TimeSpan.FromMinutes(2));
 
         var result = await engine.ResumeAsync(instanceId, "approval",
             new Approval());
@@ -75,13 +80,14 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task DueWaitDoesNotDiscardAnEventForAnotherBranch()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("ParallelDeadlineAndApproval")
             .Step<SeedActivity>()
             .Parallel(parallel => parallel
                 .Do(branch => branch.WaitFor<Approval>("first", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(80))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path.Step<MarkActivity>(step => step
                         .Input(activity => activity.Value).From(_ => "timeout")
                         .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome)))))
@@ -90,7 +96,7 @@ public sealed class WorkflowDeadlineTests
                         .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After))))
             .Build();
         var started = await engine.RunAsync(definition, new ApprovalData());
-        await Task.Delay(160);
+        time.Advance(TimeSpan.FromMinutes(2));
 
         var result = await engine.ResumeAsync(started.InstanceId, "second", new Approval());
 
@@ -104,15 +110,17 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task InstanceDeadlineIncludesTimeParkedAtWait()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("WholeInstanceTimeout")
             .Step<SeedActivity>()
             .WaitFor<Approval>("approval")
             .Build();
         var started = await engine.RunAsync(definition, new ApprovalData(),
-            new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(80) });
+            new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMinutes(1) });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        time.Advance(TimeSpan.FromMinutes(2));
 
         var result = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(Patience);
@@ -123,16 +131,22 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task InstanceDeadlineInterruptsAnActiveActivity()
     {
-        using var services = Services();
+        var time = new TimerRecordingClock();
+        using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var blocking = services.GetRequiredService<BlockingProbe>();
         var definition = Workflow.Create<ApprovalData>("ActiveExecutionTimeout")
             .Step<BlockingActivity>()
             .Build();
 
+        var deadline = time.GetUtcNow() + TimeSpan.FromSeconds(5);
         var execution = engine.RunAsync(definition, new ApprovalData(),
-            new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(500) });
+            new WorkflowOptions { ExecutionTimeout = TimeSpan.FromSeconds(5) });
         await blocking.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        // The run waits for its activity and for the deadline's timer; only that timer can wake it.
+        await time.WaitForTimerDueAtAsync(deadline);
+        // One step, shorter than a lease renewal, while the run holds its lease.
+        time.Advance(TimeSpan.FromSeconds(6));
         var result = await execution.WaitAsync(TimeSpan.FromSeconds(3));
 
         Assert.Equal(WorkflowExecutionStatus.TimedOut, result.Status);
@@ -144,12 +158,14 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task InstanceDeadlinePassingAfterRootCompletionStillCompletes()
     {
-        var timeout = TimeSpan.FromMilliseconds(300);
-        var repository = new DelayRootCompletionRepository(timeout * 2);
+        var time = new FakeTimeProvider();
+        var timeout = TimeSpan.FromSeconds(5);
+        var repository = new DelayRootCompletionRepository(time, timeout + TimeSpan.FromSeconds(1));
         using var services = new ServiceCollection()
             .AddLogging()
+            .AddSingleton<TimeProvider>(time)
             .AddTransient<SeedActivity>()
-            .AddIxIFlow()
+            .AddIxIFlow().Services
             .AddSingleton<IWorkflowStateRepository>(repository)
             .BuildServiceProvider();
         var engine = services.GetRequiredService<IWorkflowClient>();
@@ -172,22 +188,23 @@ public sealed class WorkflowDeadlineTests
     public async Task LocalRecoveryServiceWakesAnOverdueWait()
     {
         // The wait was saved by a host that is gone, so only the scan can find it.
-        var repository = new InMemoryWorkflowStateRepository();
+        var time = new FakeTimeProvider();
+        var repository = new InMemoryWorkflowStateRepository(time);
         string instanceId;
-        using (var first = Services(repository))
+        using (var first = Services(time, repository))
             instanceId = (await first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(ApprovalWorkflow("ScannedApproval"), new ApprovalData())).InstanceId;
-        using var services = Services(repository);
+        using var services = Services(time, repository);
         await services.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(ApprovalWorkflow("ScannedApproval"));
         Assert.Contains(services.GetServices<IHostedService>(),
             service => service is WorkflowRecoveryService);
-        await Task.Delay(160);
+        time.Advance(TimeSpan.FromMinutes(2));
         Assert.Contains(await repository.GetRunnableInstancesAsync(100),
             instance => instance.InstanceId == instanceId);
         using var scanner = new WorkflowRecoveryService(
             services.GetRequiredService<IServiceScopeFactory>(), repository,
-            NullLogger<WorkflowRecoveryService>.Instance);
+            NullLogger<WorkflowRecoveryService>.Instance, time);
 
         await scanner.RecoverOnceAsync(CancellationToken.None);
 
@@ -215,13 +232,14 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task TimeoutExitsOnlyItsContainingSequence()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("NestedWaitTimeout")
             .Step<SeedActivity>()
             .Sequence(sequence => sequence
                 .WaitFor<Approval>("approval", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(80))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path.Step<MarkActivity>(step => step
                         .Input(activity => activity.Value).From(_ => "timeout")
                         .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))))
@@ -232,6 +250,7 @@ public sealed class WorkflowDeadlineTests
                 .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After))
             .Build();
         var started = await engine.RunAsync(definition, new ApprovalData());
+        time.Advance(TimeSpan.FromMinutes(2));
 
         var result = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(Patience);
@@ -245,7 +264,8 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task WholeInstanceTimeoutRunsFinally()
     {
-        using var services = Services();
+        var time = new TimerRecordingClock();
+        using var services = Services(time);
         var blocking = services.GetRequiredService<BlockingProbe>();
         var definition = Workflow.Create<ApprovalData>("TimeoutFinally")
             .Step<SeedActivity>()
@@ -254,10 +274,15 @@ public sealed class WorkflowDeadlineTests
                 .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After)))
             .Build();
 
+        var deadline = time.GetUtcNow() + TimeSpan.FromSeconds(5);
         var execution = services.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new ApprovalData(),
-                new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(500) });
+                new WorkflowOptions { ExecutionTimeout = TimeSpan.FromSeconds(5) });
         await blocking.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        // The run waits for its activity and for the deadline's timer; only that timer can wake it.
+        await time.WaitForTimerDueAtAsync(deadline);
+        // One step, shorter than a lease renewal, while the run holds its lease.
+        time.Advance(TimeSpan.FromSeconds(6));
         var result = await execution.WaitAsync(TimeSpan.FromSeconds(3));
 
         Assert.Equal(WorkflowExecutionStatus.TimedOut, result.Status);
@@ -267,13 +292,15 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task TimedWaitInFinallyCompletesBusinessCancellation()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time);
         var definition = CleanupWaitWorkflow("CancelCleanupTimeout");
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(definition, new ApprovalData());
         var cleaning = await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, cleaning.Status);
+        time.Advance(TimeSpan.FromMinutes(2));
 
         var result = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(Patience);
@@ -285,14 +312,16 @@ public sealed class WorkflowDeadlineTests
     [Fact]
     public async Task TimedWaitInFinallyCompletesExecutionTimeout()
     {
-        using var services = Services();
-        var definition = CleanupWaitWorkflow("DeadlineCleanupTimeout", TimeSpan.FromMilliseconds(800));
+        var time = new FakeTimeProvider();
+        using var services = Services(time);
+        var definition = CleanupWaitWorkflow("DeadlineCleanupTimeout", TimeSpan.FromMinutes(10));
         var engine = services.GetRequiredService<IWorkflowClient>();
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var started = await engine.RunAsync(definition, new ApprovalData(),
-            new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMilliseconds(80) });
+            new WorkflowOptions { ExecutionTimeout = TimeSpan.FromMinutes(1) });
 
         // The host wakes the instance at its deadline; it then waits in its cleanup wait.
+        time.Advance(TimeSpan.FromMinutes(2));
         var deadline = DateTime.UtcNow + Patience;
         while (true)
         {
@@ -308,6 +337,7 @@ public sealed class WorkflowDeadlineTests
         }
 
         // The cleanup wait times out and the instance ends.
+        time.Advance(TimeSpan.FromMinutes(11));
         var result = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(Patience);
 
@@ -320,7 +350,7 @@ public sealed class WorkflowDeadlineTests
             .Step<SeedActivity>()
             .Try(body => body.WaitFor<Approval>("start"))
             .Finally(body => body.WaitFor<Approval>("cleanup", configure: wait => wait
-                .TimeoutAfter(cleanupTimeout ?? TimeSpan.FromMilliseconds(80))
+                .TimeoutAfter(cleanupTimeout ?? TimeSpan.FromMinutes(1))
                 .OnTimeout(path => path.Step<AfterActivity>(step => step
                     .Output(activity => activity.Done).To(ctx => ctx.WorkflowData.After)))))
             .Build();
@@ -329,7 +359,7 @@ public sealed class WorkflowDeadlineTests
         Workflow.Create<ApprovalData>(name)
             .Step<SeedActivity>()
             .WaitFor<Approval>("approval", configure: wait => wait
-                .TimeoutAfter(TimeSpan.FromMilliseconds(80))
+                .TimeoutAfter(TimeSpan.FromMinutes(1))
                 .OnTimeout(path => path.Step<MarkActivity>(step => step
                     .Input(activity => activity.Value).From(_ => "timeout")
                     .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))))
@@ -340,10 +370,11 @@ public sealed class WorkflowDeadlineTests
 
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(5);
 
-    private static ServiceProvider Services(IWorkflowStateRepository? repository = null)
+    private static ServiceProvider Services(TimeProvider time, IWorkflowStateRepository? repository = null)
     {
         var registrations = new ServiceCollection();
         registrations.AddLogging();
+        registrations.AddSingleton(time);
         if (repository != null)
             registrations.AddSingleton(repository);
         registrations.AddTransient<SeedActivity>();
@@ -391,8 +422,10 @@ public sealed class WorkflowDeadlineTests
         }
     }
 
-    // Holds the commit that records a completed root until the execution deadline has passed.
-    private sealed class DelayRootCompletionRepository(TimeSpan delay) : IWorkflowStateRepository
+    // Holds the commit that records a completed root until the execution deadline has passed: it moves
+    // the clock past the deadline, in one step shorter than a lease renewal.
+    private sealed class DelayRootCompletionRepository(FakeTimeProvider time, TimeSpan delay)
+        : IWorkflowStateRepository
     {
         public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
             _inner.AppendEventAsync(workflowEvent);
@@ -408,7 +441,7 @@ public sealed class WorkflowDeadlineTests
         public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
             _inner.GetOpenWaitsAsync(query);
 
-        private readonly InMemoryWorkflowStateRepository _inner = new();
+        private readonly InMemoryWorkflowStateRepository _inner = new(time);
         private int _delayed;
 
         public bool Delayed => Volatile.Read(ref _delayed) != 0;
@@ -422,7 +455,7 @@ public sealed class WorkflowDeadlineTests
                 ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations[0].Status ==
                     ContinuationStatus.Completed &&
                 Interlocked.Exchange(ref _delayed, 1) == 0)
-                await Task.Delay(delay);
+                time.Advance(delay);
             return await _inner.CommitWorkflowInstanceAsync(commit);
         }
 

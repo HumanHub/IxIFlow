@@ -278,7 +278,7 @@ public sealed class WorkflowRecoveryServiceTests
             throw new NotSupportedException();
         public List<string> Recovered { get; } = [];
 
-        public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId,
+        public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId, string? actor = null,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public Task<WorkflowExecutionResult> RecoverAsync(string instanceId,
@@ -321,7 +321,7 @@ public sealed class WorkflowRecoveryServiceTests
         public TaskCompletionSource ReleaseFirst { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId,
+        public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId, string? actor = null,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public async Task<WorkflowExecutionResult> RecoverAsync(string instanceId,

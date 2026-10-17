@@ -5,6 +5,7 @@ using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -212,16 +213,29 @@ public sealed class CommitBudgetTests
     [Trait("Spec", "C-03")]
     public async Task RetryParkedOnALongBackoff()
     {
-        var store = new MeasuringStore();
-        using var services = Services(store);
+        var time = new FakeTimeProvider();
+        var store = new MeasuringStore(time);
+        using var services = Services(store, time);
         var definition = Workflow.Create<BudgetData>("BudgetParkedRetry")
             .Step<WorkActivity>()
             .Saga(saga => saga.Step<FailOnceActivity>(step => step
                 .OnError<InvalidOperationException>(handler => handler.ThenRetry(new RetryPolicy(
                     TimeSpan.FromMilliseconds(1200), TimeSpan.FromMilliseconds(1200), 1, 1)))))
             .Build();
+        var instanceId = Guid.NewGuid().ToString("N");
 
-        var result = await Engine(services).RunAsync(definition, new BudgetData());
+        var running = Engine(services).RunAsync(definition, new BudgetData(),
+            new WorkflowOptions { InstanceId = instanceId });
+        // The retry is parked once the instance is due later than now; then its backoff passes.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (await store.GetWorkflowInstanceAsync(instanceId) is not
+               { Status: WorkflowStatus.Running, RunnableAtUtc: { } due } || due <= time.GetUtcNow().UtcDateTime)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The retry was never parked");
+            await Task.Delay(10);
+        }
+        time.Advance(TimeSpan.FromMilliseconds(1300));
+        var result = await running.WaitAsync(TimeSpan.FromSeconds(10));
 
         // The park is one commit of its own; resuming adds none before the retried activity starts.
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -272,11 +286,13 @@ public sealed class CommitBudgetTests
         return (store.Commits, store.MaxBytes);
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository store)
+    private static ServiceProvider Services(IWorkflowStateRepository store, TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(store);
+        if (time != null)
+            services.AddSingleton(time);
         services.AddIxIFlow();
         services.AddTransient<WorkActivity>();
         services.AddTransient<CountActivity>();
@@ -293,6 +309,14 @@ public sealed class CommitBudgetTests
     private sealed class MeasuringStore : FaultInjectingRepository
     {
         private readonly ConcurrentQueue<(long Bytes, int PartsWritten, int PartsDeleted)> _applied = new();
+
+        public MeasuringStore()
+        {
+        }
+
+        public MeasuringStore(TimeProvider time) : base(time)
+        {
+        }
 
         public IReadOnlyList<(long Bytes, int PartsWritten, int PartsDeleted)> Applied => _applied.ToArray();
         public int Commits => _applied.Count;

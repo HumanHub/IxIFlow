@@ -2,6 +2,7 @@ using IxIFlow.Core;
 using IxIFlow.Tests.Infrastructure;
 using Dapper;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -15,7 +16,13 @@ public sealed class WorkflowCompletionOutboxTests
     [Fact]
     public async Task ExpiredMemoryOutboxClaimCanBeRecovered()
     {
-        await VerifyExpiredClaimCanBeRecovered(new InMemoryWorkflowStateRepository());
+        var time = new FakeTimeProvider();
+        await VerifyExpiredClaimCanBeRecovered(new InMemoryWorkflowStateRepository(time),
+            TimeSpan.FromMilliseconds(50), reclaim =>
+            {
+                time.Advance(TimeSpan.FromMilliseconds(200));
+                return reclaim();
+            });
     }
 
     [SqlServerFact]
@@ -24,10 +31,26 @@ public sealed class WorkflowCompletionOutboxTests
     {
         var repository = new SqlWorkflowStateRepository(
             SqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString);
-        await VerifyExpiredClaimCanBeRecovered(repository);
+        // Long enough that the refusal right after the claim cannot land after it on SQL Server's clock; the
+        // new host then claims again until the dead host's claim has expired.
+        await VerifyExpiredClaimCanBeRecovered(repository, TimeSpan.FromSeconds(2), async reclaim =>
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (true)
+            {
+                var claimed = (await reclaim()).ToList();
+                if (claimed.Count > 0)
+                    return claimed;
+                Assert.True(DateTime.UtcNow < deadline, "The expired claim was never recovered");
+                await Task.Delay(100);
+            }
+        });
     }
 
-    private static async Task VerifyExpiredClaimCanBeRecovered(IWorkflowStateRepository repository)
+    // The dead host's claim lasts deadHostClaim; reclaimOnceExpired lets it expire and claims for the new host.
+    private static async Task VerifyExpiredClaimCanBeRecovered(IWorkflowStateRepository repository,
+        TimeSpan deadHostClaim,
+        Func<Func<Task<IEnumerable<WorkflowInstance>>>, Task<IEnumerable<WorkflowInstance>>> reclaimOnceExpired)
     {
         var outbox = Assert.IsAssignableFrom<IWorkflowCompletionOutbox>(repository);
         var instance = new WorkflowInstance
@@ -42,14 +65,12 @@ public sealed class WorkflowCompletionOutboxTests
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
                     Guid.NewGuid().ToString("N")))).Status);
             Assert.Single(await outbox.ClaimUnpublishedCompletionsAsync(
-                instance.InstanceId, "dead-host", TimeSpan.FromMilliseconds(50)));
+                instance.InstanceId, "dead-host", deadHostClaim));
             Assert.Empty(await outbox.ClaimUnpublishedCompletionsAsync(
                 instance.InstanceId, "new-host", TimeSpan.FromSeconds(5)));
 
-            await Task.Delay(200);
-
-            var recovered = Assert.Single(await outbox.ClaimUnpublishedCompletionsAsync(
-                instance.InstanceId, "new-host", TimeSpan.FromSeconds(5)));
+            var recovered = Assert.Single(await reclaimOnceExpired(() => outbox.ClaimUnpublishedCompletionsAsync(
+                instance.InstanceId, "new-host", TimeSpan.FromSeconds(5))));
             Assert.False(await outbox.MarkCompletionPublishedAsync(
                 instance.InstanceId, recovered.Revision, "dead-host"));
             Assert.True(await outbox.MarkCompletionPublishedAsync(

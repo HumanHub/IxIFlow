@@ -3,6 +3,7 @@ using IxIFlow.Core;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -21,14 +22,17 @@ public sealed class ParkedRunTests
     [Trait("Spec", "C-12")]
     public async Task ALongRetryGivesItsSlotToOtherWork()
     {
-        using var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
+        var time = new FakeTimeProvider();
+        using var services = Services(new InMemoryWorkflowStateRepository(time), slots: 1, time);
         var probe = services.GetRequiredService<ParkProbe>();
-        var retrying = Client(services).RunAsync(RetryingWorkflow("ParksItsRetry", 600), new ParkData());
+        var retrying = Client(services).RunAsync(RetryingWorkflow("ParksItsRetry", 60_000), new ParkData());
         await probe.FailedOnce.Task.WaitAsync(Patience);
 
         // The only slot is free while the retry waits, so other work runs in between.
         var other = await Client(services).RunAsync(Workflow.Create<ParkData>("RunsMeanwhile")
             .Step<MarkActivity>().Build(), new ParkData()).WaitAsync(Patience);
+        // Nothing runs now; the host resumes the parked retry once its minute has passed.
+        time.Advance(TimeSpan.FromSeconds(61));
         var retried = await retrying.WaitAsync(Patience);
 
         Assert.Equal(WorkflowExecutionStatus.Success, other.Status);
@@ -40,8 +44,9 @@ public sealed class ParkedRunTests
     [Trait("Spec", "C-03")]
     public async Task AParkedRunReleasesItsLeaseInItsCommit()
     {
-        var store = new InMemoryWorkflowStateRepository();
-        using var services = Services(store, slots: 4);
+        var time = new FakeTimeProvider();
+        var store = new InMemoryWorkflowStateRepository(time);
+        using var services = Services(store, slots: 4, time);
         var probe = services.GetRequiredService<ParkProbe>();
         var instanceId = Guid.NewGuid().ToString("N");
         var retrying = Client(services).RunAsync(RetryingWorkflow("ReleasesItsLease", 1500), new ParkData(),
@@ -49,7 +54,7 @@ public sealed class ParkedRunTests
         await probe.FailedOnce.Task.WaitAsync(Patience);
         var parked = await WaitForAsync(async () =>
             await store.GetWorkflowInstanceAsync(instanceId) is { RunnableAtUtc: { } due } saved &&
-            due > DateTime.UtcNow ? saved : null);
+            due > time.GetUtcNow().UtcDateTime ? saved : null);
 
         // Running, due at the retry, and unowned: a claim now finds no crash to count.
         Assert.Equal(WorkflowStatus.Running, parked.Status);
@@ -59,6 +64,8 @@ public sealed class ParkedRunTests
         Assert.True(await store.ReleaseExecutionLeaseAsync(instanceId, "probe"));
         Assert.DoesNotContain(await store.GetRunnableInstancesAsync(100), item => item.InstanceId == instanceId);
 
+        // Past the backoff, the host resumes the retry.
+        time.Advance(TimeSpan.FromSeconds(2));
         Assert.Equal(WorkflowExecutionStatus.Success, (await retrying.WaitAsync(Patience)).Status);
     }
 
@@ -137,7 +144,11 @@ public sealed class ParkedRunTests
     [Fact]
     [Trait("Spec", "C-01")]
     [Trait("Spec", "C-05")]
-    public Task MemoryStoreKeepsOneRunnableTime() => VerifyRunnableTimes(new InMemoryWorkflowStateRepository());
+    public Task MemoryStoreKeepsOneRunnableTime()
+    {
+        var time = new FakeTimeProvider();
+        return VerifyRunnableTimes(new InMemoryWorkflowStateRepository(time), time);
+    }
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
@@ -146,28 +157,40 @@ public sealed class ParkedRunTests
     public Task SqlStoreKeepsOneRunnableTime() =>
         VerifyRunnableTimes(new SqlWorkflowStateRepository(SqlTestDatabase<ParkedRunTests>.ConnectionString));
 
-    private static async Task VerifyRunnableTimes(IWorkflowStateRepository store)
+    // On a fake clock the delays end by advancing it; SQL Server's clock is polled until they have ended.
+    private static async Task VerifyRunnableTimes(IWorkflowStateRepository store, FakeTimeProvider? time = null)
     {
         var ids = Enumerable.Range(0, 4).Select(_ => Guid.NewGuid().ToString("N")).ToArray();
         try
         {
             // Three idle instances whose delays end in the reverse order of their commits: the store
             // stamps each deadline from its own clock, so the last one committed is due first. One more
-            // waits only for an event.
+            // waits only for an event. The delays are three seconds apart, so a slow store has seconds to make the
+            // commits without changing their order, and all three must be due within the longest and three more.
+            var committed = DateTime.UtcNow;
             for (var index = 0; index < 3; index++)
                 await Commit(store, new WorkflowInstance
                 {
                     InstanceId = ids[index], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
                     WorkflowDataJson = "{}"
                 }, new OpenedWait($"{ids[index]}-delay", WaitKind.Delay, "delay", "",
-                    TimeSpan.FromSeconds(3 - index)));
+                    TimeSpan.FromSeconds(7 - 3 * index)));
             await Commit(store, new WorkflowInstance
             {
                 InstanceId = ids[3], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
                 WorkflowDataJson = "{}"
             });
             Assert.DoesNotContain(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == ids[0]);
-            await Task.Delay(TimeSpan.FromSeconds(3.3));
+            if (time != null)
+            {
+                time.Advance(TimeSpan.FromSeconds(8));
+                Assert.Equal(3, (await Ours(store, ids)).Length);
+            }
+            else
+            {
+                await WaitForAsync(async () => (await Ours(store, ids)).Length == 3 ? ids : null);
+                Assert.True(DateTime.UtcNow - committed < TimeSpan.FromSeconds(10), "The delays were not due on time");
+            }
 
             // The poll takes the earliest first, no more than it asks for. Other rows of a shared store
             // may be due earlier, so only these instances' order is checked.
@@ -237,11 +260,13 @@ public sealed class ParkedRunTests
                     1, 1)))))
             .Build();
 
-    private static ServiceProvider Services(IWorkflowStateRepository store, int slots)
+    private static ServiceProvider Services(IWorkflowStateRepository store, int slots, TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(store);
+        if (time != null)
+            services.AddSingleton(time);
         services.AddIxIFlow(options =>
         {
             options.Slots = slots;

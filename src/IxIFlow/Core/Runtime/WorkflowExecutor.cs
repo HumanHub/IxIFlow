@@ -37,6 +37,12 @@ internal sealed class WorkflowExecutor
     {
         // Everything logged during the run carries its instance (G-03).
         using var logScope = _logger.BeginScope(LogScope.ForInstance(instance));
+        // A span for the run pass, and the host's count of active runs (D-39).
+        using var span = Telemetry.Source.StartActivity($"run {instance.WorkflowName}");
+        Telemetry.Tag(span, instance);
+        using var activeRun = Telemetry.Running(instance);
+        // Expressions read time from the engine's clock (D-42).
+        using var clock = RunClock.Use(_time);
         checkpoint.RootData = workflowData;
         var inFlight = new Dictionary<string, RunningActivity>();
         // Set when a step hit a resource limit: the run starts nothing new and stops once its
@@ -559,11 +565,7 @@ internal sealed class WorkflowExecutor
         var root = checkpoint.Continuations[0];
         if (root.Status == ContinuationStatus.Completed)
             return false;
-        instance.CancellationReason = requested;
-        checkpoint.CancellationRequested = true;
-        checkpoint.UnhandledError = null;
-        checkpoint.RuntimeUnhandledError = null;
-        ContinuationTransitions.CancelTree(checkpoint, root);
+        OperatorTrace.ApplyCancellation(instance, checkpoint, requested, Now);
         await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
         return true;
     }

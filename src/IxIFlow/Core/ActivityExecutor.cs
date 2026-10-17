@@ -17,6 +17,7 @@ public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : I
     public string InvocationId { get; }
     public string AttemptId { get; }
     public object? RecoveryState { get; internal set; }
+    public ActivityAttempt Attempt { get; internal set; } = ActivityAttempt.First;
     public string CorrelationId { get; }
     public string ActivityName { get; }
     public int StepNumber { get; }
@@ -125,7 +126,7 @@ public sealed class PreparedActivity
 
     internal PreparedActivity(IAsyncActivity activity, IActivityContext context,
         Func<Task> applyOutputs, Action<object?> setRecoveryState, Action<ReplyAddress> setReply,
-        Runtime.ActivityInputSnapshot inputs)
+        Action<ActivityAttempt> setAttempt, Runtime.ActivityInputSnapshot inputs)
     {
         Activity = activity;
         Context = context;
@@ -133,9 +134,11 @@ public sealed class PreparedActivity
         _applyOutputs = applyOutputs;
         _setRecoveryState = setRecoveryState;
         _setReply = setReply;
+        _setAttempt = setAttempt;
     }
 
     private readonly Action<ReplyAddress> _setReply;
+    private readonly Action<ActivityAttempt> _setAttempt;
 
     public IAsyncActivity Activity { get; }
     public IActivityContext Context { get; }
@@ -146,6 +149,7 @@ public sealed class PreparedActivity
     internal Task ApplyOutputsAsync() => _applyOutputs();
     internal void SetRecoveryState(object? state) => _setRecoveryState(state);
     internal void SetReply(ReplyAddress reply) => _setReply(reply);
+    internal void SetAttempt(ActivityAttempt attempt) => _setAttempt(attempt);
 }
 
 /// <summary>
@@ -266,6 +270,7 @@ public class ActivityExecutor : IActivityExecutor
                 new TypedActivityExecutionResult<object>(), request.Items),
             state => context.RecoveryState = state,
             reply => context.Reply = reply,
+            attempt => context.Attempt = attempt,
             inputs);
     }
 
