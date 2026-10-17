@@ -26,7 +26,7 @@ public class EngineContractRegressionTests
 
         string waitingId;
         string waitingName;
-        using (var firstProvider = new ServiceCollection().AddLogging().AddIxIFlow()
+        using (var firstProvider = new ServiceCollection().AddLogging().AddIxIFlow().Services
                    .AddSingleton<IWorkflowStateRepository>(repository).BuildServiceProvider())
         {
             var engine = firstProvider.GetRequiredService<IWorkflowClient>();
@@ -42,7 +42,7 @@ public class EngineContractRegressionTests
             waitingName = savedWaiting.WorkflowName;
         }
 
-        using var secondProvider = new ServiceCollection().AddLogging().AddIxIFlow()
+        using var secondProvider = new ServiceCollection().AddLogging().AddIxIFlow().Services
             .AddSingleton<IWorkflowStateRepository>(repository).BuildServiceProvider();
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(Waiting());
@@ -143,7 +143,7 @@ public class EngineContractRegressionTests
     {
         using var provider = new ServiceCollection()
             .AddLogging()
-            .AddIxIFlow()
+            .AddIxIFlow().Services
             .BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<RegressionData>("OptionsMustBeHonest")

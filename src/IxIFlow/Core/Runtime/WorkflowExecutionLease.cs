@@ -27,7 +27,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         _token = token;
         _renewal = RenewUntilStoppedAsync(settings, requestedAtUtc.Add(settings.Duration));
         _cancellationWatch = watch.Watch(instanceId, _cancellation,
-            error => _loss.TrySetResult(error), settings.Duration, settings.RenewalInterval, ObserveInbox);
+            Lose, settings.Duration, settings.RenewalInterval, ObserveInbox);
     }
 
     private readonly object _inboxLock = new();
@@ -69,6 +69,13 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     public int CrashCount { get; }
 
     public Task Loss => _loss.Task;
+
+    // The lease is lost once; the host counts it (D-39).
+    private void Lose(Exception error)
+    {
+        if (_loss.TrySetResult(error))
+            Telemetry.LeasesLost.Add(1);
+    }
     public Task<CancellationReason> Cancellation => _cancellation.Task;
 
     public static async Task<WorkflowExecutionLease?> TryAcquireAsync(
@@ -121,7 +128,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                 var sentAtUtc = Now;
                 if (sentAtUtc >= expiresAtUtc)
                 {
-                    _loss.TrySetResult(new TimeoutException(
+                    Lose(new TimeoutException(
                         $"Execution lease for workflow instance '{_instanceId}' expired before it could be renewed"));
                     return;
                 }
@@ -133,7 +140,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                         _time, _stop.Token);
                     if (!renewed)
                     {
-                        _loss.TrySetResult(new InvalidOperationException(
+                        Lose(new InvalidOperationException(
                             $"Execution lease for workflow instance '{_instanceId}' was lost"));
                         return;
                     }
@@ -142,7 +149,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                 }
                 catch (TimeoutException)
                 {
-                    _loss.TrySetResult(new TimeoutException(
+                    Lose(new TimeoutException(
                         $"Execution lease for workflow instance '{_instanceId}' could not be renewed before it expired"));
                     return;
                 }
@@ -150,7 +157,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                 {
                     if (Now >= expiresAtUtc)
                     {
-                        _loss.TrySetResult(error);
+                        Lose(error);
                         return;
                     }
                     // Try again soon, while the lease still holds.
@@ -164,7 +171,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         }
         catch (Exception error)
         {
-            _loss.TrySetResult(error);
+            Lose(error);
         }
     }
 

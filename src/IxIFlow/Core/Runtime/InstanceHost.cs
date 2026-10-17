@@ -32,6 +32,8 @@ internal sealed class InstanceHost(
     private readonly WorkflowExecutor _executor = new(services, activityExecutor,
         timeProvider ?? TimeProvider.System);
 
+    private readonly string? _defaultActor = (services.GetService(typeof(ClientActor)) as ClientActor)?.Name;
+
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
     public static bool HasStructuredCheckpoint(
@@ -53,6 +55,7 @@ internal sealed class InstanceHost(
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         cancellationToken.ThrowIfCancellationRequested();
+        reason = OperatorTrace.WithActor(reason, _defaultActor);
         if (!await _store.RequestCancellationAsync(instanceId, reason))
         {
             var existing = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
@@ -133,7 +136,7 @@ internal sealed class InstanceHost(
         var childDataType = step.StepType == WorkflowStepType.WorkflowInvocation
             ? await ResolveChildDataTypeAsync(step)
             : null;
-        var decision = PrepareResolution(scopes, step, resolution, childDataType);
+        var decision = PrepareResolution(scopes, step, resolution, childDataType, _defaultActor);
         var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
@@ -157,11 +160,7 @@ internal sealed class InstanceHost(
         var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
         if (cancellationReason != null && !checkpoint.CancellationRequested &&
             checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
-        {
-            instance.CancellationReason = cancellationReason;
-            checkpoint.CancellationRequested = true;
-            ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
-        }
+            OperatorTrace.ApplyCancellation(instance, checkpoint, cancellationReason, Now);
         await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
         return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
             true, owner, cancellationToken);
@@ -259,13 +258,13 @@ internal sealed class InstanceHost(
     }
 
     private static ActivityResolutionState PrepareResolution(WorkflowScopeCatalog scopes,
-        WorkflowStep step, ActivityResolution resolution, Type? childDataType)
+        WorkflowStep step, ActivityResolution resolution, Type? childDataType, string? defaultActor)
     {
         var decision = new ActivityResolutionState
         {
             Kind = resolution.Kind,
             Note = resolution.Note,
-            DecidedBy = resolution.DecidedBy
+            DecidedBy = resolution.DecidedBy ?? defaultActor
         };
         if (resolution.Kind == ActivityResolutionKind.Failed)
         {
@@ -543,13 +542,14 @@ internal sealed class InstanceHost(
     /// Releases an instance stopped for an operator and runs it. Automatic recovery, including a
     /// parent checking its child, never releases a stop.
     /// </summary>
-    public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId, CancellationToken cancellationToken) =>
-        ContinueAsync(instanceId, release: true, cancellationToken);
+    public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId, string? actor,
+        CancellationToken cancellationToken) =>
+        ContinueAsync(instanceId, release: true, cancellationToken, actor: actor ?? _defaultActor);
 
     // With forEvent, an instance with nothing to run is answered as it is saved: another run took the
     // event already, or it was stored for an instance that is finished or stopped.
     private async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, bool release,
-        CancellationToken cancellationToken, bool forEvent = false)
+        CancellationToken cancellationToken, bool forEvent = false, string? actor = null)
     {
         using var lease = await gate.EnterAsync(instanceId, cancellationToken);
         var instance = await _store.GetWorkflowInstanceAsync(instanceId);
@@ -592,6 +592,10 @@ internal sealed class InstanceHost(
             return current?.Status == WorkflowStatus.Running
                 ? WorkflowExecutor.Busy(instanceId)
                 : Rejected(instanceId, "The workflow instance changed before recovery could start");
+        // How long the instance waited to be claimed, on the store's clock as this run last read it (D-39).
+        if (instance.RunnableAtUtc is { } runnableAt && checkpoint.Clock.ToStore(Now) - runnableAt is var waited &&
+            waited >= TimeSpan.Zero)
+            Telemetry.BacklogAge.Record(waited.TotalSeconds, Telemetry.Workflow(instance));
         // Only a claim of a running instance can see crashes: every commit that leaves Running
         // records progress and clears the count, and other entry points refuse running instances.
         if (owner.CrashCount >= _limits.MaxCrashes)
@@ -602,6 +606,8 @@ internal sealed class InstanceHost(
             checkpoint.OperatorStop = null;
             instance.LastError = null;
             instance.LastErrorStackTrace = null;
+            if (release)
+                OperatorTrace.Released(instance, actor, Now);
         }
         // A run for an event only takes it: an activity waiting for an operator stays waiting.
         foreach (var continuation in checkpoint.Continuations.Where(item =>
@@ -611,13 +617,7 @@ internal sealed class InstanceHost(
             continuation.Status = ContinuationStatus.Active;
         instance.Status = WorkflowStatus.Running;
         if (newCancellation)
-        {
-            instance.CancellationReason = cancellationReason;
-            checkpoint.CancellationRequested = true;
-            checkpoint.UnhandledError = null;
-            checkpoint.RuntimeUnhandledError = null;
-            ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
-        }
+            OperatorTrace.ApplyCancellation(instance, checkpoint, cancellationReason!, Now);
         if (stopCleared)
         {
             // Leaving a stop is saved before any workflow code runs, so a crash after it is counted

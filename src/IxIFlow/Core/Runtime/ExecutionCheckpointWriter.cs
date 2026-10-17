@@ -50,12 +50,19 @@ internal static class ExecutionCheckpointWriter
             stopped: checkpoint.OperatorStop != null, childStarts: checkpoint.ChildStarts.ToArray(),
             childCancellations: checkpoint.ChildCancellations.ToArray(),
             parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: instance.Trace.Pending);
+        using var span = Telemetry.Source.StartActivity("commit");
+        Telemetry.Tag(span, instance);
+        var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         for (var attempt = 1; ; attempt++)
         {
             var reply = await host.CommitAsync(commit);
             switch (reply.Kind)
             {
                 case CheckpointReplyKind.Acknowledged:
+                    var tags = Telemetry.Workflow(instance);
+                    Telemetry.CommitDuration.Record(
+                        System.Diagnostics.Stopwatch.GetElapsedTime(startedAt).TotalSeconds, tags);
+                    Telemetry.CommitSize.Record(size, tags);
                     instance.Revision = reply.Revision;
                     instance.Saved(commit.StoredParts, reply.Revision);
                     instance.Trace.Committed();
