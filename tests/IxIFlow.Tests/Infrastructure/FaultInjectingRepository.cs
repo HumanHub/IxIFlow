@@ -12,7 +12,7 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
         _inner.AppendEventAsync(workflowEvent);
     public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
         _inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
-    public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
+    public virtual Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
         _inner.GetEventAsync(instanceId, eventId);
     public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
         _inner.GetWaitAsync(instanceId, waitId);
