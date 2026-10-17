@@ -162,6 +162,12 @@ public sealed class CancellationWatchTests
     public Task SqlStoreReportsAPendingRequestWithACommit() =>
         VerifyCommitReportsPendingCancellation(new SqlWorkflowStateRepository(SqlTestDatabase<CancellationWatchTests>.ConnectionString));
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "B-10")]
+    public Task PostgreSqlStoreReportsAPendingRequestWithACommit() =>
+        VerifyCommitReportsPendingCancellation(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CancellationWatchTests>.ConnectionString));
+
     private static async Task VerifyCommitReportsPendingCancellation(IWorkflowStateRepository repository)
     {
         var instance = new WorkflowInstance

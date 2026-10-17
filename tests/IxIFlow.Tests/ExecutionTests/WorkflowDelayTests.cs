@@ -88,6 +88,50 @@ public sealed class WorkflowDelayTests
         }
     }
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task DueDelayRecoversFromPostgreSqlOnAnotherHost()
+    {
+        var connectionString = PostgreSqlTestDatabase<WorkflowDelayTests>.ConnectionString;
+        var repository = new PostgreSqlWorkflowStateRepository(connectionString);
+        var definition = Workflow.Create<DelayData>("SqlDurableDelay")
+            .Step<NoopActivity>()
+            .Delay(TimeSpan.FromSeconds(1))
+            .Step<MarkActivity>()
+            .Build();
+        string? instanceId = null;
+        try
+        {
+            using (var firstHost = Services(repository))
+            {
+                var started = await firstHost.GetRequiredService<IWorkflowClient>()
+                    .RunAsync(definition, new DelayData());
+                Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+                instanceId = started.InstanceId;
+            }
+
+            using var secondHost = Services(new PostgreSqlWorkflowStateRepository(connectionString));
+            await secondHost.GetRequiredService<IWorkflowVersionRegistry>()
+                .RegisterWorkflowAsync(definition);
+            await Task.Delay(1200);
+            using var scanner = new WorkflowRecoveryService(
+                secondHost.GetRequiredService<IServiceScopeFactory>(),
+                secondHost.GetRequiredService<IWorkflowStateRepository>(),
+                NullLogger<WorkflowRecoveryService>.Instance);
+            await scanner.RecoverOnceAsync(CancellationToken.None);
+
+            var saved = await repository.GetWorkflowInstanceAsync(instanceId);
+            Assert.Equal(WorkflowStatus.Completed, saved!.Status);
+            Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<DelayData>(
+                saved.WorkflowDataJson)!.Runs);
+        }
+        finally
+        {
+            if (instanceId != null)
+                await repository.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
     [Fact]
     public async Task DelayParksWithoutAResumeEventAndCompletesAfterRestart()
     {

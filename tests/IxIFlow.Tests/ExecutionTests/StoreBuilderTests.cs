@@ -51,6 +51,37 @@ public sealed class StoreBuilderTests
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
     }
 
+    [Fact]
+    public void PostgreSqlIsRefusedAsASecondStoreChoice()
+    {
+        var builder = new ServiceCollection().AddLogging().AddIxIFlow().UseSqlServer("Server=unused");
+
+        var error = Assert.Throws<InvalidOperationException>(() => builder.UsePostgreSql("Host=unused"));
+
+        Assert.Contains("choose one store", error.Message);
+    }
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task UsePostgreSqlKeepsInstancesInTheDatabase()
+    {
+        var connectionString = PostgreSqlTestDatabase<StoreBuilderTests>.ConnectionString;
+        var services = new ServiceCollection().AddLogging();
+        services.AddIxIFlow().UsePostgreSql(connectionString);
+        using var provider = services.BuildServiceProvider();
+
+        var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(
+            Workflow.Create<Data>("StoredInPostgreSql").Step<Noop>().Build(), new Data());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        // The store also wakes the host when an instance becomes runnable (C-13).
+        Assert.Same(provider.GetRequiredService<IWorkflowStateRepository>(),
+            provider.GetRequiredService<IRunnableWakeSource>());
+        Assert.IsType<PostgreSqlWorkflowStateRepository>(provider.GetRequiredService<IWorkflowStateRepository>());
+        var saved = await new PostgreSqlWorkflowStateRepository(connectionString).GetWorkflowInstanceAsync(result.InstanceId);
+        Assert.Equal(WorkflowStatus.Completed, saved!.Status);
+    }
+
     public sealed class Data;
 
     public sealed class Noop : IAsyncActivity

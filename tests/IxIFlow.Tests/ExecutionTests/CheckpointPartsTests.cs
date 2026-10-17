@@ -28,6 +28,11 @@ public sealed class CheckpointPartsTests
     public Task SqlServerKeepsAnInstanceAsATrunkAndParts() =>
         StoresAnInstanceAsATrunkAndPartsAsync(new SqlWorkflowStateRepository(SqlTestDatabase<CheckpointPartsTests>.ConnectionString));
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public Task PostgreSqlKeepsAnInstanceAsATrunkAndParts() =>
+        StoresAnInstanceAsATrunkAndPartsAsync(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CheckpointPartsTests>.ConnectionString));
+
     [Fact]
     public Task AMemoryReadNeverMixesTwoCommits() =>
         ReadsNeverMixTwoCommitsAsync(new InMemoryWorkflowStateRepository());
@@ -36,6 +41,11 @@ public sealed class CheckpointPartsTests
     [Trait("Category", "SqlIntegration")]
     public Task ASqlServerReadNeverMixesTwoCommits() =>
         ReadsNeverMixTwoCommitsAsync(new SqlWorkflowStateRepository(SqlTestDatabase<CheckpointPartsTests>.ConnectionString));
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public Task APostgreSqlReadNeverMixesTwoCommits() =>
+        ReadsNeverMixTwoCommitsAsync(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CheckpointPartsTests>.ConnectionString));
 
     // The finished items of a parallel ForEach are stored in chunks of a fixed number of items, so an item finishing
     // rewrites one small part however long the list is, and they read back whole.
