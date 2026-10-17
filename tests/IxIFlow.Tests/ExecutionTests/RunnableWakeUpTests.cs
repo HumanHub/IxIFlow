@@ -63,8 +63,9 @@ public sealed class RunnableWakeUpTests
         }
     }
 
-    // The host's scan at its start, and the one the wake-up it gets when it starts listening asks for, are over
-    // before the event is stored, so only the notification of its append can make the host claim the instance.
+    // The clock never moves, so the host scans twice before the event is stored: when it starts, and when its store
+    // wakes it as it starts listening. Both are over before the event is stored, so only the notification of its
+    // append can make the host claim the instance.
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task AnEventStoredElsewhereWakesAPostgreSqlHost()
@@ -79,7 +80,7 @@ public sealed class RunnableWakeUpTests
         await using var host = await StartAsync(Services(time, scans.Store, wakeUps));
         await ListenerAsync(connectionString, except: gone);
         await wakeUps.WokenAsync(times: 1);
-        await scans.SettledAsync(after: wakeUps.ScansAtLastWake);
+        await scans.FinishedAsync(scans: 2);
 
         await AppendApprovalAsync(store, instanceId);
 
@@ -109,6 +110,8 @@ public sealed class RunnableWakeUpTests
         }
         await ListenerAsync(connectionString, except: [.. gone, dropped], time);
         var instanceId = await SuspendAsync(PostgreSqlServices(time, connectionString));
+        // The polls the moving clock caused are not counted, so the scans are taken as over once the one the new
+        // connection's wake-up asked for has started and none has started for a while.
         await wakeUps.WokenAsync(times: 2);
         await scans.SettledAsync(after: wakeUps.ScansAtLastWake);
 
@@ -248,6 +251,17 @@ public sealed class RunnableWakeUpTests
             counter._inner = inner;
             counter.Store = store;
             return counter;
+        }
+
+        // Waits until the host has finished this many scans and is running none.
+        public async Task FinishedAsync(int scans)
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (Volatile.Read(ref _finished) < scans || Started != Volatile.Read(ref _finished))
+            {
+                Assert.True(DateTime.UtcNow < deadline, "The host's scans never finished");
+                await Task.Delay(20);
+            }
         }
 
         // Waits until a scan has started since the count after, none is running, and none starts for a while.
