@@ -178,7 +178,10 @@ internal static class ChildInputs
         var underlying = Nullable.GetUnderlyingType(target.PropertyType) ?? target.PropertyType;
         try
         {
-            return System.Convert.ChangeType(value, underlying);
+            // A whole number takes an enum property as reflection assigns it.
+            return underlying.IsEnum && Type.GetTypeCode(value.GetType()) is >= TypeCode.SByte and <= TypeCode.UInt64
+                ? Enum.ToObject(underlying, value)
+                : System.Convert.ChangeType(value, underlying);
         }
         catch (Exception error) when (error is InvalidCastException or FormatException or OverflowException)
         {
