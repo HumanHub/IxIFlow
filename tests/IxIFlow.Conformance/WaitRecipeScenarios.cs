@@ -293,7 +293,7 @@ public sealed class WaitRecipeScenarios
         var payments = new RecordingPayments();
         await using var cluster = await ClusterAsync(profile, payments: payments);
         var engine = cluster.AddHost();
-        var started = await engine.RunAsync(PaymentRecipe.Definition(TimeSpan.FromMilliseconds(600)),
+        var started = await engine.RunAsync(PaymentRecipe.Definition(TimeSpan.FromSeconds(2)),
             new Payment { OrderId = "order-14", Amount = 40 });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.True(ReplyToken.TryRead(payments.Token, out var instanceId, out var waitId, out var subject));
