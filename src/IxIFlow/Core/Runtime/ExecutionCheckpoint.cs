@@ -507,22 +507,22 @@ internal sealed class ActivityInputValue
     {
         if (value is Delegate)
             return (new ActivityInputValue { RebindFromDefinition = true }, value);
+        // The value and the definition are all a first attempt reads, so any failure here is the definition's.
         try
         {
             if (value is Exception error)
             {
                 var exception = SerializedException.From(error);
-                var saved = new ActivityInputValue { Exception = exception };
-                return (saved, saved.Read(input, services));
+                return (new ActivityInputValue { Exception = exception }, exception.Restore());
             }
-            if (value == null)
+            if (value == null && PropertyConverter(input) == null)
                 return (new ActivityInputValue(), null);
             var type = SavedType(input, value);
             var json = JsonSerializer.Serialize(value, type, OptionsFor(input));
-            var copy = new ActivityInputValue { Value = new SerializedValue { Type = type.AssemblyQualifiedName!, Json = json } };
-            return (copy, copy.Read(input, services));
+            var saved = new ActivityInputValue { Value = new SerializedValue { Type = type.AssemblyQualifiedName!, Json = json } };
+            return (saved, saved.ReadAs(type, input, services));
         }
-        catch (Exception problem) when (problem is not WorkflowEngineException)
+        catch (Exception problem)
         {
             throw Unreadable(input, problem);
         }
@@ -538,11 +538,9 @@ internal sealed class ActivityInputValue
         var type = WorkflowTypeIdentity.Resolve(Value.Type)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Saved value type '{Value.Type}' is unavailable");
-        if (typeof(IAsyncActivity).IsAssignableFrom(type))
-            return Value.Read(services);
         try
         {
-            return JsonSerializer.Deserialize(Value.Json, type, OptionsFor(input));
+            return ReadAs(type, input, services);
         }
         catch (Exception problem) when (problem is not WorkflowEngineException)
         {
@@ -550,39 +548,62 @@ internal sealed class ActivityInputValue
         }
     }
 
-    // A value is saved under its own type when that type can be read back by name, which keeps a derived value whole;
-    // a compiler-made or non-public type, such as a LINQ iterator, is saved under the input's declared type.
-    private static Type SavedType(PropertyInfo input, object value)
+    private object? ReadAs(Type type, PropertyInfo input, IServiceProvider services) =>
+        typeof(IAsyncActivity).IsAssignableFrom(type)
+            ? SerializedValue.ReadActivity(type, Value!.Json, services)
+            : JsonSerializer.Deserialize(Value!.Json, type, OptionsFor(input));
+
+    // A value is saved under its own type, read back by name, which keeps a derived value whole. A non-public
+    // collection, such as a LINQ iterator, is saved under the input's declared type: what it holds is its elements, and
+    // its own type cannot be made from them. An input property with a converter or number handling is saved under its
+    // declared type, which they are written for.
+    private static Type SavedType(PropertyInfo input, object? value)
     {
+        if (value == null || HasJsonAttributes(input) && input.PropertyType != typeof(object))
+            return input.PropertyType;
         var runtime = value.GetType();
-        return runtime.IsVisible && !runtime.IsAbstract || input.PropertyType == typeof(object) ? runtime : input.PropertyType;
+        return input.PropertyType == typeof(object) || runtime.IsVisible || value is not System.Collections.IEnumerable
+            ? runtime
+            : input.PropertyType;
     }
 
+    private static bool HasJsonAttributes(PropertyInfo input) =>
+        input.IsDefined(typeof(JsonConverterAttribute)) || input.IsDefined(typeof(JsonNumberHandlingAttribute));
+
     // Every property is written, as for branch data (D-14), so a null or default inside an input reads back as it was;
-    // a converter or number handling on the input property applies as it would to the property.
+    // a converter or number handling on the input property applies as it would to the property. A converter for the
+    // declared type also applies to a value of that type nested inside the input.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<PropertyInfo, JsonSerializerOptions> Options = new();
 
-    private static JsonSerializerOptions OptionsFor(PropertyInfo input) => Options.GetOrAdd(input, property =>
+    private static readonly JsonSerializerOptions EveryProperty = EveryPropertyOptions();
+
+    private static JsonSerializerOptions EveryPropertyOptions() => new()
     {
-        var options = new JsonSerializerOptions
+        TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver
         {
-            TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver
-            {
-                Modifiers = { info => { foreach (var each in info.Properties) each.ShouldSerialize = null; } }
-            }
-        };
-        if (property.GetCustomAttribute<JsonConverterAttribute>() is { } attribute)
-        {
-            var converter = attribute.ConverterType is { } converterType
-                ? Activator.CreateInstance(converterType) as JsonConverter
-                : attribute.CreateConverter(property.PropertyType);
-            if (converter != null)
-                options.Converters.Add(converter);
+            Modifiers = { info => { foreach (var each in info.Properties) each.ShouldSerialize = null; } }
         }
-        if (property.GetCustomAttribute<JsonNumberHandlingAttribute>() is { } numbers)
-            options.NumberHandling = numbers.Handling;
-        return options;
-    });
+    };
+
+    private static JsonSerializerOptions OptionsFor(PropertyInfo input) => !HasJsonAttributes(input)
+        ? EveryProperty
+        : Options.GetOrAdd(input, property =>
+        {
+            var options = EveryPropertyOptions();
+            if (PropertyConverter(property) is { } converter)
+                options.Converters.Add(converter);
+            if (property.GetCustomAttribute<JsonNumberHandlingAttribute>() is { } numbers)
+                options.NumberHandling = numbers.Handling;
+            return options;
+        });
+
+    /// <summary>The converter a property's <see cref="JsonConverterAttribute"/> names, if it has one.</summary>
+    public static JsonConverter? PropertyConverter(PropertyInfo property) =>
+        property.GetCustomAttribute<JsonConverterAttribute>() is { } attribute
+            ? attribute.ConverterType is { } converterType
+                ? Activator.CreateInstance(converterType) as JsonConverter
+                : attribute.CreateConverter(property.PropertyType)
+            : null;
 
     private static WorkflowEngineException Unreadable(PropertyInfo input, Exception problem) => new(
         WorkflowErrorKind.InvalidDefinition,
@@ -933,37 +954,51 @@ internal sealed class SerializedValue
         var type = WorkflowTypeIdentity.Resolve(Type)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Saved value type '{Type}' is unavailable");
-        if (typeof(IAsyncActivity).IsAssignableFrom(type))
+        return typeof(IAsyncActivity).IsAssignableFrom(type)
+            ? ReadActivity(type, Json, services)
+            : JsonSerializer.Deserialize(Json, type);
+    }
+
+    /// <summary>An activity created through the container, with each saved property set as its own attributes read it.</summary>
+    public static object ReadActivity(Type type, string json, IServiceProvider services)
+    {
+        var activity = ActivatorUtilities.CreateInstance(services, type);
+        var properties = ActivityProperties.GetOrAdd(type, SettableProperties);
+        using var document = JsonDocument.Parse(json);
+        foreach (var value in document.RootElement.EnumerateObject())
         {
-            var activity = ActivatorUtilities.CreateInstance(services, type);
-            using var document = JsonDocument.Parse(Json);
-            foreach (var value in document.RootElement.EnumerateObject())
+            if (!properties.TryGetValue(value.Name, out var saved) || saved.Property.GetSetMethod(nonPublic: true) == null)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    $"Saved activity output '{type.Name}.{value.Name}' cannot be restored");
+            var options = saved.Options
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    $"Converter for saved activity output '{type.Name}.{saved.Property.Name}' is unavailable");
+            saved.Property.SetValue(activity, value.Value.Deserialize(saved.Property.PropertyType, options));
+        }
+        return activity;
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type,
+        IReadOnlyDictionary<string, (PropertyInfo Property, JsonSerializerOptions? Options)>> ActivityProperties = new();
+
+    // An activity's public properties by their JSON names, the first of a name winning, each with the options its
+    // converter and number handling need; no options when its converter cannot be created.
+    private static IReadOnlyDictionary<string, (PropertyInfo Property, JsonSerializerOptions? Options)> SettableProperties(
+        Type type) =>
+        type.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .GroupBy(property => property.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? property.Name)
+            .ToDictionary(group => group.Key, group =>
             {
-                var property = type.GetProperties(BindingFlags.Instance | BindingFlags.Public)
-                    .FirstOrDefault(candidate =>
-                        (candidate.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? candidate.Name) == value.Name);
-                if (property?.GetSetMethod(nonPublic: true) == null)
-                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                        $"Saved activity output '{type.Name}.{value.Name}' cannot be restored");
+                var property = group.First();
                 var options = new JsonSerializerOptions();
-                var converterAttribute = property.GetCustomAttribute<JsonConverterAttribute>();
-                if (converterAttribute != null)
+                if (property.IsDefined(typeof(JsonConverterAttribute)))
                 {
-                    var converter = converterAttribute.ConverterType is { } converterType
-                        ? Activator.CreateInstance(converterType) as JsonConverter
-                        : converterAttribute.CreateConverter(property.PropertyType);
-                    if (converter == null)
-                        throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                            $"Converter for saved activity output '{type.Name}.{property.Name}' is unavailable");
+                    if (ActivityInputValue.PropertyConverter(property) is not { } converter)
+                        return (property, (JsonSerializerOptions?)null);
                     options.Converters.Add(converter);
                 }
-                var numberHandling = property.GetCustomAttribute<JsonNumberHandlingAttribute>();
-                if (numberHandling != null)
-                    options.NumberHandling = numberHandling.Handling;
-                property.SetValue(activity, value.Value.Deserialize(property.PropertyType, options));
-            }
-            return activity;
-        }
-        return JsonSerializer.Deserialize(Json, type);
-    }
+                if (property.GetCustomAttribute<JsonNumberHandlingAttribute>() is { } numbers)
+                    options.NumberHandling = numbers.Handling;
+                return (property, options);
+            });
 }

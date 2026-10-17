@@ -13,7 +13,7 @@ namespace IxIFlow.Core.Runtime;
 /// an activity, runs inline in that slot instead of waiting for another. On stop the host drains:
 /// it accepts nothing new, cancels queued work, lets running instances reach their next commit,
 /// and cancels them after the drain timeout.
-/// Named LocalWorkflowHost until C-19 frees the WorkflowHost name (D-16).
+/// Named LocalWorkflowHost until it takes the WorkflowHost name, free since C-19, and absorbs InstanceHost (D-16).
 /// </summary>
 internal sealed class LocalWorkflowHost : IHostedService, IDisposable
 {
