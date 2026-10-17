@@ -64,6 +64,14 @@ public sealed class RazorTemplateEngine : ITemplateEngine
             var instance = (RazorTemplate<TModel>)Activator.CreateInstance(compiled.Template)!;
             return await instance.RenderAsync(model, culture, template.Format);
         }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // The template's own code failed, in an initializer or in its body, such as on a null member.
+            var cause = error is System.Reflection.TargetInvocationException { InnerException: { } inner }
+                ? inner
+                : error;
+            throw new TemplateRenderException(template, cause.Message, cause);
+        }
         finally
         {
             CultureInfo.CurrentCulture = current;

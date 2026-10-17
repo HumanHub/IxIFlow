@@ -60,6 +60,7 @@ public sealed class TemplateEngineTests
     [InlineData("{{ Number.Length }}", "'Number' has no member 'Length'")]
     [InlineData("{% for line in Lines %}{{ forloop.parent }}{% endfor %}", "'forloop' has no member 'parent'")]
     [InlineData("{% include 'footer' %}", "cannot include another template")]
+    [InlineData("{% liquid assign y = 'b' %}{{ y }}", "{% liquid %} tag is not available")]
     public async Task LiquidPublishingRejectsWhatTheModelDoesNotHave(string content, string expected)
     {
         using var services = Services();
@@ -367,9 +368,13 @@ public sealed class TemplateEngineTests
         var first = Source($"@Model.Number {Guid.NewGuid():N}");
         Assert.Equal("A-17", (await engine.RenderAsync(first, SampleOrder(), CultureInfo.InvariantCulture))[..4]);
         var context = WeakContextOf(first);
+        var second = Source($"@Model.Number {Guid.NewGuid():N}");
 
-        await engine.RenderAsync(Source($"@Model.Number {Guid.NewGuid():N}"), SampleOrder(),
-            CultureInfo.InvariantCulture);
+        await engine.RenderAsync(second, SampleOrder(), CultureInfo.InvariantCulture);
+        // The template rendered last stays loaded and is reused, not compiled again.
+        var kept = WeakContextOf(second);
+        await engine.RenderAsync(second, SampleOrder(), CultureInfo.InvariantCulture);
+        Assert.Same(kept.Target, WeakContextOf(second).Target);
 
         for (var attempt = 0; attempt < 20 && context.IsAlive; attempt++)
         {
@@ -392,6 +397,24 @@ public sealed class TemplateEngineTests
             Source("@functions { readonly string total = (2.5m).ToString(); }@total"), SampleOrder(), German);
 
         Assert.Equal("2,5", text.Trim());
+    }
+
+    [Fact]
+    public async Task RazorTemplateFailuresAreRenderFailures()
+    {
+        var engine = new RazorTemplateEngine();
+        var order = SampleOrder();
+        order.Customer = null!;
+
+        // The template's own code failing, in its body or in an initializer, fails the render like Liquid's do.
+        var body = await Assert.ThrowsAsync<TemplateRenderException>(() =>
+            engine.RenderAsync(Source("@Model.Customer.Name"), order, CultureInfo.InvariantCulture).AsTask());
+        var initializer = await Assert.ThrowsAsync<TemplateRenderException>(() => engine.RenderAsync(
+            Source("@functions { readonly int x = int.Parse(\"x\"); }@x"), order, CultureInfo.InvariantCulture)
+            .AsTask());
+
+        Assert.IsType<NullReferenceException>(body.InnerException);
+        Assert.IsType<FormatException>(initializer.InnerException);
     }
 
     [Fact]
