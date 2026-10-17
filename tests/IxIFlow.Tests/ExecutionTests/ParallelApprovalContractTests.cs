@@ -999,7 +999,6 @@ public class ParallelApprovalContractTests
                     break;
                 await Task.Delay(25);
             }
-            await Task.Delay(100);
             probe.ReleaseOther.SetResult();
             await probe.OtherReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
