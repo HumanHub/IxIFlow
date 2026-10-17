@@ -47,6 +47,28 @@ public sealed class WorkflowCompletionOutboxTests
         });
     }
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task ExpiredPostgreSqlOutboxClaimCanBeRecovered()
+    {
+        var repository = new PostgreSqlWorkflowStateRepository(
+            PostgreSqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString);
+        // Long enough that the refusal right after the claim cannot land after it on PostgreSQL's clock; the
+        // new host then claims again until the dead host's claim has expired.
+        await VerifyExpiredClaimCanBeRecovered(repository, TimeSpan.FromSeconds(2), async reclaim =>
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (true)
+            {
+                var claimed = (await reclaim()).ToList();
+                if (claimed.Count > 0)
+                    return claimed;
+                Assert.True(DateTime.UtcNow < deadline, "The expired claim was never recovered");
+                await Task.Delay(100);
+            }
+        });
+    }
+
     // The dead host's claim lasts deadHostClaim; reclaimOnceExpired lets it expire and claims for the new host.
     private static async Task VerifyExpiredClaimCanBeRecovered(IWorkflowStateRepository repository,
         TimeSpan deadHostClaim,
