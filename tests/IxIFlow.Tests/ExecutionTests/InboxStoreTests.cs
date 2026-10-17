@@ -704,6 +704,56 @@ public sealed class InboxStoreTests
         }
     }
 
+    [Fact]
+    [Trait("Spec", "D-06")]
+    public Task MemoryStoreGivesEachGoneChildItsOwnInboxPlace() =>
+        VerifyGoneChildrenTakeTheirOwnPlaces(new InMemoryWorkflowStateRepository());
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-06")]
+    public Task PostgreSqlStoreGivesEachGoneChildItsOwnInboxPlace() =>
+        VerifyGoneChildrenTakeTheirOwnPlaces(
+            new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
+
+    // A commit that asks two missing children to cancel appends a completion for each to its own inbox. Each takes
+    // its own sequence, so a reader that pages through the inbox one event at a time meets both.
+    private static async Task VerifyGoneChildrenTakeTheirOwnPlaces(IWorkflowStateRepository store)
+    {
+        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
+        var first = Guid.NewGuid().ToString("N");
+        var second = Guid.NewGuid().ToString("N");
+        try
+        {
+            var parent = (await store.GetWorkflowInstanceAsync(parentId))!;
+            var opening = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, parent.Revision,
+                openedWaits:
+                [
+                    new OpenedWait($"{first}-wait", WaitKind.Child, "", "IxIFlow.ChildCompleted", null),
+                    new OpenedWait($"{second}-wait", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)
+                ]));
+            parent.Revision = opening.Revision;
+            var reason = new CancellationReason { ReasonCode = "parent" };
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+                parent, 0, parent.Revision, childCancellations:
+                [
+                    new ChildCancellation(first, reason, $"{first}-wait"),
+                    new ChildCancellation(second, reason, $"{second}-wait")
+                ]))).Status);
+
+            var firstPage = await store.GetPendingEventsAsync(parentId, 0, 1);
+            var secondPage = await store.GetPendingEventsAsync(parentId, firstPage.Events.Single().Sequence, 1);
+
+            Assert.Equal(new[] { $"child-completed-{first}", $"child-completed-{second}" }.Order(),
+                firstPage.Events.Concat(secondPage.Events).Select(stored => stored.EventId).Order());
+            Assert.Equal(firstPage.Events.Single().Sequence + 1, secondPage.Events.Single().Sequence);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(parentId);
+        }
+    }
+
     private static WorkflowInstance Child(string childId, string parentId, string waitId) => new()
     {
         InstanceId = childId, WorkflowName = "Child", Status = WorkflowStatus.Running, WorkflowDataJson = "{}",
