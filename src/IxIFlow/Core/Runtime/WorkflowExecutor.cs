@@ -559,6 +559,7 @@ internal sealed class WorkflowExecutor
         var root = checkpoint.Continuations[0];
         if (root.Status == ContinuationStatus.Completed)
             return false;
+        OperatorTrace.Cancellation(instance, requested, Now);
         instance.CancellationReason = requested;
         checkpoint.CancellationRequested = true;
         checkpoint.UnhandledError = null;

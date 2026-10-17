@@ -75,7 +75,8 @@ public class CancellationReason
     public DateTime RequestedAt { get; set; }
 
     /// <summary>
-    ///     Who requested the cancellation
+    ///     Who requested the cancellation: a plain string the engine records and never checks (D-38). Empty takes
+    ///     the client's default actor, <c>IxIFlowOptions.Actor</c>.
     /// </summary>
     public string RequestedBy { get; set; } = "";
 
@@ -599,7 +600,13 @@ public enum TraceEntryType
     /// <summary>
     ///     Custom debug event
     /// </summary>
-    DebugEvent
+    DebugEvent,
+
+    /// <summary>A cancellation request reached the run, with who made it (D-38).</summary>
+    CancellationRequested,
+
+    /// <summary>An operator released an instance stopped for them, with who did (D-38).</summary>
+    Released
 }
 
 /// <summary>

@@ -38,6 +38,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(InProcessInstanceGate.Shared);
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(ExecutionLimits.Default);
+        services.TryAddSingleton(new ClientActor(null));
         
         // Workflow state and persistence
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
@@ -95,6 +96,8 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The host name cannot be empty");
         services.Replace(ServiceDescriptor.Singleton(
             new HostSettings(options.Slots, options.DrainTimeout, options.PollInterval, options.HostName)));
+        services.Replace(ServiceDescriptor.Singleton(
+            new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -430,4 +433,12 @@ public class IxIFlowOptions
     /// is the process ID and machine name, <c>pid@machine</c>.
     /// </summary>
     public string HostName { get; set; } = HostSettings.DefaultName;
+
+    /// <summary>
+    /// Who this application's operator calls are recorded as when a call names nobody: a plain string the engine
+    /// stores and never checks, such as <c>"orders-service"</c> (D-38). A call that acts for a user names them
+    /// instead: <see cref="CancellationReason.RequestedBy"/>, the resolution's <c>decidedBy</c>, or the release's
+    /// actor. Deciding who may call is the application's job.
+    /// </summary>
+    public string? Actor { get; set; }
 }
