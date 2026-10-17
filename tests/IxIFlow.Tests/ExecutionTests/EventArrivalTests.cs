@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Extensions;
@@ -47,7 +48,7 @@ public sealed class EventArrivalTests
     [Trait("Spec", "D-03")]
     public async Task AnEventForAChildThatAnotherHostOwnsStaysPendingUntilItsOwnerDecides()
     {
-        var repository = new InMemoryWorkflowStateRepository();
+        var repository = new EventReadingStore();
         using var services = Services(repository);
         var engine = services.GetRequiredService<IWorkflowClient>();
         await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
@@ -65,10 +66,14 @@ public sealed class EventArrivalTests
         var childId = await repository.WaitingInstanceAsync("ChildWithApproval", "approval");
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, "other-host", TimeSpan.FromMinutes(1)));
 
-        // The event goes to the child (D-17); its owner has not decided it.
-        using var attempt = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            engine.ResumeAsync(childId, "approval", new Approval { Approved = true }, "approval-1", attempt.Token));
+        // The event goes to the child (D-17); its owner has not decided it. The caller stores it, tries the
+        // child, which another host owns, and reads the event back; from then on it can only wait.
+        using var attempt = new CancellationTokenSource();
+        var resume = engine.ResumeAsync(childId, "approval", new Approval { Approved = true }, "approval-1",
+            attempt.Token);
+        await repository.ReadBack("approval-1").WaitAsync(TimeSpan.FromSeconds(10));
+        attempt.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resume);
         Assert.Equal(EventOutcome.Pending, (await repository.GetEventAsync(childId, "approval-1"))!.Outcome);
 
         // Once the child is free, it takes the event, and its completion wakes its parent.
@@ -91,6 +96,26 @@ public sealed class EventArrivalTests
         services.AddTransient<SlowActivity>();
         services.AddIxIFlow();
         return services.BuildServiceProvider();
+    }
+
+    /// <summary>Reports the first read of each stored event, as a caller reads it back to learn its outcome.</summary>
+    private sealed class EventReadingStore : FaultInjectingRepository
+    {
+        private readonly ConcurrentDictionary<string, TaskCompletionSource> _read = new();
+
+        /// <summary>Completes once the event, stored, has been read.</summary>
+        public Task ReadBack(string eventId) => Read(eventId).Task;
+
+        public override async Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId)
+        {
+            var stored = await base.GetEventAsync(instanceId, eventId);
+            if (stored != null)
+                Read(eventId).TrySetResult();
+            return stored;
+        }
+
+        private TaskCompletionSource Read(string eventId) =>
+            _read.GetOrAdd(eventId, _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
     }
 
     public sealed class RaceData
