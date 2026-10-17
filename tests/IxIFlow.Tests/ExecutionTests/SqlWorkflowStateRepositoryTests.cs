@@ -11,7 +11,7 @@ public class SqlWorkflowStateRepositoryTests
     [Trait("Category", "SqlIntegration")]
     public async Task SuspendedDeadlineAppearsInRecoveryScanWhenDue()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var repository = new SqlWorkflowStateRepository(connectionString);
         try
@@ -47,7 +47,7 @@ public class SqlWorkflowStateRepositoryTests
     [Trait("Spec", "A-08")]
     public async Task ACommitIsStoredAsItCameAndReadsTakeTheRevisionAndRunnableTimeFromTheirColumns()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var repository = new SqlWorkflowStateRepository(connectionString);
         try
@@ -86,7 +86,7 @@ public class SqlWorkflowStateRepositoryTests
     [Trait("Category", "SqlIntegration")]
     public async Task SuspendedInstance_AppliesOneDeliveryOnceAcrossRepositories()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
@@ -104,7 +104,7 @@ public class SqlWorkflowStateRepositoryTests
     [Trait("Category", "SqlIntegration")]
     public async Task SuspendedInstance_SurvivesRepositoryRecreation()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         try
