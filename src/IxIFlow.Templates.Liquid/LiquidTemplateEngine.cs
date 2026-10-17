@@ -48,12 +48,22 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
     {
         ArgumentNullException.ThrowIfNull(template);
         ArgumentNullException.ThrowIfNull(modelType);
-        var parsed = Parse(template);
+        // Fluid 2.40 parses a {% liquid %} block into no statements at all, losing the rest of the template.
+        if (LiquidTagPattern().IsMatch(template.Content))
+        {
+            return ValueTask.FromResult<IReadOnlyList<TemplateDiagnostic>>(
+                [new TemplateDiagnostic("The {% liquid %} tag is not available; write each tag in its own {% %}")]);
+        }
+        // Drafts are parsed afresh, so validating them keeps nothing; only what is rendered is kept.
+        var parsed = ParseOnce(template);
         IReadOnlyList<TemplateDiagnostic> diagnostics = parsed.Template is IStatementList statements
             ? LiquidModelChecker.Check(statements, modelType, OptionsFor(modelType))
             : [parsed.Error!];
         return ValueTask.FromResult(diagnostics);
     }
+
+    [GeneratedRegex(@"\{%-?\s*liquid\b")]
+    private static partial Regex LiquidTagPattern();
 
     public async ValueTask<string> RenderAsync<TModel>(TemplateSource template, TModel model, CultureInfo culture,
         CancellationToken cancellationToken = default)
@@ -98,10 +108,12 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
     }
 
     private Parsed Parse(TemplateSource template) =>
-        _parsed.GetOrAdd(template.Digest, _ => new Lazy<Parsed>(() =>
-            Parser.TryParse(template.Content, out var parsed, out var error)
-                ? new Parsed(parsed, null)
-                : new Parsed(null, Diagnostic(error)))).Value;
+        _parsed.GetOrAdd(template.Digest, _ => new Lazy<Parsed>(() => ParseOnce(template))).Value;
+
+    private static Parsed ParseOnce(TemplateSource template) =>
+        Parser.TryParse(template.Content, out var parsed, out var error)
+            ? new Parsed(parsed, null)
+            : new Parsed(null, Diagnostic(error));
 
     private TemplateOptions OptionsFor(Type model) => _options.GetValue(model, type =>
     {
