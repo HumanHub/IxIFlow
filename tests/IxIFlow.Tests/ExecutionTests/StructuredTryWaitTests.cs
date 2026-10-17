@@ -1617,7 +1617,7 @@ public class StructuredTryWaitTests
 
         public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            var instance = commit.ReadTrunk();
             if (Interlocked.Increment(ref _commits) > 80)
                 throw new InvalidOperationException("Parallel cleanup exceeded the checkpoint budget");
             return _inner.CommitWorkflowInstanceAsync(commit);

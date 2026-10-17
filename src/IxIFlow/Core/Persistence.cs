@@ -200,9 +200,16 @@ public interface IWorkflowStateRepository : IWorkflowInbox
     Task SaveWorkflowInstanceAsync(WorkflowInstance instance);
 
     /// <summary>
-    ///     Get workflow instance by ID
+    /// The whole instance: its trunk and every part of its state, read at one revision (A-08).
     /// </summary>
     Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId);
+
+    /// <summary>
+    /// The instance without its branches (A-08): its fields, its workflow data and the trunk of its execution state.
+    /// Enough for a status, a result or a stop check, never to run it. This fallback reads the whole instance; a
+    /// store that keeps parts reads only the trunk and the data.
+    /// </summary>
+    Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) => GetWorkflowInstanceAsync(instanceId);
 
     /// <summary>
     ///     Get workflow instances by workflow name
@@ -282,6 +289,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     private readonly Dictionary<(string InstanceId, string EventId), (StoredWorkflowEvent Event, byte[] Hash)> _events = new();
     private readonly Dictionary<string, long> _inboxSequence = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _inboxReadThrough = new(StringComparer.Ordinal);
+    // Each instance's stored parts by key, beside its trunk in _instances, at its revision (A-08).
+    private readonly Dictionary<string, IReadOnlyDictionary<string, string>> _parts = new(StringComparer.Ordinal);
     // Each instance's waits by wait ID, so appends and reads touch only that instance's waits.
     private readonly Dictionary<string, Dictionary<string, StoredWait>> _waits = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<string>> _traces = new(StringComparer.Ordinal);
@@ -487,7 +496,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
         ArgumentNullException.ThrowIfNull(commit);
-        var snapshot = commit.ReadInstance();
+        var snapshot = commit.ReadTrunk();
         lock (_claimLock)
         {
             var key = (commit.InstanceId, commit.CommitId);
@@ -570,6 +579,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             }
             // An idle owner that has not read every arrival keeps the lease and reads them.
             var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
+            _parts[commit.InstanceId] = commit.ApplyParts(_parts.GetValueOrDefault(commit.InstanceId) ??
+                                                          new Dictionary<string, string>());
             _instances[commit.InstanceId] = snapshot;
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (commit.TraceEntries.Count > 0)
@@ -595,6 +606,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 child.Revision = 1;
                 child.RunnableAtUtc = now;
                 _instances[child.InstanceId] = child;
+                _parts.Remove(child.InstanceId);
                 madeRunnable.Add(child.InstanceId);
             }
             foreach (var cancellation in commit.ChildCancellations)
@@ -791,35 +803,55 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             if (instance.Revision != 0 ||
                 (_instances.TryGetValue(instance.InstanceId, out var stored) && stored.Revision != 0))
                 throw new InvalidOperationException("Revisioned instances require an atomic commit");
-            var saved = SnapshotStructured(instance);
+            var saved = instance.Revision != 0 || ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
+                ? JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!
+                : instance;
             saved.RunnableAtUtc = WorkflowStoreRules.RunnableAt(saved, false, Now);
             _instances[instance.InstanceId] = saved;
+            _parts.Remove(instance.InstanceId);
         }
         return Task.CompletedTask;
     }
 
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
     {
-        _instances.TryGetValue(instanceId, out var instance);
-        return Task.FromResult(instance == null ? null : SnapshotStructured(instance));
+        lock (_claimLock)
+            return Task.FromResult(_instances.TryGetValue(instanceId, out var instance)
+                ? SnapshotStructured(instance) : null);
+    }
+
+    public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId)
+    {
+        lock (_claimLock)
+        {
+            if (!_instances.TryGetValue(instanceId, out var instance))
+                return Task.FromResult<WorkflowInstance?>(null);
+            if (instance.Revision == 0 && !ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson))
+                return Task.FromResult<WorkflowInstance?>(instance);
+            return Task.FromResult<WorkflowInstance?>(CheckpointParts.Summarize(JsonSerializer.Serialize(instance),
+                _parts.GetValueOrDefault(instanceId)?.GetValueOrDefault(CheckpointParts.DataKey)));
+        }
     }
 
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName)
     {
-        var instances = _instances.Values.Where(i => i.WorkflowName == workflowName).Select(SnapshotStructured).ToList();
-        return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
+        lock (_claimLock)
+            return Task.FromResult<IEnumerable<WorkflowInstance>>(_instances.Values
+                .Where(i => i.WorkflowName == workflowName).Select(SnapshotStructured).ToList());
     }
 
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status)
     {
-        var instances = _instances.Values.Where(i => i.Status == status).Select(SnapshotStructured).ToList();
-        return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
+        lock (_claimLock)
+            return Task.FromResult<IEnumerable<WorkflowInstance>>(_instances.Values
+                .Where(i => i.Status == status).Select(SnapshotStructured).ToList());
     }
 
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId)
     {
-        var instances = _instances.Values.Where(i => i.CorrelationId == correlationId).Select(SnapshotStructured).ToList();
-        return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
+        lock (_claimLock)
+            return Task.FromResult<IEnumerable<WorkflowInstance>>(_instances.Values
+                .Where(i => i.CorrelationId == correlationId).Select(SnapshotStructured).ToList());
     }
 
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
@@ -863,16 +895,22 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             _inboxReadThrough.Remove(instanceId);
             _waits.Remove(instanceId);
             _traces.Remove(instanceId);
+            _parts.Remove(instanceId);
             foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
                 _commits.Remove(key);
         }
         return Task.CompletedTask;
     }
 
-    private static WorkflowInstance SnapshotStructured(WorkflowInstance instance) =>
-        instance.Revision != 0 || ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
-            ? JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!
-            : instance;
+    // The whole instance, its trunk with its parts, as a copy. Caller holds _claimLock.
+    private WorkflowInstance SnapshotStructured(WorkflowInstance instance)
+    {
+        if (instance.Revision == 0 && !ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson))
+            return instance;
+        return CheckpointParts.Assemble(JsonSerializer.Serialize(instance),
+            (_parts.GetValueOrDefault(instance.InstanceId) ?? new Dictionary<string, string>())
+            .Select(part => new CheckpointPart(part.Key, part.Value)));
+    }
 
     private static void ValidateLeaseArguments(string instanceId, string token, TimeSpan duration)
     {

@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 
 namespace IxIFlow.Core.Runtime;
@@ -25,8 +24,7 @@ internal static class ExecutionCheckpointWriter
             return false;
         var lastCommitted = SavedForm.Of(instance);
         checkpoint.CloseEndedRequests();
-        Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData);
-        var size = CheckpointBytes(instance);
+        var size = Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData).Bytes;
         if (enforceLimit && size > host.Limits.MaxCheckpointBytes)
         {
             // The instance keeps the last checkpoint that was committed, and the trace only what that holds.
@@ -55,6 +53,7 @@ internal static class ExecutionCheckpointWriter
             {
                 case CheckpointReplyKind.Acknowledged:
                     instance.Revision = reply.Revision;
+                    instance.SavedParts = commit.StoredParts;
                     instance.Trace.Committed();
                     checkpoint.ChildStarts.Clear();
                     checkpoint.ChildCancellations.Clear();
@@ -102,7 +101,11 @@ internal static class ExecutionCheckpointWriter
             checkpoint.ExecutionDeadlineUtc = storeNow + execution;
     }
 
-    public static void Prepare(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
+    /// <summary>
+    /// Puts the instance in the form it is stored in (A-08): its data, and its state's trunk, with the parts both are
+    /// stored in as <see cref="WorkflowInstance.Stored"/>.
+    /// </summary>
+    public static StoredCheckpoint Prepare(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
         object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false)
     {
         try
@@ -112,9 +115,11 @@ internal static class ExecutionCheckpointWriter
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson
                 : BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData)));
-            var stateJson = JsonSerializer.Serialize(checkpoint);
+            var stored = StoredCheckpoint.Split(checkpoint, dataJson);
             instance.WorkflowDataJson = dataJson;
-            instance.ExecutionStateJson = stateJson;
+            instance.ExecutionStateJson = stored.Trunk;
+            instance.Stored = stored;
+            return stored;
         }
         catch (Exception ex)
         {
@@ -122,23 +127,22 @@ internal static class ExecutionCheckpointWriter
         }
     }
 
-    /// <summary>The size a checkpoint limit applies to: the workflow data and the execution state.</summary>
-    public static long CheckpointBytes(WorkflowInstance instance) =>
-        Encoding.UTF8.GetByteCount(instance.WorkflowDataJson) +
-        Encoding.UTF8.GetByteCount(instance.ExecutionStateJson);
+    /// <summary>The size a checkpoint limit applies to: the instance's state and data as they are stored (D-28).</summary>
+    public static long CheckpointBytes(WorkflowInstance instance) => StoredCheckpoint.Of(instance).Bytes;
 
     public sealed class CheckpointDataException(Exception inner) : Exception(
         $"The workflow state could not be checkpointed: {inner.Message}", inner);
 
-    private sealed record SavedForm(string WorkflowDataJson, string ExecutionStateJson)
+    private sealed record SavedForm(string WorkflowDataJson, string ExecutionStateJson, StoredCheckpoint? Stored)
     {
         public static SavedForm Of(WorkflowInstance instance) => new(instance.WorkflowDataJson,
-            instance.ExecutionStateJson);
+            instance.ExecutionStateJson, instance.Stored);
 
         public void RestoreTo(WorkflowInstance instance)
         {
             instance.WorkflowDataJson = WorkflowDataJson;
             instance.ExecutionStateJson = ExecutionStateJson;
+            instance.Stored = Stored;
         }
     }
 }

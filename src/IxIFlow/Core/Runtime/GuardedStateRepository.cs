@@ -90,6 +90,10 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
         Guard(() => _store.GetWorkflowInstanceAsync(instanceId),
             $"Reading workflow instance '{instanceId}'");
 
+    public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
+        Guard(() => _store.GetWorkflowInstanceSummaryAsync(instanceId),
+            $"Reading workflow instance '{instanceId}'");
+
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
         Guard(() => _store.GetWorkflowInstancesByNameAsync(workflowName),
             $"Listing instances of workflow '{workflowName}'");

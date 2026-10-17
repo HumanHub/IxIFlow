@@ -65,12 +65,14 @@ public sealed record WorkflowCommitResult(
 public sealed record ExecutionLeaseGrant(long Epoch, int CrashCount);
 
 /// <summary>
-/// One checkpoint write: the serialized instance, fenced by the owner's execution epoch and the
-/// revision it was based on. A commit is immutable, so sending the same commit again is safe.
+/// One checkpoint write: the instance's trunk and the parts of its state that changed (A-08), fenced by the owner's
+/// execution epoch and the revision it was based on. A commit is immutable, so sending the same commit again is safe.
 /// </summary>
 public sealed class CheckpointCommit
 {
-    private CheckpointCommit(CommittedInstance instance, string payload, long epoch, string commitId,
+    private CheckpointCommit(CommittedInstance instance, string payload, IReadOnlyList<CheckpointPart> parts,
+        IReadOnlyList<string> deletedParts, bool replacesParts, IReadOnlyDictionary<string, string> storedParts,
+        long epoch, string commitId,
         long expectedRevision, bool clearsCrashCount, bool parks, IReadOnlyList<EventSettlement> settlements,
         long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
@@ -80,6 +82,10 @@ public sealed class CheckpointCommit
         Instance = instance;
         InstanceId = instance.InstanceId;
         Payload = payload;
+        Parts = parts;
+        DeletedParts = deletedParts;
+        ReplacesParts = replacesParts;
+        StoredParts = storedParts;
         Epoch = epoch;
         CommitId = commitId;
         ExpectedRevision = expectedRevision;
@@ -102,7 +108,9 @@ public sealed class CheckpointCommit
             $"{JsonSerializer.Serialize(settlements)}\n{JsonSerializer.Serialize(openedWaits)}\n" +
             $"{JsonSerializer.Serialize(armedWaits)}\n{JsonSerializer.Serialize(closedWaits)}\n" +
             $"{JsonSerializer.Serialize(childStarts)}\n{JsonSerializer.Serialize(childCancellations)}\n" +
-            $"{JsonSerializer.Serialize(parentNotice)}\n{JsonSerializer.Serialize(traceEntries)}\n{payload}"));
+            $"{JsonSerializer.Serialize(parentNotice)}\n{JsonSerializer.Serialize(traceEntries)}\n" +
+            $"{(replacesParts ? 1 : 0)}\n{JsonSerializer.Serialize(deletedParts)}\n{JsonSerializer.Serialize(parts)}\n" +
+            payload));
     }
 
     /// <summary>The longest timeout, delay or park a commit may carry.</summary>
@@ -113,10 +121,31 @@ public sealed class CheckpointCommit
     public string InstanceId { get; }
 
     /// <summary>
-    /// The instance as JSON, to be stored at <see cref="ExpectedRevision"/> + 1. Its revision and runnable time are
-    /// the store's to set; a store keeps them beside it rather than rewriting it.
+    /// The instance's trunk as JSON, to be stored at <see cref="ExpectedRevision"/> + 1: its fields and the part of
+    /// its execution state that belongs to no branch. Its revision and runnable time are the store's to set; a store
+    /// keeps them beside it rather than rewriting it. <see cref="CheckpointParts.Assemble"/> reads it back with its
+    /// parts.
     /// </summary>
     public string Payload { get; }
+
+    /// <summary>The parts this commit writes, in key order: new ones, and those whose JSON changed (A-08).</summary>
+    public IReadOnlyList<CheckpointPart> Parts { get; }
+
+    /// <summary>The keys of the parts this commit deletes, in order.</summary>
+    public IReadOnlyList<string> DeletedParts { get; }
+
+    /// <summary>
+    /// True when the commit's parts are all the instance has: the store deletes any others. A commit replaces them
+    /// when it was not made from an instance whose stored parts are known, such as one just started.
+    /// </summary>
+    public bool ReplacesParts { get; }
+
+    /// <summary>Every part the instance has once the commit is applied.</summary>
+    internal IReadOnlyDictionary<string, string> StoredParts { get; }
+
+    /// <summary>The bytes of state the commit carries: its payload and the parts it writes, as UTF-8 (J-04).</summary>
+    public long StateBytes => Encoding.UTF8.GetByteCount(Payload) +
+                              Parts.Sum(part => (long)Encoding.UTF8.GetByteCount(part.Json));
 
     /// <summary>What a store reads from the instance to apply the commit, so it need not parse the payload.</summary>
     public CommittedInstance Instance { get; }
@@ -317,7 +346,16 @@ public sealed class CheckpointCommit
                 instance.ParentWaitId != parentNotice.ParentWaitId)
                 throw new ArgumentException("Only a child's terminal commit notifies its own parent", nameof(parentNotice));
         }
-        return new CheckpointCommit(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance), epoch, commitId,
+        // Only the parts that differ from those the instance was last stored with are written (A-08).
+        var stored = Runtime.StoredCheckpoint.Of(instance);
+        var saved = instance.SavedParts;
+        var written = stored.Parts
+            .Where(part => saved == null || !saved.TryGetValue(part.Key, out var json) || json != part.Value)
+            .Select(part => new CheckpointPart(part.Key, part.Value)).ToArray();
+        var deleted = saved == null ? [] : saved.Keys.Where(key => !stored.Parts.ContainsKey(key))
+            .Order(StringComparer.Ordinal).ToArray();
+        return new CheckpointCommit(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(stored.Trunk)),
+            Array.AsReadOnly(written), Array.AsReadOnly(deleted), saved == null, stored.Parts.AsReadOnly(), epoch, commitId,
             expectedRevision, clearsCrashCount, parks, Array.AsReadOnly(settled), inboxReadThrough,
             Array.AsReadOnly(opened), Array.AsReadOnly(armed), Array.AsReadOnly(closed), wakeAfter, stopped,
             Array.AsReadOnly(started), Array.AsReadOnly(cancelled), parentNotice,
@@ -330,11 +368,49 @@ public sealed class CheckpointCommit
             throw new ArgumentOutOfRangeException(parameter, "Durations are between zero and 100 years");
     }
 
-    /// <summary>A fresh copy of the committed instance, at its new revision.</summary>
-    public WorkflowInstance ReadInstance()
+    /// <summary>
+    /// The committed instance's fields and the trunk of its state, at its new revision, without its parts: its
+    /// workflow data and its branches are in them.
+    /// </summary>
+    public WorkflowInstance ReadTrunk()
     {
-        var instance = JsonSerializer.Deserialize<WorkflowInstance>(Payload)
-                       ?? throw new InvalidOperationException("A checkpoint payload could not be read");
+        var instance = CheckpointParts.Summarize(Payload, null);
+        instance.Revision = checked(ExpectedRevision + 1);
+        return instance;
+    }
+
+    /// <summary>
+    /// The parts the instance has once the commit is applied to <paramref name="stored"/>, those it had at the
+    /// revision the commit was based on. A commit that replaces its parts needs none.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> ApplyParts(IReadOnlyDictionary<string, string>? stored)
+    {
+        var parts = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        if (!ReplacesParts)
+        {
+            ArgumentNullException.ThrowIfNull(stored);
+            foreach (var (key, json) in stored)
+                parts[key] = json;
+            foreach (var key in DeletedParts)
+                parts.Remove(key);
+        }
+        foreach (var part in Parts)
+            parts[part.Key] = part.Json;
+        return parts.AsReadOnly();
+    }
+
+    /// <summary>
+    /// The whole committed instance, at its new revision: its trunk with the commit applied to
+    /// <paramref name="basedOn"/>'s parts, the instance as read at the revision the commit was based on. A commit that
+    /// replaces its parts needs none.
+    /// </summary>
+    public WorkflowInstance ReadInstance(WorkflowInstance? basedOn = null)
+    {
+        if (!ReplacesParts && basedOn?.SavedParts == null)
+            throw new InvalidOperationException(
+                "The commit writes only the parts that changed; read it with the instance it was based on");
+        var instance = CheckpointParts.Assemble(Payload, ApplyParts(basedOn?.SavedParts)
+            .Select(part => new CheckpointPart(part.Key, part.Value)));
         instance.Revision = checked(ExpectedRevision + 1);
         return instance;
     }

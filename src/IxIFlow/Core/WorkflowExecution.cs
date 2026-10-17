@@ -349,6 +349,26 @@ public class WorkflowInstance
     internal TraceBuffer Trace { get; } = new();
 
     /// <summary>
+    /// The parts the instance's state is stored in as of its last commit or read, by key, or null when that is not
+    /// known; a commit writes only the parts that differ, and deletes those that are gone (A-08).
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal IReadOnlyDictionary<string, string>? SavedParts { get; set; }
+
+    /// <summary>The stored form the last preparation made of the instance's state and data.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal Runtime.StoredCheckpoint? Stored { get; set; }
+
+    /// <summary>The instance's fields with <paramref name="trunk"/> as its state and no data, to store as a trunk.</summary>
+    internal WorkflowInstance AsTrunk(string trunk)
+    {
+        var copy = (WorkflowInstance)MemberwiseClone();
+        copy.ExecutionStateJson = trunk;
+        copy.WorkflowDataJson = "";
+        return copy;
+    }
+
+    /// <summary>
 }
 
 /// <summary>

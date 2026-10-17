@@ -421,6 +421,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             var child = new ContinuationState
             {
                 ParentJoinId = join.Id,
+                Sequence = ++checkpoint.BranchesStarted,
                 Data = BranchData.Copy(snapshot, forkData.GetType()),
                 InheritedItems = ForEachTransitions.Inherited(scopes, parent),
                 Previous = previous,
@@ -867,13 +868,16 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     public static void PrepareCheckpoint(ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes)
     {
         // A finished branch that no join or wait still refers to can never run again, so it is not
-        // saved. The root stays: its status is the instance's outcome.
+        // saved. The root stays: its status is the instance's outcome. A join refers to its parent and
+        // to its branches, each of which names it.
         var root = checkpoint.Continuations.FirstOrDefault();
+        var joins = checkpoint.Joins.Select(join => join.Id).ToHashSet(StringComparer.Ordinal);
+        var referenced = checkpoint.Joins.Select(join => join.ParentContinuationId)
+            .Concat(checkpoint.Waits.Select(wait => wait.ContinuationId)).ToHashSet(StringComparer.Ordinal);
         checkpoint.Continuations.RemoveAll(continuation => continuation != root &&
             continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled &&
-            !checkpoint.Joins.Any(join => join.ParentContinuationId == continuation.Id ||
-                                          join.ChildContinuationIds.Contains(continuation.Id)) &&
-            !checkpoint.Waits.Any(wait => wait.ContinuationId == continuation.Id));
+            !(continuation.ParentJoinId != null && joins.Contains(continuation.ParentJoinId)) &&
+            !referenced.Contains(continuation.Id));
         foreach (var continuation in checkpoint.Continuations)
         {
             if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
@@ -897,13 +901,15 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 }
             }
 
-            if (continuation.RuntimePrevious != null)
+            // A value is serialized when it is set, not at every commit: a saved value read back stays as it was
+            // saved, so a type that serializes differently each time does not rewrite every branch (A-08).
+            if (continuation is { RuntimePrevious: not null, Previous: null })
                 continuation.Previous = SerializedValue.From(continuation.RuntimePrevious);
             foreach (var frame in continuation.Stack)
             {
-                if (frame.RuntimeEntryPrevious != null)
+                if (frame is { RuntimeEntryPrevious: not null, EntryPrevious: null })
                     frame.EntryPrevious = SerializedValue.From(frame.RuntimeEntryPrevious);
-                if (frame.TryState?.RuntimeEntryPrevious != null)
+                if (frame.TryState is { RuntimeEntryPrevious: not null, EntryPrevious: null })
                     frame.TryState.EntryPrevious = SerializedValue.From(frame.TryState.RuntimeEntryPrevious);
             }
         }

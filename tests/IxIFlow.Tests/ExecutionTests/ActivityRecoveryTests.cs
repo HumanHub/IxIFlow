@@ -904,7 +904,7 @@ public sealed class ActivityRecoveryTests
 
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            var instance = commit.ReadTrunk();
             if (FailNextCommits-- > 0)
             {
                 throw new IOException("Checkpoint unavailable");

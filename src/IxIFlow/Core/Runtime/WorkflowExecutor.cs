@@ -682,7 +682,8 @@ internal sealed class WorkflowExecutor
     private async Task<WorkflowExecutionResult> StopAtLimitAsync(WorkflowDefinition definition,
         WorkflowInstance instance, object workflowData, IExecutionHost host, CheckpointLimitExceededException limit)
     {
-        var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+        var checkpoint = ExecutionCheckpoint.Read(
+            StoredCheckpoint.AssembleState(instance.ExecutionStateJson, instance.SavedParts ?? new Dictionary<string, string>()));
         checkpoint.OperatorStop = new OperatorStopState
         {
             Kind = OperatorStopKind.ResourceLimit, Reason = limit.Message, StoppedAtUtc = Now

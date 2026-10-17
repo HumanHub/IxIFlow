@@ -415,7 +415,9 @@ public sealed class WorkflowDeadlineTests
 
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            // The whole instance the commit saves: the commit applied to the instance it was based on.
+            var instance = commit.ReadInstance(
+                commit.ReplacesParts ? null : await _inner.GetWorkflowInstanceAsync(commit.InstanceId));
             if (ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) &&
                 ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations[0].Status ==
                     ContinuationStatus.Completed &&

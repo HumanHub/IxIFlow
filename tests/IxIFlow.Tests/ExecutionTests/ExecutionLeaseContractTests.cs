@@ -1472,7 +1472,7 @@ public sealed class ExecutionLeaseContractTests
                 inner.ReleaseExecutionLeaseAsync(id, token);
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            var instance = commit.ReadTrunk();
             if (instance.Status == WorkflowStatus.Completed &&
                 Interlocked.Exchange(ref CancelBeforeTerminalCommit, 0) > 0)
                 await inner.RequestCancellationAsync(instance.InstanceId,
