@@ -6,6 +6,7 @@ using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Extensions;
 
@@ -24,18 +25,20 @@ public static class ServiceCollectionExtensions
     {
         // Core workflow services
         services.TryAddSingleton(HostSettings.Default);
-        services.AddSingleton<LocalWorkflowHost>();
+        services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
+            provider.GetService<ILogger<WorkflowHost>>()));
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
-        services.AddScoped<DirectInstanceClient>();
+        services.AddScoped<WorkflowHost.SlotClient>();
         services.AddScoped<RunControl>();
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
-        services.AddScoped<InstanceHost>();
+        services.AddScoped<WorkflowHost.InstanceOperations>();
         services.AddHostedService<WorkflowRecoveryService>();
         // Registered after the scanner so it stops first: hosted services stop in reverse order,
         // and the host drains the work the scanner admitted.
-        services.AddHostedService(provider => provider.GetRequiredService<LocalWorkflowHost>());
+        services.AddHostedService(provider => provider.GetRequiredService<WorkflowHost>());
         services.AddSingleton(InProcessInstanceGate.Shared);
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(ExecutionLimits.Default);
