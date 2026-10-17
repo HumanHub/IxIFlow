@@ -124,10 +124,12 @@ public sealed class PreparedActivity
     private readonly Action<object?> _setRecoveryState;
 
     internal PreparedActivity(IAsyncActivity activity, IActivityContext context,
-        Func<Task> applyOutputs, Action<object?> setRecoveryState, Action<ReplyAddress> setReply)
+        Func<Task> applyOutputs, Action<object?> setRecoveryState, Action<ReplyAddress> setReply,
+        Runtime.ActivityInputSnapshot inputs)
     {
         Activity = activity;
         Context = context;
+        Inputs = inputs;
         _applyOutputs = applyOutputs;
         _setRecoveryState = setRecoveryState;
         _setReply = setReply;
@@ -137,6 +139,9 @@ public sealed class PreparedActivity
 
     public IAsyncActivity Activity { get; }
     public IActivityContext Context { get; }
+
+    /// <summary>The inputs as saved; the activity holds copies read back from them (A-09).</summary>
+    internal Runtime.ActivityInputSnapshot Inputs { get; }
 
     internal Task ApplyOutputsAsync() => _applyOutputs();
     internal void SetRecoveryState(object? state) => _setRecoveryState(state);
@@ -244,8 +249,9 @@ public class ActivityExecutor : IActivityExecutor
             attemptId);
 
         var mappingResult = new TypedActivityExecutionResult<object>();
+        var inputs = new Runtime.ActivityInputSnapshot();
         if (applyInputMappings || codeInputs is { Count: > 0 })
-            await ApplyTypedInputMappingsAsync(activity,
+            await ApplyTypedInputMappingsAsync(activity, inputs,
                 applyInputMappings ? request.InputMappings : request.InputMappings
                     .Where(mapping => codeInputs!.Contains(mapping.TargetProperty)).ToList(),
                 request.WorkflowData,
@@ -259,7 +265,8 @@ public class ActivityExecutor : IActivityExecutor
                 request.WorkflowData, request.PreviousStepData, request.CatchFault,
                 new TypedActivityExecutionResult<object>(), request.Items),
             state => context.RecoveryState = state,
-            reply => context.Reply = reply);
+            reply => context.Reply = reply,
+            inputs);
     }
 
     public TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> CreateTypedActivityContext<TWorkflowData, TPreviousStepData>(
@@ -440,6 +447,7 @@ public class ActivityExecutor : IActivityExecutor
 
     private async Task ApplyTypedInputMappingsAsync<TWorkflowData, TPreviousStepData>(
         IAsyncActivity activity,
+        Runtime.ActivityInputSnapshot inputs,
         List<PropertyMapping> inputMappings,
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
@@ -534,7 +542,10 @@ public class ActivityExecutor : IActivityExecutor
                 var targetProperty = activity.GetType().GetProperty(mapping.TargetProperty);
                 if (targetProperty != null && targetProperty.CanWrite)
                 {
-                    var convertedValue = ConvertValue(sourceValue, targetProperty.PropertyType);
+                    // The activity gets a copy of what its attempt saves, set once (A-09).
+                    var (saved, convertedValue) = Runtime.ActivityInputValue.Of(targetProperty,
+                        ConvertValue(sourceValue, targetProperty.PropertyType), _serviceProvider);
+                    inputs.Properties[targetProperty.Name] = saved;
                     targetProperty.SetValue(activity, convertedValue);
                     trace.TargetValue = convertedValue;
                     trace.IsSuccess = true;

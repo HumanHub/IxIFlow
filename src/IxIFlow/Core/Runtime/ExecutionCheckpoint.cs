@@ -452,29 +452,10 @@ internal sealed class ActivityInputSnapshot
         .Where(item => item.Value.RebindFromDefinition)
         .Select(item => item.Key).ToArray();
 
-    public static ActivityInputSnapshot Capture(IAsyncActivity activity, WorkflowStep step)
-    {
-        var snapshot = new ActivityInputSnapshot();
-        foreach (var mapping in step.InputMappings.Where(item =>
-                     item.Direction == PropertyMappingDirection.Input))
-        {
-            var property = activity.GetType().GetProperty(mapping.TargetProperty)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                    $"Mapped activity input '{mapping.TargetProperty}' was not found");
-            var value = property.GetValue(activity);
-            snapshot.Properties[property.Name] = value switch
-            {
-                Delegate => new ActivityInputValue { RebindFromDefinition = true },
-                Exception error => new ActivityInputValue
-                {
-                    Exception = SerializedException.From(error)
-                },
-                _ => new ActivityInputValue { Value = SerializedValue.From(value) }
-            };
-        }
-        return snapshot;
-    }
-
+    /// <summary>
+    /// Sets the saved inputs on a recovered attempt's activity, as copies read back from what was saved, so it runs on
+    /// exactly what its first attempt ran on.
+    /// </summary>
     public void Restore(IAsyncActivity activity, IServiceProvider services)
     {
         foreach (var (name, saved) in Properties)
@@ -487,16 +468,111 @@ internal sealed class ActivityInputSnapshot
             if (property.GetSetMethod(nonPublic: true) == null)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Saved activity input '{activity.GetType().Name}.{name}' cannot be restored");
-            property.SetValue(activity, saved.Exception?.Restore() ?? saved.Value?.Read(services));
+            property.SetValue(activity, saved.Read(property, services));
         }
     }
 }
 
+/// <summary>
+/// One activity input as its attempt saves it (A-09). The activity runs on a copy read back from this, on its first
+/// attempt as after a recovery, so a change it makes to an input reaches nothing outside it: the workflow data changes
+/// only through output mappings, whether or not the host crashed. A delegate input is bound again from the definition.
+/// </summary>
 internal sealed class ActivityInputValue
 {
     public SerializedValue? Value { get; set; }
     public SerializedException? Exception { get; set; }
     public bool RebindFromDefinition { get; set; }
+
+    /// <summary>
+    /// Saves the value mapped to <paramref name="input"/> and returns it with the copy the activity is given. A value
+    /// that cannot be saved and read back is an invalid definition, refused before the activity runs.
+    /// </summary>
+    public static (ActivityInputValue Saved, object? Copy) Of(PropertyInfo input, object? value, IServiceProvider services)
+    {
+        if (value is Delegate)
+            return (new ActivityInputValue { RebindFromDefinition = true }, value);
+        try
+        {
+            if (value is Exception error)
+            {
+                var exception = SerializedException.From(error);
+                var saved = new ActivityInputValue { Exception = exception };
+                return (saved, saved.Read(input, services));
+            }
+            if (value == null)
+                return (new ActivityInputValue(), null);
+            var type = SavedType(input, value);
+            var json = JsonSerializer.Serialize(value, type, OptionsFor(input));
+            var copy = new ActivityInputValue { Value = new SerializedValue { Type = type.AssemblyQualifiedName!, Json = json } };
+            return (copy, copy.Read(input, services));
+        }
+        catch (Exception problem) when (problem is not WorkflowEngineException)
+        {
+            throw Unreadable(input, problem);
+        }
+    }
+
+    /// <summary>The copy of the saved value the activity is given.</summary>
+    public object? Read(PropertyInfo input, IServiceProvider services)
+    {
+        if (Exception != null)
+            return Exception.Restore();
+        if (Value == null)
+            return null;
+        var type = WorkflowTypeIdentity.Resolve(Value.Type)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Saved value type '{Value.Type}' is unavailable");
+        if (typeof(IAsyncActivity).IsAssignableFrom(type))
+            return Value.Read(services);
+        try
+        {
+            return JsonSerializer.Deserialize(Value.Json, type, OptionsFor(input));
+        }
+        catch (Exception problem) when (problem is not WorkflowEngineException)
+        {
+            throw Unreadable(input, problem);
+        }
+    }
+
+    // A value is saved under its own type when that type can be read back by name, which keeps a derived value whole;
+    // a compiler-made or non-public type, such as a LINQ iterator, is saved under the input's declared type.
+    private static Type SavedType(PropertyInfo input, object value)
+    {
+        var runtime = value.GetType();
+        return runtime.IsVisible && !runtime.IsAbstract || input.PropertyType == typeof(object) ? runtime : input.PropertyType;
+    }
+
+    // Every property is written, as for branch data (D-14), so a null or default inside an input reads back as it was;
+    // a converter or number handling on the input property applies as it would to the property.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<PropertyInfo, JsonSerializerOptions> Options = new();
+
+    private static JsonSerializerOptions OptionsFor(PropertyInfo input) => Options.GetOrAdd(input, property =>
+    {
+        var options = new JsonSerializerOptions
+        {
+            TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver
+            {
+                Modifiers = { info => { foreach (var each in info.Properties) each.ShouldSerialize = null; } }
+            }
+        };
+        if (property.GetCustomAttribute<JsonConverterAttribute>() is { } attribute)
+        {
+            var converter = attribute.ConverterType is { } converterType
+                ? Activator.CreateInstance(converterType) as JsonConverter
+                : attribute.CreateConverter(property.PropertyType);
+            if (converter != null)
+                options.Converters.Add(converter);
+        }
+        if (property.GetCustomAttribute<JsonNumberHandlingAttribute>() is { } numbers)
+            options.NumberHandling = numbers.Handling;
+        return options;
+    });
+
+    private static WorkflowEngineException Unreadable(PropertyInfo input, Exception problem) => new(
+        WorkflowErrorKind.InvalidDefinition,
+        $"Activity input '{input.DeclaringType?.Name}.{input.Name}' cannot be saved and read back: " +
+        problem.GetBaseException().Message, problem);
 }
 
 internal sealed class ScopePosition
