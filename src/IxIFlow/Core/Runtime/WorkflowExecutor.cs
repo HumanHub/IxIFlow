@@ -463,7 +463,15 @@ internal sealed class WorkflowExecutor
         {
             // Activity outcomes after the last checkpoint are not kept; recovery re-derives them.
             await AbandonInFlightAsync(inFlight);
-            return await StopAtLimitAsync(definition, instance, checkpoint.RootData, host, limit);
+            return await StopForOperatorAsync(definition, instance, checkpoint.RootData, host,
+                OperatorStopKind.ResourceLimit, limit.Message);
+        }
+        catch (CheckpointVerificationException unverified)
+        {
+            // An engine fault, not the workflow's: the last checkpoint is kept, as at a limit.
+            await AbandonInFlightAsync(inFlight);
+            return await StopForOperatorAsync(definition, instance, checkpoint.RootData, host,
+                OperatorStopKind.Verification, unverified.Message);
         }
         catch (WorkflowEngineException ex) when (WorkflowEngineException.IsEngineFailure(ex) && ex.IsInterruption)
         {
@@ -682,18 +690,18 @@ internal sealed class WorkflowExecutor
         }
     }
 
-    // A checkpoint over the limit is never saved. The instance keeps its last checkpoint and
-    // stops at NeedsResolution until an operator raises the limit and releases it, or cancels it (D-28).
-    private async Task<WorkflowExecutionResult> StopAtLimitAsync(WorkflowDefinition definition,
-        WorkflowInstance instance, object workflowData, IExecutionHost host, CheckpointLimitExceededException limit)
+    // A checkpoint over the limit, or one that fails verification, is never saved. The instance keeps its last
+    // checkpoint and stops at NeedsResolution until an operator releases it, or cancels it (D-28, A-08).
+    private async Task<WorkflowExecutionResult> StopForOperatorAsync(WorkflowDefinition definition,
+        WorkflowInstance instance, object workflowData, IExecutionHost host, OperatorStopKind kind, string reason)
     {
         var checkpoint = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
         checkpoint.OperatorStop = new OperatorStopState
         {
-            Kind = OperatorStopKind.ResourceLimit, Reason = limit.Message, StoppedAtUtc = Now
+            Kind = kind, Reason = reason, StoppedAtUtc = Now
         };
         instance.Status = WorkflowStatus.NeedsResolution;
-        instance.LastError = limit.Message;
+        instance.LastError = reason;
         instance.CompletedAt = null;
         // The stop saves the last committed checkpoint plus a small marker, so it is not held to the
         // limit; otherwise a checkpoint just under the limit could never stop.
@@ -705,7 +713,7 @@ internal sealed class WorkflowExecutor
             Status = WorkflowExecutionStatus.NeedsResolution,
             WorkflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, workflowData.GetType()),
             TraceEntries = instance.Trace.Run.ToList(),
-            ErrorMessage = limit.Message,
+            ErrorMessage = reason,
             ExecutionTime = Now - instance.StartedAt!.Value
         };
     }

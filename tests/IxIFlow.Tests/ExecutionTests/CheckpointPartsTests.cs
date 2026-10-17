@@ -142,6 +142,44 @@ public sealed class CheckpointPartsTests
         Assert.Equal("{\"Value\":\"A\"}", (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.WorkflowDataJson);
     }
 
+    // The parts an instance was read with belong to that instance: an object read for one instance and committed for
+    // another at the same revision writes every part rather than leaving the other's.
+    [Fact]
+    public async Task ACommitFromAnInstanceReadAsAnotherWritesAllItsParts()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var (state, _) = State(1, 2);
+        WorkflowInstance Instance(string data) => new()
+        {
+            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Renamed", Status = WorkflowStatus.Running,
+            ExecutionStateJson = state, WorkflowDataJson = data
+        };
+        var first = Instance("{\"Value\":\"A\"}");
+        var second = Instance("{\"Value\":\"B\"}");
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, 0, 0));
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(second, 0, 0));
+        var read = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
+
+        read.InstanceId = second.InstanceId;
+        var commit = CheckpointCommit.Create(read, 0, 1);
+        await repository.CommitWorkflowInstanceAsync(commit);
+
+        Assert.True(commit.ReplacesParts);
+        Assert.Equal("{\"Value\":\"A\"}", (await repository.GetWorkflowInstanceAsync(second.InstanceId))!.WorkflowDataJson);
+    }
+
+    // The diagnostic option reaches the limits every commit is made under.
+    [Fact]
+    public void TheVerifyingOptionReachesTheExecutionLimits()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow(options => options.VerifyCheckpointParts = true);
+        using var provider = services.BuildServiceProvider();
+
+        Assert.True(provider.GetRequiredService<ExecutionLimits>().VerifyCheckpointParts);
+    }
+
     // A commit serializes only the branches marked as changed; the verifying mode the tests run with fails a commit
     // whose branch changed without a mark, and a marked branch is written again.
     [Fact]
@@ -154,7 +192,7 @@ public sealed class CheckpointPartsTests
 
         branch.Status = ContinuationStatus.Active;
 
-        var unmarked = Assert.Throws<InvalidOperationException>(() =>
+        var unmarked = Assert.Throws<CheckpointVerificationException>(() =>
             StoredCheckpoint.Split(checkpoint, data, saved, checkpoint.TakeMarks(), verify: true));
         Assert.Contains(StoredCheckpoint.BranchKey(branch.Id), unmarked.Message);
         checkpoint.Touch(branch);

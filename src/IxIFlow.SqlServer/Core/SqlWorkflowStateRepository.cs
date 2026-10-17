@@ -60,7 +60,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             SET CompletionClaimToken = @Token,
                 CompletionClaimUntil = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME())
             OUTPUT inserted.InstanceId, inserted.StateJson, inserted.RunnableAtUtc, inserted.Revision,
-                CAST(inserted.RowStamp AS BIGINT) AS Stamp
+                inserted.Incarnation
             FROM dbo.IxIFlowWorkflowInstances AS instance
             INNER JOIN pending ON pending.InstanceId = instance.InstanceId;
             """, new { InstanceId = instanceId, Token = token,
@@ -1026,15 +1026,16 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
 
     private const int MaxReadAttempts = 20;
 
-    // An instance row's columns as a read takes them. Its stamp changes with every write to the row and never repeats,
-    // not even when the instance is deleted and created again.
-    private const string RowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, CAST(RowStamp AS BIGINT) AS Stamp";
+    // An instance row's columns as a read takes them. Its revision changes with every commit, and its incarnation with
+    // every insert, so together they never repeat for an ID, not even when the instance is deleted and created again;
+    // inbox appends, cancellation requests and claims change neither.
+    private const string RowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation";
 
     private const string UnpublishedCompletion =
         "AND Status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut') AND CompletionPublished = 0";
 
-    // The row, then its parts, then its stamp again: when the stamp moved, a commit, or a delete and a new instance
-    // with the same ID, may have changed the parts after the row was read, and the read starts again. The reads hold
+    // The row, then its parts, then its revision and incarnation again: when they moved, a commit, or a delete and a
+    // new instance with the same ID, may have changed the parts after the row was read, and the read starts again. The reads hold
     // no lock between statements; under row versioning they take none. A summary reads only the data part.
     // <paramref name="filter"/> is the condition the row was selected by, which a row read again must still meet.
     private static async Task<WorkflowInstance?> ReadAtOneRevisionAsync(SqlConnection connection, string instanceId,
@@ -1047,22 +1048,23 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         {
             StoredRow? row;
             StoredPart[] parts;
-            long? stamp;
+            StoredStamp? stamp;
             using (var read = await connection.QueryMultipleAsync($"""
                 SELECT {RowColumns} FROM dbo.IxIFlowWorkflowInstances
                 WHERE InstanceId = @InstanceId {filter};
                 SELECT InstanceId, PartKey, Json FROM dbo.IxIFlowWorkflowParts
                 WHERE InstanceId = @InstanceId {(wholly ? "" : "AND PartKey = @DataKey")};
-                SELECT CAST(RowStamp AS BIGINT) FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId;
+                SELECT InstanceId, Revision, Incarnation FROM dbo.IxIFlowWorkflowInstances
+                WHERE InstanceId = @InstanceId;
                 """, parameters))
             {
                 row = await read.ReadSingleOrDefaultAsync<StoredRow>();
                 parts = (await read.ReadAsync<StoredPart>()).ToArray();
-                stamp = await read.ReadSingleOrDefaultAsync<long?>();
+                stamp = await read.ReadSingleOrDefaultAsync<StoredStamp>();
             }
             if (row == null)
                 return null;
-            if (stamp == row.Stamp)
+            if (stamp != null && row.Same(stamp))
                 return wholly ? row.Read(parts) : row.Summarize(parts.SingleOrDefault()?.Json);
             if (attempt == MaxReadAttempts)
                 throw new InvalidOperationException(
@@ -1072,8 +1074,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         }
     }
 
-    // Each row with the parts stored with it. The parts and the stamps are read after the rows; a row whose stamp
-    // moved since is read again on its own, and kept only if it still meets <paramref name="filter"/>, the condition
+    // Each row with the parts stored with it. The parts, revisions and incarnations are read after the rows; a row
+    // that moved since is read again on its own, and kept only if it still meets <paramref name="filter"/>, the condition
     // it was selected by, so no instance mixes two commits or is listed for a state it has left.
     private static async Task<WorkflowInstance[]> AssembleAsync(SqlConnection connection, IReadOnlyList<StoredRow> rows,
         string filter, object? filterValues)
@@ -1082,19 +1084,19 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         foreach (var batch in rows.Chunk(StatementBatch))
         {
             ILookup<string, StoredPart> parts;
-            Dictionary<string, long> stamps;
+            Dictionary<string, StoredStamp> stamps;
             using (var read = await connection.QueryMultipleAsync("""
                 SELECT InstanceId, PartKey, Json FROM dbo.IxIFlowWorkflowParts WHERE InstanceId IN @Ids;
-                SELECT InstanceId, CAST(RowStamp AS BIGINT) AS Stamp FROM dbo.IxIFlowWorkflowInstances
+                SELECT InstanceId, Revision, Incarnation FROM dbo.IxIFlowWorkflowInstances
                 WHERE InstanceId IN @Ids;
                 """, new { Ids = batch.Select(row => row.InstanceId).ToArray() }))
             {
                 parts = (await read.ReadAsync<StoredPart>()).ToLookup(part => part.InstanceId, StringComparer.Ordinal);
                 stamps = (await read.ReadAsync<StoredStamp>())
-                    .ToDictionary(stored => stored.InstanceId, stored => stored.Stamp, StringComparer.Ordinal);
+                    .ToDictionary(stored => stored.InstanceId, StringComparer.Ordinal);
             }
             foreach (var row in batch)
-                if (stamps.TryGetValue(row.InstanceId, out var stamp) && stamp == row.Stamp)
+                if (stamps.TryGetValue(row.InstanceId, out var stamp) && row.Same(stamp))
                     instances.Add(row.Read(parts[row.InstanceId]));
                 else if (await ReadAtOneRevisionAsync(connection, row.InstanceId, wholly: true, filter, filterValues)
                          is { } moved)
@@ -1257,7 +1259,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
         public string StateJson { get; set; } = "";
         public DateTime? RunnableAtUtc { get; set; }
         public long Revision { get; set; }
-        public long Stamp { get; set; }
+        public Guid Incarnation { get; set; }
+
+        public bool Same(StoredStamp stamp) => stamp.Revision == Revision && stamp.Incarnation == Incarnation;
 
         public WorkflowInstance Read(IEnumerable<StoredPart> parts) => Runnable(CheckpointParts.Assemble(StateJson,
             parts.Select(part => new CheckpointPart(part.PartKey, part.Json)), Revision));
@@ -1281,7 +1285,8 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
     private sealed class StoredStamp
     {
         public string InstanceId { get; set; } = "";
-        public long Stamp { get; set; }
+        public long Revision { get; set; }
+        public Guid Incarnation { get; set; }
     }
 
     private async Task<SqlConnection> OpenConnectionAsync()
@@ -1360,8 +1365,9 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                     ALTER TABLE dbo.IxIFlowWorkflowInstances
                         ADD InboxReadThrough BIGINT NOT NULL
                             CONSTRAINT DF_IxIFlowWorkflowInstances_InboxReadThrough DEFAULT 0;
-                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'RowStamp') IS NULL
-                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD RowStamp ROWVERSION;
+                IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'Incarnation') IS NULL
+                    ALTER TABLE dbo.IxIFlowWorkflowInstances ADD Incarnation UNIQUEIDENTIFIER NOT NULL
+                        CONSTRAINT DF_IxIFlowWorkflowInstances_Incarnation DEFAULT NEWID();
                 IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'ParentInstanceId') IS NULL
                 BEGIN
                     ALTER TABLE dbo.IxIFlowWorkflowInstances ADD ParentInstanceId NVARCHAR(100) NULL;

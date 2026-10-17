@@ -128,7 +128,7 @@ internal static class ExecutionCheckpointWriter
             instance.Stored = stored;
             return stored;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not CheckpointVerificationException)
         {
             throw new CheckpointDataException(ex);
         }
