@@ -782,8 +782,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (WorkflowEngineException.IsEngineFailure(error))
             return false;
         checkpoint.Touch(continuation);
+        // A failed attempt's inputs are kept only for a retry of its step.
+        var retryInputs = continuation.RetryInputs;
+        continuation.RetryInputs = null;
         if (allowStepRetry && !continuation.CancellationUnwind &&
-            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, StoreNow(checkpoint)))
+            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, StoreNow(checkpoint), retryInputs))
             return true;
         if (continuation.CancellationUnwind)
         {

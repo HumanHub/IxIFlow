@@ -370,6 +370,14 @@ internal sealed class ContinuationState
     public List<ScopePosition> Stack { get; set; } = [];
     public SerializedValue? Previous { get; set; }
     public ActivityInvocationState? PendingActivity { get; set; }
+
+    /// <summary>
+    /// The inputs a failed attempt saved, kept while its step waits to be retried: a step retry is another attempt of
+    /// the same invocation and starts from them (D-14).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public KeptActivityInputs? RetryInputs { get; set; }
+
     public AcceptedWaitState? AcceptedWait { get; set; }
 
     /// <summary>For a branch, the <c>ForEach</c> items in force where it was forked (D-34).</summary>
@@ -423,6 +431,13 @@ internal sealed class ActivityInvocationState
     public List<ActivityAttemptState> Attempts { get; set; } = [];
     public string? ResolutionReason { get; set; }
     public ActivityResolutionState? Resolution { get; set; }
+}
+
+/// <summary>The inputs an invocation's failed attempt saved, for the step retry that continues the invocation.</summary>
+internal sealed class KeptActivityInputs
+{
+    public string InvocationId { get; set; } = "";
+    public ActivityInputSnapshot Inputs { get; set; } = new();
 }
 
 internal sealed class ActivityResolutionState

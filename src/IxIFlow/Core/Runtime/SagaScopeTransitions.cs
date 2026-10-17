@@ -243,7 +243,7 @@ internal static class SagaScopeTransitions
     }
 
     public static bool HandleStepFailure(WorkflowScopeCatalog scopes,
-        ContinuationState continuation, Exception error, DateTime now)
+        ContinuationState continuation, Exception error, DateTime now, KeptActivityInputs? failedInputs)
     {
         var position = continuation.Stack[^1];
         var step = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
@@ -271,6 +271,7 @@ internal static class SagaScopeTransitions
         position.StepRetryCounts[position.NextStepIndex] = attempts + 1;
         continuation.RetryAfterUtc = RetrySchedule.NextAttemptUtc(
             handler.RetryPolicy, attempts + 1, now);
+        continuation.RetryInputs = failedInputs;
         return true;
     }
 

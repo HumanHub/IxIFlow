@@ -32,6 +32,11 @@ internal sealed class ActivityAttempts(
                 "The saved activity does not match its continuation");
 
         var invocationId = pending?.Id ?? NewInvocationId(instance, continuation, scopes.Id(step));
+        // A step retry continues the invocation its failed attempt began, from the inputs that attempt saved (D-14).
+        var retryInputs = pending == null && continuation.RetryInputs?.InvocationId == invocationId
+            ? continuation.RetryInputs.Inputs
+            : null;
+        continuation.RetryInputs = null;
         var attempt = new ActivityAttemptState
         {
             StartedAtUtc = Now,
@@ -49,12 +54,13 @@ internal sealed class ActivityAttempts(
                 continuation.GetPrevious(services),
                 TryScopeTransitions.CatchFault(checkpoint, continuation, services),
                 activityCancellation.Token, invocationId, attempt.Id,
-                continuation.Stack[^1].NextStepIndex, !isRecovery,
-                pending?.Inputs.CodeInputs,
+                continuation.Stack[^1].NextStepIndex, !isRecovery && retryInputs == null,
+                (pending?.Inputs ?? retryInputs)?.CodeInputs,
                 compensationInputs, SagaScopeTransitions.ActivityMetadata(scopes, continuation, step),
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
             if (pending == null)
             {
+                retryInputs?.Restore(prepared.Activity, services);
                 recoveryState = (prepared.Activity as IRecoverableActivity)?
                     .CaptureRecoveryStateObject(prepared.Context);
                 if (prepared.Activity is IRecoverableActivity && recoveryState == null)
@@ -66,7 +72,7 @@ internal sealed class ActivityAttempts(
                     StartedAtUtc = Now,
                     Id = invocationId,
                     StepId = scopes.Id(step),
-                    Inputs = prepared.Inputs,
+                    Inputs = retryInputs ?? prepared.Inputs,
                     RecoveryState = SerializedValue.From(recoveryState)
                 };
                 continuation.PendingActivity = pending;
@@ -391,6 +397,13 @@ internal sealed class ActivityAttempts(
 
             if (outcome.Kind == ActivityRunKind.Threw)
             {
+                // Kept until the failure is handled, for a retry of the step (D-14).
+                if (activity.Continuation.PendingActivity is { } failed)
+                    activity.Continuation.RetryInputs = new KeptActivityInputs
+                    {
+                        InvocationId = failed.Id,
+                        Inputs = failed.Inputs
+                    };
                 MarkActivityEnd(activity, instance, "Threw", outcome.Error);
                 throw outcome.Error ?? new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "Activity failed without an exception");
