@@ -78,38 +78,51 @@ internal static class LiquidModel
         return null;
     }
 
-    /// <summary>Values Fluid turns into its own strings, numbers, booleans and dates, which have no members.</summary>
+    /// <summary>
+    /// Values Fluid turns into its own strings, numbers, booleans and dates, which have no members: what
+    /// <c>FluidValue.Create</c> converts before it looks for a dictionary, a collection or an object.
+    /// </summary>
     public static bool IsScalar(Type type)
     {
         type = Unwrap(type);
-        return type.IsPrimitive || type.IsEnum || type == typeof(string) || type == typeof(decimal) ||
-               type == typeof(DateTime) || type == typeof(DateTimeOffset) || type == typeof(TimeSpan) ||
-               type == typeof(DateOnly) || type == typeof(TimeOnly) || type == typeof(Guid);
+        return type.IsEnum || Type.GetTypeCode(type) != TypeCode.Object || type == typeof(DateTimeOffset) ||
+               type == typeof(TimeSpan) || typeof(IConvertible).IsAssignableFrom(type) ||
+               typeof(IFormattable).IsAssignableFrom(type);
     }
 
-    /// <summary>The value type of a dictionary with string keys, or null for any other type.</summary>
-    public static Type? DictionaryValue(Type type) =>
-        Implementations(type)
+    /// <summary>The value type of a dictionary Fluid reads by key, or null for any other type.</summary>
+    public static Type? DictionaryValue(Type type)
+    {
+        if (IsScalar(type))
+            return null;
+        var generic = Implementations(type)
             .Where(candidate => candidate.IsGenericType &&
                                 (candidate.GetGenericTypeDefinition() == typeof(IDictionary<,>) ||
                                  candidate.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>)) &&
                                 candidate.GetGenericArguments()[0] == typeof(string))
             .Select(candidate => candidate.GetGenericArguments()[1])
             .FirstOrDefault();
+        return generic ?? (typeof(System.Collections.IDictionary).IsAssignableFrom(type) ? typeof(object) : null);
+    }
 
-    /// <summary>The element type of a collection other than a string or a dictionary, or null for any other type.</summary>
+    /// <summary>The element type of a collection other than a dictionary, or null for any other type.</summary>
     public static Type? Element(Type type)
     {
-        if (type == typeof(string) || DictionaryValue(type) != null)
+        if (IsScalar(type) || DictionaryValue(type) != null)
             return null;
         if (type.IsArray)
             return type.GetElementType();
-        return Implementations(type)
+        var generic = Implementations(type)
             .Where(candidate => candidate.IsGenericType &&
                                 candidate.GetGenericTypeDefinition() == typeof(IEnumerable<>))
             .Select(candidate => candidate.GetGenericArguments()[0])
             .FirstOrDefault();
+        return generic ?? (typeof(System.Collections.IEnumerable).IsAssignableFrom(type) ? typeof(object) : null);
     }
+
+    /// <summary>Whether Fluid reads <paramref name="type"/> as an object with members.</summary>
+    public static bool IsObject(Type type) =>
+        !IsScalar(type) && DictionaryValue(type) == null && Element(type) == null;
 
     public static Type Unwrap(Type type) => Nullable.GetUnderlyingType(type) ?? type;
 

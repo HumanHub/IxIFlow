@@ -51,7 +51,8 @@ public sealed class TemplateVersion
             throw new ArgumentException(
                 $"Template '{key}' v{version} has no base variant, the one without a culture that every culture falls back to",
                 nameof(variants));
-        Variants = _variants.Values.OrderBy(variant => variant.Culture, StringComparer.OrdinalIgnoreCase).ToList();
+        Variants = _variants.Values.OrderBy(variant => variant.Culture, StringComparer.OrdinalIgnoreCase).ToList()
+            .AsReadOnly();
     }
 
     /// <summary>A version written against <typeparamref name="TModel"/>.</summary>
@@ -135,7 +136,7 @@ public sealed class TemplateVariant
         ArgumentNullException.ThrowIfNull(content);
         Culture = culture.Length == 0 ? TemplateVersion.BaseCulture : CultureNamed(culture).Name;
         Content = content;
-        Digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
+        Digest = DigestOf(content);
     }
 
     public string Culture { get; }
@@ -144,6 +145,9 @@ public sealed class TemplateVariant
 
     /// <summary>The SHA-256 of the content, which engines key their parsed or compiled templates by.</summary>
     public string Digest { get; }
+
+    internal static string DigestOf(string content) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
 
     internal static CultureInfo CultureNamed(string name)
     {

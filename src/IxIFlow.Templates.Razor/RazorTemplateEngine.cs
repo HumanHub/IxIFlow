@@ -10,7 +10,8 @@ namespace IxIFlow.Templates.Razor;
 /// template that does not compile against its model is never published. A template is C# code: it can call anything
 /// its model's assemblies reference, so Razor templates come from trusted authors, and keeping them free of effects,
 /// clocks included, is the author's part of keeping <see cref="RenderTemplate{TModel}"/> safe to run again.
-/// Each template is compiled once per model type and kept while the model type is loaded.
+/// Validating compiles without loading anything. Rendering compiles each template once per model type and keeps it
+/// loaded while the model type is, which bounds what is loaded by the template versions a host renders.
 /// </summary>
 public sealed class RazorTemplateEngine : ITemplateEngine
 {
@@ -25,7 +26,7 @@ public sealed class RazorTemplateEngine : ITemplateEngine
     {
         ArgumentNullException.ThrowIfNull(template);
         ArgumentNullException.ThrowIfNull(modelType);
-        return ValueTask.FromResult(Compile(template, modelType).Errors);
+        return ValueTask.FromResult(RazorCompiler.Compile(template, modelType, load: false).Errors);
     }
 
     public async ValueTask<string> RenderAsync<TModel>(TemplateSource template, TModel model, CultureInfo culture,
@@ -39,12 +40,26 @@ public sealed class RazorTemplateEngine : ITemplateEngine
         if (compiled.Template == null)
             throw new TemplateRenderException(template, string.Join("; ", compiled.Errors));
         cancellationToken.ThrowIfCancellationRequested();
-        var instance = (RazorTemplate<TModel>)Activator.CreateInstance(compiled.Template)!;
-        return await instance.RenderAsync(model, culture, template.Format);
+        // The culture is current from the template's construction on, so its field initializers format with it too.
+        var current = CultureInfo.CurrentCulture;
+        var currentUi = CultureInfo.CurrentUICulture;
+        CultureInfo.CurrentCulture = culture;
+        CultureInfo.CurrentUICulture = culture;
+        try
+        {
+            var instance = (RazorTemplate<TModel>)Activator.CreateInstance(compiled.Template)!;
+            return await instance.RenderAsync(model, culture, template.Format);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = current;
+            CultureInfo.CurrentUICulture = currentUi;
+        }
     }
 
     private RazorCompilation Compile(TemplateSource template, Type model) =>
         _compiled.GetValue(model, _ => new ConcurrentDictionary<string, Lazy<RazorCompilation>>(StringComparer.Ordinal))
-            .GetOrAdd(template.Digest, _ => new Lazy<RazorCompilation>(() => RazorCompiler.Compile(template, model)))
+            .GetOrAdd(template.Digest,
+                _ => new Lazy<RazorCompilation>(() => RazorCompiler.Compile(template, model, load: true)))
             .Value;
 }

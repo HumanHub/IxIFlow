@@ -1,5 +1,6 @@
 using Fluid;
 using Fluid.Ast;
+using Fluid.Values;
 
 namespace IxIFlow.Templates.Liquid;
 
@@ -23,6 +24,12 @@ internal sealed class LiquidModelChecker
 
     public static IReadOnlyList<TemplateDiagnostic> Check(IStatementList template, Type model, TemplateOptions options)
     {
+        if (!LiquidModel.IsObject(model))
+        {
+            return [new TemplateDiagnostic(
+                $"A Liquid template reads the members of its model, and '{TemplateVersion.ModelTypeName(model)}' " +
+                "has none; wrap it in a model type")];
+        }
         var checker = new LiquidModelChecker(options);
         checker._scopes.Add(LiquidModel.Members(model)
             .GroupBy(member => member.Name, StringComparer.Ordinal)
@@ -47,12 +54,11 @@ internal sealed class LiquidModelChecker
                 Expression(output.Expression);
                 break;
             case AssignStatement assign:
-                // Fluid assigns into the template's outermost scope, so the variable outlives any loop around it.
-                _scopes[0][assign.Identifier] = Expression(assign.Value);
+                Assign(assign.Identifier, Expression(assign.Value));
                 break;
             case CaptureStatement capture:
                 Statements(capture.Statements);
-                _scopes[0][capture.Identifier] = Shape.Of(typeof(string));
+                Assign(capture.Identifier, Shape.Of(typeof(string)));
                 break;
             case ForStatement loop:
                 var element = Elements(Expression(loop.Source));
@@ -108,6 +114,11 @@ internal sealed class LiquidModelChecker
         }
     }
 
+    // Fluid assigns into the template's outermost scope, so the variable outlives any loop around it. A variable
+    // assigned twice, in branches the check cannot tell apart, has a known type only if both assignments agree.
+    private void Assign(string name, Shape shape) =>
+        _scopes[0][name] = _scopes[0].TryGetValue(name, out var earlier) && earlier != shape ? Shape.Unknown : shape;
+
     private void Scoped(IReadOnlyList<Statement> statements, params (string Name, Shape Shape)[] variables)
     {
         _scopes.Add(variables.ToDictionary(variable => variable.Name, variable => variable.Shape,
@@ -126,6 +137,11 @@ internal sealed class LiquidModelChecker
                 Expression(filter.Input);
                 if (!_options.Filters.TryGetValue(filter.Name, out _))
                     _diagnostics.Add(new TemplateDiagnostic($"There is no filter named '{filter.Name}'"));
+                else if (LiquidTemplateEngine.ClockFilters.Contains(filter.Name) &&
+                         filter.Input is LiteralExpression { Value: StringValue clock } &&
+                         LiquidTemplateEngine.IsClock(clock.ToStringValue()))
+                    _diagnostics.Add(new TemplateDiagnostic(
+                        $"A template has no clock: '{clock.ToStringValue()}' is not available; pass the time in the model"));
                 foreach (var argument in filter.Parameters ?? [])
                     Expression(argument.Expression);
                 return Shape.Unknown;
@@ -191,7 +207,7 @@ internal sealed class LiquidModelChecker
                         return Shape.Of(value);
                     if (LiquidModel.Element(type) is { } element)
                         return Shape.Of(element);
-                    if (indexer.Expression is LiteralExpression { Value: Fluid.Values.StringValue name })
+                    if (indexer.Expression is LiteralExpression { Value: StringValue name })
                         return Read(shape, name.ToStringValue(), path);
                 }
                 return Shape.Unknown;
@@ -227,7 +243,7 @@ internal sealed class LiquidModelChecker
             if (name is "first" or "last")
                 return Shape.Of(element);
         }
-        else if (!LiquidModel.IsScalar(type) && LiquidModel.Member(type, name) is { } member)
+        else if (LiquidModel.IsObject(type) && LiquidModel.Member(type, name) is { } member)
         {
             return Shape.Of(member);
         }

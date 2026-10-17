@@ -120,8 +120,10 @@ public sealed class TemplateActivityTests
         Assert.Single(sender.Delivered);
     }
 
-    [Fact]
-    public async Task EachItemOfALoopSendsItsOwnMessage()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EachItemOfALoopSendsItsOwnMessage(bool parallel)
     {
         var sender = new RecordingSender();
         using var services = Services(sender: sender);
@@ -136,7 +138,13 @@ public sealed class TemplateActivityTests
                 .Step<SendTemplateMessage>(step => step
                     .Input(activity => activity.Channel).From(_ => "email")
                     .Input(activity => activity.Recipients).From(ctx => new List<string> { ctx.Item(recipient) })
-                    .Input(activity => activity.Body).From(ctx => ctx.WorkflowData.Body!)))
+                    .Input(activity => activity.Body).From(ctx => ctx.WorkflowData.Body!)),
+                setup =>
+                {
+                    // In parallel, each item runs as a branch of its own.
+                    if (parallel)
+                        setup.Parallel();
+                })
             .Build();
 
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition,

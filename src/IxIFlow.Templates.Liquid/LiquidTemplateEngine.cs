@@ -5,16 +5,16 @@ using System.Text.Encodings.Web;
 using System.Text.RegularExpressions;
 using Fluid;
 using Fluid.Ast;
+using Fluid.Values;
 using Microsoft.Extensions.FileProviders;
 
 namespace IxIFlow.Templates.Liquid;
 
 /// <summary>
 /// Liquid templates, rendered by Fluid (H-03). A template reads only its model's members: the public properties and
-/// fields of the model type and of the types reachable through them. Publishing checks every variable, member and
-/// filter against the model type, and a render refuses anything undefined rather than writing nothing. A render has
-/// no clock, no file system and no other template to include, so its text depends only on the template, the model and
-/// the culture.
+/// fields of the model type and of the types reachable through them; any other object is nil to it. Publishing checks
+/// every variable, member and filter against the model type. A render has no clock, no file system, no host time zone
+/// and no other template to include, so its text depends only on the template, the model and the culture.
 /// </summary>
 public sealed partial class LiquidTemplateEngine : ITemplateEngine
 {
@@ -94,21 +94,41 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
     {
         var options = new TemplateOptions
         {
-            StrictVariables = true,
+            // Undefined values are nil, as Liquid has them: a model's null members render as nothing. Publishing
+            // checks every name against the model, and LiquidValues keeps everything outside the model unreadable.
             StrictFilters = true,
             MaxSteps = _settings.MaxSteps,
             MaxRecursion = _settings.MaxRecursion,
             FileProvider = new NullFileProvider(),
             TimeZone = TimeZoneInfo.Utc,
             CultureInfo = CultureInfo.InvariantCulture,
-            Now = () => throw new InvalidOperationException(
-                "A template has no clock: 'now' and 'today' are not available; pass the time in the model"),
+            // Fluid reads the clock before parsing any date; the date filters refuse 'now' and 'today' themselves.
+            Now = () => DateTimeOffset.UnixEpoch,
             MemberAccessStrategy = new DefaultMemberAccessStrategy()
         };
-        foreach (var reachable in LiquidModel.Reachable(type))
-            options.MemberAccessStrategy.Register(reachable);
+        var reachable = LiquidModel.Reachable(type);
+        foreach (var registered in reachable)
+            options.MemberAccessStrategy.Register(registered);
+        options.ValueConverters.Add(new LiquidValues(reachable).Convert);
+        // json serializes the object behind a value, every member of its runtime type included.
+        options.Filters.Remove("json");
+        foreach (var name in ClockFilters)
+        {
+            if (!options.Filters.TryGetValue(name, out var filter))
+                continue;
+            options.Filters.AddFilter(name, (input, arguments, context) => input.Type == FluidValues.String &&
+                                                                          IsClock(input.ToStringValue())
+                ? throw new InvalidOperationException(
+                    "A template has no clock: 'now' and 'today' are not available; pass the time in the model")
+                : filter(input, arguments, context));
+        }
         return options;
     });
+
+    /// <summary>The filters that read 'now' and 'today' as the current time.</summary>
+    internal static readonly string[] ClockFilters = ["date", "format_date", "time_zone"];
+
+    internal static bool IsClock(string value) => value is "now" or "today";
 
     private static TemplateDiagnostic Diagnostic(string error)
     {

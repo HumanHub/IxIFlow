@@ -95,6 +95,8 @@ public sealed class VersionedTemplateTests
                 In("DE", "b")));
         Assert.Contains("two variants for culture 'de'", twice.Message);
         Assert.Throws<ArgumentException>(() => In("not-a-culture-name", "x"));
+        var version = TemplateVersion.Create<Order>("t", 1, "liquid", TemplateFormat.Text, Base("x"), In("de", "y"));
+        Assert.True(((ICollection<TemplateVariant>)version.Variants).IsReadOnly);
         Assert.Throws<ArgumentOutOfRangeException>(() => new TemplateReference("t", 0));
     }
 
