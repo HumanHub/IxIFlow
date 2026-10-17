@@ -88,8 +88,9 @@ internal sealed class DirectInstanceClient
 
     public Task<WorkflowExecutionResult> ReleaseAsync(
         string instanceId,
+        string? actor = null,
         CancellationToken cancellationToken = default) =>
-        ForInstanceAsync(instanceId, _runner.ReleaseAsync(instanceId, cancellationToken));
+        ForInstanceAsync(instanceId, _runner.ReleaseAsync(instanceId, actor, cancellationToken));
 
     public Task<WorkflowExecutionResult> CancelAsync(
         string instanceId, CancellationReason reason,
