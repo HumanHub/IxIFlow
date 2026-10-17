@@ -131,7 +131,7 @@ public sealed class StoreClockTests
     [Fact]
     public async Task AnEventReceivedInTimeBeatsTheDeadlineWhenItsOwnerWasBusy()
     {
-        var clocks = new Clocks(0);
+        var clocks = Clocks.One();
         using var services = Services(clocks);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
