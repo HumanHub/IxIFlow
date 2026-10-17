@@ -55,8 +55,9 @@ public abstract class RazorTemplate<TModel>
         _output.Append(_format == TemplateFormat.Html ? HtmlEncoder.Default.Encode(value) : value);
     }
 
-    // An attribute whose only value is null or false is left out, and one whose only value is true is written with
-    // its own name as its value, as ASP.NET Core Razor does for checked, disabled and the like.
+    // As ASP.NET Core Razor writes attributes: an attribute whose only value is null or false, with nothing before it,
+    // is left out; such a value that is true is written as the attribute's name, as checked and disabled want; a null
+    // value is left out with the text before it.
     protected void BeginWriteAttribute(string name, string prefix, int prefixOffset, string suffix, int suffixOffset,
         int attributeValuesCount)
     {
@@ -70,18 +71,20 @@ public abstract class RazorTemplate<TModel>
     {
         if (_attribute is { ValueCount: 1 } single)
         {
-            if (!isLiteral && value is null or false)
+            if (string.IsNullOrEmpty(prefix) && value is null or false)
             {
                 _attribute = single with { Omitted = true };
                 return;
             }
             WriteLiteral(single.Prefix);
-            if (!isLiteral && value is true)
+            if (string.IsNullOrEmpty(prefix) && value is true)
                 value = single.Name;
         }
+        if (value is null)
+            return;
         WriteLiteral(prefix);
         if (isLiteral)
-            WriteLiteral(value?.ToString());
+            WriteLiteral(value.ToString());
         else
             Write(value);
     }

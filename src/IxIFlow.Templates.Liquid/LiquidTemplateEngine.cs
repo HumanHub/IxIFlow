@@ -102,33 +102,52 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
             FileProvider = new NullFileProvider(),
             TimeZone = TimeZoneInfo.Utc,
             CultureInfo = CultureInfo.InvariantCulture,
-            // Fluid reads the clock before parsing any date; the date filters refuse 'now' and 'today' themselves.
+            // Fluid reads the clock before parsing any date; the date filters take no text it would complete from it.
             Now = () => DateTimeOffset.UnixEpoch,
             MemberAccessStrategy = new DefaultMemberAccessStrategy()
         };
         var reachable = LiquidModel.Reachable(type);
         foreach (var registered in reachable)
-            options.MemberAccessStrategy.Register(registered);
+            options.MemberAccessStrategy.Register(registered, LiquidModel.Accessors(registered));
         options.ValueConverters.Add(new LiquidValues(reachable).Convert);
         // json serializes the object behind a value, every member of its runtime type included.
         options.Filters.Remove("json");
-        foreach (var name in ClockFilters)
+        foreach (var name in DateFilters)
         {
             if (!options.Filters.TryGetValue(name, out var filter))
                 continue;
-            options.Filters.AddFilter(name, (input, arguments, context) => input.Type == FluidValues.String &&
-                                                                          IsClock(input.ToStringValue())
-                ? throw new InvalidOperationException(
-                    "A template has no clock: 'now' and 'today' are not available; pass the time in the model")
-                : filter(input, arguments, context));
+            options.Filters.AddFilter(name, (input, arguments, context) =>
+            {
+                if (input.Type != FluidValues.String)
+                    return filter(input, arguments, context);
+                var text = input.ToStringValue();
+                return TryParseDate(text, out var date)
+                    ? filter(new DateTimeValue(date), arguments, context)
+                    : throw new InvalidOperationException(NotADate(text));
+            });
         }
         return options;
     });
 
-    /// <summary>The filters that read 'now' and 'today' as the current time.</summary>
-    internal static readonly string[] ClockFilters = ["date", "format_date", "time_zone"];
+    /// <summary>The filters that read text as a date, completing what it leaves out from the clock.</summary>
+    internal static readonly string[] DateFilters = ["date", "format_date", "time_zone"];
 
-    internal static bool IsClock(string value) => value is "now" or "today";
+    // A date written as text must be a complete ISO 8601 date, since Fluid takes a missing date, year or time zone from
+    // the host's clock. Without an offset it is read at offset zero, like a DateTime in the model.
+    private static readonly string[] DateFormats =
+    [
+        "yyyy-MM-dd", "yyyy-MM-ddTHH:mm", "yyyy-MM-ddTHH:mm:ss", "yyyy-MM-ddTHH:mm:ss.FFFFFFF",
+        "yyyy-MM-ddTHH:mmK", "yyyy-MM-ddTHH:mm:ssK", "yyyy-MM-ddTHH:mm:ss.FFFFFFFK",
+        "yyyy-MM-dd HH:mm", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mmK", "yyyy-MM-dd HH:mm:ssK"
+    ];
+
+    internal static bool TryParseDate(string text, out DateTimeOffset date) =>
+        DateTimeOffset.TryParseExact(text, DateFormats, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal,
+            out date);
+
+    internal static string NotADate(string text) =>
+        $"'{text}' is not a date a template can read: a template has no clock, so a date written as text is a " +
+        "complete ISO 8601 date such as 2026-03-04 or 2026-03-04T09:30:00Z; pass the time in the model";
 
     private static TemplateDiagnostic Diagnostic(string error)
     {

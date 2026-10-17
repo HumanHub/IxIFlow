@@ -76,14 +76,6 @@ internal static class RazorCompiler
 
         var tree = CSharpSyntaxTree.ParseText(csharp.GeneratedCode,
             new CSharpParseOptions(LanguageVersion.Latest), path: TemplatePath, encoding: Encoding.UTF8);
-        // @inherits would compile against another base than the model's, and fail only when rendered.
-        var declared = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
-            .First(node => node.Identifier.ValueText == className).BaseList?.Types.FirstOrDefault()?.Type.ToString();
-        if (!string.Equals(Compact(declared), Compact(baseType), StringComparison.Ordinal))
-        {
-            return RazorCompilation.Failed([new TemplateDiagnostic(
-                "A template derives from the base the engine gives it for its model; @inherits is not available")]);
-        }
         var compilation = CSharpCompilation.Create(
             $"{Namespace}.{className}.{Guid.NewGuid():N}",
             [tree],
@@ -100,6 +92,11 @@ internal static class RazorCompiler
                 .Select(Diagnostic)
                 .ToList());
         }
+        if (!DerivesFromModelBase(compilation, tree, className, baseType))
+        {
+            return RazorCompilation.Failed([new TemplateDiagnostic(
+                "A template derives from the base the engine gives it for its model; @inherits is not available")]);
+        }
         if (!load)
             return RazorCompilation.Succeeded(null);
         image.Position = 0;
@@ -108,8 +105,19 @@ internal static class RazorCompiler
         return RazorCompilation.Succeeded(assembly.GetType($"{Namespace}.{className}", throwOnError: true)!);
     }
 
-    private static string? Compact(string? text) =>
-        text == null ? null : string.Concat(text.Where(character => !char.IsWhiteSpace(character)));
+    // @inherits would compile against another base than the model's, and fail only when rendered. The base the class
+    // has is compared, as a type, with the one the engine names, bound where the class is declared.
+    private static bool DerivesFromModelBase(CSharpCompilation compilation, SyntaxTree tree, string className,
+        string baseType)
+    {
+        var declaration = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+            .First(node => node.Identifier.ValueText == className);
+        var model = compilation.GetSemanticModel(tree);
+        var expected = model.GetSpeculativeTypeInfo(declaration.SpanStart, SyntaxFactory.ParseTypeName(baseType),
+            SpeculativeBindingOption.BindAsTypeOrNamespace).Type;
+        var actual = model.GetDeclaredSymbol(declaration)?.BaseType;
+        return expected != null && SymbolEqualityComparer.Default.Equals(actual, expected);
+    }
 
     /// <summary>
     /// The load context the model's types come from: a bundle's when any of them, a generic argument included, was
