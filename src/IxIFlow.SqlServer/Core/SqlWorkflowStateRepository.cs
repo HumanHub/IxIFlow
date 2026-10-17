@@ -820,11 +820,10 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
             }, transaction);
         var madeRunnable = new List<string>();
         // Each child starts as its own instance, runnable now, with no owner yet (D-17).
+        // The payload is stored as the start carries it; the child's revision and runnable time live in their columns.
         foreach (var start in commit.ChildStarts)
         {
-            var child = JsonSerializer.Deserialize<WorkflowInstance>(start.Payload)!;
-            child.Revision = 1;
-            child.RunnableAtUtc = now;
+            var child = start.Instance!;
             await connection.ExecuteAsync("""
                 INSERT INTO dbo.IxIFlowWorkflowInstances
                     (InstanceId, WorkflowName, Status, CorrelationId, RunnableAtUtc, StateJson, Revision, ParentInstanceId)
@@ -832,7 +831,7 @@ public sealed class SqlWorkflowStateRepository : IWorkflowStateRepository, IWork
                 """, WithTimes(new
             {
                 child.InstanceId, child.WorkflowName, Status = child.Status.ToString(), child.CorrelationId,
-                StateJson = JsonSerializer.Serialize(child), ParentInstanceId = commit.InstanceId
+                StateJson = start.Payload, ParentInstanceId = commit.InstanceId
             }, ("Now", now)), transaction);
             madeRunnable.Add(child.InstanceId);
         }
