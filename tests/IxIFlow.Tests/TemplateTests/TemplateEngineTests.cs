@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.Loader;
 using IxIFlow.Templates;
 using IxIFlow.Templates.Liquid;
 using IxIFlow.Templates.Razor;
@@ -85,18 +86,58 @@ public sealed class TemplateEngineTests
         var engine = new LiquidTemplateEngine();
         var order = new DerivedOrder { Number = "A-1", Secret = "s3cret", Extra = new Credentials { Password = "pw" } };
 
-        // A member typed object could hold anything, so publishing reads nothing through it, and a render reads
-        // nothing of a type the model does not reach, even from a template that skipped publishing.
-        var throughObject = Source("{{ Extra.Password }}");
+        // A member typed object could hold anything, so publishing reads nothing through it, and a render finds
+        // nothing in an object of a type the model does not reach, even from a template that skipped publishing.
+        var throughObject = Source("[{{ Extra.Password }}][{{ Extra }}]");
         Assert.Contains(await engine.ValidateAsync(throughObject, typeof(Order)),
             diagnostic => diagnostic.Message.Contains("an object of unknown type"));
+        Assert.Equal("[][]", await engine.RenderAsync<Order>(throughObject, order, CultureInfo.InvariantCulture));
+        // A model of a derived type shows only the members of the type the template was written against, and an
+        // object writes no text of its own, so its ToString shows nothing either.
+        Assert.Equal("[A-1][][]", await engine.RenderAsync<Order>(
+            Source("[{{ Number }}][{{ Secret }}][{{ Customer }}]"), order, CultureInfo.InvariantCulture));
+        // json would serialize the object behind a value, every member of its runtime type included.
+        Assert.Contains(await engine.ValidateAsync(Source("{{ Extra | json }}"), typeof(Order)),
+            diagnostic => diagnostic.Message.Contains("no filter named 'json'"));
         await Assert.ThrowsAsync<TemplateRenderException>(() =>
-            engine.RenderAsync<Order>(throughObject, order, CultureInfo.InvariantCulture).AsTask());
-        // A model of a derived type shows only the members of the type the template was written against.
-        await Assert.ThrowsAsync<TemplateRenderException>(() =>
-            engine.RenderAsync<Order>(Source("{{ Secret }}"), order, CultureInfo.InvariantCulture).AsTask());
-        Assert.Equal("A-1", await engine.RenderAsync<Order>(Source("{{ Number }}"), order,
-            CultureInfo.InvariantCulture));
+            engine.RenderAsync<Order>(Source("{{ Customer | json }}"), order, CultureInfo.InvariantCulture).AsTask());
+    }
+
+    [Fact]
+    public async Task LiquidRendersNullsAndMissingValuesAsNothing()
+    {
+        var engine = new LiquidTemplateEngine();
+        var template = Source(
+            "[{{ Customer.Name }}][{{ Customer.Name | default: 'anon' }}][{{ Labels.missing }}][{{ Lines[5].Sku }}]" +
+            "{% if Extra %}extra{% endif %}");
+        var order = SampleOrder();
+        order.Customer.Name = null!;
+
+        Assert.Empty(await engine.ValidateAsync(template, typeof(Order)));
+        Assert.Equal("[][anon][][]", await engine.RenderAsync(template, order, CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public async Task LiquidWritesDatesAsTheModelHasThemOnAnyHost()
+    {
+        var engine = new LiquidTemplateEngine();
+        var template = Source(
+            "{{ Local | date: '%Y-%m-%d %H:%M' }}|{{ Unspecified | date: '%Y-%m-%d %H:%M' }}|" +
+            "{{ Utc | date: '%H:%M' }}|{{ Offset | date: '%H:%M %z' }}|{{ Duration }}|" +
+            "{{ '2026-03-04' | date: '%d.%m.' }}");
+        var schedule = new Schedule
+        {
+            Local = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Local),
+            Unspecified = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Unspecified),
+            Utc = new DateTime(2026, 1, 1, 9, 30, 0, DateTimeKind.Utc),
+            Offset = new DateTimeOffset(2026, 1, 1, 8, 15, 0, TimeSpan.FromHours(2)),
+            Duration = TimeSpan.FromMinutes(90)
+        };
+
+        Assert.Empty(await engine.ValidateAsync(template, typeof(Schedule)));
+        // Neither kind of DateTime is shifted by the host's time zone, and a TimeSpan is a duration, not a date.
+        Assert.Equal("2026-01-01 12:00|2026-01-01 12:00|09:30|08:15 +0200|01:30:00|04.03.",
+            await engine.RenderAsync(template, schedule, CultureInfo.InvariantCulture));
     }
 
     [Fact]
@@ -104,11 +145,47 @@ public sealed class TemplateEngineTests
     {
         var engine = new LiquidTemplateEngine();
 
+        Assert.Contains(await engine.ValidateAsync(Source("{{ 'now' | date: '%Y' }}"), typeof(Order)),
+            diagnostic => diagnostic.Message.Contains("has no clock"));
+        // A clock word that reaches a date filter from the model is refused when rendered.
+        var order = SampleOrder();
+        order.Number = "today";
         var error = await Assert.ThrowsAsync<TemplateRenderException>(() =>
-            engine.RenderAsync(Source("{{ 'now' | date: '%Y' }}"), SampleOrder(), CultureInfo.InvariantCulture)
-                .AsTask());
-
+            engine.RenderAsync(Source("{{ Number | date: '%Y' }}"), order, CultureInfo.InvariantCulture).AsTask());
         Assert.Contains("has no clock", error.Message);
+    }
+
+    [Fact]
+    public async Task LiquidCheckingFollowsFluidsValues()
+    {
+        var engine = new LiquidTemplateEngine();
+
+        // A formattable value is text to Fluid, so it has no members to read.
+        Assert.Empty(await engine.ValidateAsync(Source("{{ Price }}"), typeof(Priced)));
+        Assert.Contains(await engine.ValidateAsync(Source("{{ Price.Amount }}"), typeof(Priced)),
+            diagnostic => diagnostic.Message.Contains("'Price' has no member 'Amount'"));
+        Assert.Equal("12.50 EUR", await engine.RenderAsync(Source("{{ Price }}"),
+            new Priced { Price = new Money(12.5m, "EUR") }, CultureInfo.InvariantCulture));
+        // A template reads its model's members; a collection has none it can name.
+        Assert.Contains(await engine.ValidateAsync(Source("{{ Count }}"), typeof(List<OrderLine>)),
+            diagnostic => diagnostic.Message.Contains("wrap it in a model type"));
+        // A variable assigned values of two types in branches the check cannot tell apart is not checked further.
+        Assert.Empty(await engine.ValidateAsync(Source(
+            "{% assign x = Customer %}{% if Total > 100 %}{% assign x = Number %}{% endif %}{{ x.Name }}"),
+            typeof(Order)));
+    }
+
+    [Fact]
+    public async Task EnginesKeyWhatTheyParseByTheContent()
+    {
+        var liquid = new LiquidTemplateEngine();
+        var razor = new RazorTemplateEngine();
+
+        // The same key and version with other content is other text, whatever the engine has already seen.
+        Assert.Equal("one", await liquid.RenderAsync(Source("one"), SampleOrder(), CultureInfo.InvariantCulture));
+        Assert.Equal("two", await liquid.RenderAsync(Source("two"), SampleOrder(), CultureInfo.InvariantCulture));
+        Assert.Equal("one", await razor.RenderAsync(Source("one"), SampleOrder(), CultureInfo.InvariantCulture));
+        Assert.Equal("two", await razor.RenderAsync(Source("two"), SampleOrder(), CultureInfo.InvariantCulture));
     }
 
     [Fact]
@@ -174,6 +251,50 @@ public sealed class TemplateEngineTests
     }
 
     [Fact]
+    public async Task RazorWritesBooleanAndNullAttributesAsRazorDoes()
+    {
+        var engine = new RazorTemplateEngine();
+
+        var html = await engine.RenderAsync(Source(
+            "<input disabled=\"@(Model.Total > 100)\" checked=\"@(Model.Total > 1)\" title=\"@Model.Extra\" " +
+            "class=\"line @Model.Number\" />", TemplateFormat.Html), SampleOrder(), CultureInfo.InvariantCulture);
+
+        Assert.Equal("<input checked=\"checked\" class=\"line A-17\" />", html);
+    }
+
+    [Fact]
+    public async Task RazorTemplatesDeriveFromTheModelsBase()
+    {
+        var diagnostics = await new RazorTemplateEngine().ValidateAsync(
+            Source("@inherits IxIFlow.Templates.Razor.RazorTemplate<object>\n@Model"), typeof(Order));
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("@inherits is not available"));
+    }
+
+    [Fact]
+    public async Task RazorCreatesTheTemplateInTheCultureAskedFor()
+    {
+        var text = await new RazorTemplateEngine().RenderAsync(
+            Source("@functions { readonly string total = (2.5m).ToString(); }@total"), SampleOrder(), German);
+
+        Assert.Equal("2,5", text.Trim());
+    }
+
+    [Fact]
+    public async Task RazorValidationLoadsNothing()
+    {
+        var engine = new RazorTemplateEngine();
+        var template = Source($"@Model.Number {Guid.NewGuid():N}");
+        var loaded = () =>
+            AssemblyLoadContext.All.Any(context => context.Name == "Template_" + template.Digest[..16]);
+
+        Assert.Empty(await engine.ValidateAsync(template, typeof(Order)));
+        Assert.False(loaded());
+        await engine.RenderAsync(template, SampleOrder(), CultureInfo.InvariantCulture);
+        Assert.True(loaded());
+    }
+
+    [Fact]
     public void EnginesAreRegisteredByName()
     {
         using var services = Services();
@@ -185,14 +306,31 @@ public sealed class TemplateEngineTests
         Assert.Throws<TemplateNotFoundException>(() => engines.Get("handlebars"));
     }
 
-    private static TemplateSource Source(string content, TemplateFormat format = TemplateFormat.Text)
-    {
-        var variant = Base(content);
-        return new TemplateSource("test", 1, variant.Culture, format, content, variant.Digest);
-    }
+    private static TemplateSource Source(string content, TemplateFormat format = TemplateFormat.Text) =>
+        new("test", 1, TemplateVersion.BaseCulture, format, content);
 
     private static string Normalize(string text) =>
         string.Join("", text.Split('\n').Select(line => line.Trim()));
+
+    public sealed class Schedule
+    {
+        public DateTime Local { get; set; }
+        public DateTime Unspecified { get; set; }
+        public DateTime Utc { get; set; }
+        public DateTimeOffset Offset { get; set; }
+        public TimeSpan Duration { get; set; }
+    }
+
+    public readonly record struct Money(decimal Amount, string Currency) : IFormattable
+    {
+        public string ToString(string? format, IFormatProvider? provider) =>
+            $"{Amount.ToString("0.00", provider)} {Currency}";
+    }
+
+    public sealed class Priced
+    {
+        public Money Price { get; set; }
+    }
 
     public sealed class Credentials
     {

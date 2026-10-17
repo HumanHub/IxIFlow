@@ -5,6 +5,7 @@ using System.Text;
 using Microsoft.AspNetCore.Razor.Language;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace IxIFlow.Templates.Razor;
 
@@ -31,16 +32,30 @@ internal static class RazorCompiler
     private static readonly ConcurrentDictionary<string, MetadataReference> References =
         new(StringComparer.OrdinalIgnoreCase);
 
-    public static RazorCompilation Compile(TemplateSource template, Type model)
+    /// <summary>
+    /// Compiles <paramref name="template"/> against <paramref name="model"/>. Only a compilation that is to be
+    /// rendered is loaded, so validating drafts loads no assemblies.
+    /// </summary>
+    public static RazorCompilation Compile(TemplateSource template, Type model, bool load)
     {
+        AssemblyLoadContext modelContext;
+        try
+        {
+            modelContext = ContextOf(model);
+        }
+        catch (ArgumentException error)
+        {
+            return RazorCompilation.Failed([new TemplateDiagnostic(error.Message)]);
+        }
         var className = "Template_" + template.Digest[..16];
+        var baseType = $"global::{typeof(RazorTemplate<>).Namespace}.RazorTemplate<{CSharpName(model)}>";
         var engine = RazorProjectEngine.Create(RazorConfiguration.Default, EmptyFileSystem.Instance, builder =>
         {
             builder.SetNamespace(Namespace);
             builder.AddDefaultImports(DefaultImports);
             // The ASP.NET Core attributes that mark compiled views are not available, and nothing here reads them.
             builder.Features.Add(new WithoutMetadataAttributes());
-            builder.SetBaseType($"global::{typeof(RazorTemplate<>).Namespace}.RazorTemplate<{CSharpName(model)}>");
+            builder.SetBaseType(baseType);
             builder.ConfigureClass((_, node) =>
             {
                 node.ClassName = className;
@@ -61,10 +76,18 @@ internal static class RazorCompiler
 
         var tree = CSharpSyntaxTree.ParseText(csharp.GeneratedCode,
             new CSharpParseOptions(LanguageVersion.Latest), path: TemplatePath, encoding: Encoding.UTF8);
+        // @inherits would compile against another base than the model's, and fail only when rendered.
+        var declared = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+            .First(node => node.Identifier.ValueText == className).BaseList?.Types.FirstOrDefault()?.Type.ToString();
+        if (!string.Equals(Compact(declared), Compact(baseType), StringComparison.Ordinal))
+        {
+            return RazorCompilation.Failed([new TemplateDiagnostic(
+                "A template derives from the base the engine gives it for its model; @inherits is not available")]);
+        }
         var compilation = CSharpCompilation.Create(
             $"{Namespace}.{className}.{Guid.NewGuid():N}",
             [tree],
-            ReferencesFor(model),
+            ReferencesFor(model, modelContext),
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
                 optimizationLevel: OptimizationLevel.Release,
                 nullableContextOptions: NullableContextOptions.Disable));
@@ -77,10 +100,35 @@ internal static class RazorCompiler
                 .Select(Diagnostic)
                 .ToList());
         }
+        if (!load)
+            return RazorCompilation.Succeeded(null);
         image.Position = 0;
-        var context = new TemplateLoadContext(className, model.Assembly);
+        var context = new TemplateLoadContext(className, modelContext);
         var assembly = context.LoadFromStream(image);
         return RazorCompilation.Succeeded(assembly.GetType($"{Namespace}.{className}", throwOnError: true)!);
+    }
+
+    private static string? Compact(string? text) =>
+        text == null ? null : string.Concat(text.Where(character => !char.IsWhiteSpace(character)));
+
+    /// <summary>
+    /// The load context the model's types come from: a bundle's when any of them, a generic argument included, was
+    /// loaded with one (F-02), and the default context otherwise.
+    /// </summary>
+    private static AssemblyLoadContext ContextOf(Type model)
+    {
+        var contexts = TypesOf(model)
+            .Select(type => AssemblyLoadContext.GetLoadContext(type.Assembly) ?? AssemblyLoadContext.Default)
+            .Where(context => context != AssemblyLoadContext.Default)
+            .Distinct()
+            .ToList();
+        return contexts.Count switch
+        {
+            0 => AssemblyLoadContext.Default,
+            1 => contexts[0],
+            _ => throw new ArgumentException(
+                $"The model '{TemplateVersion.ModelTypeName(model)}' mixes types from {contexts.Count} load contexts")
+        };
     }
 
     // Razor maps the generated code back to the template with #line directives, so errors in the template's own
@@ -98,10 +146,9 @@ internal static class RazorCompiler
     /// The platform's assemblies, this engine's, and the model type's assemblies with everything they reference, as
     /// the model's load context resolves them.
     /// </summary>
-    private static List<MetadataReference> ReferencesFor(Type model)
+    private static List<MetadataReference> ReferencesFor(Type model, AssemblyLoadContext context)
     {
         var assemblies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var context = AssemblyLoadContext.GetLoadContext(model.Assembly) ?? AssemblyLoadContext.Default;
         var pending = new Queue<Assembly>(TypesOf(model).Select(type => type.Assembly)
             .Append(typeof(RazorTemplate<>).Assembly)
             .Append(typeof(TemplateFormat).Assembly));
@@ -186,10 +233,10 @@ internal static class RazorCompiler
         return chain;
     }
 
-    private sealed class TemplateLoadContext(string name, Assembly model)
+    private sealed class TemplateLoadContext(string name, AssemblyLoadContext model)
         : AssemblyLoadContext(name, isCollectible: true)
     {
-        private readonly AssemblyLoadContext _model = GetLoadContext(model) ?? Default;
+        private readonly AssemblyLoadContext _model = model;
 
         protected override Assembly? Load(AssemblyName assemblyName)
         {
@@ -257,11 +304,12 @@ internal sealed class RazorCompilation
         Errors = errors;
     }
 
+    /// <summary>The compiled class, when the compilation was loaded.</summary>
     public Type? Template { get; }
 
     public IReadOnlyList<TemplateDiagnostic> Errors { get; }
 
-    public static RazorCompilation Succeeded(Type template) => new(template, []);
+    public static RazorCompilation Succeeded(Type? template) => new(template, []);
 
     public static RazorCompilation Failed(IReadOnlyList<TemplateDiagnostic> errors) => new(null, errors);
 }
