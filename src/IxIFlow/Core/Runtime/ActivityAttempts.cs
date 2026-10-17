@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
@@ -11,6 +13,7 @@ internal sealed class ActivityAttempts(
     TimeProvider time)
 {
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
+    private readonly ILogger _logger = LogScope.Logger(services);
 
     private DateTime Now => time.GetUtcNow().UtcDateTime;
 
@@ -32,6 +35,8 @@ internal sealed class ActivityAttempts(
                 "The saved activity does not match its continuation");
 
         var invocationId = pending?.Id ?? NewInvocationId(instance, continuation, scopes.Id(step));
+        // The attempt, its activity's own logging included, logs with its step and invocation (G-03).
+        using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), invocationId));
         // A step retry continues the invocation its failed attempt began, from the inputs that attempt saved (D-14).
         var retryInputs = pending == null && continuation.RetryInputs?.InvocationId == invocationId
             ? continuation.RetryInputs.Inputs
@@ -274,6 +279,7 @@ internal sealed class ActivityAttempts(
         IExecutionHost host,
         CancellationTokenSource cancellation)
     {
+        using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), continuation.PendingActivity?.Id));
         checkpoint.Touch(continuation);
         var stepNumber = continuation.Stack[^1].NextStepIndex;
         RunningActivity Settles(ActivityRunResult outcome) =>
@@ -376,6 +382,8 @@ internal sealed class ActivityAttempts(
         WorkflowInstance instance,
         IExecutionHost host)
     {
+        using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(activity.Step),
+            activity.Continuation.PendingActivity?.Id));
         checkpoint.Touch(activity.Continuation);
         // The branch's copy may have changed while its activity ran; it is recorded at the next commit.
         activity.Continuation.DataChanged = activity.Continuation.ParentJoinId != null;
