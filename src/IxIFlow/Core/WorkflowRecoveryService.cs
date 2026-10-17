@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -5,13 +6,17 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
 
-/// <summary>Wakes due waits and deadlines, and recovers interrupted instances.</summary>
+/// <summary>
+/// Wakes due waits and deadlines, and recovers interrupted instances. It polls the store and, when the store can wake
+/// it, also claims as soon as the store says an instance became claimable (C-13).
+/// </summary>
 internal sealed class WorkflowRecoveryService(
     IServiceScopeFactory scopes,
     IWorkflowStateRepository repository,
     ILogger<WorkflowRecoveryService> logger,
     TimeProvider? timeProvider = null,
-    HostSettings? settings = null) : BackgroundService
+    HostSettings? settings = null,
+    IRunnableWakeSource? wakeSource = null) : BackgroundService
 {
     private readonly HostSettings _settings = settings ?? HostSettings.Default;
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
@@ -33,14 +38,18 @@ internal sealed class WorkflowRecoveryService(
         }
     }
 
-    internal async Task RecoverOnceAsync(CancellationToken cancellationToken)
+    internal async Task RecoverOnceAsync(CancellationToken cancellationToken) =>
+        await await ClaimAsync(cancellationToken);
+
+    // Lists the instances this host may claim now and reserves them; the task returned recovers them.
+    private async Task<Task> ClaimAsync(CancellationToken cancellationToken)
     {
         // A host claims only what it has slots for (D-10); the rest waits for the next pass or another host.
         int limit;
         using (var probe = scopes.CreateScope())
             limit = probe.ServiceProvider.GetService<LocalWorkflowHost>()?.FreeSlots ?? _settings.Slots;
         if (limit == 0)
-            return;
+            return Task.CompletedTask;
         HashSet<string> skipped;
         lock (_lock)
         {
@@ -63,6 +72,11 @@ internal sealed class WorkflowRecoveryService(
                 if (!skipped.Contains(candidate.InstanceId) && _recovering.Add(candidate.InstanceId))
                     instances.Add(candidate);
             }
+        return RecoverReservedAsync(instances, cancellationToken);
+    }
+
+    private async Task RecoverReservedAsync(List<RunnableInstance> instances, CancellationToken cancellationToken)
+    {
         try
         {
             await RecoverAsync(instances, cancellationToken);
@@ -128,29 +142,107 @@ internal sealed class WorkflowRecoveryService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var passes = new List<Task>();
+        var waking = wakeSource == null ? Task.CompletedTask : WakeAsync(wakeSource, passes, stoppingToken);
         // A pass runs until the work it handed out is idle or parked; the next tick does not wait for
         // it, and skips the instances it is still recovering.
         using var timer = new PeriodicTimer(_settings.PollInterval, _time);
-        var passes = new List<Task>();
         try
         {
             do
             {
-                passes.RemoveAll(pass => pass.IsCompleted);
-                passes.Add(PassAsync(stoppingToken));
+                Track(passes, PassAsync(RecoverOnceAsync(stoppingToken), stoppingToken));
             } while (await timer.WaitForNextTickAsync(stoppingToken));
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
         }
-        await Task.WhenAll(passes);
+        await waking;
+        Task[] running;
+        lock (passes)
+            running = passes.ToArray();
+        await Task.WhenAll(running);
     }
 
-    private async Task PassAsync(CancellationToken stoppingToken)
+    private static void Track(List<Task> passes, Task pass)
+    {
+        lock (passes)
+        {
+            passes.RemoveAll(done => done.IsCompleted);
+            passes.Add(pass);
+        }
+    }
+
+    // Claims each time the store wakes the host. Wake-ups that come while a claim is listing are one wake-up, so a
+    // burst costs one more claim, not one per instance.
+    private async Task WakeAsync(IRunnableWakeSource source, List<Task> passes, CancellationToken stoppingToken)
+    {
+        var wakes = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+        {
+            FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true
+        });
+        var listening = ListenAsync(source, () => wakes.Writer.TryWrite(true), stoppingToken);
+        try
+        {
+            await foreach (var _ in wakes.Reader.ReadAllAsync(stoppingToken))
+            {
+                Task recovering;
+                try
+                {
+                    recovering = await ClaimAsync(stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception error)
+                {
+                    logger.LogError(error, "Could not claim the workflows the store woke this host for");
+                    continue;
+                }
+                Track(passes, PassAsync(recovering, stoppingToken));
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+        await listening;
+    }
+
+    // A lost connection costs only latency: the poll goes on, and listening starts again a poll interval later.
+    private async Task ListenAsync(IRunnableWakeSource source, Action wake, CancellationToken stoppingToken)
+    {
+        while (true)
+        {
+            try
+            {
+                await source.ListenAsync(wake, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception error)
+            {
+                logger.LogWarning(error, "Lost the store's wake-ups; polling every {PollInterval} until they return",
+                    _settings.PollInterval);
+            }
+            try
+            {
+                await Task.Delay(_settings.PollInterval, _time, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task PassAsync(Task pass, CancellationToken stoppingToken)
     {
         try
         {
-            await RecoverOnceAsync(stoppingToken);
+            await pass;
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {

@@ -5,23 +5,25 @@ namespace IxIFlow.Tests.Conformance;
 
 /// <summary>
 /// The test profiles from spec J-02. Each conformance scenario runs in every profile it applies to.
-/// Profiles for SQLite and PostgreSQL are added when those stores exist.
+/// The SQLite profile is added when that store exists.
 /// </summary>
 public static class StoreProfiles
 {
     public const string LocalMemory = "local-memory";
     public const string DistributedSqlServer = "distributed-sqlserver";
+    public const string DistributedPostgreSql = "distributed-postgresql";
 
     /// <summary>Every profile. Use for scenarios that apply to any store.</summary>
-    public static TheoryData<string> All => new() { LocalMemory, DistributedSqlServer };
+    public static TheoryData<string> All => new() { LocalMemory, DistributedSqlServer, DistributedPostgreSql };
 
     /// <summary>Profiles with several hosts sharing a durable store.</summary>
-    public static TheoryData<string> Distributed => new() { DistributedSqlServer };
+    public static TheoryData<string> Distributed => new() { DistributedSqlServer, DistributedPostgreSql };
 
     internal static async Task<ProfileStore> CreateAsync(string profile) => profile switch
     {
         LocalMemory => ProfileStore.Memory(),
         DistributedSqlServer => await ProfileStore.SqlServerAsync(),
+        DistributedPostgreSql => await ProfileStore.PostgreSqlAsync(),
         _ => throw new ArgumentOutOfRangeException(nameof(profile), profile, "Unknown test profile")
     };
 }
@@ -56,6 +58,14 @@ internal sealed class ProfileStore : IAsyncDisposable
         return new ProfileStore(StoreProfiles.DistributedSqlServer,
             () => new SqlWorkflowStateRepository(connectionString),
             () => SqlServerTestServer.DropDatabaseAsync(connectionString));
+    }
+
+    public static async Task<ProfileStore> PostgreSqlAsync()
+    {
+        var connectionString = await PostgreSqlTestServer.CreateDatabaseAsync("ixiflow_conformance");
+        return new ProfileStore(StoreProfiles.DistributedPostgreSql,
+            () => new PostgreSqlWorkflowStateRepository(connectionString),
+            () => PostgreSqlTestServer.DropDatabaseAsync(connectionString));
     }
 
     public ValueTask DisposeAsync() => new(_dispose());
