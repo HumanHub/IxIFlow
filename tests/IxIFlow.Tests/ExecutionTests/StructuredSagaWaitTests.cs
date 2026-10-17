@@ -1,10 +1,8 @@
-using System.Collections.Concurrent;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Time.Testing;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using IxIFlow.Tests.Infrastructure;
@@ -1049,7 +1047,7 @@ public class StructuredSagaWaitTests
     [Fact]
     public async Task StepRetryHonorsItsConfiguredDelay()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<TimeProvider>(time);
@@ -1068,12 +1066,11 @@ public class StructuredSagaWaitTests
 
         var running = provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new SagaData(), new WorkflowOptions { InstanceId = instanceId });
-        await WaitForRetryCheckpointAsync(provider.GetRequiredService<IWorkflowStateRepository>(), instanceId);
-        time.Advance(TimeSpan.FromMilliseconds(180));
-        var result = await running.WaitAsync(TimeSpan.FromSeconds(10));
+        var starts = provider.GetRequiredService<RetryIdProbe>().Starts;
+        var result = await RetryAtItsDelayAsync(time, provider.GetRequiredService<IWorkflowStateRepository>(),
+            instanceId, running, starts, TimeSpan.FromMilliseconds(180));
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        var starts = provider.GetRequiredService<RetryIdProbe>().Starts;
         Assert.Equal(2, starts.Count);
         Assert.Equal(TimeSpan.FromMilliseconds(180), starts[1] - starts[0]);
     }
@@ -1081,7 +1078,7 @@ public class StructuredSagaWaitTests
     [Fact]
     public async Task SagaRetryHonorsItsConfiguredDelay()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<TimeProvider>(time);
@@ -1100,12 +1097,11 @@ public class StructuredSagaWaitTests
 
         var running = provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new SagaData(), new WorkflowOptions { InstanceId = instanceId });
-        await WaitForRetryCheckpointAsync(provider.GetRequiredService<IWorkflowStateRepository>(), instanceId);
-        time.Advance(TimeSpan.FromMilliseconds(180));
-        var result = await running.WaitAsync(TimeSpan.FromSeconds(10));
+        var starts = provider.GetRequiredService<SagaRetryProbe>().Starts;
+        var result = await RetryAtItsDelayAsync(time, provider.GetRequiredService<IWorkflowStateRepository>(),
+            instanceId, running, starts, TimeSpan.FromMilliseconds(180));
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        var starts = provider.GetRequiredService<SagaRetryProbe>().Starts;
         Assert.Equal(2, starts.Count);
         Assert.Equal(TimeSpan.FromMilliseconds(180), starts[1] - starts[0]);
     }
@@ -1113,7 +1109,7 @@ public class StructuredSagaWaitTests
     [Fact]
     public async Task InterruptedRetryKeepsItsDeadlineAcrossRecovery()
     {
-        var time = new TimerCountingClock();
+        var time = new TimerRecordingClock();
         var retryDelay = TimeSpan.FromMilliseconds(700);
         var repository = new InMemoryWorkflowStateRepository(time);
         var services = new ServiceCollection();
@@ -1140,16 +1136,19 @@ public class StructuredSagaWaitTests
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running);
 
-        // The clock moves only once the recovery waits for the retry's deadline, so a recovery that forgot
-        // the deadline would retry at once.
-        var timersBefore = time.TimersSetFor(retryDelay);
+        // Part of the delay passes before the recovery, which must wait only for the rest: a recovery that
+        // forgot the deadline would retry at once, and one that started the delay again would wait all of it.
+        // The clock moves on only once the recovery waits for the retry's deadline.
+        var starts = provider.GetRequiredService<RetryIdProbe>().Starts;
+        var passed = TimeSpan.FromMilliseconds(300);
+        time.Advance(passed);
+        var timersBefore = time.Armed;
         var recovering = engine.RecoverAsync(instanceId);
-        await time.TimerSetAsync(retryDelay, timersBefore + 1);
-        time.Advance(retryDelay);
+        await time.WaitForTimerDueAtAsync(starts[0] + retryDelay, timersBefore);
+        time.Advance(retryDelay - passed);
         var recovered = await recovering.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
-        var starts = provider.GetRequiredService<RetryIdProbe>().Starts;
         Assert.Equal(2, starts.Count);
         Assert.Equal(retryDelay, starts[1] - starts[0]);
     }
@@ -1186,7 +1185,8 @@ public class StructuredSagaWaitTests
         Assert.Single(provider.GetRequiredService<RetryIdProbe>().Starts);
     }
 
-    private static async Task WaitForRetryCheckpointAsync(IWorkflowStateRepository repository,
+    // The retry's deadline as the run saved it.
+    private static async Task<DateTimeOffset> WaitForRetryCheckpointAsync(IWorkflowStateRepository repository,
         string instanceId)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
@@ -1196,38 +1196,32 @@ public class StructuredSagaWaitTests
             if (saved != null)
             {
                 using var checkpoint = JsonDocument.Parse(saved.ExecutionStateJson);
-                if (checkpoint.RootElement.GetProperty("Continuations")[0]
-                        .GetProperty("RetryAfterUtc").ValueKind == JsonValueKind.String)
-                    return;
+                var retryAfter = checkpoint.RootElement.GetProperty("Continuations")[0].GetProperty("RetryAfterUtc");
+                if (retryAfter.ValueKind == JsonValueKind.String)
+                    return retryAfter.GetDateTimeOffset();
             }
             await Task.Delay(10);
         }
         throw new TimeoutException("The retry deadline was not saved");
     }
 
-    /// <summary>A fake clock that counts the timers set for each delay, so a test can tell when a run waits.</summary>
-    private sealed class TimerCountingClock : FakeTimeProvider
+    // The retry is saved for, and the run's timer set to, the delay after the first attempt started. The clock
+    // then stops a millisecond short of it, where the second attempt must not start, and moves on to it.
+    private static async Task<WorkflowExecutionResult> RetryAtItsDelayAsync(TimerRecordingClock time,
+        IWorkflowStateRepository repository, string instanceId, Task<WorkflowExecutionResult> running,
+        List<DateTimeOffset> starts, TimeSpan delay)
     {
-        private readonly ConcurrentDictionary<TimeSpan, int> _timers = new();
+        var retryAt = await WaitForRetryCheckpointAsync(repository, instanceId);
+        var firstStart = Assert.Single(starts);
+        Assert.Equal(firstStart + delay, retryAt);
+        await time.WaitForTimerDueAtAsync(firstStart + delay);
 
-        public int TimersSetFor(TimeSpan dueTime) => _timers.GetValueOrDefault(dueTime);
+        time.Advance(delay - TimeSpan.FromMilliseconds(1));
+        await Task.Delay(100);
+        Assert.Single(starts);
 
-        // Waits until the given number of timers were set for the delay.
-        public async Task TimerSetAsync(TimeSpan dueTime, int count)
-        {
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-            while (TimersSetFor(dueTime) < count)
-            {
-                Assert.True(DateTime.UtcNow < deadline, $"No timer was set for {dueTime}");
-                await Task.Delay(10);
-            }
-        }
-
-        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
-        {
-            _timers.AddOrUpdate(dueTime, 1, (_, count) => count + 1);
-            return base.CreateTimer(callback, state, dueTime, period);
-        }
+        time.Advance(TimeSpan.FromMilliseconds(1));
+        return await running.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     [Fact]
