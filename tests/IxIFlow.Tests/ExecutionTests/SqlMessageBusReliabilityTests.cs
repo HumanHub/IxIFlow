@@ -12,7 +12,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task GenericConsumerContinuesAfterLosingAcknowledgementClaim()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -51,7 +51,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task GenericConsumerAcknowledgesEachMessageAfterProcessing()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -90,7 +90,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task RetriedCompletionPublishQueuesOneEventPerInstance()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
@@ -127,7 +127,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task RetriedStartPublishQueuesOneEventPerInstance()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
@@ -161,7 +161,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task PendingMessagePollHasAFilteredIndex()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         using var bus = new SqlMessageBus(connectionString);
         try
@@ -194,7 +194,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task PruningOldProcessedMessagesKeepsDeadLetters()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var processedToken = Guid.NewGuid().ToString("N");
         var deadToken = Guid.NewGuid().ToString("N");
         try
@@ -249,7 +249,7 @@ public class SqlMessageBusReliabilityTests
     public async Task ConsumerRecoversAfterConnectionPoolExhaustion()
     {
         var builder = new SqlConnectionStringBuilder(
-            SqlServerTestServer.ConnectionString)
+            SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString)
         {
             MaxPoolSize = 1,
             ConnectTimeout = 1,
@@ -289,7 +289,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task OldNotificationIsPrunedWithoutAConsumer()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var hostId = Guid.NewGuid().ToString("N");
         try
         {
@@ -327,7 +327,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task ActiveDeliveryKeepsItsClaimPastTheOriginalExpiry()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -364,7 +364,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task OneClaimRenewalErrorDoesNotExposeAnActiveDelivery()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -417,7 +417,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task MessageWithoutHandlerAcknowledgement_IsRedelivered()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
 
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync();
@@ -471,7 +471,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task AcknowledgedMessage_IsNotRedelivered()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -505,7 +505,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task RejectedMessageIsDelayedAndRecordsTheFailure()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -545,7 +545,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task BusyMessageCanBeDeferredWithoutUsingItsFailureBudget()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -581,7 +581,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task RepeatedFailureDeadLettersTheMessage()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         try
         {
@@ -620,7 +620,7 @@ public class SqlMessageBusReliabilityTests
     [Trait("Category", "SqlIntegration")]
     public async Task InvalidPayloadIsDeadLetteredWithoutStoppingTheConsumer()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlMessageBusReliabilityTests>.ConnectionString;
         var token = Guid.NewGuid().ToString("N");
         string? messageId = null;
         try
