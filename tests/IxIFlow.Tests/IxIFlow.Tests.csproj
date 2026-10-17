@@ -21,6 +21,7 @@
     <ProjectReference Include="..\..\src\IxIFlow.Authoring\IxIFlow.Authoring.csproj" />
     <ProjectReference Include="..\IxIFlow.TestSupport\IxIFlow.TestSupport.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.SqlServer\IxIFlow.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\IxIFlow.PostgreSql\IxIFlow.PostgreSql.csproj" />
     <ProjectReference Include="..\..\samples\IxIFlow.DemoActivities\IxIFlow.DemoActivities.csproj" />
   </ItemGroup>
 
