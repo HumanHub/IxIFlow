@@ -1,0 +1,336 @@
+using System.Globalization;
+using IxIFlow.Templates;
+using IxIFlow.Templates.Liquid;
+using Microsoft.Extensions.DependencyInjection;
+using static IxIFlow.Tests.TemplateTests.TemplateFixtures;
+
+namespace IxIFlow.Tests.TemplateTests;
+
+/// <summary>
+/// The Liquid engine (Fluid) reads only the model's members and validates a template against its model when it is
+/// published (spec H-03).
+/// </summary>
+[Trait("Feature", "templates")]
+[Trait("Spec", "H-03")]
+public sealed class TemplateEngineTests
+{
+    private static readonly CultureInfo German = CultureInfo.GetCultureInfo("de-DE");
+
+    [Fact]
+    public async Task LiquidRendersTheModelWithLoopsVariablesAndCulture()
+    {
+        var engine = new LiquidTemplateEngine();
+        var template = Source("""
+            {%- assign count = Lines.size -%}
+            {%- capture who %}{{ Customer.Name | upcase }}{% endcapture -%}
+            {{ who }}: {{ count }} lines, first {{ Lines.first.Sku }}, total {{ Total }}
+            {%- for line in Lines %} [{{ forloop.index }} {{ line.Sku }} x{{ line.Quantity }}]{% endfor %} {{ Labels.gift }}
+            """);
+        var order = SampleOrder();
+        order.Labels["gift"] = "wrapped";
+
+        Assert.Empty(await engine.ValidateAsync(template, typeof(Order)));
+        var text = await engine.RenderAsync(template, order, German);
+
+        Assert.Equal("ANA: 2 lines, first pen, total 2,5 [1 pen x2] [2 ink x1] wrapped", text);
+    }
+
+    [Fact]
+    public async Task LiquidEncodesValuesInHtmlTemplatesOnly()
+    {
+        var engine = new LiquidTemplateEngine();
+        var order = SampleOrder();
+        order.Customer.Name = "<script>x</script>";
+
+        var html = await engine.RenderAsync(Source("<b>{{ Customer.Name }}</b>", TemplateFormat.Html), order,
+            CultureInfo.InvariantCulture);
+        var text = await engine.RenderAsync(Source("{{ Customer.Name }}"), order, CultureInfo.InvariantCulture);
+
+        Assert.Equal("<b>&lt;script&gt;x&lt;/script&gt;</b>", html);
+        Assert.Equal("<script>x</script>", text);
+    }
+
+    [Theory]
+    [InlineData("{{ Customer.Nmae }}", "'Customer' has no member 'Nmae'")]
+    [InlineData("{{ Missing }}", "'Missing' is not a member of the model or a variable of the template")]
+    [InlineData("{% for line in Lines %}{{ line.Price }}{% endfor %}", "'line' has no member 'Price'")]
+    [InlineData("{{ Number | shout }}", "There is no filter named 'shout'")]
+    [InlineData("{{ Number.Length }}", "'Number' has no member 'Length'")]
+    [InlineData("{% for line in Lines %}{{ forloop.parent }}{% endfor %}", "'forloop' has no member 'parent'")]
+    [InlineData("{% include 'footer' %}", "cannot include another template")]
+    [InlineData("{% liquid assign y = 'b' %}{{ y }}", "{% liquid %} tag is not available")]
+    public async Task LiquidPublishingRejectsWhatTheModelDoesNotHave(string content, string expected)
+    {
+        using var services = Services();
+
+        var error = await Assert.ThrowsAsync<TemplateValidationException>(() =>
+            services.PublishAsync<Order>("bad", 1, "liquid", TemplateFormat.Text, Base(content)));
+
+        Assert.Contains(error.Diagnostics, diagnostic => diagnostic.Message.Contains(expected));
+    }
+
+    [Fact]
+    public async Task LiquidReportsWhereATemplateDoesNotParse()
+    {
+        var diagnostics = await new LiquidTemplateEngine().ValidateAsync(Source("Hello\n{{ Number"), typeof(Order));
+
+        var diagnostic = Assert.Single(diagnostics);
+        Assert.Equal(2, diagnostic.Line);
+        Assert.Contains("'}}' was expected", diagnostic.Message);
+    }
+
+    [Fact]
+    public async Task LiquidCannotReachBeyondTheModel()
+    {
+        var engine = new LiquidTemplateEngine();
+        var order = new DerivedOrder { Number = "A-1", Secret = "s3cret", Extra = new Credentials { Password = "pw" } };
+
+        // A member typed object could hold anything, so it is not readable at all: publishing refuses it, and a
+        // template that skipped publishing finds nothing in it, whatever it holds.
+        var throughObject = Source(
+            "[{{ Extra.Password }}][{{ Extra }}][{% for pair in Extra %}{{ pair[0] }}={{ pair[1] }}{% endfor %}]");
+        Assert.Contains(await engine.ValidateAsync(throughObject, typeof(Order)),
+            diagnostic => diagnostic.Message.Contains("'Extra' of the model cannot be read"));
+        Assert.Equal("[][][]", await engine.RenderAsync<Order>(throughObject, order, CultureInfo.InvariantCulture));
+        order.Extra = new Dictionary<string, string> { ["Password"] = "pw" };
+        Assert.Equal("[][][]", await engine.RenderAsync<Order>(throughObject, order, CultureInfo.InvariantCulture));
+        // Filters that unwrap a value get an object's empty text, not the object.
+        Assert.Equal("[]", await engine.RenderAsync<Order>(Source("[{{ '{0}' | format_string: Customer }}]"), order,
+            CultureInfo.InvariantCulture));
+        // Arithmetic on an object gets zero, as on anything that is not a number.
+        Assert.Equal("1", await engine.RenderAsync<Order>(Source("{{ Customer | plus: 1 }}"), order,
+            CultureInfo.InvariantCulture));
+        // A model of a derived type shows only the members of the type the template was written against, and an
+        // object writes no text of its own, so its ToString shows nothing either.
+        Assert.Equal("[A-1][][]", await engine.RenderAsync<Order>(
+            Source("[{{ Number }}][{{ Secret }}][{{ Customer }}]"), order, CultureInfo.InvariantCulture));
+        // json would serialize the object behind a value, every member of its runtime type included.
+        Assert.Contains(await engine.ValidateAsync(Source("{{ Extra | json }}"), typeof(Order)),
+            diagnostic => diagnostic.Message.Contains("no filter named 'json'"));
+        await Assert.ThrowsAsync<TemplateRenderException>(() =>
+            engine.RenderAsync<Order>(Source("{{ Customer | json }}"), order, CultureInfo.InvariantCulture).AsTask());
+    }
+
+    [Fact]
+    public async Task LiquidRendersNullsAndMissingValuesAsNothing()
+    {
+        var engine = new LiquidTemplateEngine();
+        var template = Source(
+            "[{{ Customer.Name }}][{{ Customer.Name | default: 'anon' }}][{{ Labels.missing }}][{{ Lines[5].Sku }}]" +
+            "{% if Customer.Name %}named{% endif %}");
+        var order = SampleOrder();
+        order.Customer.Name = null!;
+
+        Assert.Empty(await engine.ValidateAsync(template, typeof(Order)));
+        Assert.Equal("[][anon][][]", await engine.RenderAsync(template, order, CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public async Task LiquidWritesDatesAsTheModelHasThemOnAnyHost()
+    {
+        var engine = new LiquidTemplateEngine();
+        var template = Source(
+            "{{ Unspecified | date: '%Y-%m-%d %H:%M' }}|" +
+            "{{ Utc | date: '%H:%M' }}|{{ Offset | date: '%H:%M %z' }}|{{ Duration }}|" +
+            "{{ '2026-03-04' | date: '%d.%m.' }}|{{ Day | date: '%d.%m.%Y' }}|{{ Time }}");
+        var schedule = new Schedule
+        {
+            Local = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Local),
+            Unspecified = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Unspecified),
+            Utc = new DateTime(2026, 1, 1, 9, 30, 0, DateTimeKind.Utc),
+            Offset = new DateTimeOffset(2026, 1, 1, 8, 15, 0, TimeSpan.FromHours(2)),
+            Duration = TimeSpan.FromMinutes(90),
+            Day = new DateOnly(2026, 3, 4),
+            Time = new TimeOnly(9, 30)
+        };
+
+        Assert.Empty(await engine.ValidateAsync(template, typeof(Schedule)));
+        // A DateTime is not shifted by the host's time zone, a TimeSpan is a duration, not a date, and a DateOnly is
+        // a date in every culture, not text read back by the culture's day and month order.
+        const string expected = "2026-01-01 12:00|09:30|08:15 +0200|01:30:00|04.03.|04.03.2026|09:30:00";
+        Assert.Equal(expected, await engine.RenderAsync(template, schedule, CultureInfo.InvariantCulture));
+        Assert.Equal(expected, await engine.RenderAsync(template, schedule, German));
+        // A local time comes back from a checkpoint as another host's local time, so it is refused.
+        var local = await Assert.ThrowsAsync<TemplateRenderException>(() =>
+            engine.RenderAsync(Source("{{ Local }}"), schedule, CultureInfo.InvariantCulture).AsTask());
+        Assert.Contains("kind Local", local.Message);
+    }
+
+    [Fact]
+    public async Task LiquidHasNoClock()
+    {
+        var engine = new LiquidTemplateEngine();
+
+        // Fluid completes a date written as text from the clock: 'now', or a time without a date, is today.
+        foreach (var text in new[] { "now", "today", "12:34", "March 4" })
+        {
+            Assert.Contains(await engine.ValidateAsync(Source($"{{{{ '{text}' | date: '%Y' }}}}"), typeof(Order)),
+                diagnostic => diagnostic.Message.Contains("has no clock"));
+            // Text that reaches a date filter from the model is refused when rendered.
+            var order = SampleOrder();
+            order.Number = text;
+            var error = await Assert.ThrowsAsync<TemplateRenderException>(() =>
+                engine.RenderAsync(Source("{{ Number | format_date: 'yyyy' }}"), order, CultureInfo.InvariantCulture)
+                    .AsTask());
+            Assert.Contains("has no clock", error.Message);
+        }
+        // Text a variable was assigned is checked like text written in place.
+        Assert.Contains(await engine.ValidateAsync(Source("{% assign n = 'now' %}{{ n | date: '%Y' }}"), typeof(Order)),
+            diagnostic => diagnostic.Message.Contains("has no clock"));
+    }
+
+    [Fact]
+    public async Task LiquidCheckingFollowsFluidsValues()
+    {
+        var engine = new LiquidTemplateEngine();
+
+        // A formattable value is text to Fluid, so it has no members to read.
+        Assert.Empty(await engine.ValidateAsync(Source("{{ Price }}"), typeof(Priced)));
+        Assert.Contains(await engine.ValidateAsync(Source("{{ Price.Amount }}"), typeof(Priced)),
+            diagnostic => diagnostic.Message.Contains("'Price' has no member 'Amount'"));
+        // It is formatted for the culture asked for, like a number.
+        var priced = new Priced { Price = new Money(12.5m, "EUR") };
+        Assert.Equal("12.50 EUR", await engine.RenderAsync(Source("{{ Price }}"), priced, CultureInfo.InvariantCulture));
+        Assert.Equal("12,50 EUR", await engine.RenderAsync(Source("{{ Price }}"), priced, German));
+        // Fluid reads by key only a dictionary it can index; a read-only one is a list of pairs to it.
+        Assert.Contains(await engine.ValidateAsync(Source("{{ Map.ana.Name }}"), typeof(Priced)),
+            diagnostic => diagnostic.Message.Contains("'Map' has no member 'ana'"));
+        // A template reads its model's members; a collection has none it can name.
+        Assert.Contains(await engine.ValidateAsync(Source("{{ Count }}"), typeof(List<OrderLine>)),
+            diagnostic => diagnostic.Message.Contains("wrap it in a model type"));
+        // A variable assigned values of two types in branches the check cannot tell apart is not checked further.
+        Assert.Empty(await engine.ValidateAsync(Source(
+            "{% assign x = Customer %}{% if Total > 100 %}{% assign x = Number %}{% endif %}{{ x.Name }}"),
+            typeof(Order)));
+    }
+
+    [Fact]
+    public async Task LiquidCollectionsReadAsTheirMembersAreDeclared()
+    {
+        var engine = new LiquidTemplateEngine();
+        var directory = new Directory
+        {
+            Bag = new Dictionary<string, object> { ["Password"] = "pw" },
+            People = new Dictionary<string, Customer> { ["ana"] = new() { Name = "Ana" } },
+            Root = [[], []]
+        };
+        var template = Source(
+            "[{% for pair in Bag %}{{ pair[0] }}={{ pair[1] }}{{ pair.Value }}{% endfor %}]" +
+            "[{% for pair in People %}{{ pair.Key }}:{{ pair.Value.Name }}{% endfor %}][{{ Root.size }}]");
+
+        // A model type that is a collection of itself is checked once.
+        Assert.Contains(await engine.ValidateAsync(template, typeof(Directory)),
+            diagnostic => diagnostic.Message.Contains("'Value' of pair cannot be read"));
+        // A read-only dictionary is a list of pairs, as declared, even when it holds a dictionary, and a pair whose
+        // value could be anything shows nothing of it: the one pair in Bag writes only the template's own '='.
+        Assert.Equal("[=][ana:Ana][2]", await engine.RenderAsync(template, directory, CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public async Task LiquidArrayFiltersReadTheModel()
+    {
+        var engine = new LiquidTemplateEngine();
+        var order = SampleOrder();
+        order.Lines = [new OrderLine { Sku = "z", Quantity = 2 }, new OrderLine { Sku = "ä", Quantity = 1 }];
+        var template = Source(
+            "{% assign sorted = Lines | sort: 'Sku' %}{% for line in sorted %}{{ line.Sku }}{% endfor %}|" +
+            "{{ Lines | sum: 'Quantity' }}|" +
+            "{% for line in Lines limit: 1 %}{{ line.Sku }}{% endfor %}{% for line in Lines offset: continue %}" +
+            "{{ line.Sku }}{% endfor %}");
+
+        Assert.Empty(await engine.ValidateAsync(template, typeof(Order)));
+        // Sorting compares in the culture asked for, not the host's: ä sorts after z in Swedish, before it in German.
+        var current = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("sv-SE");
+        try
+        {
+            Assert.Equal("äz|3|zä", await engine.RenderAsync(template, order, German));
+            Assert.Equal("zä|3|zä", await engine.RenderAsync(template, order, CultureInfo.GetCultureInfo("sv-SE")));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = current;
+        }
+    }
+
+    [Fact]
+    public async Task EnginesKeyWhatTheyParseByTheContent()
+    {
+        var liquid = new LiquidTemplateEngine();
+
+        // The same key and version with other content is other text, whatever the engine has already seen.
+        Assert.Equal("one", await liquid.RenderAsync(Source("one"), SampleOrder(), CultureInfo.InvariantCulture));
+        Assert.Equal("two", await liquid.RenderAsync(Source("two"), SampleOrder(), CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public void EnginesAreRegisteredByName()
+    {
+        using var services = Services();
+
+        var engines = services.GetRequiredService<TemplateEngines>();
+
+        Assert.IsType<LiquidTemplateEngine>(engines.Get("liquid"));
+        Assert.IsType<LiquidTemplateEngine>(engines.Get("Liquid"));
+        Assert.Throws<TemplateNotFoundException>(() => engines.Get("handlebars"));
+    }
+
+    private static TemplateSource Source(string content, TemplateFormat format = TemplateFormat.Text) =>
+        new("test", 1, TemplateVersion.BaseCulture, format, content);
+
+    public sealed class Schedule
+    {
+        public DateTime Local { get; set; }
+        public DateTime Unspecified { get; set; }
+        public DateTime Utc { get; set; }
+        public DateTimeOffset Offset { get; set; }
+        public TimeSpan Duration { get; set; }
+        public DateOnly Day { get; set; }
+        public TimeOnly Time { get; set; }
+    }
+
+    public readonly record struct Money(decimal Amount, string Currency) : IFormattable
+    {
+        public string ToString(string? format, IFormatProvider? provider) =>
+            $"{Amount.ToString("0.00", provider)} {Currency}";
+    }
+
+    public sealed class Priced
+    {
+        public Money Price { get; set; }
+        public ReadOnlyMap Map { get; set; } = new();
+    }
+
+    /// <summary>A dictionary Fluid cannot index: it is only read-only.</summary>
+    public sealed class ReadOnlyMap : IReadOnlyDictionary<string, Customer>
+    {
+        private readonly Dictionary<string, Customer> _items = [];
+        public Customer this[string key] => _items[key];
+        public IEnumerable<string> Keys => _items.Keys;
+        public IEnumerable<Customer> Values => _items.Values;
+        public int Count => _items.Count;
+        public bool ContainsKey(string key) => _items.ContainsKey(key);
+        public bool TryGetValue(string key, out Customer value) => _items.TryGetValue(key, out value!);
+        public IEnumerator<KeyValuePair<string, Customer>> GetEnumerator() => _items.GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    public sealed class Directory
+    {
+        public IReadOnlyDictionary<string, object> Bag { get; set; } = new Dictionary<string, object>();
+        public IReadOnlyDictionary<string, Customer> People { get; set; } = new Dictionary<string, Customer>();
+        public Tree Root { get; set; } = [];
+    }
+
+    public sealed class Tree : List<Tree>;
+
+    public sealed class Credentials
+    {
+        public string Password { get; set; } = "";
+    }
+
+    public sealed class DerivedOrder : Order
+    {
+        public string Secret { get; set; } = "";
+    }
+}
