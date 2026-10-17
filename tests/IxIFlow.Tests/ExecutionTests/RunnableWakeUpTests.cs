@@ -63,8 +63,8 @@ public sealed class RunnableWakeUpTests
         }
     }
 
-    // The host's scan at its start, and the one the wake-up on listening asks for, are over before the event is
-    // stored, so only the notification of its append can make the host claim the instance.
+    // The host's scan at its start, and the one the wake-up it gets when it starts listening asks for, are over
+    // before the event is stored, so only the notification of its append can make the host claim the instance.
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task AnEventStoredElsewhereWakesAPostgreSqlHost()
@@ -78,6 +78,7 @@ public sealed class RunnableWakeUpTests
         var gone = await ListenersAsync(connectionString);
         await using var host = await StartAsync(Services(time, scans.Store, wakeUps));
         await ListenerAsync(connectionString, except: gone);
+        await wakeUps.WokenAsync(times: 1);
         await scans.SettledAsync(after: wakeUps.ScansAtLastWake);
 
         await AppendApprovalAsync(store, instanceId);
@@ -108,6 +109,7 @@ public sealed class RunnableWakeUpTests
         }
         await ListenerAsync(connectionString, except: [.. gone, dropped], time);
         var instanceId = await SuspendAsync(PostgreSqlServices(time, connectionString));
+        await wakeUps.WokenAsync(times: 2);
         await scans.SettledAsync(after: wakeUps.ScansAtLastWake);
 
         await AppendApprovalAsync(store, instanceId);
@@ -292,17 +294,32 @@ public sealed class RunnableWakeUpTests
         }
     }
 
-    /// <summary>A store's wake-ups, with the number of scans the host had started when it was last woken.</summary>
+    /// <summary>
+    /// A store's wake-ups, counted, with the number of scans the host had started when it was last woken. The store
+    /// wakes the host once each time it starts listening, so a count is also a barrier for that wake-up.
+    /// </summary>
     private sealed class ProbedWakeSource(IRunnableWakeSource inner, ScanCounter scans) : IRunnableWakeSource
     {
         private int _scansAtLastWake = -1;
+        private int _wakes;
 
         public int ScansAtLastWake => Volatile.Read(ref _scansAtLastWake);
+
+        public async Task WokenAsync(int times)
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (Volatile.Read(ref _wakes) < times)
+            {
+                Assert.True(DateTime.UtcNow < deadline, "The store never woke the host");
+                await Task.Delay(20);
+            }
+        }
 
         public Task ListenAsync(Action wake, CancellationToken cancellationToken) =>
             inner.ListenAsync(() =>
             {
                 Volatile.Write(ref _scansAtLastWake, scans.Started);
+                Interlocked.Increment(ref _wakes);
                 wake();
             }, cancellationToken);
     }
