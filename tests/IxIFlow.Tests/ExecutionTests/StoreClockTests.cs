@@ -9,6 +9,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
+using Npgsql;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -26,6 +27,10 @@ public sealed class StoreClockTests
     // One SQL Server store for these tests, so its schema is checked once.
     private static readonly Lazy<SqlWorkflowStateRepository> SqlStore =
         new(() => new SqlWorkflowStateRepository(SqlTestDatabase<StoreClockTests>.ConnectionString));
+
+    // One PostgreSQL store for these tests, so its schema is checked once.
+    private static readonly Lazy<PostgreSqlWorkflowStateRepository> PostgreSqlStore =
+        new(() => new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<StoreClockTests>.ConnectionString));
 
     [Theory]
     [InlineData(5)]
@@ -443,6 +448,12 @@ public sealed class StoreClockTests
     public Task SqlStoreRefusesEventsThatArriveAfterTheirDeadline() =>
         VerifyLateArrivals(SqlStore.Value);
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-03")]
+    public Task PostgreSqlStoreRefusesEventsThatArriveAfterTheirDeadline() =>
+        VerifyLateArrivals(PostgreSqlStore.Value);
+
     private static async Task VerifyLateArrivals(IWorkflowStateRepository store)
     {
         var instanceId = Guid.NewGuid().ToString("N");
@@ -503,6 +514,21 @@ public sealed class StoreClockTests
         {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
             while (!(await SqlStore.Value.GetPendingEventsAsync(instanceId, 0, 10)).IsDue("short"))
+            {
+                Assert.True(DateTime.UtcNow < deadline, "The store never found the deadline due");
+                await Task.Delay(50);
+            }
+        });
+
+    // PostgreSQL's clock cannot be moved either.
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-03")]
+    public Task PostgreSqlStoreFindsDeadlinesDueWithTheEventsReceivedBeforeThem() =>
+        VerifyDuePage(PostgreSqlStore.Value, TimeSpan.FromSeconds(2), async instanceId =>
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (!(await PostgreSqlStore.Value.GetPendingEventsAsync(instanceId, 0, 10)).IsDue("short"))
             {
                 Assert.True(DateTime.UtcNow < deadline, "The store never found the deadline due");
                 await Task.Delay(50);
@@ -587,6 +613,49 @@ public sealed class StoreClockTests
         }
     }
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-03")]
+    public async Task PostgreSqlStoreReadsItsTimeOnceTheInstanceLockIsHeld()
+    {
+        var store = PostgreSqlStore.Value;
+        var instanceId = Guid.NewGuid().ToString("N");
+        try
+        {
+            await CommitAsync(store, instanceId, null,
+                new OpenedWait("approval", WaitKind.Event, "approval", "Approval", TimeSpan.FromHours(1)));
+
+            // Another transaction holds the instance row while a read and an append wait for it.
+            await using var holder = new NpgsqlConnection(PostgreSqlTestDatabase<StoreClockTests>.ConnectionString);
+            await holder.OpenAsync();
+            await using var transaction = await holder.BeginTransactionAsync();
+            await using (var lockRow = new NpgsqlCommand(
+                             "SELECT instance_id FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId " +
+                             "FOR UPDATE", holder, transaction))
+            {
+                lockRow.Parameters.AddWithValue("InstanceId", instanceId);
+                await lockRow.ExecuteScalarAsync();
+            }
+            var read = store.GetPendingEventsAsync(instanceId, 0, 10);
+            var append = store.AppendEventAsync(Event(instanceId, "held", key: "approval"));
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+            Assert.False(read.IsCompleted || append.IsCompleted);
+            DateTime releasedAt;
+            await using (var clock = new NpgsqlCommand("SELECT clock_timestamp()", holder, transaction))
+                releasedAt = (DateTime)(await clock.ExecuteScalarAsync())!;
+            await transaction.CommitAsync();
+
+            // Both took the store's time after the lock was theirs, not when they started waiting.
+            Assert.True((await read).StoreTimeUtc >= releasedAt);
+            Assert.Equal(EventAppendStatus.Stored, (await append).Status);
+            Assert.True((await store.GetEventAsync(instanceId, "held"))!.ReceivedAtUtc >= releasedAt);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
     [Fact]
     [Trait("Spec", "D-03")]
     public Task MemoryStoreArmsAReplyWaitOnce()
@@ -604,6 +673,12 @@ public sealed class StoreClockTests
     [Trait("Spec", "D-03")]
     public Task SqlStoreArmsAReplyWaitOnce() =>
         VerifyArming(SqlStore.Value, () => Task.Delay(TimeSpan.FromMilliseconds(50)));
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-03")]
+    public Task PostgreSqlStoreArmsAReplyWaitOnce() =>
+        VerifyArming(PostgreSqlStore.Value, () => Task.Delay(TimeSpan.FromMilliseconds(50)));
 
     private static async Task VerifyArming(IWorkflowStateRepository store, Func<Task> letTimePass)
     {

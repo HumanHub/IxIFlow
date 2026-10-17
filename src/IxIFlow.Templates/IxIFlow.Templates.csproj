@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>1.0.0</Version>
+    <Description>Versioned templates for IxIFlow: the RenderTemplate and SendTemplateMessage activities and the ITemplateEngine contract.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\IxIFlow.Abstractions\IxIFlow.Abstractions.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
+  </ItemGroup>
+</Project>

@@ -6,6 +6,7 @@ using IxIFlow.Tests.Infrastructure;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
+using Npgsql;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -298,6 +299,43 @@ public sealed class ResourceLimitTests
             }, 0, 0))).Status);
 
         await using (var hog = new SqlConnection(connectionString))
+        {
+            await hog.OpenAsync();
+            await Assert.ThrowsAnyAsync<Exception>(() => store.GetWorkflowInstanceAsync(instanceId));
+
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience));
+            Assert.True(await store.RenewExecutionLeaseAsync(instanceId, "owner", Patience));
+            Assert.Empty(await store.GetCancellationRequestsAsync([instanceId]));
+            Assert.True(await store.RequestCancellationAsync(instanceId,
+                new CancellationReason { ReasonCode = "operator" }));
+            Assert.Equal("operator", (await store.GetCancellationRequestAsync(instanceId))?.ReasonCode);
+            Assert.Single(await store.GetCancellationRequestsAsync([instanceId]));
+            Assert.True(await store.ReleaseExecutionLeaseAsync(instanceId, "owner"));
+        }
+        await store.DeleteWorkflowInstanceAsync(instanceId);
+    }
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task PostgreSqlLeasesAndCancellationKeepWorkingWhenTheMainPoolIsExhausted()
+    {
+        var builder = new NpgsqlConnectionStringBuilder(PostgreSqlTestDatabase<ResourceLimitTests>.ConnectionString)
+        {
+            ApplicationName = $"pool-test-{Guid.NewGuid():N}",
+            MaxPoolSize = 1,
+            Timeout = 2
+        };
+        var connectionString = builder.ConnectionString;
+        var store = new PostgreSqlWorkflowStateRepository(connectionString);
+        var instanceId = Guid.NewGuid().ToString("N");
+        Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+            new WorkflowInstance
+            {
+                InstanceId = instanceId, WorkflowName = "PoolReservation", Status = WorkflowStatus.Running,
+                WorkflowDataJson = "{}"
+            }, 0, 0))).Status);
+
+        await using (var hog = new NpgsqlConnection(connectionString))
         {
             await hog.OpenAsync();
             await Assert.ThrowsAnyAsync<Exception>(() => store.GetWorkflowInstanceAsync(instanceId));

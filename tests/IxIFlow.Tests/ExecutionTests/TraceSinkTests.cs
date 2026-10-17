@@ -171,6 +171,36 @@ public sealed class TraceSinkTests
         Assert.Empty(await repository.GetTraceAsync(instance.InstanceId));
     }
 
+    [PostgreSqlFact]
+    [Trait("Spec", "G-01")]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task PostgreSqlStoresTheTraceInOrderOncePerCommit()
+    {
+        var repository = new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<TraceSinkTests>.ConnectionString);
+        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace" };
+        try
+        {
+            var first = CheckpointCommit.Create(instance, 0, 0, traceEntries:
+                Enumerable.Range(0, 1_500).Select(index => new ExecutionTraceEntry { ActivityName = $"step-{index}" })
+                    .ToArray());
+            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
+            Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
+            instance.Revision = 1;
+            var second = CheckpointCommit.Create(instance, 0, 1, traceEntries:
+                [new ExecutionTraceEntry { ActivityName = "last" }]);
+            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(second)).Status);
+
+            var page = await repository.GetTraceAsync(instance.InstanceId, afterSequence: 1_498, limit: 10);
+            Assert.Equal([1_499L, 1_500, 1_501], page.Select(entry => entry.Sequence));
+            Assert.Equal(["step-1498", "step-1499", "last"], page.Select(entry => entry.Entry.ActivityName));
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
+        }
+        Assert.Empty(await repository.GetTraceAsync(instance.InstanceId));
+    }
+
     private static WorkflowDefinition TwoSteps(string name) =>
         Workflow.Create<TraceData>(name).Step<Noop>().WaitFor<Go>("go").Step<Noop>().Build();
 

@@ -103,6 +103,12 @@ public sealed class ParkedRunTests
     public Task SqlStoreParksAtomically() =>
         VerifyParking(new SqlWorkflowStateRepository(SqlTestDatabase<ParkedRunTests>.ConnectionString));
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "C-03")]
+    public Task PostgreSqlStoreParksAtomically() =>
+        VerifyParking(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<ParkedRunTests>.ConnectionString));
+
     private static async Task VerifyParking(IWorkflowStateRepository store)
     {
         var parkedId = Guid.NewGuid().ToString("N");
@@ -156,6 +162,13 @@ public sealed class ParkedRunTests
     [Trait("Spec", "C-05")]
     public Task SqlStoreKeepsOneRunnableTime() =>
         VerifyRunnableTimes(new SqlWorkflowStateRepository(SqlTestDatabase<ParkedRunTests>.ConnectionString));
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "C-01")]
+    [Trait("Spec", "C-05")]
+    public Task PostgreSqlStoreKeepsOneRunnableTime() =>
+        VerifyRunnableTimes(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<ParkedRunTests>.ConnectionString));
 
     // On a fake clock the delays end by advancing it; SQL Server's clock is polled until they have ended.
     private static async Task VerifyRunnableTimes(IWorkflowStateRepository store, FakeTimeProvider? time = null)
