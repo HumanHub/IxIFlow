@@ -24,5 +24,6 @@ public static class WorkflowDefinitionValidator
 
     /// <summary>The build rules, in order, over the steps of a definition being built; returns the steps.</summary>
     internal static List<WorkflowStep> Apply(List<WorkflowStep> steps) =>
-        MappingRules.Checked(ParallelRules.Checked(ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(steps)))));
+        ExpressionRules.Checked(MappingRules.Checked(ParallelRules.Checked(
+            ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(steps))))));
 }
