@@ -131,12 +131,7 @@ internal sealed class ExecutionCheckpoint
     {
         var deadlines = page.Deadlines ?? new Dictionary<string, DateTime>();
         foreach (var wait in Waits.Where(wait => wait.TableKind is not WaitKind.Child))
-        {
-            var read = deadlines.TryGetValue(wait.Id, out var deadline) ? deadline : (DateTime?)null;
-            if (wait.DeadlineUtc != read)
-                TouchOwner(wait.ContinuationId);
-            wait.DeadlineUtc = read;
-        }
+            wait.DeadlineUtc = deadlines.TryGetValue(wait.Id, out var deadline) ? deadline : null;
         if (ExecutionTimerId != null)
             ExecutionDeadlineUtc = deadlines.TryGetValue(ExecutionTimerId, out var execution) ? execution : null;
     }

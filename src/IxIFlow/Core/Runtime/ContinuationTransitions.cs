@@ -372,6 +372,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         {
             wait.Timeout = timeout;
             wait.DeadlineUtc = StoreNow(checkpoint) + timeout;
+            // The timeout is stored with the wait; the deadline is the store's.
             checkpoint.TouchOwner(wait.ContinuationId);
         }
         continuation.Status = ContinuationStatus.Waiting;
