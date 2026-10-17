@@ -4,6 +4,7 @@ using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -23,15 +24,20 @@ public sealed class CrashAccountingTests
     private static readonly TimeSpan SqlLease = TimeSpan.FromSeconds(2);
 
     [Fact]
-    public Task MemoryStoreCountsLeasesLostWhileRunning() =>
-        VerifyCrashCounting(new InMemoryWorkflowStateRepository(), Short);
+    public Task MemoryStoreCountsLeasesLostWhileRunning()
+    {
+        var time = new FakeTimeProvider();
+        return VerifyCrashCounting(new InMemoryWorkflowStateRepository(time), Short, time);
+    }
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlStoreCountsLeasesLostWhileRunning() =>
         VerifyCrashCounting(new SqlWorkflowStateRepository(SqlTestDatabase<CrashAccountingTests>.ConnectionString), SqlLease);
 
-    private static async Task VerifyCrashCounting(IWorkflowStateRepository repository, TimeSpan lease)
+    // On a fake clock a lease expires by advancing it; on SQL Server's clock the claims poll for the expiry.
+    private static async Task VerifyCrashCounting(IWorkflowStateRepository repository, TimeSpan lease,
+        FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         var instance = new WorkflowInstance
@@ -46,11 +52,11 @@ public sealed class CrashAccountingTests
             await CommitAsync(repository, instance, first, clearsCrashCount: true);
 
             // The owner dies with the instance running: the next claim counts it.
-            var second = await ReclaimAfterExpiryAsync(repository, instanceId, "second", lease);
+            var second = await ReclaimAfterExpiryAsync(repository, instanceId, "second", lease, time);
             Assert.Equal(1, second.CrashCount);
             // Claiming an activity is not progress; the next loss counts on top.
             await CommitAsync(repository, instance, second, clearsCrashCount: false);
-            var third = await ReclaimAfterExpiryAsync(repository, instanceId, "third", lease);
+            var third = await ReclaimAfterExpiryAsync(repository, instanceId, "third", lease, time);
             Assert.Equal(2, third.CrashCount);
 
             // A released lease is not a crash.
@@ -68,14 +74,14 @@ public sealed class CrashAccountingTests
             instance.Status = WorkflowStatus.Suspended;
             await CommitAsync(repository, instance, fifth, clearsCrashCount: false);
             var sixth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "sixth", lease))!;
-            var seventh = await ReclaimAfterExpiryAsync(repository, instanceId, "seventh", lease);
+            var seventh = await ReclaimAfterExpiryAsync(repository, instanceId, "seventh", lease, time);
             Assert.Equal(0, sixth.CrashCount);
             Assert.Equal(0, seventh.CrashCount);
 
             // A recreated instance does not inherit crashes.
             instance.Status = WorkflowStatus.Running;
             await CommitAsync(repository, instance, seventh, clearsCrashCount: false);
-            var lost = await ReclaimAfterExpiryAsync(repository, instanceId, "lost", lease);
+            var lost = await ReclaimAfterExpiryAsync(repository, instanceId, "lost", lease, time);
             Assert.Equal(1, lost.CrashCount);
             await repository.DeleteWorkflowInstanceAsync(instanceId);
             Assert.Equal(0, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "recreated", lease))!
@@ -123,10 +129,11 @@ public sealed class CrashAccountingTests
     [Fact]
     public async Task AnInstanceLostByEveryOwnerIsQuarantinedUntilReleased()
     {
-        var store = new FaultInjectingRepository();
-        using var services = Services(store);
+        var time = new FakeTimeProvider();
+        var store = new FaultInjectingRepository(time);
+        using var services = Services(store, time);
         var instanceId = await InterruptedRunAsync(services, store);
-        await CrashOwnersAsync(store, instanceId, 3);
+        await CrashOwnersAsync(store, time, instanceId, 3);
 
         var quarantined = await Client(services).RecoverAsync(instanceId);
 
@@ -156,10 +163,11 @@ public sealed class CrashAccountingTests
     [Fact]
     public async Task AReleasedInstanceGetsTheFullNumberOfAttemptsAgain()
     {
-        var store = new FaultInjectingRepository();
-        using var services = Services(store);
+        var time = new FakeTimeProvider();
+        var store = new FaultInjectingRepository(time);
+        using var services = Services(store, time);
         var instanceId = await InterruptedRunAsync(services, store);
-        await CrashOwnersAsync(store, instanceId, 3);
+        await CrashOwnersAsync(store, time, instanceId, 3);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
             (await Client(services).RecoverAsync(instanceId)).Status);
 
@@ -168,7 +176,7 @@ public sealed class CrashAccountingTests
         await Assert.ThrowsAnyAsync<Exception>(() => Client(services).ReleaseAsync(instanceId));
         store.FailCommit = _ => false;
         // Two more lost owners stay under the limit only if the release started the count again.
-        await CrashOwnersAsync(store, instanceId, 2);
+        await CrashOwnersAsync(store, time, instanceId, 2);
 
         var recovered = await Client(services).RecoverAsync(instanceId);
 
@@ -178,8 +186,9 @@ public sealed class CrashAccountingTests
     [Fact]
     public async Task ACancelledInstanceStoppedAgainWaitsForARelease()
     {
-        var store = new FaultInjectingRepository();
-        using var services = Services(store);
+        var time = new FakeTimeProvider();
+        var store = new FaultInjectingRepository(time);
+        using var services = Services(store, time);
         // The run dies between two activities, so nothing is in flight when it is cancelled.
         var instanceId = Guid.NewGuid().ToString("N");
         var allowed = 1;
@@ -187,7 +196,7 @@ public sealed class CrashAccountingTests
         await Assert.ThrowsAnyAsync<Exception>(() => Client(services).RunAsync(GuardedWorkflow(),
             new CrashData(), new WorkflowOptions { InstanceId = instanceId }));
         store.FailCommit = _ => false;
-        await CrashOwnersAsync(store, instanceId, 3);
+        await CrashOwnersAsync(store, time, instanceId, 3);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
             (await Client(services).RecoverAsync(instanceId)).Status);
 
@@ -199,7 +208,7 @@ public sealed class CrashAccountingTests
         var unwinding = (await store.GetWorkflowInstanceAsync(instanceId))!;
         Assert.Equal(WorkflowStatus.Running, unwinding.Status);
         Assert.Null(ExecutionCheckpoint.StopOf(unwinding));
-        await CrashOwnersAsync(store, instanceId, 3);
+        await CrashOwnersAsync(store, time, instanceId, 3);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
             (await Client(services).RecoverAsync(instanceId)).Status);
 
@@ -217,14 +226,15 @@ public sealed class CrashAccountingTests
     [Fact]
     public async Task AnInstanceWhoseDataCannotBeReadIsQuarantinedWithoutReadingIt()
     {
-        var store = new FaultInjectingRepository();
-        using var services = Services(store);
+        var time = new FakeTimeProvider();
+        var store = new FaultInjectingRepository(time);
+        using var services = Services(store, time);
         var instanceId = await InterruptedRunAsync(services, store);
         var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short))!;
         var corrupted = (await store.GetWorkflowInstanceAsync(instanceId))!;
         corrupted.WorkflowDataJson = "{ not json";
         await CommitAsync(store, corrupted, grant, clearsCrashCount: false);
-        await CrashOwnersAsync(store, instanceId, 3, alreadyHeld: true);
+        await CrashOwnersAsync(store, time, instanceId, 3, alreadyHeld: true);
 
         var quarantined = await Client(services).RecoverAsync(instanceId);
 
@@ -240,14 +250,15 @@ public sealed class CrashAccountingTests
     [Fact]
     public async Task AwaitingAQuarantinedInstanceDoesNotReadItsData()
     {
-        var store = new FaultInjectingRepository();
-        using var services = Services(store);
+        var time = new FakeTimeProvider();
+        var store = new FaultInjectingRepository(time);
+        using var services = Services(store, time);
         var instanceId = await InterruptedRunAsync(services, store);
         var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short))!;
         var corrupted = (await store.GetWorkflowInstanceAsync(instanceId))!;
         corrupted.WorkflowDataJson = "{ not json";
         await CommitAsync(store, corrupted, grant, clearsCrashCount: false);
-        await CrashOwnersAsync(store, instanceId, 3, alreadyHeld: true);
+        await CrashOwnersAsync(store, time, instanceId, 3, alreadyHeld: true);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
             (await Client(services).RecoverAsync(instanceId)).Status);
 
@@ -284,24 +295,32 @@ public sealed class CrashAccountingTests
             .Finally(cleanup => cleanup.Step<CleanupActivity>())
             .Build();
 
-    // Owners that claim the running instance and die without releasing it.
-    private static async Task CrashOwnersAsync(IWorkflowStateRepository store, string instanceId, int count,
-        bool alreadyHeld = false)
+    // Owners that claim the running instance and die without releasing it; the clock moves past each lease.
+    private static async Task CrashOwnersAsync(IWorkflowStateRepository store, FakeTimeProvider time,
+        string instanceId, int count, bool alreadyHeld = false)
     {
         for (var index = 0; index < count; index++)
         {
             if (alreadyHeld || index > 0)
-                await Task.Delay(Short * 2);
+                time.Advance(Short * 2);
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"dead-{index}", Short));
         }
-        await Task.Delay(Short * 2);
+        time.Advance(Short * 2);
     }
 
     // Claims the instance as soon as the lease it had has expired, which is within one lease length of the call,
-    // since the lease was taken before it; a slow store is allowed three seconds more.
+    // since the lease was taken before it; a slow store is allowed three seconds more. On a fake clock the lease
+    // has expired once the clock has moved one lease length.
     private static async Task<ExecutionLeaseGrant> ReclaimAfterExpiryAsync(IWorkflowStateRepository repository,
-        string instanceId, string token, TimeSpan lease)
+        string instanceId, string token, TimeSpan lease, FakeTimeProvider? time)
     {
+        if (time != null)
+        {
+            time.Advance(lease);
+            var reclaimed = await repository.TryAcquireExecutionLeaseAsync(instanceId, token, lease);
+            Assert.NotNull(reclaimed);
+            return reclaimed;
+        }
         var deadline = DateTime.UtcNow + lease + TimeSpan.FromSeconds(3);
         while (true)
         {
@@ -325,11 +344,13 @@ public sealed class CrashAccountingTests
         instance.Revision = result.Revision;
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository repository)
+    private static ServiceProvider Services(IWorkflowStateRepository repository, TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
+        if (time != null)
+            services.AddSingleton(time);
         services.AddIxIFlow(options => options.MaxCrashes = 3);
         services.AddSingleton<CrashProbe>();
         services.AddTransient<QuickActivity>();

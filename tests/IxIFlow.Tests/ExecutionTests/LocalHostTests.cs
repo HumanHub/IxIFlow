@@ -5,6 +5,7 @@ using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -311,23 +312,35 @@ public sealed class LocalHostTests
     [Trait("Spec", "B-10")]
     public async Task OneWatchReadsCancellationForAllRunningInstances()
     {
-        var store = new CountingStore();
-        using var services = Services(store, slots: 8);
+        var time = new FakeTimeProvider();
+        var store = new CountingStore(time);
+        using var services = Services(store, slots: 8, time);
         var gate = Gate(services);
         var runs = Enumerable.Range(0, 5)
             .Select(index => Client(services).RunAsync(BlockingWorkflow($"Watched{index}"), new HostData()))
             .ToArray();
         await gate.WaitForRunningAsync(5);
 
+        // One second in steps of the watch's 250 ms interval, each followed by the read it brings.
         var singleBefore = store.CancellationReads;
         var batchBefore = store.BatchCancellationReads;
-        await Task.Delay(1000);
+        for (var step = 1; step <= 4; step++)
+        {
+            time.Advance(TimeSpan.FromMilliseconds(250));
+            var deadline = DateTime.UtcNow + Patience;
+            while (store.BatchCancellationReads - batchBefore < step)
+            {
+                Assert.True(DateTime.UtcNow < deadline, $"The watch did not read after step {step}");
+                await Task.Delay(5);
+            }
+            await Task.Delay(5);
+        }
         var single = store.CancellationReads - singleBefore;
         var batches = store.BatchCancellationReads - batchBefore;
 
-        // Five leases polling on their own would read about 20 times a second.
+        // Five leases polling on their own would read 20 times in that second.
         Assert.Equal(0, single);
-        Assert.InRange(batches, 1, 8);
+        Assert.Equal(4, batches);
         Assert.Equal(5, store.LargestBatch);
         gate.Release();
         await Task.WhenAll(runs).WaitAsync(Patience);
@@ -397,11 +410,14 @@ public sealed class LocalHostTests
     private static WorkflowDefinition QuickWorkflow(string name) =>
         Workflow.Create<HostData>(name).Step<QuickActivity>().Step<QuickActivity>().Build();
 
-    private static ServiceProvider Services(IWorkflowStateRepository repository, int slots)
+    private static ServiceProvider Services(IWorkflowStateRepository repository, int slots,
+        TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
+        if (time != null)
+            services.AddSingleton(time);
         services.AddIxIFlow(options => options.Slots = slots);
         services.AddSingleton<ActivityGate>();
         services.AddSingleton<HostProbe>();
@@ -577,6 +593,14 @@ public sealed class LocalHostTests
     private sealed class CountingStore : FaultInjectingRepository
     {
         private int _cancellationReads;
+
+        public CountingStore()
+        {
+        }
+
+        public CountingStore(TimeProvider time) : base(time)
+        {
+        }
 
         public int CancellationReads => Volatile.Read(ref _cancellationReads);
 
