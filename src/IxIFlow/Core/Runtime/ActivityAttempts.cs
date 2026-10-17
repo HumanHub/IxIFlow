@@ -38,9 +38,10 @@ internal sealed class ActivityAttempts(
         // The attempt, its activity's own logging included, logs with its step and invocation (G-03).
         using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), invocationId));
         // A step retry continues the invocation its failed attempt began, from the inputs that attempt saved (D-14).
-        var retryInputs = pending == null && continuation.RetryInputs?.InvocationId == invocationId
-            ? continuation.RetryInputs.Inputs
+        var retried = pending == null && continuation.RetryInputs?.InvocationId == invocationId
+            ? continuation.RetryInputs
             : null;
+        var retryInputs = retried?.Inputs;
         continuation.RetryInputs = null;
         var attempt = new ActivityAttemptState
         {
@@ -74,11 +75,12 @@ internal sealed class ActivityAttempts(
                 prepared.SetRecoveryState(recoveryState);
                 pending = new ActivityInvocationState
                 {
-                    StartedAtUtc = Now,
+                    StartedAtUtc = retried?.StartedAtUtc ?? Now,
                     Id = invocationId,
                     StepId = scopes.Id(step),
                     Inputs = retryInputs ?? prepared.Inputs,
-                    RecoveryState = SerializedValue.From(recoveryState)
+                    RecoveryState = SerializedValue.From(recoveryState),
+                    Attempts = retried?.Attempts ?? []
                 };
                 continuation.PendingActivity = pending;
             }
@@ -317,6 +319,7 @@ internal sealed class ActivityAttempts(
 
         pending = new ActivityInvocationState { StepId = scopes.Id(step), StartedAtUtc = Now };
         pending.ChildWorkflowId = pending.Id;
+        using var startScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), pending.Id));
         var childDefinition = await host.ResolveChildAsync(step, starting: true);
         ChildStart start;
         try
@@ -410,7 +413,9 @@ internal sealed class ActivityAttempts(
                     activity.Continuation.RetryInputs = new KeptActivityInputs
                     {
                         InvocationId = failed.Id,
-                        Inputs = failed.Inputs
+                        Inputs = failed.Inputs,
+                        StartedAtUtc = failed.StartedAtUtc,
+                        Attempts = failed.Attempts
                     };
                 MarkActivityEnd(activity, instance, "Threw", outcome.Error);
                 throw outcome.Error ?? new WorkflowEngineException(WorkflowErrorKind.InvalidState,

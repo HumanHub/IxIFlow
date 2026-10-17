@@ -21,6 +21,7 @@ public sealed class LoggingScopeTests
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(capture));
         services.AddTransient<LogsItsName>();
+        services.AddSingleton<BothBranches>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<ScopeData>("LoggingScopes")
@@ -44,6 +45,10 @@ public sealed class LoggingScopeTests
             Assert.False(string.IsNullOrEmpty(entry.Scope["InvocationId"] as string));
         }
         Assert.Equal(3, ran.Select(entry => entry.Scope["StepId"]).Distinct().Count());
+        // Each entry carries its own step: the engine logs applying each activity's name input in the same scope.
+        foreach (var (name, entry) in new[] { "first", "left", "right" }.Zip(ran))
+            Assert.Contains(capture.Entries, applied => applied.Message == $"Applied typed input mapping: Name = {name}" &&
+                                                         Equals(applied.Scope["StepId"], entry.Scope["StepId"]));
 
         // The engine's own entries for an attempt, from applying its inputs to applying its outputs, carry the same
         // scope.
@@ -58,13 +63,29 @@ public sealed class LoggingScopeTests
 
     public sealed class ScopeData;
 
-    public sealed class LogsItsName(ILogger<LogsItsName> logger) : IAsyncActivity
+    /// <summary>Holds the two branch activities until both run, so they log at the same time.</summary>
+    public sealed class BothBranches
+    {
+        private int _arrived;
+        private readonly TaskCompletionSource _both = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task ArriveAsync()
+        {
+            if (Interlocked.Increment(ref _arrived) == 2)
+                _both.TrySetResult();
+            return _both.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    public sealed class LogsItsName(ILogger<LogsItsName> logger, BothBranches branches) : IAsyncActivity
     {
         public string Name { get; set; } = "";
 
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
-            // The entry is written after a yield, as an activity doing work would, on whatever thread resumes it.
+            // The branch activities write their entries while both are running, each on whatever thread resumes it.
+            if (Name != "first")
+                await branches.ArriveAsync();
             await Task.Yield();
             logger.LogInformation("ran {Name}", Name);
         }

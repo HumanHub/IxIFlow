@@ -97,6 +97,91 @@ public sealed class ActivityInputCopyTests
         Assert.Equal(2, probe.Appends);
     }
 
+    // A cancellation abandons the retry, and the inputs kept for it go with it.
+    [Fact]
+    public async Task ACancelledRetryLeavesNoKeptInputsBehind()
+    {
+        var probe = new Probe();
+        var store = new InMemoryWorkflowStateRepository();
+        using var services = Services(store, probe);
+        var definition = Workflow.Create<ListData>("CancelledRetry")
+            .Step<CountsNames>(step => step.Input(activity => activity.Names).From(ctx => ctx.WorkflowData.Items))
+            .Saga(saga => saga.Step<ChangesTheDataThenFailsOnce>(step => step
+                .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Seen)
+                .OnError<InvalidOperationException>(handler => handler.ThenRetry(
+                    new RetryPolicy(TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(10), 2, 1)))))
+            .Build();
+        var client = services.GetRequiredService<IWorkflowClient>();
+        var instanceId = Guid.NewGuid().ToString("N");
+        // The run parks until its retry is due, keeping the failed attempt's inputs.
+        var running = client.RunAsync(definition, new ListData { Seen = 10 }, new WorkflowOptions { InstanceId = instanceId });
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (await store.GetWorkflowInstanceAsync(instanceId) is not { RunnableAtUtc: not null } parked ||
+               !parked.ExecutionStateJson.Contains("RetryInputs"))
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The run did not park its retry");
+            await Task.Delay(20);
+        }
+
+        await client.CancelAsync(instanceId, new CancellationReason { ReasonCode = "stop" });
+
+        Assert.Equal(WorkflowExecutionStatus.Cancelled, (await running.WaitAsync(TimeSpan.FromSeconds(10))).Status);
+        Assert.DoesNotContain("RetryInputs", (await store.GetWorkflowInstanceAsync(instanceId))!.ExecutionStateJson);
+        Assert.Equal(1, probe.Appends);
+    }
+
+    // Number handling on an input property needs no declared type: a value behind an interface keeps its own.
+    [Fact]
+    public async Task NumberHandlingOnAnInterfaceInputKeepsTheValuesType()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+        var definition = Workflow.Create<ListData>("NumberHandledInput")
+            .Step<ReadsNumberedLine>(step => step
+                .Input(activity => activity.Line).From(_ => new PublicLine { Quantity = 5 })
+                .Output(activity => activity.Quantity).To(ctx => ctx.WorkflowData.Seen))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, Data());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(5, Assert.IsType<ListData>(result.WorkflowData).Seen);
+    }
+
+    // A converter on an input typed as object applies to whatever value it holds.
+    [Fact]
+    public async Task AConverterOnAnObjectInputAppliesToItsValue()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+        var definition = Workflow.Create<ListData>("ConvertedObjectInput")
+            .Step<TakesBoxed>(step => step
+                .Input(activity => activity.Boxed).From(_ => new Fixed(6))
+                .Output(activity => activity.Number).To(ctx => ctx.WorkflowData.Seen))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, Data());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(6, Assert.IsType<ListData>(result.WorkflowData).Seen);
+    }
+
+    // An activity given as an input is read back through the properties its saved form holds; an ignored property's
+    // converter, which could not be made, is never needed.
+    [Fact]
+    public async Task AnActivityInputWithAnIgnoredConvertedPropertyIsReadBack()
+    {
+        using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+        var definition = Workflow.Create<ListData>("IgnoredConverterActivityInput")
+            .Step<TakesIgnoring>(step => step
+                .Input(activity => activity.Other).From(_ => new IgnoresAConvertedProperty { Count = 3 })
+                .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Seen))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, Data());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(3, Assert.IsType<ListData>(result.WorkflowData).Seen);
+    }
+
     // The recovery state is taken from the inputs the activity runs on, not from the data they were copied from.
     [Fact]
     public async Task TheRecoveryStateIsTakenFromTheInputsTheActivityRunsOn()
@@ -263,6 +348,9 @@ public sealed class ActivityInputCopyTests
         services.AddTransient<ChangesTheDataThenFailsOnce>();
         services.AddTransient<TakesFixed>();
         services.AddTransient<TakesError>();
+        services.AddTransient<TakesBoxed>();
+        services.AddTransient<TakesIgnoring>();
+        services.AddTransient<IgnoresAConvertedProperty>();
         services.AddTransient<TakesActivity>();
         services.AddIxIFlow();
         return services.BuildServiceProvider();
@@ -397,6 +485,24 @@ public sealed class ActivityInputCopyTests
         public int Quantity { get; set; }
     }
 
+    public sealed class PublicLine : ILine
+    {
+        public int Quantity { get; set; }
+    }
+
+    public sealed class ReadsNumberedLine : IAsyncActivity
+    {
+        [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+        public ILine? Line { get; set; }
+        public int Quantity { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Quantity = Line!.Quantity;
+            return Task.CompletedTask;
+        }
+    }
+
     public sealed class ReadsLine : IAsyncActivity
     {
         public ILine? Line { get; set; }
@@ -455,6 +561,65 @@ public sealed class ActivityInputCopyTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Appended();
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Reads any boxed <see cref="Fixed"/> back from its number.</summary>
+    public sealed class BoxConverter : JsonConverter<object>
+    {
+        public override object Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert,
+            System.Text.Json.JsonSerializerOptions options) => new Fixed(reader.GetInt32());
+
+        public override void Write(System.Text.Json.Utf8JsonWriter writer, object value,
+            System.Text.Json.JsonSerializerOptions options) => writer.WriteNumberValue(((Fixed)value).Number);
+    }
+
+    public sealed class TakesBoxed : IAsyncActivity
+    {
+        [JsonConverter(typeof(BoxConverter))]
+        public object? Boxed { get; set; }
+        public int Number { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Number = ((Fixed)Boxed!).Number;
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>A converter that cannot be made: it has no parameterless constructor.</summary>
+    public sealed class UnmakeableConverter(int unused) : JsonConverter<string>
+    {
+        public int Unused { get; } = unused;
+
+        public override string Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert,
+            System.Text.Json.JsonSerializerOptions options) => reader.GetString()!;
+
+        public override void Write(System.Text.Json.Utf8JsonWriter writer, string value,
+            System.Text.Json.JsonSerializerOptions options) => writer.WriteStringValue(value);
+    }
+
+    public sealed class IgnoresAConvertedProperty : IAsyncActivity
+    {
+        public int Count { get; set; }
+
+        [JsonIgnore]
+        [JsonConverter(typeof(UnmakeableConverter))]
+        public string Note { get; set; } = "";
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    public sealed class TakesIgnoring : IAsyncActivity
+    {
+        public IgnoresAConvertedProperty? Other { get; set; }
+        public int Count { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Count = Other!.Count;
             return Task.CompletedTask;
         }
     }

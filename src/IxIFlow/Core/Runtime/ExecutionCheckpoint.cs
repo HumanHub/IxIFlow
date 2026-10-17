@@ -438,6 +438,10 @@ internal sealed class KeptActivityInputs
 {
     public string InvocationId { get; set; } = "";
     public ActivityInputSnapshot Inputs { get; set; } = new();
+
+    /// <summary>When the invocation began, and its attempts so far, which the retry's record carries on.</summary>
+    public DateTime StartedAtUtc { get; set; }
+    public List<ActivityAttemptState> Attempts { get; set; } = [];
 }
 
 internal sealed class ActivityResolutionState
@@ -510,12 +514,12 @@ internal sealed class ActivityInputValue
         // The value and the definition are all a first attempt reads, so any failure here is the definition's.
         try
         {
-            if (value is Exception error)
+            if (value is Exception error && !HasConverter(input))
             {
                 var exception = SerializedException.From(error);
                 return (new ActivityInputValue { Exception = exception }, exception.Restore());
             }
-            if (value == null && PropertyConverter(input) == null)
+            if (value == null && !HasConverter(input))
                 return (new ActivityInputValue(), null);
             var type = SavedType(input, value);
             var json = JsonSerializer.Serialize(value, type, OptionsFor(input));
@@ -549,23 +553,26 @@ internal sealed class ActivityInputValue
     }
 
     private object? ReadAs(Type type, PropertyInfo input, IServiceProvider services) =>
-        typeof(IAsyncActivity).IsAssignableFrom(type)
+        typeof(IAsyncActivity).IsAssignableFrom(type) && !HasConverter(input)
             ? SerializedValue.ReadActivity(type, Value!.Json, services)
             : JsonSerializer.Deserialize(Value!.Json, type, OptionsFor(input));
 
     // A value is saved under its own type, read back by name, which keeps a derived value whole. A non-public
     // collection, such as a LINQ iterator, is saved under the input's declared type: what it holds is its elements, and
-    // its own type cannot be made from them. An input property with a converter or number handling is saved under its
-    // declared type, which they are written for.
+    // its own type cannot be made from them. An input property with a converter is saved under its declared type,
+    // which the converter is written for, and read back through it, whatever the value: an object, an exception or an
+    // activity. Number handling applies to the numbers inside whatever type is saved.
     private static Type SavedType(PropertyInfo input, object? value)
     {
-        if (value == null || HasJsonAttributes(input) && input.PropertyType != typeof(object))
+        if (value == null || HasConverter(input))
             return input.PropertyType;
         var runtime = value.GetType();
         return input.PropertyType == typeof(object) || runtime.IsVisible || value is not System.Collections.IEnumerable
             ? runtime
             : input.PropertyType;
     }
+
+    private static bool HasConverter(PropertyInfo input) => input.IsDefined(typeof(JsonConverterAttribute));
 
     private static bool HasJsonAttributes(PropertyInfo input) =>
         input.IsDefined(typeof(JsonConverterAttribute)) || input.IsDefined(typeof(JsonNumberHandlingAttribute));
@@ -970,7 +977,7 @@ internal sealed class SerializedValue
             if (!properties.TryGetValue(value.Name, out var saved) || saved.Property.GetSetMethod(nonPublic: true) == null)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Saved activity output '{type.Name}.{value.Name}' cannot be restored");
-            var options = saved.Options
+            var options = saved.Options.Value
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Converter for saved activity output '{type.Name}.{saved.Property.Name}' is unavailable");
             saved.Property.SetValue(activity, value.Value.Deserialize(saved.Property.PropertyType, options));
@@ -979,26 +986,31 @@ internal sealed class SerializedValue
     }
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type,
-        IReadOnlyDictionary<string, (PropertyInfo Property, JsonSerializerOptions? Options)>> ActivityProperties = new();
+        IReadOnlyDictionary<string, (PropertyInfo Property, Lazy<JsonSerializerOptions?> Options)>> ActivityProperties =
+            new();
 
     // An activity's public properties by their JSON names, the first of a name winning, each with the options its
-    // converter and number handling need; no options when its converter cannot be created.
-    private static IReadOnlyDictionary<string, (PropertyInfo Property, JsonSerializerOptions? Options)> SettableProperties(
-        Type type) =>
+    // converter and number handling need, made when a saved value first needs them; no options when its converter
+    // cannot be created. A property the saved form leaves out, such as an ignored one, never makes its converter.
+    private static IReadOnlyDictionary<string, (PropertyInfo Property, Lazy<JsonSerializerOptions?> Options)>
+        SettableProperties(Type type) =>
         type.GetProperties(BindingFlags.Instance | BindingFlags.Public)
             .GroupBy(property => property.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? property.Name)
             .ToDictionary(group => group.Key, group =>
             {
                 var property = group.First();
-                var options = new JsonSerializerOptions();
-                if (property.IsDefined(typeof(JsonConverterAttribute)))
+                return (property, new Lazy<JsonSerializerOptions?>(() =>
                 {
-                    if (ActivityInputValue.PropertyConverter(property) is not { } converter)
-                        return (property, (JsonSerializerOptions?)null);
-                    options.Converters.Add(converter);
-                }
-                if (property.GetCustomAttribute<JsonNumberHandlingAttribute>() is { } numbers)
-                    options.NumberHandling = numbers.Handling;
-                return (property, options);
+                    var options = new JsonSerializerOptions();
+                    if (property.IsDefined(typeof(JsonConverterAttribute)))
+                    {
+                        if (ActivityInputValue.PropertyConverter(property) is not { } converter)
+                            return null;
+                        options.Converters.Add(converter);
+                    }
+                    if (property.GetCustomAttribute<JsonNumberHandlingAttribute>() is { } numbers)
+                        options.NumberHandling = numbers.Handling;
+                    return options;
+                }));
             });
 }
