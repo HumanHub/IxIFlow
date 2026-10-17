@@ -281,7 +281,7 @@ public sealed class LocalHostTests
             await gate.WaitForRunningAsync(1);
             var queued = Client(services).RunAsync(QuickWorkflow("NeverStarted"), new HostData());
 
-            var stopping = services.GetRequiredService<LocalWorkflowHost>().StopAsync(CancellationToken.None);
+            var stopping = services.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(Patience));
             // While draining, the run waits for its activity instead of spinning on the store.
             var readsBefore = repository.CancellationReads;
@@ -532,7 +532,7 @@ public sealed class LocalHostTests
     }
 
     /// <summary>Leaves a task behind that calls the client after the run has finished.</summary>
-    internal sealed class BackgroundCallingActivity(LocalWorkflowHost host, IWorkflowClient client,
+    internal sealed class BackgroundCallingActivity(WorkflowHost host, IWorkflowClient client,
         BackgroundProbe probe) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
