@@ -75,6 +75,28 @@ public sealed class ActivityInputCopyTests
         Assert.Equal(2, probe.Appends);
     }
 
+    // A retry is another attempt of the same invocation: it starts from the inputs the failed attempt saved, even when
+    // that attempt changed the data the inputs were mapped from.
+    [Fact]
+    public async Task ARetryKeepsTheSavedInputsWhenTheirSourceChanged()
+    {
+        var probe = new Probe();
+        using var services = Services(new InMemoryWorkflowStateRepository(), probe);
+        var definition = Workflow.Create<ListData>("RetryKeepsSavedInputs")
+            .Step<CountsNames>(step => step.Input(activity => activity.Names).From(ctx => ctx.WorkflowData.Items))
+            .Saga(saga => saga.Step<ChangesTheDataThenFailsOnce>(step => step
+                .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Seen)
+                .Output(activity => activity.Amount).To(ctx => ctx.WorkflowData.Seen)
+                .OnError<InvalidOperationException>(handler => handler.ThenRetry(1))))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new ListData { Seen = 10 });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(10, Assert.IsType<ListData>(result.WorkflowData).Seen);
+        Assert.Equal(2, probe.Appends);
+    }
+
     // The recovery state is taken from the inputs the activity runs on, not from the data they were copied from.
     [Fact]
     public async Task TheRecoveryStateIsTakenFromTheInputsTheActivityRunsOn()
@@ -167,6 +189,7 @@ public sealed class ActivityInputCopyTests
         services.AddSingleton(probe);
         services.AddTransient<AppendsToItsInput>();
         services.AddTransient<AppendThenFailOnce>();
+        services.AddTransient<ChangesTheDataThenFailsOnce>();
         services.AddTransient<TakesFixed>();
         services.AddIxIFlow();
         return services.BuildServiceProvider();
@@ -229,6 +252,21 @@ public sealed class ActivityInputCopyTests
             return probe.Appends == 1
                 ? throw new InvalidOperationException("Planned failure after changing the input")
                 : Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Changes the live workflow data its input was mapped from, then fails on its first attempt.</summary>
+    public sealed class ChangesTheDataThenFailsOnce(Probe probe) : IAsyncActivity
+    {
+        public int Amount { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.Appended();
+            if (probe.Appends > 1)
+                return Task.CompletedTask;
+            ((ListData)context.WorkflowData).Seen = 20;
+            throw new InvalidOperationException("Planned failure after changing the data");
         }
     }
 
