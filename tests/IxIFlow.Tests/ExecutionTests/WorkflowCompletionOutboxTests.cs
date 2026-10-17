@@ -2,6 +2,7 @@ using IxIFlow.Core;
 using IxIFlow.Tests.Infrastructure;
 using Dapper;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -15,7 +16,12 @@ public sealed class WorkflowCompletionOutboxTests
     [Fact]
     public async Task ExpiredMemoryOutboxClaimCanBeRecovered()
     {
-        await VerifyExpiredClaimCanBeRecovered(new InMemoryWorkflowStateRepository());
+        var time = new FakeTimeProvider();
+        await VerifyExpiredClaimCanBeRecovered(new InMemoryWorkflowStateRepository(time), () =>
+        {
+            time.Advance(TimeSpan.FromMilliseconds(200));
+            return Task.CompletedTask;
+        });
     }
 
     [SqlServerFact]
@@ -24,10 +30,11 @@ public sealed class WorkflowCompletionOutboxTests
     {
         var repository = new SqlWorkflowStateRepository(
             SqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString);
-        await VerifyExpiredClaimCanBeRecovered(repository);
+        await VerifyExpiredClaimCanBeRecovered(repository, () => Task.Delay(200));
     }
 
-    private static async Task VerifyExpiredClaimCanBeRecovered(IWorkflowStateRepository repository)
+    private static async Task VerifyExpiredClaimCanBeRecovered(IWorkflowStateRepository repository,
+        Func<Task> letClaimExpire)
     {
         var outbox = Assert.IsAssignableFrom<IWorkflowCompletionOutbox>(repository);
         var instance = new WorkflowInstance
@@ -46,7 +53,7 @@ public sealed class WorkflowCompletionOutboxTests
             Assert.Empty(await outbox.ClaimUnpublishedCompletionsAsync(
                 instance.InstanceId, "new-host", TimeSpan.FromSeconds(5)));
 
-            await Task.Delay(200);
+            await letClaimExpire();
 
             var recovered = Assert.Single(await outbox.ClaimUnpublishedCompletionsAsync(
                 instance.InstanceId, "new-host", TimeSpan.FromSeconds(5)));
