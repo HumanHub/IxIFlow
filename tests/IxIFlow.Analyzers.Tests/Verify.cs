@@ -54,6 +54,11 @@ internal static class Verify
         return test.RunAsync();
     }
 
+    /// <summary>Runs an analyzer on a source that does not reference the engine, which it must leave alone.</summary>
+    public static Task AnalyzerWithoutEngine<TAnalyzer>(string source)
+        where TAnalyzer : DiagnosticAnalyzer, new() =>
+        new CSharpAnalyzerTest<TAnalyzer, DefaultVerifier> { TestCode = source, ReferenceAssemblies = Net10 }.RunAsync();
+
     public static Task CodeFix<TAnalyzer, TFix>(string source, string fixedSource, params DiagnosticResult[] expected)
         where TAnalyzer : DiagnosticAnalyzer, new()
         where TFix : CodeFixProvider, new()
