@@ -5,6 +5,7 @@ using IxIFlow.Core;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -588,7 +589,8 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task AKeptRequestWhoseAnswerTimedOutTakesItsTimeoutPathAgain()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time: time);
         var journal = services.GetRequiredService<Journal>();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ShopData>("TimedOutThenRetried")
@@ -596,12 +598,13 @@ public sealed class SagaHandlerTests
             .Saga(saga => saga
                 .Request<CreatePayment>("payment")
                 .WaitFor<PaymentReceived>("payment", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(200))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path.Step<ShipOrder>())))
             .OnError<ShippingFailed>(handler => handler.CompensateNone().ThenRetry(1))
             .Build();
         var started = await engine.RunAsync(definition, new ShopData());
 
+        time.Advance(TimeSpan.FromMinutes(2));
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -759,7 +762,8 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task CancellingARetryHandlersNestedSagaUndoesItBeforeTheKeptSteps()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time: time);
         var journal = services.GetRequiredService<Journal>();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ShopData>("NestedSagaInHandler")
@@ -770,17 +774,22 @@ public sealed class SagaHandlerTests
                 .Step<ShipOrder>())
             .OnError<ShippingFailed>(handler => handler
                 .WaitFor<Approval>("retry", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(100))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path.Saga(inner => inner
                         .Step<InsureOrder>(step => step.CompensateWith<UninsureOrder>())
                         .WaitFor<Approval>("insured"))))
                 .CompensateUpTo<ReserveStock>().ThenRetry(2))
             .Build();
         var started = await engine.RunAsync(definition, new ShopData());
+        time.Advance(TimeSpan.FromMinutes(2));
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (!journal.Entries.Contains(nameof(InsureOrder)) ||
                (await engine.GetOpenWaitsAsync(new WaitQuery { InstanceId = started.InstanceId }))
                .All(wait => wait.Key != "insured"))
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The nested saga never waited");
             await Task.Delay(20);
+        }
 
         await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
@@ -795,9 +804,10 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task CancellingARetryHandlersChildCancelsTheChildBeforeTheKeptStepsAreUndone()
     {
-        var repository = new InMemoryWorkflowStateRepository();
+        var time = new FakeTimeProvider();
+        var repository = new InMemoryWorkflowStateRepository(time);
         var journal = new Journal();
-        using var services = Services(repository, journal);
+        using var services = Services(repository, journal, time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
             Workflow.Create<ShopData>("CarrierClaim").Step<ValidateOrder>().WaitFor<Approval>("settled").Build());
@@ -809,15 +819,18 @@ public sealed class SagaHandlerTests
                 .Step<ShipOrder>())
             .OnError<ShippingFailed>(handler => handler
                 .WaitFor<Approval>("retry", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(100))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path.Invoke<ShopData>("CarrierClaim", 1)))
                 .CompensateUpTo<ReserveStock>().ThenRetry(2))
             .Build();
         var started = await engine.RunAsync(definition, new ShopData());
+        time.Advance(TimeSpan.FromMinutes(2));
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         WorkflowInstance? child = null;
         while (child == null || (await engine.GetOpenWaitsAsync(new WaitQuery { InstanceId = child.InstanceId }))
                .All(wait => wait.Key != "settled"))
         {
+            Assert.True(DateTime.UtcNow < deadline, "The handler's child never waited");
             await Task.Delay(20);
             child = (await repository.GetChildInstancesAsync(started.InstanceId)).SingleOrDefault();
         }
@@ -836,7 +849,8 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task CancellingInsideAFinallyOfARetryHandlerUndoesTheKeptStepsOnceItIsDone()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time: time);
         var journal = services.GetRequiredService<Journal>();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ShopData>("FinallyInHandler")
@@ -847,16 +861,21 @@ public sealed class SagaHandlerTests
                 .Step<ShipOrder>())
             .OnError<ShippingFailed>(handler => handler
                 .WaitFor<Approval>("retry", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(100))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path
                         .Try(body => body.Step<InsureOrder>())
                         .Finally(cleanup => cleanup.WaitFor<Approval>("cleanup"))))
                 .CompensateUpTo<ReserveStock>().ThenRetry(2))
             .Build();
         var started = await engine.RunAsync(definition, new ShopData());
+        time.Advance(TimeSpan.FromMinutes(2));
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while ((await engine.GetOpenWaitsAsync(new WaitQuery { InstanceId = started.InstanceId }))
                .All(wait => wait.Key != "cleanup"))
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The cleanup never waited");
             await Task.Delay(20);
+        }
 
         // The cancellation lets the Finally finish, then unwinds to the saga, which undoes what it kept.
         await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
@@ -873,7 +892,8 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task ANestedHandlerFailingInsideARetryHandlerUndoesTheOuterKeptSteps()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time: time);
         var journal = services.GetRequiredService<Journal>();
         journal.ShippingFailures = 2;
         var engine = services.GetRequiredService<IWorkflowClient>();
@@ -885,7 +905,7 @@ public sealed class SagaHandlerTests
                 .Step<ShipOrder>())
             .OnError<ShippingFailed>(handler => handler
                 .WaitFor<Approval>("retry", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(100))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path
                         .Saga(inner => inner
                             .Step<InsureOrder>(step => step.CompensateWith<UninsureOrder>())
@@ -895,6 +915,7 @@ public sealed class SagaHandlerTests
                 .CompensateUpTo<ReserveStock>().ThenRetry(2))
             .Build();
         var started = await engine.RunAsync(definition, new ShopData());
+        time.Advance(TimeSpan.FromMinutes(2));
 
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(10));
@@ -1029,7 +1050,8 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task AnApprovalTakenInATimeoutPathIsReplayedWhenTheRetryTakesThePathAgain()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time: time);
         var journal = services.GetRequiredService<Journal>();
         journal.ShippingFailures = 1;
         var engine = services.GetRequiredService<IWorkflowClient>();
@@ -1038,16 +1060,19 @@ public sealed class SagaHandlerTests
             .Saga(saga => saga
                 .Request<CreatePayment>("payment")
                 .WaitFor<PaymentReceived>("payment", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(200))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path.WaitFor<Approval>("manual").Step<ShipOrder>())))
             .OnError<ShippingFailed>(handler => handler.CompensateNone().ThenRetry(1))
             .Build();
         var started = await engine.RunAsync(definition, new ShopData());
+        time.Advance(TimeSpan.FromMinutes(2));
         var timedOut = await engine.AwaitAsync(started.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (timedOut.Status != WorkflowExecutionStatus.Suspended ||
                (await engine.GetOpenWaitsAsync(new WaitQuery { InstanceId = started.InstanceId }))
                .All(wait => wait.Key != "manual"))
         {
+            Assert.True(DateTime.UtcNow < deadline, "The manual approval was never asked for");
             await Task.Delay(20);
             timedOut = await engine.AwaitAsync(started.InstanceId);
         }
@@ -1063,7 +1088,8 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task AnApprovalTakenInAPlainWaitsTimeoutPathIsKeptWhileTheRetryWaitsAgain()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time: time);
         var journal = services.GetRequiredService<Journal>();
         journal.ShippingFailures = 1;
         var engine = services.GetRequiredService<IWorkflowClient>();
@@ -1072,18 +1098,19 @@ public sealed class SagaHandlerTests
             .Saga(saga => saga
                 .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
                 .WaitFor<Approval>("pickup", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(200))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path.WaitFor<Approval>("manual").Step<ShipOrder>())))
             .OnError<ShippingFailed>(handler => handler.CompensateNone().ThenRetry(1))
             .Build();
         var started = await engine.RunAsync(definition, new ShopData());
-        while ((await engine.GetOpenWaitsAsync(new WaitQuery { InstanceId = started.InstanceId }))
-               .All(wait => wait.Key != "manual"))
-            await Task.Delay(20);
+        time.Advance(TimeSpan.FromMinutes(2));
+        await OpenWaitAsync(engine, started.InstanceId, "manual");
 
         // Shipping fails; the retry waits for the pickup again, which times out again, and the manual approval
         // already given is replayed rather than asked for.
         await engine.ResumeAsync(started.InstanceId, "manual", new Approval());
+        await OpenWaitAsync(engine, started.InstanceId, "pickup");
+        time.Advance(TimeSpan.FromMinutes(2));
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -1231,7 +1258,8 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task AParkedRetryResumesOnAnotherHostWithItsKeptRequest()
     {
-        var repository = new InMemoryWorkflowStateRepository();
+        var time = new FakeTimeProvider();
+        var repository = new InMemoryWorkflowStateRepository(time);
         var journal = new Journal { ShippingFailures = 1 };
         var definition = Workflow.Create<ShopData>("ParkedThenMoved")
             .Step<ValidateOrder>()
@@ -1245,17 +1273,17 @@ public sealed class SagaHandlerTests
                 .ThenRetry(new RetryPolicy(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2), 2, 1)))
             .Build();
         string instanceId;
-        using (var first = Services(repository, journal))
+        using (var first = Services(repository, journal, time))
         {
             instanceId = await first.GetRequiredService<IWorkflowClient>().StartAsync(definition, new ShopData());
             await ParkedAsync(repository, instanceId);
         }
 
         // Another host reads the parked retry, with its restored frames and the kept payment's wait.
-        using var second = Services(repository, journal);
+        using var second = Services(repository, journal, time);
         await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
         var engine = second.GetRequiredService<IWorkflowClient>();
-        await Task.Delay(TimeSpan.FromSeconds(2.5));
+        time.Advance(TimeSpan.FromSeconds(3));
         // The retry has not run yet: the first host left before it was due.
         Assert.Equal(1, journal.Entries.Count(entry => entry == nameof(ReserveStock)));
         Assert.Equal(WorkflowExecutionStatus.Suspended, (await engine.RecoverAsync(instanceId)).Status);
@@ -1276,6 +1304,18 @@ public sealed class SagaHandlerTests
         while ((await repository.GetWorkflowInstanceAsync(instanceId))?.ExecutionStateJson
                .Contains("\"RetryAfterUtc\":\"") != true)
             await Task.Delay(20, patience.Token);
+    }
+
+    // Waits until the instance has an open wait under the key.
+    private static async Task OpenWaitAsync(IWorkflowClient engine, string instanceId, string key)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while ((await engine.GetOpenWaitsAsync(new WaitQuery { InstanceId = instanceId }))
+               .All(wait => wait.Key != key))
+        {
+            Assert.True(DateTime.UtcNow < deadline, $"The wait '{key}' never opened");
+            await Task.Delay(20);
+        }
     }
 
     [Fact]
@@ -1390,10 +1430,13 @@ public sealed class SagaHandlerTests
             .OnError<ShippingFailed>(handler)
             .Build();
 
-    private static ServiceProvider Services(IWorkflowStateRepository? repository = null, Journal? journal = null)
+    private static ServiceProvider Services(IWorkflowStateRepository? repository = null, Journal? journal = null,
+        TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        if (time != null)
+            services.AddSingleton(time);
         services.AddIxIFlow();
         if (repository != null)
             services.AddSingleton(repository);

@@ -229,7 +229,8 @@ public sealed class StoreClockTests
     [InlineData(true)]
     public async Task AWaitTimesOutWhileASiblingBranchRuns(bool answersARequest)
     {
-        using var services = RealServices();
+        var clocks = new Clocks(0);
+        using var services = Services(clocks);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
         var definition = answersARequest
@@ -239,20 +240,21 @@ public sealed class StoreClockTests
                     .Do(branch => branch.Step<GatedActivity>())
                     .Do(branch => branch
                         .Request<AskActivity>("approval")
-                        .WaitFor<Approval>("approval", configure: ShortTimeout)))
+                        .WaitFor<Approval>("approval", configure: OneMinuteTimeout)))
                 .Build()
             : Workflow.Create<ClockData>("SiblingRunsWhileAWaitWaits")
                 .Step<NoopActivity>()
                 .Parallel(parallel => parallel
                     .Do(branch => branch.Step<GatedActivity>())
-                    .Do(branch => branch.WaitFor<Approval>("approval", configure: ShortTimeout)))
+                    .Do(branch => branch.WaitFor<Approval>("approval", configure: OneMinuteTimeout)))
                 .Build();
         var instanceId = Guid.NewGuid().ToString("N");
         var run = Engine(services).RunAsync(definition, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // No event comes and the sibling keeps running: the wait still times out on time.
-        var waitId = await OpenWaitIdAsync(store, instanceId);
+        var waitId = await ArmedWaitIdAsync(store, instanceId);
+        await clocks.AdvanceInStepsAsync(TimeSpan.FromSeconds(61));
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         StoredWait? wait;
         while ((wait = await store.GetWaitAsync(instanceId, waitId))!.IsOpen && DateTime.UtcNow < deadline)
@@ -268,12 +270,13 @@ public sealed class StoreClockTests
     [Fact]
     public async Task AChildWaitsForASlotWhileItsParentHoldsTheOnlyOne()
     {
-        using var services = RealServices(slots: 1);
+        var clocks = new Clocks(0);
+        using var services = Services(clocks, slots: 1);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
         var child = Workflow.Create<ClockData>("SlotlessChild")
             .Step<NoopActivity>()
-            .WaitFor<Approval>("approval", configure: ShortTimeout)
+            .WaitFor<Approval>("approval", configure: OneMinuteTimeout)
             .Build();
         var parent = Workflow.Create<ClockData>("SlotHoldingParent")
             .Step<NoopActivity>()
@@ -298,18 +301,21 @@ public sealed class StoreClockTests
         // Once the parent waits for it, the slot is free: the child runs, times out and wakes its parent.
         gate.Release.TrySetResult();
         var idle = await run.WaitAsync(TimeSpan.FromSeconds(10));
+        await ArmedWaitIdAsync(store, started.InstanceId);
+        await clocks.AdvanceInStepsAsync(TimeSpan.FromSeconds(61));
         Assert.Equal(WorkflowExecutionStatus.Success, (await Engine(services).FinishedAsync(idle)).Status);
     }
 
     [Fact]
     public async Task AChildsWaitTimesOutWhileItsParentRunsASiblingInAnotherSlot()
     {
-        using var services = RealServices(slots: 2);
+        var clocks = new Clocks(0);
+        using var services = Services(clocks, slots: 2);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
         var child = Workflow.Create<ClockData>("StoreClockChild")
             .Step<NoopActivity>()
-            .WaitFor<Approval>("approval", configure: ShortTimeout)
+            .WaitFor<Approval>("approval", configure: OneMinuteTimeout)
             .Build();
         var parent = Workflow.Create<ClockData>("StoreClockParent")
             .Step<NoopActivity>()
@@ -324,6 +330,16 @@ public sealed class StoreClockTests
 
         // The child runs in the other slot, and its own deadline ends its wait.
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        WorkflowInstance? started = null;
+        while ((started = (await store.GetWorkflowInstancesByNameAsync("StoreClockChild"))
+                   .SingleOrDefault(item => item.ParentInstanceId == instanceId)) == null)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The child was never started");
+            await Task.Delay(20);
+        }
+        await ArmedWaitIdAsync(store, started.InstanceId);
+        await clocks.AdvanceInStepsAsync(TimeSpan.FromSeconds(61));
+        deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         WorkflowInstance? childInstance = null;
         while (DateTime.UtcNow < deadline &&
                (childInstance = (await store.GetWorkflowInstancesByNameAsync("StoreClockChild"))
@@ -390,22 +406,24 @@ public sealed class StoreClockTests
         return services.BuildServiceProvider();
     }
 
-    private static void ShortTimeout<TPrevious>(ISuspendSetupBuilder<ClockData, Approval, TPrevious> wait)
+    private static void OneMinuteTimeout<TPrevious>(ISuspendSetupBuilder<ClockData, Approval, TPrevious> wait)
         where TPrevious : class => wait
-        .TimeoutAfter(TimeSpan.FromMilliseconds(300))
+        .TimeoutAfter(TimeSpan.FromMinutes(1))
         .OnTimeout(path => path.Step<MarkActivity>(step => step
             .Input(activity => activity.Value).From(_ => "timeout")
             .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome)));
 
-    private static async Task<string> OpenWaitIdAsync(IWorkflowStateRepository store, string instanceId)
+    // The open approval wait, once its deadline is set: a request's wait opens before its WaitFor arms it,
+    // and the clock must not move in between.
+    private static async Task<string> ArmedWaitIdAsync(IWorkflowStateRepository store, string instanceId)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (true)
         {
             if ((await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId, Key: "approval")))
-                .SingleOrDefault() is { } open)
+                .SingleOrDefault() is { DeadlineUtc: not null } open)
                 return open.WaitId;
-            Assert.True(DateTime.UtcNow < deadline, "The wait never opened");
+            Assert.True(DateTime.UtcNow < deadline, "The wait was never armed");
             await Task.Delay(10);
         }
     }
@@ -461,29 +479,47 @@ public sealed class StoreClockTests
 
     [Fact]
     [Trait("Spec", "D-03")]
-    public Task MemoryStoreFindsDeadlinesDueWithTheEventsReceivedBeforeThem() =>
-        VerifyDuePage(new InMemoryWorkflowStateRepository());
+    public Task MemoryStoreFindsDeadlinesDueWithTheEventsReceivedBeforeThem()
+    {
+        var time = new FakeTimeProvider(Start);
+        return VerifyDuePage(new InMemoryWorkflowStateRepository(time), TimeSpan.FromMilliseconds(500), _ =>
+        {
+            time.Advance(TimeSpan.FromMilliseconds(700));
+            return Task.CompletedTask;
+        });
+    }
 
+    // SQL Server's clock cannot be moved: the deadline leaves room for a slow server, and the test reads
+    // until the store finds it due.
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-03")]
     public Task SqlStoreFindsDeadlinesDueWithTheEventsReceivedBeforeThem() =>
-        VerifyDuePage(SqlStore.Value);
+        VerifyDuePage(SqlStore.Value, TimeSpan.FromSeconds(2), async instanceId =>
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (!(await SqlStore.Value.GetPendingEventsAsync(instanceId, 0, 10)).IsDue("short"))
+            {
+                Assert.True(DateTime.UtcNow < deadline, "The store never found the deadline due");
+                await Task.Delay(50);
+            }
+        });
 
-    private static async Task VerifyDuePage(IWorkflowStateRepository store)
+    private static async Task VerifyDuePage(IWorkflowStateRepository store, TimeSpan shortDeadline,
+        Func<string, Task> passShortDeadline)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
             await CommitAsync(store, instanceId, null,
-                new OpenedWait("short", WaitKind.Event, "approval", "Approval", TimeSpan.FromMilliseconds(500)),
+                new OpenedWait("short", WaitKind.Event, "approval", "Approval", shortDeadline),
                 new OpenedWait("long", WaitKind.Event, "other", "Approval", TimeSpan.FromHours(1)));
             var before = await store.GetPendingEventsAsync(instanceId, 0, 10);
             Assert.False(before.IsDue("short"));
             Assert.Equal(EventAppendStatus.Stored,
                 (await store.AppendEventAsync(Event(instanceId, "in-time", key: "approval"))).Status);
 
-            await Task.Delay(TimeSpan.FromMilliseconds(700));
+            await passShortDeadline(instanceId);
             var page = await store.GetPendingEventsAsync(instanceId, 0, 10);
 
             // The page says which deadlines had passed at its time, and holds every event received before them.
@@ -549,15 +585,23 @@ public sealed class StoreClockTests
 
     [Fact]
     [Trait("Spec", "D-03")]
-    public Task MemoryStoreArmsAReplyWaitOnce() => VerifyArming(new InMemoryWorkflowStateRepository());
+    public Task MemoryStoreArmsAReplyWaitOnce()
+    {
+        var time = new FakeTimeProvider(Start);
+        return VerifyArming(new InMemoryWorkflowStateRepository(time), () =>
+        {
+            time.Advance(TimeSpan.FromMilliseconds(50));
+            return Task.CompletedTask;
+        });
+    }
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-03")]
     public Task SqlStoreArmsAReplyWaitOnce() =>
-        VerifyArming(SqlStore.Value);
+        VerifyArming(SqlStore.Value, () => Task.Delay(TimeSpan.FromMilliseconds(50)));
 
-    private static async Task VerifyArming(IWorkflowStateRepository store)
+    private static async Task VerifyArming(IWorkflowStateRepository store, Func<Task> letTimePass)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         try
@@ -574,7 +618,7 @@ public sealed class StoreClockTests
             Assert.NotNull(deadline);
 
             // The same commit again, and a later one that arms it again, keep the first deadline.
-            await Task.Delay(TimeSpan.FromMilliseconds(50));
+            await letTimePass();
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(arming)).Status);
             instance.Revision = armed.Revision;
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
@@ -647,25 +691,12 @@ public sealed class StoreClockTests
         }
     }
 
-    private static ServiceProvider Services(Clocks clocks)
+    private static ServiceProvider Services(Clocks clocks, int? slots = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<TimeProvider>(clocks.Host);
         services.AddSingleton<IWorkflowStateRepository>(new InMemoryWorkflowStateRepository(clocks.Store));
-        services.AddIxIFlow();
-        services.AddSingleton<Gate>();
-        services.AddTransient<NoopActivity>();
-        services.AddTransient<MarkActivity>();
-        services.AddTransient<GatedActivity>();
-        return services.BuildServiceProvider();
-    }
-
-    // The system clock for host and store, as a deployment has; a test waits for real deadlines.
-    private static ServiceProvider RealServices(int? slots = null)
-    {
-        var services = new ServiceCollection();
-        services.AddLogging();
         if (slots is { } count)
             services.AddIxIFlow(options => options.Slots = count);
         else

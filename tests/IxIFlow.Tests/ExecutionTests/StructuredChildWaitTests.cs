@@ -4,6 +4,7 @@ using IxIFlow.Extensions;
 using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using System.Text.Json;
 using IxIFlow.Tests.Infrastructure;
 
@@ -669,12 +670,13 @@ public sealed class StructuredChildWaitTests
     [Trait("Spec", "D-06")]
     public async Task AChildsTimeoutRunsInTheChildAndItsCompletionWakesItsParent()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time: time);
         await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("TimedChild")
                 .Step<NoopActivity>()
                 .WaitFor<Approval>("approval", configure: wait => wait
-                    .TimeoutAfter(TimeSpan.FromMilliseconds(80))
+                    .TimeoutAfter(TimeSpan.FromMinutes(1))
                     .OnTimeout(path => path.Step<MarkChildTimeoutActivity>(step => step
                         .Output(activity => activity.TimedOut).To(ctx => ctx.WorkflowData.TimedOut))))
                 .Build());
@@ -686,6 +688,8 @@ public sealed class StructuredChildWaitTests
         var engine = services.GetRequiredService<IWorkflowClient>();
 
         var started = await engine.RunAsync(parent, new ParentData());
+        await ChildWaitingAsync(services, await ChildIdAsync(services, started.InstanceId), "approval");
+        time.Advance(TimeSpan.FromMinutes(2));
         var finished = await FinishedAsync(engine, started.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
@@ -1069,10 +1073,12 @@ public sealed class StructuredChildWaitTests
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository? repository = null,
-        ActiveChildProbe? activeChildProbe = null)
+        ActiveChildProbe? activeChildProbe = null, TimeProvider? time = null)
     {
         var registrations = new ServiceCollection();
         registrations.AddLogging();
+        if (time != null)
+            registrations.AddSingleton(time);
         registrations.AddTransient<NoopActivity>();
         registrations.AddTransient<ApproveActivity>();
         registrations.AddTransient<FinishActivity>();

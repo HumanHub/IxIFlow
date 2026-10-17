@@ -1,8 +1,10 @@
+using System.Collections.Concurrent;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using IxIFlow.Tests.Infrastructure;
@@ -1047,12 +1049,15 @@ public class StructuredSagaWaitTests
     [Fact]
     public async Task StepRetryHonorsItsConfiguredDelay()
     {
+        var time = new FakeTimeProvider();
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<TimeProvider>(time);
         services.AddSingleton<RetryIdProbe>();
         services.AddTransient<RetryIdActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
+        var instanceId = Guid.NewGuid().ToString("N");
         var definition = Workflow.Create<SagaData>("DelayedStepRetry")
             .Step<BeginActivity>()
             .Saga(saga => saga.Step<RetryIdActivity>(step => step
@@ -1061,25 +1066,30 @@ public class StructuredSagaWaitTests
                         TimeSpan.FromMilliseconds(180), 1, 1)))))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new SagaData());
+        var running = provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData(), new WorkflowOptions { InstanceId = instanceId });
+        await WaitForRetryCheckpointAsync(provider.GetRequiredService<IWorkflowStateRepository>(), instanceId);
+        time.Advance(TimeSpan.FromMilliseconds(180));
+        var result = await running.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        var starts = provider.GetRequiredService<RetryIdProbe>().StartedTicks;
+        var starts = provider.GetRequiredService<RetryIdProbe>().Starts;
         Assert.Equal(2, starts.Count);
-        Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(starts[0], starts[1]) >=
-            TimeSpan.FromMilliseconds(130));
+        Assert.Equal(TimeSpan.FromMilliseconds(180), starts[1] - starts[0]);
     }
 
     [Fact]
     public async Task SagaRetryHonorsItsConfiguredDelay()
     {
+        var time = new FakeTimeProvider();
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<TimeProvider>(time);
         services.AddSingleton<SagaRetryProbe>();
         services.AddTransient<FailOnceSagaActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
+        var instanceId = Guid.NewGuid().ToString("N");
         var definition = Workflow.Create<SagaData>("DelayedSagaRetry")
             .Step<BeginActivity>()
             .Saga(saga => saga.Step<FailOnceSagaActivity>())
@@ -1088,22 +1098,27 @@ public class StructuredSagaWaitTests
                     TimeSpan.FromMilliseconds(180), 1, 1)))
             .Build();
 
-        var result = await provider.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new SagaData());
+        var running = provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData(), new WorkflowOptions { InstanceId = instanceId });
+        await WaitForRetryCheckpointAsync(provider.GetRequiredService<IWorkflowStateRepository>(), instanceId);
+        time.Advance(TimeSpan.FromMilliseconds(180));
+        var result = await running.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        var starts = provider.GetRequiredService<SagaRetryProbe>().StartedTicks;
+        var starts = provider.GetRequiredService<SagaRetryProbe>().Starts;
         Assert.Equal(2, starts.Count);
-        Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(starts[0], starts[1]) >=
-            TimeSpan.FromMilliseconds(130));
+        Assert.Equal(TimeSpan.FromMilliseconds(180), starts[1] - starts[0]);
     }
 
     [Fact]
     public async Task InterruptedRetryKeepsItsDeadlineAcrossRecovery()
     {
-        var repository = new InMemoryWorkflowStateRepository();
+        var time = new TimerCountingClock();
+        var retryDelay = TimeSpan.FromMilliseconds(700);
+        var repository = new InMemoryWorkflowStateRepository(time);
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<TimeProvider>(time);
         services.AddSingleton<IWorkflowStateRepository>(repository);
         services.AddSingleton<RetryIdProbe>();
         services.AddTransient<RetryIdActivity>();
@@ -1115,8 +1130,7 @@ public class StructuredSagaWaitTests
             .Step<BeginActivity>()
             .Saga(saga => saga.Step<RetryIdActivity>(step => step
                 .OnError<InvalidOperationException>(handler => handler.ThenRetry(
-                    new RetryPolicy(TimeSpan.FromMilliseconds(700),
-                        TimeSpan.FromMilliseconds(700), 1, 1)))))
+                    new RetryPolicy(retryDelay, retryDelay, 1, 1)))))
             .Build();
         using var cancellation = new CancellationTokenSource();
         var running = engine.RunAsync(definition, new SagaData(),
@@ -1126,13 +1140,18 @@ public class StructuredSagaWaitTests
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running);
 
-        var recovered = await engine.RecoverAsync(instanceId);
+        // The clock moves only once the recovery waits for the retry's deadline, so a recovery that forgot
+        // the deadline would retry at once.
+        var timersBefore = time.TimersSetFor(retryDelay);
+        var recovering = engine.RecoverAsync(instanceId);
+        await time.TimerSetAsync(retryDelay, timersBefore + 1);
+        time.Advance(retryDelay);
+        var recovered = await recovering.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
-        var starts = provider.GetRequiredService<RetryIdProbe>().StartedTicks;
+        var starts = provider.GetRequiredService<RetryIdProbe>().Starts;
         Assert.Equal(2, starts.Count);
-        Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(starts[0], starts[1]) >=
-            TimeSpan.FromMilliseconds(600));
+        Assert.Equal(retryDelay, starts[1] - starts[0]);
     }
 
     [Fact]
@@ -1164,7 +1183,7 @@ public class StructuredSagaWaitTests
         var stopped = await running.WaitAsync(TimeSpan.FromSeconds(4));
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, stopped.Status);
-        Assert.Single(provider.GetRequiredService<RetryIdProbe>().StartedTicks);
+        Assert.Single(provider.GetRequiredService<RetryIdProbe>().Starts);
     }
 
     private static async Task WaitForRetryCheckpointAsync(IWorkflowStateRepository repository,
@@ -1184,6 +1203,31 @@ public class StructuredSagaWaitTests
             await Task.Delay(10);
         }
         throw new TimeoutException("The retry deadline was not saved");
+    }
+
+    /// <summary>A fake clock that counts the timers set for each delay, so a test can tell when a run waits.</summary>
+    private sealed class TimerCountingClock : FakeTimeProvider
+    {
+        private readonly ConcurrentDictionary<TimeSpan, int> _timers = new();
+
+        public int TimersSetFor(TimeSpan dueTime) => _timers.GetValueOrDefault(dueTime);
+
+        // Waits until the given number of timers were set for the delay.
+        public async Task TimerSetAsync(TimeSpan dueTime, int count)
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (TimersSetFor(dueTime) < count)
+            {
+                Assert.True(DateTime.UtcNow < deadline, $"No timer was set for {dueTime}");
+                await Task.Delay(10);
+            }
+        }
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            _timers.AddOrUpdate(dueTime, 1, (_, count) => count + 1);
+            return base.CreateTimer(callback, state, dueTime, period);
+        }
     }
 
     [Fact]
@@ -1761,21 +1805,22 @@ public class StructuredSagaWaitTests
     public sealed class SagaRetryProbe
     {
         public int Attempts { get; set; }
-        public List<long> StartedTicks { get; } = [];
+        public List<DateTimeOffset> Starts { get; } = [];
     }
 
     public sealed class RetryIdProbe
     {
         public List<string> InvocationIds { get; } = [];
-        public List<long> StartedTicks { get; } = [];
+        public List<DateTimeOffset> Starts { get; } = [];
     }
 
-    public sealed class RetryIdActivity(RetryIdProbe probe) : IAsyncActivity
+    // Records when each attempt starts on the engine's clock.
+    public sealed class RetryIdActivity(RetryIdProbe probe, TimeProvider time) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.InvocationIds.Add(context.InvocationId);
-            probe.StartedTicks.Add(System.Diagnostics.Stopwatch.GetTimestamp());
+            probe.Starts.Add(time.GetUtcNow());
             if (probe.InvocationIds.Count == 1)
                 throw new InvalidOperationException("retry once");
             return Task.CompletedTask;
@@ -1791,11 +1836,12 @@ public class StructuredSagaWaitTests
         }
     }
 
-    public sealed class FailOnceSagaActivity(SagaRetryProbe probe) : IAsyncActivity
+    // Records when each attempt starts on the engine's clock.
+    public sealed class FailOnceSagaActivity(SagaRetryProbe probe, TimeProvider time) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
-            probe.StartedTicks.Add(System.Diagnostics.Stopwatch.GetTimestamp());
+            probe.Starts.Add(time.GetUtcNow());
             if (++probe.Attempts == 1)
                 throw new InvalidOperationException("retry once");
             return Task.CompletedTask;
