@@ -726,6 +726,10 @@ public class WorkflowStep
     /// </summary>
     public Type? WorkflowType { get; set; }
 
+    /// <summary>For a workflow invocation step, the child's data type its mappings name, checked when built (F-22).</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Type? InvokedDataType { get; set; }
+
     /// <summary>
     ///     Workflow name (for name-based workflow invocation)
     /// </summary>
@@ -941,6 +945,7 @@ public class WorkflowStep
             StepType = StepType,
             ActivityType = ActivityType,
             WorkflowType = WorkflowType,
+            InvokedDataType = InvokedDataType,
             WorkflowName = WorkflowName,
             WorkflowVersion = WorkflowVersion,
             CancelWithParent = CancelWithParent,

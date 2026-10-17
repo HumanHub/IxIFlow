@@ -118,7 +118,8 @@ internal static class ParallelRules
             ? compensations.SelectMany(compensation => compensation.OutputMappings)
             : []);
 
-    private static IEnumerable<WorkflowStep> Flatten(IReadOnlyList<WorkflowStep> steps)
+    /// <summary>Every step, and every step nested inside one, in order.</summary>
+    public static IEnumerable<WorkflowStep> Flatten(IReadOnlyList<WorkflowStep> steps)
     {
         foreach (var step in steps)
         {

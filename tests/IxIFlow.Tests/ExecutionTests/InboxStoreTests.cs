@@ -477,6 +477,43 @@ public sealed class InboxStoreTests
     public Task SqlStoreStartsAndCompletesChildrenInTheirCommits() =>
         VerifyChildren(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
 
+    // SQL Server stores a child's start as the parent's commit carries it, without reading and writing it again; the
+    // child's revision and runnable time are in their columns.
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "D-06")]
+    public async Task SqlStoreKeepsAChildStartAsItsPayloadCarriesIt()
+    {
+        var store = new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString);
+        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
+        var childId = Guid.NewGuid().ToString("N");
+        var wait = $"{parentId}-child";
+        try
+        {
+            var parent = (await store.GetWorkflowInstanceAsync(parentId))!;
+            var payload = System.Text.Json.JsonSerializer.Serialize(Child(childId, parentId, wait));
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+                parent, 0, parent.Revision,
+                openedWaits: [new OpenedWait(wait, WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
+                childStarts: [new ChildStart(childId, payload, wait)]))).Status);
+
+            await using var connection = new Microsoft.Data.SqlClient.SqlConnection(SqlServerTestServer.ConnectionString);
+            await connection.OpenAsync();
+            await using var read = new Microsoft.Data.SqlClient.SqlCommand(
+                "SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId", connection);
+            read.Parameters.AddWithValue("@InstanceId", childId);
+            Assert.Equal(payload, (string)(await read.ExecuteScalarAsync())!);
+            var child = (await store.GetWorkflowInstanceAsync(childId))!;
+            Assert.Equal(1, child.Revision);
+            Assert.NotNull(child.RunnableAtUtc);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(childId);
+            await store.DeleteWorkflowInstanceAsync(parentId);
+        }
+    }
+
     // A parent's commit starts a child as its own instance with the parent's wait for it; the child's
     // terminal commit appends its completion to that wait in the parent's inbox. Neither needs a relay.
     private static async Task VerifyChildren(IWorkflowStateRepository store)
