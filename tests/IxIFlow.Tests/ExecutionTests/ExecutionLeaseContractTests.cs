@@ -680,7 +680,7 @@ public sealed class ExecutionLeaseContractTests
     [Fact]
     public async Task LongActivityRenewsItsLease()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         var repository = new InMemoryWorkflowStateRepository(time);
         var registry = new WorkflowVersionRegistry();
         var probe = new ActivityProbe();
@@ -715,7 +715,7 @@ public sealed class ExecutionLeaseContractTests
     [Fact]
     public async Task OneCancellationReadErrorDoesNotForfeitAnActiveLease()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository(time))
         {
             PauseFirstRead = false
@@ -773,7 +773,7 @@ public sealed class ExecutionLeaseContractTests
     [Fact]
     public async Task OneRenewalErrorDoesNotForfeitAnActiveLease()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository(time))
         {
             PauseFirstRead = false
@@ -797,7 +797,7 @@ public sealed class ExecutionLeaseContractTests
     [Fact]
     public async Task LostLeaseWaitsForAnInFlightActivityToStop()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository(time))
         {
             PauseFirstRead = false
@@ -1093,27 +1093,42 @@ public sealed class ExecutionLeaseContractTests
         return Task.CompletedTask;
     }
 
-    // One renewal interval of the short lease per step, with real time between steps for the lease's
-    // renewal and the cancellation watch to run.
+    // One renewal interval of the short lease per step. The lease's renewal and the host's cancellation watch
+    // each keep a timer set at most one step ahead, and set it again once their store call is done; the clock
+    // moves only when both are set, so each step's renewal and read are done before the next.
     private static readonly TimeSpan ShortLeaseStep = TimeSpan.FromMilliseconds(50);
 
-    private static async Task AdvanceInStepsAsync(FakeTimeProvider time, TimeSpan by)
+    private static Task ShortLeaseTimersSetAsync(TimerRecordingClock time, CancellationToken cancellationToken = default) =>
+        time.WaitUntilAsync(timers => timers.Count(timer => timer.Pending && timer.DueTime <= ShortLeaseStep) >= 2,
+            "the short lease's renewal and cancellation watch timers", cancellationToken: cancellationToken);
+
+    private static async Task AdvanceInStepsAsync(TimerRecordingClock time, TimeSpan by)
     {
         for (var moved = TimeSpan.Zero; moved < by; moved += ShortLeaseStep)
         {
+            await ShortLeaseTimersSetAsync(time);
             time.Advance(ShortLeaseStep);
-            await Task.Delay(5);
         }
+        await ShortLeaseTimersSetAsync(time);
     }
 
     // Moves the clock in the same steps until the run has done what the test waits for, within five short leases.
-    private static async Task AdvanceUntilAsync(FakeTimeProvider time, Task happened)
+    private static async Task AdvanceUntilAsync(TimerRecordingClock time, Task happened)
     {
-        for (var moved = TimeSpan.Zero; !happened.IsCompleted; moved += ShortLeaseStep)
+        for (var moved = TimeSpan.Zero; ; moved += ShortLeaseStep)
         {
+            using var stop = new CancellationTokenSource();
+            var timersSet = ShortLeaseTimersSetAsync(time, stop.Token);
+            await Task.WhenAny(happened, timersSet);
+            if (happened.IsCompleted)
+            {
+                stop.Cancel();
+                await timersSet.ContinueWith(_ => { }, TaskScheduler.Default);
+                return;
+            }
+            await timersSet;
             Assert.True(moved < TimeSpan.FromSeconds(1), "It did not happen within five leases");
             time.Advance(ShortLeaseStep);
-            await Task.Delay(5);
         }
     }
 
