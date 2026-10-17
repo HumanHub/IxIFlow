@@ -14,6 +14,7 @@ internal sealed class ActivityAttempts(
 {
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
     private readonly ILogger _logger = LogScope.Logger(services);
+    private readonly string _hostName = (services.GetService(typeof(HostSettings)) as HostSettings ?? HostSettings.Default).Name;
 
     private DateTime Now => time.GetUtcNow().UtcDateTime;
 
@@ -46,6 +47,7 @@ internal sealed class ActivityAttempts(
         var attempt = new ActivityAttemptState
         {
             StartedAtUtc = Now,
+            Host = _hostName,
             Kind = pending?.Resolution is { } resolution
                 ? $"Operator{resolution.Kind}"
                 : isRecovery ? "Recover" : "Execute"
@@ -128,6 +130,9 @@ internal sealed class ActivityAttempts(
 
         pending!.ResolutionReason = null;
         pending.Attempts.Add(attempt);
+        // The activity sees the attempts before this one (D-37).
+        prepared.SetAttempt(new ActivityAttempt(pending.Attempts.Count,
+            pending.Attempts.Take(pending.Attempts.Count - 1).Select(earlier => earlier.Seen(services)).ToList()));
         var startTrace = new ExecutionTraceEntry
         {
             Timestamp = Now,
@@ -408,6 +413,9 @@ internal sealed class ActivityAttempts(
 
             if (outcome.Kind == ActivityRunKind.Threw)
             {
+                // The attempt records how it ended, and the note it left, for the attempts after it (D-37).
+                if (activity.Continuation.PendingActivity is { Attempts.Count: > 0 } ending)
+                    RecordFailure(ending.Attempts[^1], outcome.Error, activity.Prepared?.Context.Attempt.Note);
                 // Kept until the failure is handled, for a retry of the step (D-14).
                 if (activity.Continuation.PendingActivity is { } failed)
                     activity.Continuation.RetryInputs = new KeptActivityInputs
@@ -501,6 +509,21 @@ internal sealed class ActivityAttempts(
         pending.Attempts[^1].EndedAtUtc = Now;
         pending.Attempts[^1].Observation = "Unresolved";
         activity.Continuation.Status = ContinuationStatus.WaitingResolution;
+    }
+
+    private static void RecordFailure(ActivityAttemptState attempt, Exception? error, object? note)
+    {
+        attempt.ErrorType = error?.GetType().FullName;
+        attempt.ErrorMessage = error?.Message;
+        try
+        {
+            attempt.Note = SerializedValue.From(note);
+        }
+        catch (Exception problem) when (problem is not WorkflowEngineException)
+        {
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"The attempt's note, a {note!.GetType().Name}, cannot be saved: {problem.Message}", problem);
+        }
     }
 
     private void MarkActivityEnd(RunningActivity running, WorkflowInstance instance,

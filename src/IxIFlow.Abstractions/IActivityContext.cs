@@ -28,6 +28,12 @@ public interface IActivityContext
     string AttemptId { get; }
 
     /// <summary>
+    /// This attempt and the earlier attempts of the same invocation: their hosts, errors and notes (D-37). An attempt
+    /// may leave a <see cref="ActivityAttempt.Note"/> for the next one.
+    /// </summary>
+    ActivityAttempt Attempt { get; }
+
+    /// <summary>
     /// State supplied to ExecuteAsync by the activity's recovery contract, when present.
     /// </summary>
     object? RecoveryState { get; }
@@ -85,7 +91,7 @@ public interface IActivityContext
     object? PreviousStepData { get; }
 
     /// <summary>
-    ///     Step-level metadata (e.g., retry attempts, engine context)
+    ///     Step-level metadata, such as the saga's retry count. The step's own attempts are in <see cref="Attempt"/>.
     /// </summary>
     IDictionary<string, object> Metadata { get; }
 

@@ -227,19 +227,8 @@ internal static class SagaScopeTransitions
         var owner = ForwardOwner(scopes, continuation, activity);
         if (owner == null)
             return null;
-        var state = owner.SagaState!;
-        var position = continuation.Stack[^1];
-        position.StepRetryCounts.TryGetValue(position.NextStepIndex, out var stepAttempt);
-        var metadata = new Dictionary<string, object>
-        {
-            ["Saga:CurrentAttempt"] = state.RetryCount,
-            ["CurrentAttempt"] = stepAttempt
-        };
-        if (activity.StepMetadata.TryGetValue("StepErrorHandlers", out var value) &&
-            value is List<StepErrorHandlerInfo> handlers)
-            metadata["MaxAttempts"] = handlers.FirstOrDefault(handler =>
-                handler.HandlerAction == StepErrorAction.Retry)?.RetryPolicy?.MaximumAttempts ?? 0;
-        return metadata;
+        // The step's own attempts are in IActivityContext.Attempt (D-37); a saga retry is a new invocation.
+        return new Dictionary<string, object> { ["Saga:CurrentAttempt"] = owner.SagaState!.RetryCount };
     }
 
     public static bool HandleStepFailure(WorkflowScopeCatalog scopes,
