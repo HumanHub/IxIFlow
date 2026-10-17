@@ -21,6 +21,18 @@ public sealed class StoreBuilderTests
         Assert.IsType<InMemoryWorkflowStateRepository>(provider.GetRequiredService<IWorkflowStateRepository>());
     }
 
+    // Two store choices would silently end on the last; the second is refused.
+    [Fact]
+    public void ASecondStoreChoiceIsRefused()
+    {
+        var builder = new ServiceCollection().AddLogging()
+            .AddIxIFlow(options => options.UseCustomStateRepository = typeof(InMemoryWorkflowStateRepository));
+
+        var error = Assert.Throws<InvalidOperationException>(() => builder.UseSqlServer("Server=unused"));
+
+        Assert.Contains("choose one store", error.Message);
+    }
+
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public async Task UseSqlServerKeepsInstancesInTheDatabase()

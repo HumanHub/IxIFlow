@@ -50,6 +50,12 @@ public class WorkflowContext<TWorkflowData> : IItemContext
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
 
+    /// <summary>
+    /// The time on the engine's clock, the way for an expression to read time (D-42): <c>DateTime.Now</c> and the like
+    /// fail the build. An expression may be evaluated again after a recovery, and then reads the time of that run.
+    /// </summary>
+    public DateTimeOffset UtcNow => Runtime.RunClock.Current.GetUtcNow();
+
     /// <summary>The items of the <c>ForEach</c> bodies this context is made in (D-34).</summary>
     internal ItemValues Items { get; set; } = ItemValues.None;
 

@@ -160,11 +160,7 @@ internal sealed class InstanceHost(
         var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
         if (cancellationReason != null && !checkpoint.CancellationRequested &&
             checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
-        {
-            instance.CancellationReason = cancellationReason;
-            checkpoint.CancellationRequested = true;
-            ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
-        }
+            OperatorTrace.ApplyCancellation(instance, checkpoint, cancellationReason, Now);
         await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
         return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
             true, owner, cancellationToken);
@@ -621,14 +617,7 @@ internal sealed class InstanceHost(
             continuation.Status = ContinuationStatus.Active;
         instance.Status = WorkflowStatus.Running;
         if (newCancellation)
-        {
-            OperatorTrace.Cancellation(instance, cancellationReason!, Now);
-            instance.CancellationReason = cancellationReason;
-            checkpoint.CancellationRequested = true;
-            checkpoint.UnhandledError = null;
-            checkpoint.RuntimeUnhandledError = null;
-            ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
-        }
+            OperatorTrace.ApplyCancellation(instance, checkpoint, cancellationReason!, Now);
         if (stopCleared)
         {
             // Leaving a stop is saved before any workflow code runs, so a crash after it is counted

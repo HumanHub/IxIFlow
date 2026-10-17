@@ -66,6 +66,11 @@ internal sealed class ActivityAttempts(
                 (pending?.Inputs ?? retryInputs)?.CodeInputs,
                 compensationInputs, SagaScopeTransitions.ActivityMetadata(scopes, continuation, step),
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+            // The activity sees the attempts before this one from the start, its recovery state's capture
+            // included (D-37).
+            var earlier = pending?.Attempts ?? retried?.Attempts ?? [];
+            prepared.SetAttempt(new ActivityAttempt(earlier.Count + 1,
+                earlier.Select(item => item.Seen(services)).ToList()));
             if (pending == null)
             {
                 retryInputs?.Restore(prepared.Activity, services);
@@ -130,9 +135,6 @@ internal sealed class ActivityAttempts(
 
         pending!.ResolutionReason = null;
         pending.Attempts.Add(attempt);
-        // The activity sees the attempts before this one (D-37).
-        prepared.SetAttempt(new ActivityAttempt(pending.Attempts.Count,
-            pending.Attempts.Take(pending.Attempts.Count - 1).Select(earlier => earlier.Seen(services)).ToList()));
         var startTrace = new ExecutionTraceEntry
         {
             Timestamp = Now,
@@ -143,7 +145,8 @@ internal sealed class ActivityAttempts(
             {
                 ["InvocationId"] = invocationId,
                 ["AttemptId"] = attempt.Id,
-                ["Kind"] = attempt.Kind
+                ["Kind"] = attempt.Kind,
+                ["Host"] = _hostName
             }
         };
         if (pending.Resolution != null)
@@ -365,7 +368,7 @@ internal sealed class ActivityAttempts(
     private void Attempt(WorkflowInstance instance, ContinuationState continuation, WorkflowStep step,
         ActivityInvocationState pending, string kind)
     {
-        var attempt = new ActivityAttemptState { StartedAtUtc = Now, Kind = kind };
+        var attempt = new ActivityAttemptState { StartedAtUtc = Now, Kind = kind, Host = _hostName };
         pending.Attempts.Add(attempt);
         if (!instance.TracingEnabled)
             return;
@@ -520,9 +523,23 @@ internal sealed class ActivityAttempts(
         activity.Continuation.Status = ContinuationStatus.WaitingResolution;
     }
 
+    // What a later attempt sees of this one is in the trace too (D-37).
+    private static Dictionary<string, object> AttemptFacts(Dictionary<string, object> metadata,
+        ActivityAttemptState attempt)
+    {
+        if (attempt.Host != null)
+            metadata["Host"] = attempt.Host;
+        if (attempt.ErrorType != null)
+            metadata["ErrorType"] = attempt.ErrorType;
+        if (attempt.Note != null)
+            metadata["Note"] = attempt.Note.Json;
+        return metadata;
+    }
+
     private static void RecordFailure(ActivityAttemptState attempt, Exception? error, object? note)
     {
-        attempt.ErrorType = error?.GetType().FullName;
+        // The type a handler matches, not an engine wrapper around it.
+        attempt.ErrorType = error == null ? null : SerializedException.CatchType(error).FullName;
         attempt.ErrorMessage = error?.Message;
         try
         {
@@ -556,12 +573,12 @@ internal sealed class ActivityAttempts(
             Duration = attempt.EndedAtUtc - attempt.StartedAtUtc,
             ErrorMessage = error?.Message,
             StackTrace = error?.StackTrace,
-            Metadata = new Dictionary<string, object>
+            Metadata = AttemptFacts(new Dictionary<string, object>
             {
                 ["InvocationId"] = pending.Id,
                 ["AttemptId"] = attempt.Id,
                 ["Observation"] = observation
-            }
+            }, attempt)
             });
     }
 }

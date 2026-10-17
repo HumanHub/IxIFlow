@@ -479,7 +479,22 @@ internal sealed class ActivityAttemptState
 
     /// <summary>The attempt as a later attempt of the same invocation sees it.</summary>
     public PreviousActivityAttempt Seen(IServiceProvider services) =>
-        new(Id, Host, StartedAtUtc, EndedAtUtc, ErrorType, ErrorMessage, Note?.Read(services));
+        new(Id, Host, StartedAtUtc, EndedAtUtc, ErrorType, ErrorMessage, ReadNote(services));
+
+    // A note this host cannot read is an artifact problem, like a missing type: the run stops with its checkpoint
+    // kept, and a host that can read it, or one running fixed code, continues.
+    private object? ReadNote(IServiceProvider services)
+    {
+        try
+        {
+            return Note?.Read(services);
+        }
+        catch (Exception problem) when (problem is not WorkflowEngineException)
+        {
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"The note attempt '{Id}' left cannot be read: {problem.Message}", problem);
+        }
+    }
 }
 
 internal sealed class ActivityInputSnapshot

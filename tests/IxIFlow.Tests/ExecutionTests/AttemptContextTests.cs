@@ -80,6 +80,24 @@ public sealed class AttemptContextTests
         Assert.Null(lost.ErrorType);
     }
 
+    // The recovery state is captured knowing which attempt this is, so it can record what the attempt will try.
+    [Fact]
+    public async Task TheRecoveryStateIsCapturedKnowingTheAttempt()
+    {
+        var probe = new Probe();
+        using var services = Services(new InMemoryWorkflowStateRepository(), probe, "node-1");
+        var definition = Workflow.Create<Data>("CaptureSeesAttempt")
+            .Step<Noop>()
+            .Saga(saga => saga.Step<CapturesItsAttempt>(step => step
+                .OnError<InvalidOperationException>(handler => handler.ThenRetry(1))))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal([1, 2], probe.Seen.Select(attempt => attempt.Number));
+    }
+
     // A note that cannot be saved is the definition's mistake, reported as such.
     [Fact]
     public async Task ANoteThatCannotBeSavedFailsTheRun()
@@ -105,6 +123,7 @@ public sealed class AttemptContextTests
         services.AddSingleton(probe);
         services.AddTransient<TriesAnotherEndpoint>();
         services.AddTransient<RecoversByRunningAgain>();
+        services.AddTransient<CapturesItsAttempt>();
         services.AddIxIFlow(options => options.HostName = hostName);
         return services.BuildServiceProvider();
     }
@@ -171,6 +190,25 @@ public sealed class AttemptContextTests
         public Task<ActivityRecoveryResult<bool>> RecoverAsync(bool state, IActivityContext context,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<ActivityRecoveryResult<bool>>(new ActivityRecoveryResult<bool>.Execute());
+    }
+
+    /// <summary>Records the attempt its recovery state was captured in; fails the first time.</summary>
+    public sealed class CapturesItsAttempt(Probe probe) : IRecoverableActivity<int>
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            context.Attempt.Number == 1
+                ? throw new InvalidOperationException("fails once")
+                : Task.CompletedTask;
+
+        public int CaptureRecoveryState(IActivityContext context)
+        {
+            probe.Saw(context.Attempt);
+            return context.Attempt.Number;
+        }
+
+        public Task<ActivityRecoveryResult<int>> RecoverAsync(int state, IActivityContext context,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<ActivityRecoveryResult<int>>(new ActivityRecoveryResult<int>.Execute());
     }
 
     public sealed class LeavesAnUnsavableNote : IAsyncActivity

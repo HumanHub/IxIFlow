@@ -16,6 +16,7 @@ public static class IxIFlowSqlServerExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        builder.ChooseStore("SQL Server");
         builder.Services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(
             new SqlWorkflowStateRepository(connectionString)));
         return builder;
