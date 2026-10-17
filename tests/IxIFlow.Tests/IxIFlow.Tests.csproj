@@ -20,7 +20,6 @@
     <ProjectReference Include="..\..\src\IxIFlow\IxIFlow.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.Authoring\IxIFlow.Authoring.csproj" />
     <ProjectReference Include="..\IxIFlow.TestSupport\IxIFlow.TestSupport.csproj" />
-    <ProjectReference Include="..\..\src\IxIFlow.Distributed\IxIFlow.Distributed.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.SqlServer\IxIFlow.SqlServer.csproj" />
     <ProjectReference Include="..\..\samples\IxIFlow.DemoActivities\IxIFlow.DemoActivities.csproj" />
   </ItemGroup>

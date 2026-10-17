@@ -47,7 +47,7 @@ public class SqlWorkflowStateRepositoryTests
     [Trait("Spec", "A-08")]
     public async Task ACommitIsStoredAsItCameAndReadsTakeTheRevisionAndRunnableTimeFromTheirColumns()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString;
         var instanceId = Guid.NewGuid().ToString("N");
         var repository = new SqlWorkflowStateRepository(connectionString);
         try
