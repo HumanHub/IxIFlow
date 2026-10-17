@@ -21,7 +21,7 @@ public sealed class InboxStoreTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-02")]
     public Task SqlStoreAppendsEvents() =>
-        VerifyAppend(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyAppend(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     private static async Task VerifyAppend(IWorkflowStateRepository store)
     {
@@ -77,7 +77,7 @@ public sealed class InboxStoreTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-04")]
     public Task SqlStoreSettlesEventsInTheCommit() =>
-        VerifySettlement(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifySettlement(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     private static async Task VerifySettlement(IWorkflowStateRepository store)
     {
@@ -143,7 +143,7 @@ public sealed class InboxStoreTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-04")]
     public Task SqlStoreDoesNotParkPastAnUnreadEvent() =>
-        VerifyNoParkPastUnread(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyNoParkPastUnread(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     private static async Task VerifyNoParkPastUnread(IWorkflowStateRepository store)
     {
@@ -194,7 +194,7 @@ public sealed class InboxStoreTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-02")]
     public Task SqlStoreCloses() =>
-        VerifyClosed(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyClosed(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     private static async Task VerifyClosed(IWorkflowStateRepository store)
     {
@@ -237,7 +237,7 @@ public sealed class InboxStoreTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-03")]
     public Task SqlStoreRefusesEventsNoWaitCanTake() =>
-        VerifyRefusedOnArrival(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyRefusedOnArrival(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     private static async Task VerifyRefusedOnArrival(IWorkflowStateRepository store)
     {
@@ -302,7 +302,7 @@ public sealed class InboxStoreTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-03")]
     public Task SqlStoreOpensWaitsAtTheInboxSequence() =>
-        VerifyWaitSequence(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyWaitSequence(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     private static async Task VerifyWaitSequence(IWorkflowStateRepository store)
     {
@@ -388,7 +388,7 @@ public sealed class InboxStoreTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-04")]
     public Task SqlStoreSettlesALargeBacklogInOneCommit() =>
-        VerifyLargeCommit(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyLargeCommit(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     // More events and waits than one SQL statement can carry parameters for.
     private static async Task VerifyLargeCommit(IWorkflowStateRepository store)
@@ -475,7 +475,7 @@ public sealed class InboxStoreTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-06")]
     public Task SqlStoreStartsAndCompletesChildrenInTheirCommits() =>
-        VerifyChildren(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyChildren(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     // A parent's commit starts a child as its own instance with the parent's wait for it; the child's
     // terminal commit appends its completion to that wait in the parent's inbox. Neither needs a relay.
