@@ -3,10 +3,10 @@ using IxIFlow.Core.Runtime;
 namespace IxIFlow.Core;
 
 /// <summary>
-/// The client every application uses (D-02): calls become work for the local host, which runs
+/// The client every application uses (D-02): calls become work for the <see cref="WorkflowHost"/>, which runs
 /// them in slots. Reads and cancellation requests take no slot.
 /// </summary>
-internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider time) : IWorkflowClient
+internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time) : IWorkflowClient
 {
     // AwaitAsync also notices work finished on another host; until the store can notify (D-05,
     // D-12), it checks the saved state at this interval.
@@ -128,7 +128,7 @@ internal sealed class HostedWorkflowClient(LocalWorkflowHost host, TimeProvider 
             : null;
 
     private async Task<WorkflowExecutionResult> DecideAsync(string instanceId, string eventId,
-        Func<DirectInstanceClient, Task<EventAppendResult>> deliver, CancellationToken cancellationToken)
+        Func<WorkflowHost.SlotClient, Task<EventAppendResult>> deliver, CancellationToken cancellationToken)
     {
         var appended = await host.ReadAsync(deliver);
         if (await host.ReadAsync(client => client.AnswerAsync(instanceId, eventId, appended)) is { } answered)
