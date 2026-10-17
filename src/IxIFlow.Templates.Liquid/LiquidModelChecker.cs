@@ -20,7 +20,13 @@ internal sealed class LiquidModelChecker
     private readonly List<TemplateDiagnostic> _diagnostics = [];
     private readonly List<Dictionary<string, Shape>> _scopes = [];
 
-    private LiquidModelChecker(TemplateOptions options) => _options = options;
+    private readonly Type _model;
+
+    private LiquidModelChecker(TemplateOptions options, Type model)
+    {
+        _options = options;
+        _model = model;
+    }
 
     public static IReadOnlyList<TemplateDiagnostic> Check(IStatementList template, Type model, TemplateOptions options)
     {
@@ -30,8 +36,9 @@ internal sealed class LiquidModelChecker
                 $"A Liquid template reads the members of its model, and '{TemplateVersion.ModelTypeName(model)}' " +
                 "has none; wrap it in a model type")];
         }
-        var checker = new LiquidModelChecker(options);
+        var checker = new LiquidModelChecker(options, model);
         checker._scopes.Add(LiquidModel.Members(model)
+            .Where(member => member.Readable)
             .GroupBy(member => member.Name, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => Shape.Of(group.First().Type), StringComparer.Ordinal));
         checker.Statements(template.Statements);
@@ -137,11 +144,10 @@ internal sealed class LiquidModelChecker
                 Expression(filter.Input);
                 if (!_options.Filters.TryGetValue(filter.Name, out _))
                     _diagnostics.Add(new TemplateDiagnostic($"There is no filter named '{filter.Name}'"));
-                else if (LiquidTemplateEngine.ClockFilters.Contains(filter.Name) &&
-                         filter.Input is LiteralExpression { Value: StringValue clock } &&
-                         LiquidTemplateEngine.IsClock(clock.ToStringValue()))
-                    _diagnostics.Add(new TemplateDiagnostic(
-                        $"A template has no clock: '{clock.ToStringValue()}' is not available; pass the time in the model"));
+                else if (LiquidTemplateEngine.DateFilters.Contains(filter.Name) &&
+                         filter.Input is LiteralExpression { Value: StringValue text } &&
+                         !LiquidTemplateEngine.TryParseDate(text.ToStringValue(), out _))
+                    _diagnostics.Add(new TemplateDiagnostic(LiquidTemplateEngine.NotADate(text.ToStringValue())));
                 foreach (var argument in filter.Parameters ?? [])
                     Expression(argument.Expression);
                 return Shape.Unknown;
@@ -171,8 +177,10 @@ internal sealed class LiquidModelChecker
         var path = root.Identifier;
         if (shape == null)
         {
-            _diagnostics.Add(new TemplateDiagnostic(
-                $"'{root.Identifier}' is not a member of the model or a variable of the template"));
+            _diagnostics.Add(LiquidModel.Member(_model, root.Identifier) is { Readable: false } member
+                ? Unreadable("the model", member)
+                : new TemplateDiagnostic(
+                    $"'{root.Identifier}' is not a member of the model or a variable of the template"));
             shape = Shape.Unknown;
         }
         for (var index = 1; index < segments.Count; index++)
@@ -245,12 +253,19 @@ internal sealed class LiquidModelChecker
         }
         else if (LiquidModel.IsObject(type) && LiquidModel.Member(type, name) is { } member)
         {
-            return Shape.Of(member);
+            if (member.Readable)
+                return Shape.Of(member.Type);
+            _diagnostics.Add(Unreadable(path, member));
+            return Shape.Unknown;
         }
         _diagnostics.Add(new TemplateDiagnostic(
             $"'{path}' has no member '{name}': it is {TypeName(type)}"));
         return Shape.Unknown;
     }
+
+    private static TemplateDiagnostic Unreadable(string owner, ModelMember member) =>
+        new($"'{member.Name}' of {owner} cannot be read: it is typed " +
+            $"'{TemplateVersion.ModelTypeName(member.Type)}', which could hold anything; give it a model type");
 
     private static Shape Elements(Shape source) =>
         source.Type is { } type && LiquidModel.Element(type) is { } element ? Shape.Of(element) : Shape.Unknown;

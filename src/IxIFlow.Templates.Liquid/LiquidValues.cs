@@ -26,9 +26,14 @@ internal sealed class LiquidValues(IReadOnlyList<Type> reachable)
             : NilValue.Instance
     };
 
-    /// <summary>An object of the model, read only through its members.</summary>
+    /// <summary>
+    /// An object of the model, read only through its members. Filters that unwrap a value, such as format_string, get
+    /// its empty text rather than the object.
+    /// </summary>
     private sealed class ModelValue(object value) : ObjectValueBase(value)
     {
         public override string ToStringValue() => "";
+
+        public override object ToObjectValue() => "";
     }
 }

@@ -86,12 +86,18 @@ public sealed class TemplateEngineTests
         var engine = new LiquidTemplateEngine();
         var order = new DerivedOrder { Number = "A-1", Secret = "s3cret", Extra = new Credentials { Password = "pw" } };
 
-        // A member typed object could hold anything, so publishing reads nothing through it, and a render finds
-        // nothing in an object of a type the model does not reach, even from a template that skipped publishing.
-        var throughObject = Source("[{{ Extra.Password }}][{{ Extra }}]");
+        // A member typed object could hold anything, so it is not readable at all: publishing refuses it, and a
+        // template that skipped publishing finds nothing in it, whatever it holds.
+        var throughObject = Source(
+            "[{{ Extra.Password }}][{{ Extra }}][{% for pair in Extra %}{{ pair[0] }}={{ pair[1] }}{% endfor %}]");
         Assert.Contains(await engine.ValidateAsync(throughObject, typeof(Order)),
-            diagnostic => diagnostic.Message.Contains("an object of unknown type"));
-        Assert.Equal("[][]", await engine.RenderAsync<Order>(throughObject, order, CultureInfo.InvariantCulture));
+            diagnostic => diagnostic.Message.Contains("'Extra' of the model cannot be read"));
+        Assert.Equal("[][][]", await engine.RenderAsync<Order>(throughObject, order, CultureInfo.InvariantCulture));
+        order.Extra = new Dictionary<string, string> { ["Password"] = "pw" };
+        Assert.Equal("[][][]", await engine.RenderAsync<Order>(throughObject, order, CultureInfo.InvariantCulture));
+        // Filters that unwrap a value get an object's empty text, not the object.
+        Assert.Equal("[]", await engine.RenderAsync<Order>(Source("[{{ '{0}' | format_string: Customer }}]"), order,
+            CultureInfo.InvariantCulture));
         // A model of a derived type shows only the members of the type the template was written against, and an
         // object writes no text of its own, so its ToString shows nothing either.
         Assert.Equal("[A-1][][]", await engine.RenderAsync<Order>(
@@ -109,7 +115,7 @@ public sealed class TemplateEngineTests
         var engine = new LiquidTemplateEngine();
         var template = Source(
             "[{{ Customer.Name }}][{{ Customer.Name | default: 'anon' }}][{{ Labels.missing }}][{{ Lines[5].Sku }}]" +
-            "{% if Extra %}extra{% endif %}");
+            "{% if Customer.Name %}named{% endif %}");
         var order = SampleOrder();
         order.Customer.Name = null!;
 
@@ -145,14 +151,19 @@ public sealed class TemplateEngineTests
     {
         var engine = new LiquidTemplateEngine();
 
-        Assert.Contains(await engine.ValidateAsync(Source("{{ 'now' | date: '%Y' }}"), typeof(Order)),
-            diagnostic => diagnostic.Message.Contains("has no clock"));
-        // A clock word that reaches a date filter from the model is refused when rendered.
-        var order = SampleOrder();
-        order.Number = "today";
-        var error = await Assert.ThrowsAsync<TemplateRenderException>(() =>
-            engine.RenderAsync(Source("{{ Number | date: '%Y' }}"), order, CultureInfo.InvariantCulture).AsTask());
-        Assert.Contains("has no clock", error.Message);
+        // Fluid completes a date written as text from the clock: 'now', or a time without a date, is today.
+        foreach (var text in new[] { "now", "today", "12:34", "March 4" })
+        {
+            Assert.Contains(await engine.ValidateAsync(Source($"{{{{ '{text}' | date: '%Y' }}}}"), typeof(Order)),
+                diagnostic => diagnostic.Message.Contains("has no clock"));
+            // Text that reaches a date filter from the model is refused when rendered.
+            var order = SampleOrder();
+            order.Number = text;
+            var error = await Assert.ThrowsAsync<TemplateRenderException>(() =>
+                engine.RenderAsync(Source("{{ Number | format_date: 'yyyy' }}"), order, CultureInfo.InvariantCulture)
+                    .AsTask());
+            Assert.Contains("has no clock", error.Message);
+        }
     }
 
     [Fact]
@@ -166,6 +177,9 @@ public sealed class TemplateEngineTests
             diagnostic => diagnostic.Message.Contains("'Price' has no member 'Amount'"));
         Assert.Equal("12.50 EUR", await engine.RenderAsync(Source("{{ Price }}"),
             new Priced { Price = new Money(12.5m, "EUR") }, CultureInfo.InvariantCulture));
+        // Fluid reads by key only a dictionary it can index; a read-only one is a list of pairs to it.
+        Assert.Contains(await engine.ValidateAsync(Source("{{ Map.ana.Name }}"), typeof(Priced)),
+            diagnostic => diagnostic.Message.Contains("'Map' has no member 'ana'"));
         // A template reads its model's members; a collection has none it can name.
         Assert.Contains(await engine.ValidateAsync(Source("{{ Count }}"), typeof(List<OrderLine>)),
             diagnostic => diagnostic.Message.Contains("wrap it in a model type"));
@@ -257,19 +271,54 @@ public sealed class TemplateEngineTests
 
         var html = await engine.RenderAsync(Source(
             "<input disabled=\"@(Model.Total > 100)\" checked=\"@(Model.Total > 1)\" title=\"@Model.Extra\" " +
-            "class=\"line @Model.Number\" />", TemplateFormat.Html), SampleOrder(), CultureInfo.InvariantCulture);
+            "class=\"line @Model.Number\" alt=\" @(false)\" name=\" @(true)\" value=\"v @Model.Extra\" />",
+            TemplateFormat.Html), SampleOrder(), CultureInfo.InvariantCulture);
 
-        Assert.Equal("<input checked=\"checked\" class=\"line A-17\" />", html);
+        // Only a value with nothing before it decides whether its attribute is written; a null value elsewhere is
+        // left out with the text before it.
+        Assert.Equal("<input checked=\"checked\" class=\"line A-17\" alt=\" False\" name=\" True\" value=\"v\" />",
+            html);
     }
 
     [Fact]
     public async Task RazorTemplatesDeriveFromTheModelsBase()
     {
-        var diagnostics = await new RazorTemplateEngine().ValidateAsync(
-            Source("@inherits IxIFlow.Templates.Razor.RazorTemplate<object>\n@Model"), typeof(Order));
+        var engine = new RazorTemplateEngine();
 
-        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("@inherits is not available"));
+        var other = await engine.ValidateAsync(
+            Source("@inherits IxIFlow.Templates.Razor.RazorTemplate<object>\n@Model"), typeof(Order));
+        var same = await engine.ValidateAsync(Source(
+            "@using IxIFlow.Templates.Razor\n@using IxIFlow.Tests.TemplateTests\n" +
+            "@inherits RazorTemplate<TemplateFixtures.Order>\n@Model.Number"), typeof(Order));
+
+        Assert.Contains(other, diagnostic => diagnostic.Message.Contains("@inherits is not available"));
+        Assert.Empty(same);
     }
+
+    [Fact]
+    public async Task RazorUnloadsTheLeastRecentlyRenderedTemplateBeyondItsLimit()
+    {
+        var engine = new RazorTemplateEngine(new RazorEngineOptions { MaxLoadedTemplates = 1 });
+        var first = Source($"@Model.Number {Guid.NewGuid():N}");
+        Assert.Equal("A-17", (await engine.RenderAsync(first, SampleOrder(), CultureInfo.InvariantCulture))[..4]);
+        var context = WeakContextOf(first);
+
+        await engine.RenderAsync(Source($"@Model.Number {Guid.NewGuid():N}"), SampleOrder(),
+            CultureInfo.InvariantCulture);
+
+        for (var attempt = 0; attempt < 20 && context.IsAlive; attempt++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+        Assert.False(context.IsAlive);
+        // Rendered again, it is compiled again.
+        Assert.Equal("A-17", (await engine.RenderAsync(first, SampleOrder(), CultureInfo.InvariantCulture))[..4]);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static WeakReference WeakContextOf(TemplateSource template) =>
+        new(AssemblyLoadContext.All.Single(context => context.Name == "Template_" + template.Digest[..16]));
 
     [Fact]
     public async Task RazorCreatesTheTemplateInTheCultureAskedFor()
@@ -330,6 +379,21 @@ public sealed class TemplateEngineTests
     public sealed class Priced
     {
         public Money Price { get; set; }
+        public ReadOnlyMap Map { get; set; } = new();
+    }
+
+    /// <summary>A dictionary Fluid cannot index: it is only read-only.</summary>
+    public sealed class ReadOnlyMap : IReadOnlyDictionary<string, Customer>
+    {
+        private readonly Dictionary<string, Customer> _items = [];
+        public Customer this[string key] => _items[key];
+        public IEnumerable<string> Keys => _items.Keys;
+        public IEnumerable<Customer> Values => _items.Values;
+        public int Count => _items.Count;
+        public bool ContainsKey(string key) => _items.ContainsKey(key);
+        public bool TryGetValue(string key, out Customer value) => _items.TryGetValue(key, out value!);
+        public IEnumerator<KeyValuePair<string, Customer>> GetEnumerator() => _items.GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     public sealed class Credentials
