@@ -161,8 +161,17 @@ internal sealed class ActivityAttempts(
         var skipCancelledRecovery = isRecovery && continuation.CancellationUnwind &&
             !TryScopeTransitions.IsInsideFinally(continuation) &&
             !SagaScopeTransitions.IsInsideCompensation(continuation);
-        var task = ObserveActivityAsync(prepared, isRecovery, recoveryState, pending.Resolution,
-            skipCancelledRecovery, activityCancellation.Token);
+        // The attempt's span is current while the activity runs, so the activity's own spans nest in it (D-39).
+        var activityType = step.ActivityType?.Name ?? step.Name;
+        var span = Telemetry.Source.StartActivity($"activity {activityType}");
+        Telemetry.Tag(span, instance);
+        span?.SetTag(Telemetry.StepId, scopes.Id(step));
+        span?.SetTag(Telemetry.InvocationId, invocationId);
+        span?.SetTag(Telemetry.AttemptId, attempt.Id);
+        span?.SetTag(Telemetry.AttemptNumber, pending.Attempts.Count);
+        var task = Telemetry.AttemptEndedAsync(ObserveActivityAsync(prepared, isRecovery, recoveryState,
+            pending.Resolution, skipCancelledRecovery, activityCancellation.Token), span, instance, activityType,
+            System.Diagnostics.Stopwatch.GetTimestamp());
         return new RunningActivity(continuation, step, task, activityCancellation,
             prepared, continuation.Stack[^1].NextStepIndex);
     }
