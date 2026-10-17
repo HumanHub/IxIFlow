@@ -40,8 +40,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = Core.Runtime.MappingRules.Checked(Core.Runtime.ParallelRules.Checked(
-                Core.Runtime.ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(_steps)))))
+            Steps = WorkflowDefinitionValidator.Apply(_steps)
         };
     }
 
@@ -571,8 +570,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = Core.Runtime.MappingRules.Checked(Core.Runtime.ParallelRules.Checked(
-                Core.Runtime.ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(_steps)))))
+            Steps = WorkflowDefinitionValidator.Apply(_steps)
         };
     }
 
