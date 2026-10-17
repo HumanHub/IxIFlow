@@ -5,6 +5,7 @@ using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -265,13 +266,15 @@ public sealed class LocalHostTests
     [Trait("Spec", "B-12")]
     public async Task StoppingHostLetsRunningActivitiesFinishThenStops()
     {
-        var repository = new CountingStore();
+        // The clock stands still, so the watch's 250 ms timer cannot fire while the host drains.
+        var time = new FakeTimeProvider();
+        var repository = new CountingStore(time);
         var definition = Workflow.Create<HostData>("DrainedInstance")
             .Step<BlockingActivity>()
             .Step<QuickActivity>()
             .Build();
         string instanceId;
-        using (var services = Services(repository, slots: 1))
+        using (var services = Services(repository, slots: 1, time))
         {
             var gate = Gate(services);
             var run = Client(services).RunAsync(definition, new HostData());
@@ -283,7 +286,7 @@ public sealed class LocalHostTests
             // While draining, the run waits for its activity instead of spinning on the store.
             var readsBefore = repository.CancellationReads;
             await Task.Delay(300);
-            Assert.True(repository.CancellationReads - readsBefore < 20,
+            Assert.True(repository.CancellationReads - readsBefore <= 1,
                 $"{repository.CancellationReads - readsBefore} cancellation reads while draining");
             gate.Release();
             await stopping.WaitAsync(Patience);
@@ -298,7 +301,7 @@ public sealed class LocalHostTests
         // The finished activity was committed and the instance continues on another host.
         var saved = (await repository.GetWorkflowInstanceAsync(instanceId))!;
         Assert.Equal(WorkflowStatus.Running, saved.Status);
-        using var next = Services(repository, slots: 1);
+        using var next = Services(repository, slots: 1, time);
         await next.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
         Gate(next).Release();
         var recovered = await Client(next).RecoverAsync(instanceId).WaitAsync(Patience);
