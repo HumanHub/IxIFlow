@@ -229,7 +229,7 @@ public sealed class StoreClockTests
     [InlineData(true)]
     public async Task AWaitTimesOutWhileASiblingBranchRuns(bool answersARequest)
     {
-        var clocks = new Clocks(0);
+        var clocks = Clocks.One();
         using var services = Services(clocks);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
@@ -270,7 +270,7 @@ public sealed class StoreClockTests
     [Fact]
     public async Task AChildWaitsForASlotWhileItsParentHoldsTheOnlyOne()
     {
-        var clocks = new Clocks(0);
+        var clocks = Clocks.One();
         using var services = Services(clocks, slots: 1);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
@@ -309,7 +309,7 @@ public sealed class StoreClockTests
     [Fact]
     public async Task AChildsWaitTimesOutWhileItsParentRunsASiblingInAnotherSlot()
     {
-        var clocks = new Clocks(0);
+        var clocks = Clocks.One();
         using var services = Services(clocks, slots: 2);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
@@ -668,25 +668,67 @@ public sealed class StoreClockTests
             .Build();
 
     /// <summary>The host's clock and the store's, a fixed number of minutes apart, moving together.</summary>
-    private sealed class Clocks(int hostAheadMinutes)
+    private sealed class Clocks
     {
-        public FakeTimeProvider Host { get; } = new(Start.AddMinutes(hostAheadMinutes));
-        public FakeTimeProvider Store { get; } = new(Start);
+        public Clocks(int hostAheadMinutes)
+        {
+            Host = new FakeTimeProvider(Start.AddMinutes(hostAheadMinutes));
+            Store = new FakeTimeProvider(Start);
+        }
+
+        private Clocks(TimerRecordingClock both)
+        {
+            Host = both;
+            Store = both;
+            _timers = both;
+        }
+
+        /// <summary>
+        /// One clock for the host and the store, so they never differ, not even while it moves. It records its
+        /// timers, so a step waits for the leases' renewals.
+        /// </summary>
+        public static Clocks One() => new(new TimerRecordingClock(Start));
+
+        private readonly TimerRecordingClock? _timers;
+        private static readonly TimeSpan RenewalInterval = TimeSpan.FromSeconds(10);
+
+        public FakeTimeProvider Host { get; }
+        public FakeTimeProvider Store { get; }
 
         public void Advance(TimeSpan by)
         {
             Store.Advance(by);
-            Host.Advance(by);
+            if (Host != Store)
+                Host.Advance(by);
         }
 
-        // Steps shorter than a lease renewal, with time between them for the host's timers to run.
+        // Steps shorter than a lease renewal. On one recording clock, each step waits until every lease renewal
+        // that fired in it has been sent and the next one set; otherwise a short real yield lets the host's
+        // timers run. A renewal fires inside the step's advance, so one whose lease was released first is not
+        // waited for.
         public async Task AdvanceInStepsAsync(TimeSpan by)
         {
             var step = TimeSpan.FromSeconds(5);
             for (var moved = TimeSpan.Zero; moved < by; moved += step)
             {
-                Advance(by - moved < step ? by - moved : step);
-                await Task.Delay(5);
+                var length = by - moved < step ? by - moved : step;
+                if (_timers is not { } timers)
+                {
+                    Advance(length);
+                    await Task.Delay(5);
+                    continue;
+                }
+                var armedBefore = timers.Armed;
+                var renewalsBefore = timers.Armings
+                    .Where(timer => timer.Pending && timer.DueTime == RenewalInterval)
+                    .Select(timer => timer.Number)
+                    .ToHashSet();
+                Advance(length);
+                var renewalsFired = timers.Armings.Count(timer =>
+                    renewalsBefore.Contains(timer.Number) && timer.Firings > 0);
+                await timers.WaitUntilAsync(armings => armings.Skip(armedBefore)
+                        .Count(timer => timer.DueTime == RenewalInterval) >= renewalsFired,
+                    $"{renewalsFired} lease renewals set again after a step to {timers.GetUtcNow():O}");
             }
         }
     }
