@@ -299,9 +299,10 @@ public sealed class PostgreSqlWorkflowStateRepository :
     {
         await using var connection = await OpenOwnershipConnectionAsync();
         await using var transaction = await connection.BeginTransactionAsync();
-        // The instance row is locked before the lease row, in the same order as a commit, whatever its status:
-        // a commit made without a lease holds it while it checks that nobody holds the lease, so no lease is
-        // granted until it is applied.
+        // The instance is locked before its lease row, in the same order as a commit, whether or not its row exists
+        // yet: a commit made without a lease holds it while it checks that nobody holds the lease, so no lease is
+        // granted until that commit is applied.
+        await LockIdentityAsync(connection, transaction, instanceId);
         var running = await connection.QuerySingleOrDefaultAsync<string>("""
             SELECT status FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE
             """, new { InstanceId = instanceId }, transaction) == "Running";
@@ -364,6 +365,15 @@ public sealed class PostgreSqlWorkflowStateRepository :
         await transaction.CommitAsync();
         return result;
     }
+
+    // Takes the lock that commits, claims and deletes of one instance hold for their whole transaction, which
+    // exists whether or not the instance's row does: a row that does not exist cannot be locked, and the first
+    // commit, a claim and a delete must still not interleave. It is taken after the row lock of the instance's
+    // parent, as a child's commit takes that one first, and before the instance's own row.
+    private static Task LockIdentityAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        string instanceId) =>
+        connection.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended(@InstanceId, 0))",
+            new { InstanceId = instanceId }, transaction);
 
     // Locks an instance row as appends and commits lock it, then reads the store's time: a statement that
     // waits for a lock would otherwise carry a time from before it was granted.
@@ -729,6 +739,7 @@ public sealed class PostgreSqlWorkflowStateRepository :
         var parent = commit.ParentNotice is { } notice
             ? (await LockInboxAsync(connection, transaction, notice.ParentInstanceId)).Instance
             : null;
+        await LockIdentityAsync(connection, transaction, commit.InstanceId);
         // One store time for the whole commit, read once the instance row's lock is held: its deadlines,
         // its runnable time and its records (D-35).
         CommitState? current;
@@ -1207,19 +1218,19 @@ public sealed class PostgreSqlWorkflowStateRepository :
             if ((await AppendAsync(connection, transaction, gone, gone.ContentHash(), parent, now)).MadeRunnable)
                 await NotifyRunnableAsync(connection, transaction);
         }
-        // The instance row is locked first, as commits and appends lock it, then the lease row, as claims lock
-        // them. The lease row stays so a recreated instance never reuses an epoch; its crashes go. The rows in
-        // the other tables are deleted by key in one statement, which reads one snapshot: an instance whose first
-        // commit lands meanwhile, with no row to lock yet, is deleted whole or not at all.
+        // The instance is locked as commits and claims lock it, so none runs until the delete is over, even when
+        // the row does not exist yet; then its row, as appends lock it, and its lease row. The lease row stays so a
+        // recreated instance never reuses an epoch; its crashes go. The rows in the other tables are deleted by key.
+        await LockIdentityAsync(connection, transaction, instanceId);
         await connection.ExecuteAsync("""
             SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE;
             UPDATE ixiflow_workflow_leases SET expires_at_utc = '-infinity', crash_count = 0
             WHERE instance_id = @InstanceId;
-            WITH waits AS (DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId),
-                traces AS (DELETE FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId),
-                parts AS (DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId),
-                events AS (DELETE FROM ixiflow_workflow_events WHERE instance_id = @InstanceId),
-                commits AS (DELETE FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId)
+            DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
+            DELETE FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId;
+            DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId;
+            DELETE FROM ixiflow_workflow_events WHERE instance_id = @InstanceId;
+            DELETE FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId;
             DELETE FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId;
             """, new { InstanceId = instanceId }, transaction);
         await transaction.CommitAsync();

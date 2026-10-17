@@ -131,6 +131,77 @@ public class PostgreSqlWorkflowStateRepositoryTests
         return (long)(await count.ExecuteScalarAsync())!;
     }
 
+    // A row that does not exist cannot be locked, so a first commit, a claim and a delete of one instance take a lock
+    // on its ID instead, which SQL Server's range locks give it: a claim cannot grant a lease while a commit made
+    // without one is being applied, and a delete cannot interleave with a first commit.
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task CommitsClaimsAndDeletesOfANewInstanceWaitForEachOther()
+    {
+        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
+        var repository = new PostgreSqlWorkflowStateRepository(connectionString);
+        var instance = new WorkflowInstance
+        {
+            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "NewInstance", Status = WorkflowStatus.Running,
+            WorkflowDataJson = "{}"
+        };
+        // The schema is made first, so only the lock can hold the store up.
+        await repository.GetWorkflowInstanceAsync(instance.InstanceId);
+        try
+        {
+            Task<WorkflowCommitResult> commit;
+            Task<ExecutionLeaseGrant?> claim;
+            await using (var holder = await HoldIdentityAsync(connectionString, instance.InstanceId))
+            {
+                commit = repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0));
+                claim = repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1));
+                await Task.Delay(TimeSpan.FromMilliseconds(500));
+                Assert.False(commit.IsCompleted || claim.IsCompleted);
+            }
+            // Whichever went first, the other saw it: a commit after the claim is refused, one before it is not.
+            Assert.NotNull(await claim);
+            Assert.Contains((await commit).Status, new[] { WorkflowCommitStatus.Applied, WorkflowCommitStatus.StaleEpoch });
+
+            Task deleting;
+            await using (var holder = await HoldIdentityAsync(connectionString, instance.InstanceId))
+            {
+                deleting = repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
+                await Task.Delay(TimeSpan.FromMilliseconds(500));
+                Assert.False(deleting.IsCompleted);
+            }
+            await deleting;
+            Assert.Null(await repository.GetWorkflowInstanceAsync(instance.InstanceId));
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
+        }
+    }
+
+    // A transaction holding the lock the store takes on an instance's ID, until it is disposed.
+    private static async Task<IdentityHold> HoldIdentityAsync(string connectionString, string instanceId)
+    {
+        var connection = new Npgsql.NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var transaction = await connection.BeginTransactionAsync();
+        await using var hold = new Npgsql.NpgsqlCommand(
+            "SELECT pg_advisory_xact_lock(hashtextextended(@InstanceId, 0))", connection, transaction);
+        hold.Parameters.AddWithValue("InstanceId", instanceId);
+        await hold.ExecuteNonQueryAsync();
+        return new IdentityHold(connection, transaction);
+    }
+
+    private sealed class IdentityHold(Npgsql.NpgsqlConnection connection, Npgsql.NpgsqlTransaction transaction)
+        : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            await transaction.DisposeAsync();
+            await connection.DisposeAsync();
+        }
+    }
+
     // Each transaction that leaves an instance due with nobody holding it notifies listening hosts once, and the
     // steps that set the cases up notify nobody (C-13).
     [PostgreSqlFact]
