@@ -280,7 +280,7 @@ public sealed class ResourceLimitTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlLeasesAndCancellationKeepWorkingWhenTheMainPoolIsExhausted()
     {
-        var builder = new SqlConnectionStringBuilder(SqlServerTestServer.ConnectionString)
+        var builder = new SqlConnectionStringBuilder(SqlTestDatabase<ResourceLimitTests>.ConnectionString)
         {
             ApplicationName = $"pool-test-{Guid.NewGuid():N}",
             MaxPoolSize = 1,
