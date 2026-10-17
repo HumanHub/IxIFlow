@@ -153,21 +153,21 @@ public sealed class ParkedRunTests
         {
             // Three idle instances whose delays end in the reverse order of their commits: the store
             // stamps each deadline from its own clock, so the last one committed is due first. One more
-            // waits only for an event.
+            // waits only for an event. The delays leave a slow store seconds to make the four commits.
             for (var index = 0; index < 3; index++)
                 await Commit(store, new WorkflowInstance
                 {
                     InstanceId = ids[index], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
                     WorkflowDataJson = "{}"
                 }, new OpenedWait($"{ids[index]}-delay", WaitKind.Delay, "delay", "",
-                    TimeSpan.FromSeconds(3 - index)));
+                    TimeSpan.FromSeconds(5 - index)));
             await Commit(store, new WorkflowInstance
             {
                 InstanceId = ids[3], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
                 WorkflowDataJson = "{}"
             });
             Assert.DoesNotContain(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == ids[0]);
-            await Task.Delay(TimeSpan.FromSeconds(3.3));
+            await WaitForAsync(async () => (await Ours(store, ids)).Length == 3 ? ids : null);
 
             // The poll takes the earliest first, no more than it asks for. Other rows of a shared store
             // may be due earlier, so only these instances' order is checked.
