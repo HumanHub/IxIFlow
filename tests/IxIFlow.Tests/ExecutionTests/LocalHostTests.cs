@@ -311,23 +311,35 @@ public sealed class LocalHostTests
     [Trait("Spec", "B-10")]
     public async Task OneWatchReadsCancellationForAllRunningInstances()
     {
-        var store = new CountingStore();
-        using var services = Services(store, slots: 8);
+        var time = new TimerRecordingClock();
+        var store = new CountingStore(time);
+        using var services = Services(store, slots: 8, time);
         var gate = Gate(services);
         var runs = Enumerable.Range(0, 5)
             .Select(index => Client(services).RunAsync(BlockingWorkflow($"Watched{index}"), new HostData()))
             .ToArray();
         await gate.WaitForRunningAsync(5);
 
+        // One second in steps of the watch's 250 ms interval. The watch sets its timer after each read, so
+        // the count starts once it waits for its next read, and each step waits until the read it brought
+        // is done and the timer set again.
+        var interval = TimeSpan.FromMilliseconds(250);
+        await time.WaitForTimerDueAtAsync(time.GetUtcNow() + interval);
+        Assert.True(store.BatchCancellationReads >= 1);
         var singleBefore = store.CancellationReads;
         var batchBefore = store.BatchCancellationReads;
-        await Task.Delay(1000);
+        for (var step = 1; step <= 4; step++)
+        {
+            var timersBefore = time.Armed;
+            time.Advance(interval);
+            await time.WaitForTimerDueAtAsync(time.GetUtcNow() + interval, timersBefore, Patience);
+        }
         var single = store.CancellationReads - singleBefore;
         var batches = store.BatchCancellationReads - batchBefore;
 
-        // Five leases polling on their own would read about 20 times a second.
+        // Five leases polling on their own would read 20 times in that second.
         Assert.Equal(0, single);
-        Assert.InRange(batches, 1, 8);
+        Assert.Equal(4, batches);
         Assert.Equal(5, store.LargestBatch);
         gate.Release();
         await Task.WhenAll(runs).WaitAsync(Patience);
@@ -342,7 +354,7 @@ public sealed class LocalHostTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "B-10")]
     public Task SqlStoreReadsCancellationRequestsInOneCall() =>
-        VerifyBatchCancellationReads(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyBatchCancellationReads(new SqlWorkflowStateRepository(SqlTestDatabase<LocalHostTests>.ConnectionString));
 
     private static async Task VerifyBatchCancellationReads(IWorkflowStateRepository repository)
     {
@@ -397,11 +409,14 @@ public sealed class LocalHostTests
     private static WorkflowDefinition QuickWorkflow(string name) =>
         Workflow.Create<HostData>(name).Step<QuickActivity>().Step<QuickActivity>().Build();
 
-    private static ServiceProvider Services(IWorkflowStateRepository repository, int slots)
+    private static ServiceProvider Services(IWorkflowStateRepository repository, int slots,
+        TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
+        if (time != null)
+            services.AddSingleton(time);
         services.AddIxIFlow(options => options.Slots = slots);
         services.AddSingleton<ActivityGate>();
         services.AddSingleton<HostProbe>();
@@ -577,6 +592,14 @@ public sealed class LocalHostTests
     private sealed class CountingStore : FaultInjectingRepository
     {
         private int _cancellationReads;
+
+        public CountingStore()
+        {
+        }
+
+        public CountingStore(TimeProvider time) : base(time)
+        {
+        }
 
         public int CancellationReads => Volatile.Read(ref _cancellationReads);
 

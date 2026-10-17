@@ -102,6 +102,46 @@ public sealed class MappingValidationTests
         Assert.Contains("Child workflow property 'ChildData.Secret' is not an output: it has no public getter", output.Message);
     }
 
+    // A definition made without the fluent builder is checked by the same rules through the public call.
+    [Fact]
+    public void AHandBuiltDefinitionIsValidatedByTheSameRules()
+    {
+        var handBuilt = new WorkflowDefinition
+        {
+            Name = "HandBuilt",
+            Version = 1,
+            WorkflowDataType = typeof(Data),
+            Steps =
+            [
+                new WorkflowStep
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    Name = nameof(Plain),
+                    StepType = WorkflowStepType.Activity,
+                    ActivityType = typeof(Plain),
+                    WorkflowDataType = typeof(Data),
+                    InputMappings =
+                    [
+                        new PropertyMapping
+                        {
+                            TargetProperty = nameof(Plain.Computed),
+                            Direction = PropertyMappingDirection.Input,
+                            SourceFunction = _ => 1
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var error = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition,
+            () => WorkflowDefinitionValidator.Validate(handBuilt));
+
+        Assert.Contains("Activity property 'Plain.Computed' is not an input: it has no public setter", error.Message);
+        WorkflowDefinitionValidator.Validate(Workflow.Create<Data>("Valid")
+            .Step<Marked>(step => step.Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Number))
+            .Build());
+    }
+
     public sealed class Data
     {
         public int Number { get; set; }

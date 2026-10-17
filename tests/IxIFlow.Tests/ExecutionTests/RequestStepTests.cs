@@ -3,6 +3,7 @@ using IxIFlow.Core;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -183,7 +184,8 @@ public sealed class RequestStepTests
     [Trait("Spec", "D-16")]
     public async Task AnAnswerAfterTheRequestTimedOutIsRefusedAsTimedOut()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
         var definition = Workflow.Create<OrderData>("ShortRequest")
@@ -192,7 +194,7 @@ public sealed class RequestStepTests
                 .Do(branch => branch
                     .Request<RequestApproval>("approval")
                     .WaitFor<ApprovalDecision>("approval", configure: wait => wait
-                        .TimeoutAfter(TimeSpan.FromMilliseconds(100))
+                        .TimeoutAfter(TimeSpan.FromMinutes(1))
                         .OnTimeout(path => path.Step<StartActivity>())))
                 .Do(branch => branch.WaitFor<ApprovalDecision>("final")))
             .Build();
@@ -200,8 +202,14 @@ public sealed class RequestStepTests
         var token = Assert.Single(outbox.Sent).Token;
         Assert.True(ReplyToken.TryRead(token, out _, out var waitId, out _));
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
+        // The deadline passes while the instance is idle; the host's timer runs the timeout.
+        time.Advance(TimeSpan.FromMinutes(2));
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while ((await repository.GetWaitAsync(started.InstanceId, waitId))!.IsOpen)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The request's wait never timed out");
             await Task.Delay(20);
+        }
         // The timeout's own pass may still be running; the reply is sent once the instance is idle again.
         await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Idle).WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -527,10 +535,12 @@ public sealed class RequestStepTests
 
     private static OrderData Data(WorkflowExecutionResult result) => Assert.IsType<OrderData>(result.WorkflowData);
 
-    private static ServiceProvider Services()
+    private static ServiceProvider Services(TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        if (time != null)
+            services.AddSingleton(time);
         services.AddSingleton<Outbox>();
         services.AddSingleton<StepGate>();
         services.AddTransient<RequestApproval>();

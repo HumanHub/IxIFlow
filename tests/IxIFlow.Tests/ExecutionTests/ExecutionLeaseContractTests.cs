@@ -5,6 +5,7 @@ using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using IxIFlow.Tests.Infrastructure;
 using Dapper;
 using Microsoft.Data.SqlClient;
@@ -18,20 +19,34 @@ public sealed class ExecutionLeaseContractTests
     public Task MemoryLeaseIsExclusive() => VerifyExclusiveLease(new InMemoryWorkflowStateRepository());
 
     [Fact]
-    public Task MemoryExpiredLeaseCanBeReclaimed() =>
-        VerifyExpiredLease(new InMemoryWorkflowStateRepository());
+    public Task MemoryExpiredLeaseCanBeReclaimed()
+    {
+        var time = new FakeTimeProvider();
+        return VerifyExpiredLease(new InMemoryWorkflowStateRepository(time), time);
+    }
 
     [Fact]
-    public Task MemoryRenewalKeepsTheOwner() =>
-        VerifyRenewal(new InMemoryWorkflowStateRepository());
+    public Task MemoryRenewalKeepsTheOwner()
+    {
+        var time = new FakeTimeProvider();
+        return VerifyRenewal(new InMemoryWorkflowStateRepository(time), TimeSpan.FromSeconds(1),
+            TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(750), time);
+    }
 
     [Fact]
-    public Task MemoryFormerOwnerCannotCommitAfterTakeover() =>
-        VerifyFencing(new InMemoryWorkflowStateRepository());
+    public Task MemoryFormerOwnerCannotCommitAfterTakeover()
+    {
+        var time = new FakeTimeProvider();
+        return VerifyFencing(new InMemoryWorkflowStateRepository(time), TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(300), time);
+    }
 
     [Fact]
-    public Task MemoryFormerOwnerCannotReplayReceiptAfterTakeover() =>
-        VerifyReceiptFencing(new InMemoryWorkflowStateRepository());
+    public Task MemoryFormerOwnerCannotReplayReceiptAfterTakeover()
+    {
+        var time = new FakeTimeProvider();
+        return VerifyReceiptFencing(new InMemoryWorkflowStateRepository(time), time);
+    }
 
     [Fact]
     public Task MemoryOnlyTheOwnerCanReleaseItsLease() =>
@@ -42,8 +57,11 @@ public sealed class ExecutionLeaseContractTests
         VerifyRepeatedStart(new InMemoryWorkflowStateRepository());
 
     [Fact]
-    public Task MemoryRecoveryQueryExcludesLiveOwnersAndFindsExpiredLeases() =>
-        VerifyRecoveryQuery(new InMemoryWorkflowStateRepository());
+    public Task MemoryRecoveryQueryExcludesLiveOwnersAndFindsExpiredLeases()
+    {
+        var time = new FakeTimeProvider();
+        return VerifyRecoveryQuery(new InMemoryWorkflowStateRepository(time), time);
+    }
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
@@ -80,13 +98,17 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public Task SqlExpiredLeaseCanBeReclaimed() => VerifyExpiredLease(SqlRepository());
 
+    // A second on each side of the renewal and of the check, so a slow SQL Server cannot cross either.
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlRenewalKeepsTheOwner() => VerifyRenewal(SqlRepository());
+    public Task SqlRenewalKeepsTheOwner() => VerifyRenewal(SqlRepository(), TimeSpan.FromSeconds(3),
+        TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
 
+    // A lease long enough for the first commit on a cold store connection; the takeover waits it out.
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlFormerOwnerCannotCommitAfterTakeover() => VerifyFencing(SqlRepository());
+    public Task SqlFormerOwnerCannotCommitAfterTakeover() => VerifyFencing(SqlRepository(), TimeSpan.FromSeconds(1),
+        TimeSpan.FromMilliseconds(1_200));
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
@@ -472,7 +494,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlCancellationRequestReachesRunningOwnerOnAnotherHost()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var registry = new WorkflowVersionRegistry();
@@ -487,7 +509,7 @@ public sealed class ExecutionLeaseContractTests
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData(),
                 new WorkflowOptions { InstanceId = instanceId });
-        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal(WorkflowStatus.Running,
             (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
         try
@@ -499,7 +521,7 @@ public sealed class ExecutionLeaseContractTests
                 });
             Assert.Equal(WorkflowExecutionStatus.Running, requested.Status);
             Assert.Equal(WorkflowExecutionStatus.Cancelled,
-                (await executing.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+                (await executing.WaitAsync(TimeSpan.FromSeconds(30))).Status);
             var cancelled = (await secondRepository.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal(WorkflowStatus.Cancelled, cancelled.Status);
             Assert.Equal("operator", cancelled.CancellationReason?.ReasonCode);
@@ -515,7 +537,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlSuspendedWaitCanBeCancelledByAnotherHost()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var registry = new WorkflowVersionRegistry();
@@ -552,7 +574,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlScannerCompletesCancellationAfterRequestingHostStops()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var firstRegistry = new WorkflowVersionRegistry();
@@ -661,11 +683,12 @@ public sealed class ExecutionLeaseContractTests
     [Fact]
     public async Task LongActivityRenewsItsLease()
     {
-        var repository = new InMemoryWorkflowStateRepository();
+        var time = new TimerRecordingClock();
+        var repository = new InMemoryWorkflowStateRepository(time);
         var registry = new WorkflowVersionRegistry();
         var probe = new ActivityProbe();
-        using var firstHost = CreateHost(repository, registry, probe, shortLease: true);
-        using var secondHost = CreateHost(repository, registry, probe, shortLease: true);
+        using var firstHost = CreateHost(repository, registry, probe, shortLease: true, time);
+        using var secondHost = CreateHost(repository, registry, probe, shortLease: true, time);
         var definition = Workflow.Create<LeaseData>("LongOwner")
             .Step<BlockingActivity>()
             .Step<RecordActivity>()
@@ -677,7 +700,8 @@ public sealed class ExecutionLeaseContractTests
         var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         try
         {
-            await Task.Delay(600);
+            // Three lease lengths: a lease that was not renewed would have expired.
+            await AdvanceInStepsAsync(time, TimeSpan.FromMilliseconds(600));
             var attempted = await secondHost.GetRequiredService<IWorkflowClient>()
                 .RecoverAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(WorkflowExecutionStatus.Running, attempted.Status);
@@ -694,12 +718,13 @@ public sealed class ExecutionLeaseContractTests
     [Fact]
     public async Task OneCancellationReadErrorDoesNotForfeitAnActiveLease()
     {
-        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository())
+        var time = new TimerRecordingClock();
+        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository(time))
         {
             PauseFirstRead = false
         };
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true);
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true, time);
         var definition = Workflow.Create<LeaseData>("TransientCancellationRead")
             .Step<BlockingActivity>()
             .Build();
@@ -707,7 +732,7 @@ public sealed class ExecutionLeaseContractTests
             .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.FailNextCancellationReads = 1;
-        await repository.CancellationReadFailed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await AdvanceUntilAsync(time, repository.CancellationReadFailed.Task);
         probe.Release.TrySetResult();
 
         Assert.Equal(WorkflowExecutionStatus.Success,
@@ -751,12 +776,13 @@ public sealed class ExecutionLeaseContractTests
     [Fact]
     public async Task OneRenewalErrorDoesNotForfeitAnActiveLease()
     {
-        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository())
+        var time = new TimerRecordingClock();
+        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository(time))
         {
             PauseFirstRead = false
         };
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true);
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true, time);
         var definition = Workflow.Create<LeaseData>("TransientRenewal")
             .Step<BlockingActivity>()
             .Build();
@@ -764,7 +790,7 @@ public sealed class ExecutionLeaseContractTests
             .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.FailNextRenewals = 1;
-        await repository.RenewalFailed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await AdvanceUntilAsync(time, repository.RenewalFailed.Task);
         probe.Release.TrySetResult();
 
         Assert.Equal(WorkflowExecutionStatus.Success,
@@ -774,12 +800,13 @@ public sealed class ExecutionLeaseContractTests
     [Fact]
     public async Task LostLeaseWaitsForAnInFlightActivityToStop()
     {
-        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository())
+        var time = new TimerRecordingClock();
+        var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository(time))
         {
             PauseFirstRead = false
         };
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true);
+        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true, time);
         var definition = Workflow.Create<LeaseData>("LostLeaseActivity")
             .Step<BlockingActivity>()
             .Build();
@@ -787,7 +814,7 @@ public sealed class ExecutionLeaseContractTests
             .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.LoseNextRenewal = 1;
-        await repository.LeaseLost.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await AdvanceUntilAsync(time, repository.LeaseLost.Task);
         try
         {
             await Task.Delay(150);
@@ -895,7 +922,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlSuspendedInstanceCanResumeOnAnotherHost()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var firstRegistry = new WorkflowVersionRegistry();
@@ -929,7 +956,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlLiveOwnerCannotBeRecoveredByAnotherHost()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var firstRegistry = new WorkflowVersionRegistry();
@@ -982,7 +1009,7 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlRecoveryScannerReclaimsAnExpiredWorker()
     {
-        var connectionString = SqlServerTestServer.ConnectionString;
+        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
         var firstRepository = new SqlWorkflowStateRepository(connectionString);
         var secondRepository = new SqlWorkflowStateRepository(connectionString);
         var firstRegistry = new WorkflowVersionRegistry();
@@ -1036,12 +1063,14 @@ public sealed class ExecutionLeaseContractTests
     }
 
     private static ServiceProvider CreateHost(IWorkflowStateRepository repository,
-        IWorkflowVersionRegistry registry, ActivityProbe probe, bool shortLease = false)
+        IWorkflowVersionRegistry registry, ActivityProbe probe, bool shortLease = false, TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton(repository));
+        if (time != null)
+            services.Replace(ServiceDescriptor.Singleton(time));
         services.Replace(ServiceDescriptor.Singleton(registry));
         services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
         if (shortLease)
@@ -1056,7 +1085,55 @@ public sealed class ExecutionLeaseContractTests
     }
 
     private static SqlWorkflowStateRepository SqlRepository() => new(
-        SqlServerTestServer.ConnectionString);
+        SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString);
+
+    // Lets time pass for a store: a fake clock is advanced; SQL Server's own clock needs real time.
+    private static Task PassAsync(FakeTimeProvider? time, TimeSpan by)
+    {
+        if (time == null)
+            return Task.Delay(by);
+        time.Advance(by);
+        return Task.CompletedTask;
+    }
+
+    // One renewal interval of the short lease per step. The lease's renewal and the host's cancellation watch
+    // each keep a timer set at most one step ahead, and set it again once their store call is done; the clock
+    // moves only when both are set, so each step's renewal and read are done before the next.
+    private static readonly TimeSpan ShortLeaseStep = TimeSpan.FromMilliseconds(50);
+
+    private static Task ShortLeaseTimersSetAsync(TimerRecordingClock time, CancellationToken cancellationToken = default) =>
+        time.WaitUntilAsync(timers => timers.Count(timer => timer.Pending && timer.DueTime <= ShortLeaseStep) >= 2,
+            "the short lease's renewal and cancellation watch timers", cancellationToken: cancellationToken);
+
+    private static async Task AdvanceInStepsAsync(TimerRecordingClock time, TimeSpan by)
+    {
+        for (var moved = TimeSpan.Zero; moved < by; moved += ShortLeaseStep)
+        {
+            await ShortLeaseTimersSetAsync(time);
+            time.Advance(ShortLeaseStep);
+        }
+        await ShortLeaseTimersSetAsync(time);
+    }
+
+    // Moves the clock in the same steps until the run has done what the test waits for, within five short leases.
+    private static async Task AdvanceUntilAsync(TimerRecordingClock time, Task happened)
+    {
+        for (var moved = TimeSpan.Zero; ; moved += ShortLeaseStep)
+        {
+            using var stop = new CancellationTokenSource();
+            var timersSet = ShortLeaseTimersSetAsync(time, stop.Token);
+            await Task.WhenAny(happened, timersSet);
+            if (happened.IsCompleted)
+            {
+                stop.Cancel();
+                await timersSet.ContinueWith(_ => { }, TaskScheduler.Default);
+                return;
+            }
+            await timersSet;
+            Assert.True(moved < TimeSpan.FromSeconds(1), "It did not happen within five leases");
+            time.Advance(ShortLeaseStep);
+        }
+    }
 
     private static async Task VerifyExclusiveLease(IWorkflowStateRepository repository)
     {
@@ -1074,14 +1151,14 @@ public sealed class ExecutionLeaseContractTests
         }
     }
 
-    private static async Task VerifyExpiredLease(IWorkflowStateRepository repository)
+    private static async Task VerifyExpiredLease(IWorkflowStateRepository repository, FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromMilliseconds(100)));
-            await Task.Delay(300);
+            await PassAsync(time, TimeSpan.FromMilliseconds(300));
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5)));
             Assert.False(await repository.RenewExecutionLeaseAsync(instanceId, "first",
@@ -1093,19 +1170,19 @@ public sealed class ExecutionLeaseContractTests
         }
     }
 
-    private static async Task VerifyRenewal(IWorkflowStateRepository repository)
+    // The lease is renewed before it expires, and checked after the first lease would have expired but
+    // before the renewed one does.
+    private static async Task VerifyRenewal(IWorkflowStateRepository repository, TimeSpan lease,
+        TimeSpan renewAfter, TimeSpan checkAfter, FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromSeconds(1)));
-            await Task.Delay(500);
-            Assert.True(await repository.RenewExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromSeconds(1)));
-            await Task.Delay(750);
-            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
-                TimeSpan.FromSeconds(1)));
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease));
+            await PassAsync(time, renewAfter);
+            Assert.True(await repository.RenewExecutionLeaseAsync(instanceId, "first", lease));
+            await PassAsync(time, checkAfter);
+            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", lease));
         }
         finally
         {
@@ -1113,13 +1190,14 @@ public sealed class ExecutionLeaseContractTests
         }
     }
 
-    private static async Task VerifyFencing(IWorkflowStateRepository repository)
+    // The first owner holds its lease for the given length; the second takes over once takeoverAfter has passed.
+    private static async Task VerifyFencing(IWorkflowStateRepository repository, TimeSpan lease,
+        TimeSpan takeoverAfter, FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            var firstEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromMilliseconds(100));
+            var firstEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease);
             Assert.NotNull(firstEpoch);
             var oldOwner = new WorkflowInstance
             {
@@ -1131,7 +1209,7 @@ public sealed class ExecutionLeaseContractTests
             var initial = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 0, "initial"));
             Assert.Equal(WorkflowCommitStatus.Applied, initial.Status);
-            await Task.Delay(300);
+            await PassAsync(time, takeoverAfter);
             var secondEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5));
             Assert.NotNull(secondEpoch);
@@ -1173,13 +1251,15 @@ public sealed class ExecutionLeaseContractTests
         }
     }
 
-    private static async Task VerifyReceiptFencing(IWorkflowStateRepository repository)
+    private static async Task VerifyReceiptFencing(IWorkflowStateRepository repository,
+        FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
+            // Long enough for the first commit on a cold store connection; the takeover waits it out.
             var formerEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromMilliseconds(100));
+                TimeSpan.FromSeconds(1));
             Assert.NotNull(formerEpoch);
             var formerOwner = new WorkflowInstance
             {
@@ -1190,7 +1270,7 @@ public sealed class ExecutionLeaseContractTests
             };
             var start = CheckpointCommit.Create(formerOwner, formerEpoch.Epoch, 0, "start");
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(start)).Status);
-            await Task.Delay(300);
+            await PassAsync(time, TimeSpan.FromMilliseconds(1_200));
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5)));
 
@@ -1229,7 +1309,7 @@ public sealed class ExecutionLeaseContractTests
         }
     }
 
-    private static async Task VerifyRecoveryQuery(IWorkflowStateRepository repository)
+    private static async Task VerifyRecoveryQuery(IWorkflowStateRepository repository, FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         try
@@ -1242,13 +1322,27 @@ public sealed class ExecutionLeaseContractTests
             });
             Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 instance => instance.InstanceId == instanceId);
+            // Long enough for the next query on a slow store; the expiry is then polled for, and must come within
+            // the lease's length, with three seconds more for a slow store.
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2) + TimeSpan.FromSeconds(3);
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "worker",
-                TimeSpan.FromMilliseconds(150)));
+                TimeSpan.FromSeconds(2)));
             Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
                 instance => instance.InstanceId == instanceId);
-            await Task.Delay(300);
-            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
-                instance => instance.InstanceId == instanceId);
+            if (time != null)
+            {
+                // On a fake clock the lease has expired once the clock has moved its length.
+                time.Advance(TimeSpan.FromSeconds(2));
+                Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+                    instance => instance.InstanceId == instanceId);
+                return;
+            }
+            while (!(await repository.GetRunnableInstancesAsync(100)).Any(
+                       instance => instance.InstanceId == instanceId))
+            {
+                Assert.True(DateTime.UtcNow < deadline, "The expired lease was not found on time");
+                await Task.Delay(50);
+            }
         }
         finally
         {

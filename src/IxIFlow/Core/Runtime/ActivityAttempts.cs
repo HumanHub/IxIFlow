@@ -14,6 +14,7 @@ internal sealed class ActivityAttempts(
 {
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
     private readonly ILogger _logger = LogScope.Logger(services);
+    private readonly string _hostName = (services.GetService(typeof(HostSettings)) as HostSettings ?? HostSettings.Default).Name;
 
     private DateTime Now => time.GetUtcNow().UtcDateTime;
 
@@ -46,6 +47,7 @@ internal sealed class ActivityAttempts(
         var attempt = new ActivityAttemptState
         {
             StartedAtUtc = Now,
+            Host = _hostName,
             Kind = pending?.Resolution is { } resolution
                 ? $"Operator{resolution.Kind}"
                 : isRecovery ? "Recover" : "Execute"
@@ -64,6 +66,11 @@ internal sealed class ActivityAttempts(
                 (pending?.Inputs ?? retryInputs)?.CodeInputs,
                 compensationInputs, SagaScopeTransitions.ActivityMetadata(scopes, continuation, step),
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+            // The activity sees the attempts before this one from the start, its recovery state's capture
+            // included (D-37).
+            var earlier = pending?.Attempts ?? retried?.Attempts ?? [];
+            prepared.SetAttempt(new ActivityAttempt(earlier.Count + 1,
+                earlier.Select(item => item.Seen(services)).ToList()));
             if (pending == null)
             {
                 retryInputs?.Restore(prepared.Activity, services);
@@ -138,7 +145,8 @@ internal sealed class ActivityAttempts(
             {
                 ["InvocationId"] = invocationId,
                 ["AttemptId"] = attempt.Id,
-                ["Kind"] = attempt.Kind
+                ["Kind"] = attempt.Kind,
+                ["Host"] = _hostName
             }
         };
         if (pending.Resolution != null)
@@ -156,8 +164,17 @@ internal sealed class ActivityAttempts(
         var skipCancelledRecovery = isRecovery && continuation.CancellationUnwind &&
             !TryScopeTransitions.IsInsideFinally(continuation) &&
             !SagaScopeTransitions.IsInsideCompensation(continuation);
-        var task = ObserveActivityAsync(prepared, isRecovery, recoveryState, pending.Resolution,
-            skipCancelledRecovery, activityCancellation.Token);
+        // The attempt's span is current while the activity runs, so the activity's own spans nest in it (D-39).
+        var activityType = step.ActivityType?.Name ?? step.Name;
+        var span = Telemetry.Source.StartActivity($"activity {activityType}");
+        Telemetry.Tag(span, instance);
+        span?.SetTag(Telemetry.StepId, scopes.Id(step));
+        span?.SetTag(Telemetry.InvocationId, invocationId);
+        span?.SetTag(Telemetry.AttemptId, attempt.Id);
+        span?.SetTag(Telemetry.AttemptNumber, pending.Attempts.Count);
+        var task = Telemetry.AttemptEndedAsync(ObserveActivityAsync(prepared, isRecovery, recoveryState,
+            pending.Resolution, skipCancelledRecovery, activityCancellation.Token), span, instance, activityType,
+            System.Diagnostics.Stopwatch.GetTimestamp());
         return new RunningActivity(continuation, step, task, activityCancellation,
             prepared, continuation.Stack[^1].NextStepIndex);
     }
@@ -351,7 +368,7 @@ internal sealed class ActivityAttempts(
     private void Attempt(WorkflowInstance instance, ContinuationState continuation, WorkflowStep step,
         ActivityInvocationState pending, string kind)
     {
-        var attempt = new ActivityAttemptState { StartedAtUtc = Now, Kind = kind };
+        var attempt = new ActivityAttemptState { StartedAtUtc = Now, Kind = kind, Host = _hostName };
         pending.Attempts.Add(attempt);
         if (!instance.TracingEnabled)
             return;
@@ -408,6 +425,9 @@ internal sealed class ActivityAttempts(
 
             if (outcome.Kind == ActivityRunKind.Threw)
             {
+                // The attempt records how it ended, and the note it left, for the attempts after it (D-37).
+                if (activity.Continuation.PendingActivity is { Attempts.Count: > 0 } ending)
+                    RecordFailure(ending.Attempts[^1], outcome.Error, activity.Prepared?.Context.Attempt.Note);
                 // Kept until the failure is handled, for a retry of the step (D-14).
                 if (activity.Continuation.PendingActivity is { } failed)
                     activity.Continuation.RetryInputs = new KeptActivityInputs
@@ -503,6 +523,35 @@ internal sealed class ActivityAttempts(
         activity.Continuation.Status = ContinuationStatus.WaitingResolution;
     }
 
+    // What a later attempt sees of this one is in the trace too (D-37).
+    private static Dictionary<string, object> AttemptFacts(Dictionary<string, object> metadata,
+        ActivityAttemptState attempt)
+    {
+        if (attempt.Host != null)
+            metadata["Host"] = attempt.Host;
+        if (attempt.ErrorType != null)
+            metadata["ErrorType"] = attempt.ErrorType;
+        if (attempt.Note != null)
+            metadata["Note"] = attempt.Note.Json;
+        return metadata;
+    }
+
+    private static void RecordFailure(ActivityAttemptState attempt, Exception? error, object? note)
+    {
+        // The type a handler matches, not an engine wrapper around it.
+        attempt.ErrorType = error == null ? null : SerializedException.CatchType(error).FullName;
+        attempt.ErrorMessage = error?.Message;
+        try
+        {
+            attempt.Note = SerializedValue.From(note);
+        }
+        catch (Exception problem) when (problem is not WorkflowEngineException)
+        {
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"The attempt's note, a {note!.GetType().Name}, cannot be saved: {problem.Message}", problem);
+        }
+    }
+
     private void MarkActivityEnd(RunningActivity running, WorkflowInstance instance,
         string observation,
         Exception? error = null)
@@ -524,12 +573,12 @@ internal sealed class ActivityAttempts(
             Duration = attempt.EndedAtUtc - attempt.StartedAtUtc,
             ErrorMessage = error?.Message,
             StackTrace = error?.StackTrace,
-            Metadata = new Dictionary<string, object>
+            Metadata = AttemptFacts(new Dictionary<string, object>
             {
                 ["InvocationId"] = pending.Id,
                 ["AttemptId"] = attempt.Id,
                 ["Observation"] = observation
-            }
+            }, attempt)
             });
     }
 }

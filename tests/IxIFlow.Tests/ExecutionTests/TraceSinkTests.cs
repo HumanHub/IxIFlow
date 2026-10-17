@@ -146,7 +146,7 @@ public sealed class TraceSinkTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlServerStoresTheTraceInOrderOncePerCommit()
     {
-        var repository = new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString);
+        var repository = new SqlWorkflowStateRepository(SqlTestDatabase<TraceSinkTests>.ConnectionString);
         var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace" };
         try
         {

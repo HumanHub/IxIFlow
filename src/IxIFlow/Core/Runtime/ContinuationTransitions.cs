@@ -47,6 +47,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             Description = "The workflow execution deadline expired",
             RequestedAt = Now
         };
+        OperatorTrace.Cancellation(instance, instance.CancellationReason, Now);
         CancelTree(checkpoint, checkpoint.Continuations[0]);
         return true;
     }

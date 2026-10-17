@@ -123,9 +123,11 @@ public interface IWorkflowClient
     /// <summary>
     /// Releases an instance stopped for an operator, at a resource limit (after raising it) or in
     /// quarantine after repeated crashes, and runs it. Its crash count starts again from zero.
+    /// <paramref name="actor"/> is who released it, recorded in the trace; none takes the client's default actor (D-38).
     /// </summary>
     Task<WorkflowExecutionResult> ReleaseAsync(
         string instanceId,
+        string? actor = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>Requests durable cancellation and unwinds an idle instance immediately.</summary>
