@@ -70,7 +70,9 @@ internal sealed class LiquidModelChecker
             case ForStatement loop:
                 var element = Elements(Expression(loop.Source));
                 Expression(loop.Limit);
-                Expression(loop.Offset);
+                // offset: continue resumes where the last loop over the same source stopped; it names no variable.
+                if (!loop.OffsetIsContinue)
+                    Expression(loop.Offset);
                 Scoped(loop.Statements, (loop.Identifier, element), ("forloop", Shape.Named(ForLoopMembers)));
                 Statements(loop.Else?.Statements);
                 break;
@@ -141,13 +143,12 @@ internal sealed class LiquidModelChecker
             case MemberExpression member:
                 return Member(member);
             case FilterExpression filter:
-                Expression(filter.Input);
+                var input = Expression(filter.Input);
                 if (!_options.Filters.TryGetValue(filter.Name, out _))
                     _diagnostics.Add(new TemplateDiagnostic($"There is no filter named '{filter.Name}'"));
-                else if (LiquidTemplateEngine.DateFilters.Contains(filter.Name) &&
-                         filter.Input is LiteralExpression { Value: StringValue text } &&
-                         !LiquidTemplateEngine.TryParseDate(text.ToStringValue(), out _))
-                    _diagnostics.Add(new TemplateDiagnostic(LiquidTemplateEngine.NotADate(text.ToStringValue())));
+                else if (LiquidTemplateEngine.DateFilters.Contains(filter.Name) && input.Text is { } text &&
+                         !LiquidTemplateEngine.TryParseDate(text, out _))
+                    _diagnostics.Add(new TemplateDiagnostic(LiquidTemplateEngine.NotADate(text)));
                 foreach (var argument in filter.Parameters ?? [])
                     Expression(argument.Expression);
                 return Shape.Unknown;
@@ -155,6 +156,8 @@ internal sealed class LiquidModelChecker
                 Expression(binary.Left);
                 Expression(binary.Right);
                 return Shape.Unknown;
+            case LiteralExpression { Value: StringValue text }:
+                return Shape.Of(typeof(string)) with { Text = text.ToStringValue() };
             case RangeExpression range:
                 Expression(range.From);
                 Expression(range.To);
@@ -279,6 +282,9 @@ internal sealed class LiquidModelChecker
     /// </summary>
     private sealed record Shape(Type? Type, IReadOnlySet<string>? Members)
     {
+        /// <summary>The text of a string written in the template, which a variable assigned it keeps.</summary>
+        public string? Text { get; init; }
+
         public static readonly Shape Unknown = new(null, null);
 
         public static Shape Of(Type type) => new(LiquidModel.Unwrap(type), null);

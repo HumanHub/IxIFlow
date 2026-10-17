@@ -7,6 +7,13 @@ namespace IxIFlow.Templates;
 public sealed class TemplateSource
 {
     public TemplateSource(string key, int version, string culture, TemplateFormat format, string content)
+        : this(key, version, culture, format, content, TemplateVariant.DigestOf(content ?? ""))
+    {
+    }
+
+    // A variant computed its digest from the same content when it was created.
+    private TemplateSource(string key, int version, string culture, TemplateFormat format, string content,
+        string digest)
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(culture);
@@ -16,14 +23,14 @@ public sealed class TemplateSource
         Culture = culture;
         Format = format;
         Content = content;
-        Digest = TemplateVariant.DigestOf(content);
+        Digest = digest;
     }
 
     public static TemplateSource Of(TemplateVersion version, TemplateVariant variant)
     {
         ArgumentNullException.ThrowIfNull(version);
         ArgumentNullException.ThrowIfNull(variant);
-        return new(version.Key, version.Version, variant.Culture, version.Format, variant.Content);
+        return new(version.Key, version.Version, variant.Culture, version.Format, variant.Content, variant.Digest);
     }
 
     public string Key { get; }

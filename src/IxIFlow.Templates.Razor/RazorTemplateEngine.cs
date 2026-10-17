@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Runtime.Loader;
 
 namespace IxIFlow.Templates.Razor;
 
@@ -77,19 +76,22 @@ public sealed class RazorTemplateEngine : ITemplateEngine
         Loaded loaded;
         lock (_gate)
         {
-            if (!_loaded.TryGetValue((model, template.Digest), out loaded!))
+            if (_loaded.TryGetValue((model, template.Digest), out loaded!))
             {
-                loaded = new Loaded(new Lazy<RazorCompilation>(() =>
-                    RazorCompiler.Compile(template, model, load: true)));
-                _loaded[(model, template.Digest)] = loaded;
-                if (_loaded.Count > _settings.MaxLoadedTemplates)
+                loaded.LastUse = ++_uses;
+            }
+            else
+            {
+                if (_loaded.Count >= _settings.MaxLoadedTemplates)
                 {
                     var oldest = _loaded.MinBy(entry => entry.Value.LastUse);
                     _loaded.Remove(oldest.Key);
                     oldest.Value.Evict();
                 }
+                loaded = new Loaded(new Lazy<RazorCompilation>(() =>
+                    RazorCompiler.Compile(template, model, load: true))) { LastUse = ++_uses };
+                _loaded[(model, template.Digest)] = loaded;
             }
-            loaded.LastUse = ++_uses;
         }
         var compilation = loaded.Compilation.Value;
         // Evicted while it compiled: this render still runs it, and its context unloads once nothing uses it.
@@ -119,8 +121,8 @@ public sealed class RazorTemplateEngine : ITemplateEngine
         // Unloading waits for the template's code to stop running and every reference to it to go.
         public void Unload()
         {
-            if (Compilation.Value.Template is { } template && Interlocked.Exchange(ref _unloaded, 1) == 0)
-                AssemblyLoadContext.GetLoadContext(template.Assembly)?.Unload();
+            if (Compilation.Value.Context is { } context && Interlocked.Exchange(ref _unloaded, 1) == 0)
+                context.Unload();
         }
     }
 }
