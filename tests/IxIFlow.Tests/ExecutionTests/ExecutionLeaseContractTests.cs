@@ -1222,8 +1222,9 @@ public sealed class ExecutionLeaseContractTests
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
+            // Long enough for the first commit on a cold store connection; the takeover waits it out.
             var formerEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromMilliseconds(100));
+                TimeSpan.FromSeconds(1));
             Assert.NotNull(formerEpoch);
             var formerOwner = new WorkflowInstance
             {
@@ -1234,7 +1235,7 @@ public sealed class ExecutionLeaseContractTests
             };
             var start = CheckpointCommit.Create(formerOwner, formerEpoch.Epoch, 0, "start");
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(start)).Status);
-            await Task.Delay(300);
+            await Task.Delay(1_200);
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5)));
 
