@@ -178,45 +178,6 @@ public class WorkflowOptions
     ///     Whether to persist workflow state
     /// </summary>
     public bool PersistState { get; set; } = true;
-
-    /// <summary>
-    ///     Priority level for workflow execution
-    /// </summary>
-    public int Priority { get; set; } = 0;
-
-    // ========== HOST SELECTION CONTROLS ==========
-
-    /// <summary>
-    ///     MUST run on this specific host (highest priority)
-    /// </summary>
-    public string? RequiredHostId { get; set; }
-
-    /// <summary>
-    ///     PREFER to run on this specific host (with fallback)
-    /// </summary>
-    public string? PreferredHostId { get; set; }
-
-    /// <summary>
-    ///     MUST have ALL of these tags to be eligible
-    /// </summary>
-    public string[] RequiredTags { get; set; } = Array.Empty<string>();
-
-    /// <summary>
-    ///     PREFER hosts with ANY of these tags
-    /// </summary>
-    public string[] PreferredTags { get; set; } = Array.Empty<string>();
-
-    /// <summary>
-    ///     Allow fallback to non-tagged hosts if no tagged hosts available
-    /// </summary>
-    public bool AllowTagFallback { get; set; } = true;
-
-    // ========== IMMEDIATE EXECUTION CONTROLS ==========
-
-    /// <summary>
-    ///     Force execution even if host is at capacity (emergency execution)
-    /// </summary>
-    public bool OverrideCapacityLimit { get; set; } = false;
 }
 
 /// <summary>

@@ -217,6 +217,44 @@ public sealed class AddressedWaitTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, forged.Status);
     }
 
+    // An event sent again under its ID, as a redelivered message would be, is answered with its first outcome and
+    // changes nothing: the next iteration's wait stays open, and only a new event answers it (D-02, D-33).
+    [Fact]
+    [Trait("Spec", "D-02")]
+    public async Task AnEventSentAgainUnderItsIdDoesNotAnswerTheNextIterationsWait()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var store = services.GetRequiredService<IWorkflowStateRepository>();
+        var started = await engine.RunAsync(LoopWorkflow(), new LoopData { Target = 2 });
+
+        var first = await engine.ResumeAsync(started.InstanceId, "approval", new Approval(), "delivery-1");
+        var revision = (await store.GetWorkflowInstanceAsync(started.InstanceId))!.Revision;
+        var again = await engine.ResumeAsync(started.InstanceId, "approval", new Approval(), "delivery-1");
+
+        Assert.Equal(WorkflowExecutionStatus.Suspended, again.Status);
+        Assert.Equal(first.Event, again.Event);
+        Assert.Equal(1, Data(again).Count);
+        Assert.Equal(revision, (await store.GetWorkflowInstanceAsync(started.InstanceId))!.Revision);
+        var next = await engine.ResumeAsync(started.InstanceId, "approval", new Approval(), "delivery-2");
+        Assert.Equal(WorkflowExecutionStatus.Success, next.Status);
+        Assert.Equal(2, Data(next).Count);
+    }
+
+    // An event ID names one event: sending another under it is refused, whatever the instance's state.
+    [Fact]
+    [Trait("Spec", "D-02")]
+    public async Task AnEventIdSentAgainWithDifferentContentIsRefused()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(LoopWorkflow(), new LoopData { Target = 2 });
+        await engine.ResumeAsync(started.InstanceId, "approval", new Approval { Approved = true }, "delivery-1");
+
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
+            engine.ResumeAsync(started.InstanceId, "approval", new Approval { Approved = false }, "delivery-1"));
+    }
+
     private static WorkflowDefinition ApprovalWorkflow(string name, TimeSpan? timeout) =>
         Workflow.Create<LoopData>(name)
             .Step<StartActivity>()

@@ -4,10 +4,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Version>1.0.0</Version>
-    <Description>SQL Server message bus and host registry for IxIFlow distributed hosting.</Description>
+    <Description>SQL Server store for IxIFlow: instances, inbox, waits, traces and the completion outbox.</Description>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\IxIFlow.Distributed\IxIFlow.Distributed.csproj" />
+    <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.2" />
   </ItemGroup>

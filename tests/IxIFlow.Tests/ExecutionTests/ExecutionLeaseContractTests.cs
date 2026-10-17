@@ -891,50 +891,6 @@ public sealed class ExecutionLeaseContractTests
             (await repository.GetWorkflowInstanceAsync(completed.InstanceId))!.Status);
     }
 
-    [Fact]
-    public async Task QueuedResumeUsesTheRequestedWaitKey()
-    {
-        var repository = new InMemoryWorkflowStateRepository();
-        var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
-        var definition = Workflow.Create<LeaseData>("QueuedWaitKey")
-            .Step<RecordActivity>()
-            .WaitFor<LeaseEvent>("approval")
-            .Step<RecordActivity>()
-            .Build();
-        var started = await host.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData());
-        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var bus = new InMemoryMessageBus();
-        var coordinator = new WorkflowCoordinator(new MockWorkflowHostClient(),
-            new InMemoryHostRegistry());
-        using var service = new WorkflowQueueService(host, NullLogger<WorkflowQueueService>.Instance,
-            bus, coordinator, new WorkflowHostOptions { HostId = "test-host" });
-        var command = new ResumeWorkflowCommand
-        {
-            InstanceId = started.InstanceId,
-            TargetHostId = "test-host",
-            Key = "other",
-            EventDataType = typeof(LeaseEvent).AssemblyQualifiedName!,
-            EventDataJson = "{}"
-        };
-        // No wait with that key is open, so the event is refused at once instead of deferred (D-33).
-        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.ProcessResumeCommandAsync(command));
-        Assert.Contains(nameof(EventRejection.NoOpenWait), refused.Message);
-
-        Assert.Equal(WorkflowStatus.Suspended,
-            (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
-        Assert.Equal(1, probe.Recorded);
-
-        command.CommandId = Guid.NewGuid().ToString("N");
-        command.Key = "approval";
-        await service.ProcessResumeCommandAsync(command);
-        Assert.Equal(WorkflowStatus.Completed,
-            (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
-        Assert.Equal(2, probe.Recorded);
-    }
-
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public async Task SqlSuspendedInstanceCanResumeOnAnotherHost()

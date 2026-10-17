@@ -348,6 +348,29 @@ public class EngineContractRegressionTests
         Assert.Equal(WorkflowExecutionStatus.Failed, result.Status);
     }
 
+    // A cancellation that arrives after the instance completed changes nothing and does not report it cancelled.
+    [Trait("Feature", "durability")]
+    [Fact]
+    public async Task CompletedInstanceStaysCompletedOnCancellation()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var engine = provider.GetRequiredService<IWorkflowClient>();
+        var completed = await engine.RunAsync(Workflow.Create<RegressionData>("CompletedBeforeCancel")
+            .Step<MarkChildActivity>().Build(), new RegressionData());
+
+        var result = await engine.CancelAsync(completed.InstanceId,
+            new CancellationReason { ReasonCode = "too-late" });
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        var saved = (await provider.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstanceAsync(completed.InstanceId))!;
+        Assert.Equal(WorkflowStatus.Completed, saved.Status);
+        Assert.Null(saved.CancellationReason);
+    }
+
     [Trait("Feature", "registration")]
     [Fact]
     public async Task FluentBuilder_ExecutesInProcessWithoutHostRegistration()
@@ -864,60 +887,6 @@ public class EngineContractRegressionTests
         var second = await engine.ResumeAsync(started.InstanceId, "second",
             new RegressionApprovalEvent { Approved = true });
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
-    }
-
-    [Trait("Feature", "distribution")]
-    [Fact]
-    public void SqlHostRegistration_UsesSharedWorkflowState()
-    {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddIxIFlowHost(_ => { }, "Server=unused;Database=unused;");
-
-        var registration = services.Last(x => x.ServiceType == typeof(IWorkflowStateRepository));
-        Assert.NotEqual(typeof(InMemoryWorkflowStateRepository), registration.ImplementationType);
-    }
-
-    [Trait("Feature", "distribution")]
-    [Fact]
-    public void DistributedHostRegistration_ResolvesWithScopeValidation()
-    {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddIxIFlowHost(_ => { });
-        services.AddSingleton(new HttpClient());
-        services.AddSingleton<IHostRegistry, InMemoryHostRegistry>();
-        services.AddSingleton<IMessageBus, InMemoryMessageBus>();
-
-        using var provider = services.BuildServiceProvider(new ServiceProviderOptions
-        {
-            ValidateOnBuild = true,
-            ValidateScopes = true
-        });
-        Assert.NotNull(provider.GetRequiredService<IWorkflowHost>());
-        Assert.Contains(provider.GetServices<IHostedService>(), service =>
-            service is WorkflowRecoveryService);
-    }
-
-    [Trait("Feature", "distribution")]
-    [Fact]
-    public void DistributedExecutionCommand_HasSerializableWorkflowReference()
-    {
-        var command = new ExecuteWorkflowCommand
-        {
-            InstanceId = "instance-1",
-            WorkflowName = "Distributed",
-            WorkflowVersion = 1,
-            WorkflowDataJson = "{}",
-            WorkflowDataType = typeof(RegressionData).AssemblyQualifiedName!
-        };
-
-        var json = JsonSerializer.Serialize(command);
-        var restored = JsonSerializer.Deserialize<ExecuteWorkflowCommand>(json);
-        Assert.NotNull(restored);
-        Assert.Equal("Distributed", restored.WorkflowName);
-        Assert.Equal(1, restored.WorkflowVersion);
-        Assert.DoesNotContain("Definition", json);
     }
 
     [Trait("Feature", "registration")]
