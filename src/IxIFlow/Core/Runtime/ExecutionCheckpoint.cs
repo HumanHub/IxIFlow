@@ -162,6 +162,13 @@ internal sealed class ExecutionCheckpoint
             continuation.DataChanges ?? []);
     }
 
+    /// <summary>A join's branches, in the order they started, found by ID rather than by scanning for each.</summary>
+    public List<ContinuationState> BranchesOf(ParallelJoinState join)
+    {
+        var byId = Continuations.ToDictionary(item => item.Id, StringComparer.Ordinal);
+        return join.ChildContinuationIds.Where(byId.ContainsKey).Select(id => byId[id]).ToList();
+    }
+
     /// <summary>The continuation a branch was forked from.</summary>
     public ContinuationState ForkParent(ContinuationState branch)
     {

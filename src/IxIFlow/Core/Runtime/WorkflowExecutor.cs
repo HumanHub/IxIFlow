@@ -242,7 +242,7 @@ internal sealed class WorkflowExecutor
                 if (checkpoint.Continuations.Any(item =>
                         item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id)) ||
                     checkpoint.Joins.Any(item => item.IsCompleting &&
-                        checkpoint.Continuations.Where(child => item.ChildContinuationIds.Contains(child.Id))
+                        checkpoint.BranchesOf(item)
                             .All(child => child.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)))
                     continue;
                 if (_transitions.MayBeDue(checkpoint))
