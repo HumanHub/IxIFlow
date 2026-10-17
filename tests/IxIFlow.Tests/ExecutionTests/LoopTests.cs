@@ -288,6 +288,7 @@ public class LoopTests
                             .Input(act => act.IterationResults).From(ctx => ctx.WorkflowData.IterationResults)
                             .Input(act => act.ExecutionLog).From(ctx => ctx.WorkflowData.ExecutionLog)
                             .Output(act => act.NewCounter).To(ctx => ctx.WorkflowData.Counter)
+                            .Output(act => act.IterationResults).To(ctx => ctx.WorkflowData.IterationResults)
                             .Output(act => act.ExecutionLog).To(ctx => ctx.WorkflowData.ExecutionLog));
                 },
                 condition => condition.WorkflowData.Counter < condition.WorkflowData.MaxIterations

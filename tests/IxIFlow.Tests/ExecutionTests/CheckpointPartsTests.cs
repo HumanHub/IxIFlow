@@ -26,7 +26,7 @@ public sealed class CheckpointPartsTests
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlServerKeepsAnInstanceAsATrunkAndParts() =>
-        StoresAnInstanceAsATrunkAndPartsAsync(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        StoresAnInstanceAsATrunkAndPartsAsync(new SqlWorkflowStateRepository(SqlTestDatabase<CheckpointPartsTests>.ConnectionString));
 
     [Fact]
     public Task AMemoryReadNeverMixesTwoCommits() =>
@@ -35,7 +35,7 @@ public sealed class CheckpointPartsTests
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task ASqlServerReadNeverMixesTwoCommits() =>
-        ReadsNeverMixTwoCommitsAsync(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        ReadsNeverMixTwoCommitsAsync(new SqlWorkflowStateRepository(SqlTestDatabase<CheckpointPartsTests>.ConnectionString));
 
     // The finished items of a parallel ForEach are stored in chunks of a fixed number of items, so an item finishing
     // rewrites one small part however long the list is, and they read back whole.
@@ -300,7 +300,7 @@ public sealed class CheckpointPartsTests
         Assert.Null(await repository.GetWorkflowInstanceAsync(instanceId));
         if (repository is SqlWorkflowStateRepository)
         {
-            await using var connection = new SqlConnection(SqlServerTestServer.ConnectionString);
+            await using var connection = new SqlConnection(SqlTestDatabase<CheckpointPartsTests>.ConnectionString);
             await connection.OpenAsync();
             await using var count = new SqlCommand(
                 "SELECT COUNT(*) FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId", connection);

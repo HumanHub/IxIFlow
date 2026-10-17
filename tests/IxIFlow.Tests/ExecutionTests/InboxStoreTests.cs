@@ -475,7 +475,7 @@ public sealed class InboxStoreTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-06")]
     public Task SqlStoreStartsAndCompletesChildrenInTheirCommits() =>
-        VerifyChildren(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyChildren(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     // A parent's commit starts a child as its own instance with the parent's wait for it; the child's
     // terminal commit appends its completion to that wait in the parent's inbox. Neither needs a relay.
