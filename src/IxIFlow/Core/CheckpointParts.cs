@@ -17,10 +17,10 @@ public static class CheckpointParts
     public const string DataKey = "d";
 
     /// <summary>
-    /// The whole instance from a stored payload and every part stored with it at the same revision. A store
-    /// reads both under one revision; the revision and runnable time are its own to set.
+    /// The whole instance at <paramref name="revision"/> from a stored payload and every part stored with it at that
+    /// revision. A store reads both under one revision; the runnable time is its own to set.
     /// </summary>
-    public static WorkflowInstance Assemble(string payload, IEnumerable<CheckpointPart> parts)
+    public static WorkflowInstance Assemble(string payload, IEnumerable<CheckpointPart> parts, long revision)
     {
         ArgumentNullException.ThrowIfNull(payload);
         ArgumentNullException.ThrowIfNull(parts);
@@ -31,20 +31,23 @@ public static class CheckpointParts
         if (stored.TryGetValue(DataKey, out var data))
             instance.WorkflowDataJson = data;
         instance.ExecutionStateJson = StoredCheckpoint.AssembleState(instance.ExecutionStateJson, stored);
-        instance.SavedParts = stored.AsReadOnly();
+        instance.Revision = revision;
+        instance.Saved(stored.AsReadOnly(), revision);
         return instance;
     }
 
     /// <summary>
-    /// The instance from a stored payload and its data part alone: its fields, its workflow data and the trunk of
-    /// its execution state. Enough for a status, a result or a stop check, never to run it.
+    /// The instance at <paramref name="revision"/> from a stored payload and its data part alone: its fields, its
+    /// workflow data and the trunk of its execution state. Enough for a status, a result or a stop check, never to run
+    /// it.
     /// </summary>
-    public static WorkflowInstance Summarize(string payload, string? data)
+    public static WorkflowInstance Summarize(string payload, string? data, long revision)
     {
         ArgumentNullException.ThrowIfNull(payload);
         var instance = Read(payload);
         if (data != null)
             instance.WorkflowDataJson = data;
+        instance.Revision = revision;
         return instance;
     }
 

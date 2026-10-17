@@ -202,10 +202,28 @@ internal sealed class ExecutionCheckpoint
     }
 
     /// <summary>A join's branches, in the order they started, found by ID rather than by scanning for each.</summary>
-    public List<ContinuationState> BranchesOf(ParallelJoinState join)
+    public List<ContinuationState> BranchesOf(ParallelJoinState join) =>
+        join.ChildContinuationIds.Select(ContinuationById).OfType<ContinuationState>().ToList();
+
+    // Continuations by ID, built when a lookup misses and dropped when continuations are removed.
+    private Dictionary<string, ContinuationState>? _byId;
+    private List<ContinuationState>? _indexed;
+
+    /// <summary>The continuation with <paramref name="id"/>, or null when there is none.</summary>
+    public ContinuationState? ContinuationById(string id)
     {
-        var byId = Continuations.ToDictionary(item => item.Id, StringComparer.Ordinal);
-        return join.ChildContinuationIds.Where(byId.ContainsKey).Select(id => byId[id]).ToList();
+        if (_byId != null && ReferenceEquals(_indexed, Continuations) && _byId.TryGetValue(id, out var found))
+            return found;
+        _indexed = Continuations;
+        _byId = Continuations.ToDictionary(item => item.Id, StringComparer.Ordinal);
+        return _byId.GetValueOrDefault(id);
+    }
+
+    /// <summary>Removes the continuations that match; the index forgets them.</summary>
+    public void RemoveContinuations(Predicate<ContinuationState> match)
+    {
+        Continuations.RemoveAll(match);
+        _byId = null;
     }
 
     /// <summary>The continuation a branch was forked from.</summary>

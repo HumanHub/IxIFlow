@@ -510,7 +510,7 @@ internal sealed class WorkflowExecutor
                 {
                     // A terminal failure cannot resume. Retain the last committed data and the
                     // execution history even if live state cannot be serialized or is over the limit.
-                    checkpoint.Continuations.Clear();
+                    checkpoint.RemoveContinuations(_ => true);
                     checkpoint.UnhandledError = null;
                     // The failure record is the last committed data without continuations; it is
                     // not held to the limit, so a failure is never lost.
@@ -687,8 +687,7 @@ internal sealed class WorkflowExecutor
     private async Task<WorkflowExecutionResult> StopAtLimitAsync(WorkflowDefinition definition,
         WorkflowInstance instance, object workflowData, IExecutionHost host, CheckpointLimitExceededException limit)
     {
-        var checkpoint = ExecutionCheckpoint.Read(
-            StoredCheckpoint.AssembleState(instance.ExecutionStateJson, instance.SavedParts ?? new Dictionary<string, string>()));
+        var checkpoint = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
         checkpoint.OperatorStop = new OperatorStopState
         {
             Kind = OperatorStopKind.ResourceLimit, Reason = limit.Message, StoppedAtUtc = Now

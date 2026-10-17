@@ -117,9 +117,9 @@ public sealed class CommitBudgetTests
     }
 
     // J-04 at scale: a commit that moves an item carries the trunk and that item's branch, however many items
-    // there are. Only four commits carry O(N): the start, whose data holds the list; the fork, which starts every
-    // item; the join's completion, which merges them and deletes their branches; and the end. In all, the bytes
-    // stay under c·N.
+    // there are. Only three commits carry O(N): the start, whose data holds the list; the first after the fork, which
+    // writes every item's branch; and the end, which completes the join, merging the items and deleting their
+    // branches. In all, the bytes stay under c·N.
     [Theory]
     [Trait("Spec", "E-12")]
     [InlineData(100)]
@@ -141,7 +141,10 @@ public sealed class CommitBudgetTests
         var commits = store.Applied;
         // 2N + 2 for the ForEach and the workflow, and two for the activity before it.
         Assert.Equal(2 * items + 4, commits.Count);
-        var perItem = commits.OrderByDescending(commit => commit.Bytes).Skip(4).ToArray();
+        var fork = commits.ToList().FindIndex(commit => commit.PartsWritten > 2);
+        Assert.True(fork > 0 && fork < commits.Count - 1, "The fork's branches are written by a commit of their own");
+        var perItem = commits.Where((_, index) => index != 0 && index != fork && index != commits.Count - 1).ToArray();
+        Assert.All(perItem, commit => Assert.Equal(0, commit.PartsDeleted));
         Assert.True(perItem.Max(commit => commit.Bytes) <= ItemCommitCeiling,
             $"An item's commit carried {perItem.Max(commit => commit.Bytes)} bytes; the ceiling is {ItemCommitCeiling}");
         // A commit writes the branches that moved: at most one whose activity ended and one whose activity started.
@@ -285,12 +288,12 @@ public sealed class CommitBudgetTests
     private static IWorkflowClient Engine(IServiceProvider services) =>
         services.GetRequiredService<IWorkflowClient>();
 
-    /// <summary>Records, for each applied commit, the bytes of state it carried and the parts it wrote.</summary>
+    /// <summary>Records, for each applied commit, the bytes of state it carried and the parts it wrote and deleted.</summary>
     private sealed class MeasuringStore : FaultInjectingRepository
     {
-        private readonly ConcurrentQueue<(long Bytes, int PartsWritten)> _applied = new();
+        private readonly ConcurrentQueue<(long Bytes, int PartsWritten, int PartsDeleted)> _applied = new();
 
-        public IReadOnlyList<(long Bytes, int PartsWritten)> Applied => _applied.ToArray();
+        public IReadOnlyList<(long Bytes, int PartsWritten, int PartsDeleted)> Applied => _applied.ToArray();
         public int Commits => _applied.Count;
         public long MaxBytes => _applied.Max(commit => commit.Bytes);
         public long TotalBytes => _applied.Sum(commit => commit.Bytes);
@@ -299,7 +302,7 @@ public sealed class CommitBudgetTests
         {
             var result = await base.CommitWorkflowInstanceAsync(commit);
             if (result.Status == WorkflowCommitStatus.Applied)
-                _applied.Enqueue((commit.StateBytes, commit.Parts.Count));
+                _applied.Enqueue((commit.StateBytes, commit.Parts.Count, commit.DeletedParts.Count));
             return result;
         }
     }

@@ -132,11 +132,19 @@ internal sealed class StoredCheckpoint
             {
                 [CheckpointParts.DataKey] = instance.WorkflowDataJson
             }, PartMarks.All);
-        if (IsTrunk(state))
-            state = AssembleState(state, instance.SavedParts ?? throw new InvalidOperationException(
-                "The instance holds the trunk of its state without the parts it was saved with"));
-        return Split(ExecutionCheckpoint.Read(state), instance.WorkflowDataJson);
+        return Split(ExecutionCheckpoint.Read(WholeState(instance)), instance.WorkflowDataJson);
     }
+
+    /// <summary>
+    /// <paramref name="instance"/>'s whole structured state: as it holds it, or assembled from the trunk it holds
+    /// after a commit and the parts that commit stored.
+    /// </summary>
+    public static string WholeState(WorkflowInstance instance) =>
+        !ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) || !IsTrunk(instance.ExecutionStateJson)
+            ? instance.ExecutionStateJson
+        : AssembleState(instance.ExecutionStateJson, instance.PartsAt(instance.Revision) ??
+            throw new InvalidOperationException(
+                "The instance holds the trunk of its state without the parts it was saved with"));
 
     /// <summary>
     /// The whole execution state from its trunk and parts. A state that was not split is returned as it is.

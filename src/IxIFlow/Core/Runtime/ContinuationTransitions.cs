@@ -887,7 +887,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var joins = checkpoint.Joins.Select(join => join.Id).ToHashSet(StringComparer.Ordinal);
         var referenced = checkpoint.Joins.Select(join => join.ParentContinuationId)
             .Concat(checkpoint.Waits.Select(wait => wait.ContinuationId)).ToHashSet(StringComparer.Ordinal);
-        checkpoint.Continuations.RemoveAll(continuation => continuation != root &&
+        checkpoint.RemoveContinuations(continuation => continuation != root &&
             continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled &&
             !(continuation.ParentJoinId != null && joins.Contains(continuation.ParentJoinId)) &&
             !referenced.Contains(continuation.Id));
