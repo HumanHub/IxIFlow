@@ -270,7 +270,8 @@ public sealed class WaitRecipeScenarios
         await cluster.Registry.RegisterWorkflowAsync(ChildApprovalRecipe.Child());
         var parent = await engine.RunAsync(ChildApprovalRecipe.Parent(), new Order { OrderId = "order-13", Amount = 70 });
         Assert.Equal(WorkflowExecutionStatus.Suspended, parent.Status);
-        var request = mailer.To("purchasing");
+        // The child runs as an instance of its own and sends its request when a slot takes it (D-17).
+        var request = await mailer.ToAsync("purchasing");
         Assert.True(ReplyToken.TryRead(request.ReplyToken, out var childId, out _, out _));
         Assert.NotEqual(parent.InstanceId, childId);
 
@@ -381,6 +382,14 @@ public sealed class WaitRecipeScenarios
         }
 
         public ApprovalRequest To(string approver) => Assert.Single(Sent, request => request.Approver == approver);
+
+        public async Task<ApprovalRequest> ToAsync(string approver)
+        {
+            using var patience = new CancellationTokenSource(Patience);
+            while (!Sent.Any(request => request.Approver == approver))
+                await Task.Delay(10, patience.Token);
+            return To(approver);
+        }
 
         public Task SendAsync(ApprovalRequest request, CancellationToken cancellationToken)
         {

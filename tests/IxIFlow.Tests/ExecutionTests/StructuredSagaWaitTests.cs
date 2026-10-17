@@ -175,6 +175,7 @@ public class StructuredSagaWaitTests
     }
 
     [Fact]
+    [Trait("Spec", "E-08")]
     public async Task WaitAnyCompensatesTheLosingSagaBeforeContinuing()
     {
         using var services = CreateServices(new InMemoryWorkflowStateRepository());
@@ -185,25 +186,28 @@ public class StructuredSagaWaitTests
                     .Step<ReserveActivity>(setup => setup
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved)
-                        .CompensateWith<ReleaseActivity>(comp => comp
+                        .CompensateWith<LoggedReleaseActivity>(comp => comp
                             .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated)))
                     .WaitFor<Approval>("loser")))
                 .Do(branch => branch.WaitFor<Approval>("winner")))
-            .Step<CompleteActivity>(setup => setup
-                .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Compensated)
-                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))
+            .Step<CountReleasesActivity>(setup => setup
+                .Output(activity => activity.Released).To(ctx => ctx.WorkflowData.Completed))
             .Build();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(definition, new SagaData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        Assert.Equal(1, Data(started).Reserved);
+        Assert.Equal(1, (await BranchProgress.ViewAsync<SagaData>(
+            services.GetRequiredService<IWorkflowStateRepository>(), started.InstanceId)).Reserved);
 
         var result = await engine.ResumeAsync(started.InstanceId, "winner", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Equal(1, Data(result).Compensated);
-        Assert.Equal(2, Data(result).Completed);
+        // The losing saga was compensated with what it reserved, and the next step saw that release when
+        // it ran; the loser's data changes, the reservation and the compensation's output, were discarded
+        // with it (D-14).
+        Assert.Equal([1], services.GetRequiredService<ReleaseLog>().Released);
+        Assert.Equal((0, 0, 1), (Data(result).Reserved, Data(result).Compensated, Data(result).Completed));
     }
 
     [Fact]
@@ -416,6 +420,8 @@ public class StructuredSagaWaitTests
         collection.AddLogging();
         collection.AddSingleton<SlowReserveProbe>();
         collection.AddTransient<SlowReserveActivity>();
+        collection.AddSingleton<ReleaseLog>();
+        collection.AddTransient<LoggedReleaseActivity>();
         collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
         var definition = Workflow.Create<SagaData>("CancelledInflightSaga")
@@ -426,7 +432,7 @@ public class StructuredSagaWaitTests
                     branch.Saga(saga => saga.Step<SlowReserveActivity>(setup => setup
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved)
-                        .CompensateWith<ReleaseActivity>(comp => comp
+                        .CompensateWith<LoggedReleaseActivity>(comp => comp
                             .Input(activity => activity.Count).From(ctx => ctx.CurrentStep.Result)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Compensated))));
                 })
@@ -442,8 +448,10 @@ public class StructuredSagaWaitTests
         var result = await executing.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Equal(1, Data(result).Reserved);
-        Assert.Equal(1, Data(result).Compensated);
+        // The reservation that succeeded after the cancellation was compensated with its result; the
+        // losing branch's data changes were discarded (D-14).
+        Assert.Equal([1], services.GetRequiredService<ReleaseLog>().Released);
+        Assert.Equal((0, 0), (Data(result).Reserved, Data(result).Compensated));
     }
 
     [Fact]
@@ -1432,6 +1440,9 @@ public class StructuredSagaWaitTests
         services.AddLogging();
         services.AddIxIFlow();
         services.AddSingleton(repository);
+        services.AddSingleton<ReleaseLog>();
+        services.AddTransient<LoggedReleaseActivity>();
+        services.AddTransient<CountReleasesActivity>();
         return services.BuildServiceProvider();
     }
 
@@ -1537,6 +1548,49 @@ public class StructuredSagaWaitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Result = Count;
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>The counts compensations released, in order.</summary>
+    public sealed class ReleaseLog
+    {
+        private readonly List<int> _released = [];
+
+        public IReadOnlyList<int> Released
+        {
+            get { lock (_released) return _released.ToArray(); }
+        }
+
+        public void Add(int count)
+        {
+            lock (_released)
+                _released.Add(count);
+        }
+    }
+
+    /// <summary>Releases like <see cref="ReleaseActivity"/> and logs the count it was given.</summary>
+    public sealed class LoggedReleaseActivity(ReleaseLog log) : IAsyncActivity
+    {
+        public int Count { get; set; }
+        public int Result { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Result = Count;
+            log.Add(Count);
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Reports how many releases the log holds when it runs.</summary>
+    public sealed class CountReleasesActivity(ReleaseLog log) : IAsyncActivity
+    {
+        public int Released { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Released = log.Released.Count;
             return Task.CompletedTask;
         }
     }

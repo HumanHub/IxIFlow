@@ -35,6 +35,14 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
         return this;
     }
 
+    public IParallelBuilder<TWorkflowData, TPreviousStepData> Combine<TValue, TCombiner>(
+        System.Linq.Expressions.Expression<Func<TWorkflowData, TValue>> property)
+        where TCombiner : ICombiner<TValue>, new()
+    {
+        Core.Runtime.BranchData.Choose(_step, property, typeof(TWorkflowData), typeof(TValue), typeof(TCombiner));
+        return this;
+    }
+
     private void SetJoinMode(ParallelJoinMode mode)
     {
         if (_step.ParallelJoinMode != ParallelJoinMode.WaitAll)

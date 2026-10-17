@@ -149,8 +149,8 @@ public enum SagaContinuationAction
 public class SagaErrorConfiguration
 {
     public CompensationStrategy CompensationStrategy { get; set; } = CompensationStrategy.CompensateAll;
-    public SagaContinuationAction ContinuationAction { get; set; } = SagaContinuationAction.Terminate;
-    //public int RetryCount { get; set; } = 0;
+    /// <summary>What follows the undo; none raises the original error again (D-36).</summary>
+    public SagaContinuationAction? ContinuationAction { get; set; }
     public RetryPolicy? RetryPolicy { get; set; } = new();
     public Type? CompensationTargetType { get; set; }
     public bool IgnoreCompensationErrors { get; set; }

@@ -7,6 +7,7 @@ internal sealed record ExecutionLimits
     public const int DefaultMaxCrashes = 3;
     public const int DefaultMaxActiveBranches = 1_000;
     public const int DefaultMaxActivitiesPerRun = 100;
+    public const int DefaultMaxForEachItems = 1_000;
     public static readonly TimeSpan DefaultParkRetriesLongerThan = TimeSpan.FromSeconds(1);
 
     public static ExecutionLimits Default { get; } = new();
@@ -25,6 +26,9 @@ internal sealed record ExecutionLimits
 
     /// <summary>How many activities one run has in flight at once; further activities wait.</summary>
     public int MaxActivitiesPerRun { get; init; } = DefaultMaxActivitiesPerRun;
+
+    /// <summary>The longest list a <c>ForEach</c> takes; a longer one stops the instance for an operator (D-34).</summary>
+    public int MaxForEachItems { get; init; } = DefaultMaxForEachItems;
 
     /// <summary>
     /// A run with nothing in flight whose next retry is further away than this gives its slot and

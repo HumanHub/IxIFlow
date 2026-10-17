@@ -181,6 +181,7 @@ public class StructuredTryWaitTests
     }
 
     [Fact]
+    [Trait("Spec", "E-08")]
     public async Task WaitAny_RunsLosingBranchFinallyBeforeContinuing()
     {
         using var services = CreateServices();
@@ -189,13 +190,16 @@ public class StructuredTryWaitTests
             .Parallel(parallel => parallel.WaitAny()
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("loser"))
-                    .Finally(body => body.Step<CountActivity>(setup => setup
+                    .Finally(body => body.Step<LoggedCountActivity>(setup => setup
+                        .Input(activity => activity.Name).From(_ => "Finally")
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally))))
-                .Do(branch => branch.Step<CountActivity>(setup => setup
+                .Do(branch => branch.Step<LoggedCountActivity>(setup => setup
+                    .Input(activity => activity.Name).From(_ => "Body")
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Body)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Body))))
-            .Step<CountActivity>(setup => setup
+            .Step<LoggedCountActivity>(setup => setup
+                .Input(activity => activity.Name).From(_ => "After")
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
@@ -204,8 +208,9 @@ public class StructuredTryWaitTests
             .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Equal(1, Data(result).Finally);
-        Assert.Equal(2, Data(result).After);
+        // The loser's Finally ran before the next step; its write was discarded with the loser (D-14).
+        Assert.Equal(["Body:1", "Finally:1", "After:1"], services.GetRequiredService<StepLog>().Entries);
+        Assert.Equal(0, Data(result).Finally);
     }
 
     [Fact]
@@ -218,16 +223,20 @@ public class StructuredTryWaitTests
                 .Do(branch => branch
                     .Try(outer => outer
                         .Try(inner => inner.WaitFor<Approval>("loser"))
-                        .Finally(inner => inner.Step<CountActivity>(setup => setup
+                        .Finally(inner => inner.Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Finally")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally))))
-                    .Finally(outer => outer.Step<CountActivity>(setup => setup
+                    .Finally(outer => outer.Step<LoggedCountActivity>(setup => setup
+                        .Input(activity => activity.Name).From(_ => "Finally")
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally))))
-                .Do(branch => branch.Step<CountActivity>(setup => setup
+                .Do(branch => branch.Step<LoggedCountActivity>(setup => setup
+                    .Input(activity => activity.Name).From(_ => "Body")
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Body)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Body))))
-            .Step<CountActivity>(setup => setup
+            .Step<LoggedCountActivity>(setup => setup
+                .Input(activity => activity.Name).From(_ => "After")
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
@@ -236,8 +245,8 @@ public class StructuredTryWaitTests
             .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Equal(2, Data(result).Finally);
-        Assert.Equal(3, Data(result).After);
+        Assert.Equal(["Body:1", "Finally:1", "Finally:2", "After:1"], services.GetRequiredService<StepLog>().Entries);
+        Assert.Equal(0, Data(result).Finally);
     }
 
     [Fact]
@@ -251,13 +260,16 @@ public class StructuredTryWaitTests
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("loser"))
                     .Finally(body => body.WaitFor<Approval>("cleanup")
-                        .Step<CountActivity>(setup => setup
+                        .Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Finally")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally))))
-                .Do(branch => branch.Step<CountActivity>(setup => setup
+                .Do(branch => branch.Step<LoggedCountActivity>(setup => setup
+                    .Input(activity => activity.Name).From(_ => "Body")
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Body)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Body))))
-            .Step<CountActivity>(setup => setup
+            .Step<LoggedCountActivity>(setup => setup
+                .Input(activity => activity.Name).From(_ => "After")
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
@@ -268,8 +280,8 @@ public class StructuredTryWaitTests
 
         var completed = await engine.ResumeAsync(started.InstanceId, "cleanup", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
-        Assert.Equal(1, Data(completed).Finally);
-        Assert.Equal(2, Data(completed).After);
+        Assert.Equal(["Body:1", "Finally:1", "After:1"], services.GetRequiredService<StepLog>().Entries);
+        Assert.Equal(0, Data(completed).Finally);
     }
 
     [Fact]
@@ -283,11 +295,13 @@ public class StructuredTryWaitTests
                 .Do(branch => branch
                     .Try(body => body.Step<StartActivity>())
                     .Finally(body => body.WaitFor<Approval>("audit")
-                        .Step<CountActivity>(setup => setup
+                        .Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Finally")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally))))
                 .Do(branch => branch.WaitFor<Approval>("winner")))
-            .Step<CountActivity>(setup => setup
+            .Step<LoggedCountActivity>(setup => setup
+                .Input(activity => activity.Name).From(_ => "After")
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
@@ -301,8 +315,8 @@ public class StructuredTryWaitTests
 
         var completed = await engine.ResumeAsync(started.InstanceId, "audit", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
-        Assert.Equal(1, Data(completed).Finally);
-        Assert.Equal(2, Data(completed).After);
+        Assert.Equal(["Finally:1", "After:1"], services.GetRequiredService<StepLog>().Entries);
+        Assert.Equal(0, Data(completed).Finally);
     }
 
     [Fact]
@@ -316,19 +330,24 @@ public class StructuredTryWaitTests
                     .Try(body => body.WaitFor<Approval>("loser"))
                     .Finally(body => body
                         .Parallel(cleanup => cleanup
-                            .Do(first => first.Step<CountActivity>(setup => setup
+                            .Do(first => first.Step<LoggedCountActivity>(setup => setup
+                                .Input(activity => activity.Name).From(_ => "Finally")
                                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
-                            .Do(second => second.Step<CountActivity>(setup => setup
+                            .Do(second => second.Step<LoggedCountActivity>(setup => setup
+                                .Input(activity => activity.Name).From(_ => "Catch")
                                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Catch)
                                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch))))
-                        .Step<CountActivity>(setup => setup
+                        .Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Finally")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally))))
-                .Do(branch => branch.Step<CountActivity>(setup => setup
+                .Do(branch => branch.Step<LoggedCountActivity>(setup => setup
+                    .Input(activity => activity.Name).From(_ => "Body")
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Body)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Body))))
-            .Step<CountActivity>(setup => setup
+            .Step<LoggedCountActivity>(setup => setup
+                .Input(activity => activity.Name).From(_ => "After")
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
@@ -337,9 +356,12 @@ public class StructuredTryWaitTests
             .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Equal(2, Data(result).Finally);
-        Assert.Equal(1, Data(result).Catch);
-        Assert.Equal(3, Data(result).After);
+        // The cleanup's own parallel merges into the loser's copy, so the step after it counts 2.
+        var log = services.GetRequiredService<StepLog>().Entries;
+        Assert.Equal("Body:1", log[0]);
+        Assert.Equal(["Catch:1", "Finally:1"], log.Skip(1).Take(2).Order());
+        Assert.Equal(["Finally:2", "After:1"], log.Skip(3));
+        Assert.Equal((0, 0), (Data(result).Finally, Data(result).Catch));
     }
 
     [Fact]
@@ -352,17 +374,21 @@ public class StructuredTryWaitTests
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("loser"))
                     .Finally(body => body
-                        .Try(inner => inner.Step<CountActivity>(setup => setup
+                        .Try(inner => inner.Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Finally")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
-                        .Finally(inner => inner.Step<CountActivity>(setup => setup
+                        .Finally(inner => inner.Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Finally")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
-                        .Step<CountActivity>(setup => setup
+                        .Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Finally")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally))))
                 .Do(branch => branch.Step<StartActivity>()))
-            .Step<CountActivity>(setup => setup
+            .Step<LoggedCountActivity>(setup => setup
+                .Input(activity => activity.Name).From(_ => "After")
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
@@ -371,8 +397,8 @@ public class StructuredTryWaitTests
             .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Equal(3, Data(result).Finally);
-        Assert.Equal(4, Data(result).After);
+        Assert.Equal(["Finally:1", "Finally:2", "Finally:3", "After:1"], services.GetRequiredService<StepLog>().Entries);
+        Assert.Equal(0, Data(result).Finally);
     }
 
     [Fact]
@@ -515,7 +541,8 @@ public class StructuredTryWaitTests
                 .Do(branch => branch.Step<ThrowOpaqueActivity>())
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("approval"))
-                    .Finally(body => body.Step<CountActivity>(setup => setup
+                    .Finally(body => body.Step<LoggedCountActivity>(setup => setup
+                        .Input(activity => activity.Name).From(_ => "Finally")
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
             .Build();
@@ -525,7 +552,9 @@ public class StructuredTryWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal("opaque 17", result.ErrorMessage);
-        Assert.Equal(1, Data(result).Finally);
+        // The sibling's Finally ran; a failed join merges nothing (D-14).
+        Assert.Equal(["Finally:1"], services.GetRequiredService<StepLog>().Entries);
+        Assert.Equal(0, Data(result).Finally);
     }
 
     [Fact]
@@ -680,7 +709,8 @@ public class StructuredTryWaitTests
                 .Do(branch => branch.Step<ThrowActivity>())
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("approval"))
-                    .Finally(body => body.Step<CountActivity>(setup => setup
+                    .Finally(body => body.Step<LoggedCountActivity>(setup => setup
+                        .Input(activity => activity.Name).From(_ => "Finally")
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
             .Build();
@@ -690,7 +720,8 @@ public class StructuredTryWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal("boom", result.ErrorMessage);
-        Assert.Equal(1, Data(result).Finally);
+        Assert.Equal(["Finally:1"], services.GetRequiredService<StepLog>().Entries);
+        Assert.Equal(0, Data(result).Finally);
     }
 
     [Fact]
@@ -701,6 +732,8 @@ public class StructuredTryWaitTests
         services.AddSingleton<CleanupJoinProbe>();
         services.AddTransient<ThrowAfterCleanupStartsActivity>();
         services.AddTransient<WaitForCleanupReleaseActivity>();
+        services.AddSingleton<StepLog>();
+        services.AddTransient<LoggedCountActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<TryData>("NestedFinallyJoin")
@@ -712,7 +745,8 @@ public class StructuredTryWaitTests
                         .Parallel(inner => inner
                             .Do(child => child.Step<WaitForCleanupReleaseActivity>())
                             .Do(child => child.Step<StartActivity>()))
-                        .Step<CountActivity>(setup => setup
+                        .Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Finally")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
             .Build();
@@ -722,7 +756,8 @@ public class StructuredTryWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("outer failure", result.ErrorMessage);
-        Assert.Equal(1, Data(result).Finally);
+        Assert.Equal(["Finally:1"], provider.GetRequiredService<StepLog>().Entries);
+        Assert.Equal(0, Data(result).Finally);
     }
 
     [Fact]
@@ -766,14 +801,17 @@ public class StructuredTryWaitTests
                     .Try(body => body.WaitFor<Approval>("approval"))
                     .Finally(body => body
                         .Try(inner => inner.Step<ThrowActivity>())
-                        .Catch<InvalidOperationException, MessageFault>(inner => inner.Step<CountActivity>(setup => setup
+                        .Catch<InvalidOperationException, MessageFault>(inner => inner.Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Catch")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Catch)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Catch)))
-                        .Finally(inner => inner.Step<CountActivity>(setup => setup
+                        .Finally(inner => inner.Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Finally")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
                 .Do(branch => branch.Step<StartActivity>()))
-            .Step<CountActivity>(setup => setup
+            .Step<LoggedCountActivity>(setup => setup
+                .Input(activity => activity.Name).From(_ => "After")
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.After)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
@@ -782,9 +820,8 @@ public class StructuredTryWaitTests
             .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Equal(1, Data(result).Catch);
-        Assert.Equal(1, Data(result).Finally);
-        Assert.Equal(1, Data(result).After);
+        Assert.Equal(["Catch:1", "Finally:1", "After:1"], services.GetRequiredService<StepLog>().Entries);
+        Assert.Equal((0, 0, 1), (Data(result).Catch, Data(result).Finally, Data(result).After));
     }
 
     [Fact]
@@ -855,7 +892,8 @@ public class StructuredTryWaitTests
                 .Do(branch => branch
                     .Try(body => body.WaitFor<Approval>("approval"))
                     .Finally(body => body.WaitFor<Approval>("cleanup")
-                        .Step<CountActivity>(setup => setup
+                        .Step<LoggedCountActivity>(setup => setup
+                            .Input(activity => activity.Name).From(_ => "Finally")
                             .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                             .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))))
             .Build();
@@ -866,7 +904,8 @@ public class StructuredTryWaitTests
         var result = await engine.ResumeAsync(started.InstanceId, "cleanup", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal("boom", result.ErrorMessage);
-        Assert.Equal(1, Data(result).Finally);
+        Assert.Equal(["Finally:1"], services.GetRequiredService<StepLog>().Entries);
+        Assert.Equal(0, Data(result).Finally);
     }
 
     [Fact]
@@ -1343,6 +1382,8 @@ public class StructuredTryWaitTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<StepLog>();
+        services.AddTransient<LoggedCountActivity>();
         services.AddIxIFlow();
         if (repository != null)
             services.AddSingleton(repository);
@@ -1610,6 +1651,38 @@ public class StructuredTryWaitTests
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             throw new ArgumentException("catch failed");
+    }
+
+    /// <summary>What the logged steps did, in order: each entry is the property a step wrote and its value.</summary>
+    public sealed class StepLog
+    {
+        private readonly List<string> _entries = [];
+
+        public IReadOnlyList<string> Entries
+        {
+            get { lock (_entries) return _entries.ToArray(); }
+        }
+
+        public void Add(string entry)
+        {
+            lock (_entries)
+                _entries.Add(entry);
+        }
+    }
+
+    /// <summary>Counts like <see cref="CountActivity"/> and logs what it wrote, so cleanup proves it ran even when its data is discarded.</summary>
+    public sealed class LoggedCountActivity(StepLog log) : IAsyncActivity
+    {
+        public string Name { get; set; } = "";
+        public int Count { get; set; }
+        public int Result { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Result = Count + 1;
+            log.Add($"{Name}:{Result}");
+            return Task.CompletedTask;
+        }
     }
 
     public sealed class CountActivity : IAsyncActivity

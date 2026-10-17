@@ -74,7 +74,6 @@ public class FaultInjectingRepository : IWorkflowStateRepository, IWorkflowCompl
         _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
     public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         _inner.ReleaseExecutionLeaseAsync(instanceId, token);
-    public Task MakeRunnableAsync(string instanceId) => _inner.MakeRunnableAsync(instanceId);
     public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) => _inner.SaveWorkflowInstanceAsync(instance);
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
         _inner.GetWorkflowInstancesByNameAsync(workflowName);

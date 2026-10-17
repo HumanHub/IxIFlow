@@ -806,7 +806,9 @@ public class EngineContractRegressionTests
 
         var suspended = await engine.RunAsync(definition, new RegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
-        var suspendedData = Assert.IsType<RegressionData>(suspended.WorkflowData);
+        // While the parallel step is open, the branches' work is read from their saved changes (D-14).
+        var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
+        var suspendedData = await BranchProgress.ViewAsync<RegressionData>(repository, suspended.InstanceId);
         Assert.Equal(1, suspendedData.ParallelCompletedBranchCount);
         Assert.False(suspendedData.AfterTryExecuted);
 
@@ -814,7 +816,7 @@ public class EngineContractRegressionTests
             new RegressionApprovalEvent { Approved = true });
         Assert.True(resumed.Status == WorkflowExecutionStatus.Suspended,
             $"Expected a second parallel wait, got {resumed.Status}: {resumed.ErrorMessage}");
-        var data = Assert.IsType<RegressionData>(resumed.WorkflowData);
+        var data = await BranchProgress.ViewAsync<RegressionData>(repository, resumed.InstanceId);
         Assert.Equal(1, data.ParallelCompletedBranchCount);
         Assert.True(data.ParallelWaitBranchCompleted);
         Assert.False(data.AfterTryExecuted);
@@ -1094,7 +1096,7 @@ public class EngineContractRegressionTests
                 .Output(data => data.Executed).To(ctx => ctx.WorkflowData.ChildExecuted))
             .Build();
         var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
-            .RunAsync(parent, new RegressionData { Value = "input" });
+            .RunToEndAsync(parent, new RegressionData { Value = "input" });
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);
@@ -1128,7 +1130,7 @@ public class EngineContractRegressionTests
                 .Step<MarkChildActivity>(setup => setup
                     .Output(a => a.Executed).To(ctx => ctx.WorkflowData.Executed))
                 .Build());
-        var result = await engine.RecoverAsync(saved.InstanceId);
+        var result = await engine.FinishedAsync(await engine.RecoverAsync(saved.InstanceId));
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);

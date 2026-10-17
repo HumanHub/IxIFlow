@@ -202,6 +202,8 @@ public sealed class RequestStepTests
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         while ((await repository.GetWaitAsync(started.InstanceId, waitId))!.IsOpen)
             await Task.Delay(20);
+        // The timeout's own pass may still be running; the reply is sent once the instance is idle again.
+        await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Idle).WaitAsync(TimeSpan.FromSeconds(10));
 
         var late = await engine.ReplyAsync(token, new ApprovalDecision { Approved = true });
 
@@ -235,6 +237,294 @@ public sealed class RequestStepTests
             .Step<StartActivity>().Request<StartActivity>("approval"));
     }
 
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task ARequestInASagaIsCompensatedAndALateAnswerIsRefusedAsCancelled()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("CompensatedRequest")
+            .Step<StartActivity>()
+            .Saga(saga => saga
+                .Request<RequestApproval>("approval", step => step
+                    .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
+                    .CompensateWith<WithdrawRequest>(withdraw => withdraw
+                        .Output(activity => activity.Withdrawn).To(ctx => ctx.WorkflowData.Withdrawn)))
+                .Step<FailingActivity>()
+                .WaitFor<ApprovalDecision>("approval", configure: wait => wait
+                    .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved)))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenContinue())
+            .WaitFor<OtherAnswer>("done")
+            .Build();
+
+        var started = await engine.RunAsync(definition, new OrderData { Amount = 10 });
+
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        Assert.True(Data(started).Withdrawn);
+        var late = await engine.ReplyAsync(Assert.Single(outbox.Sent).Token, new ApprovalDecision { Approved = true });
+        EventAssert.Rejected(late, EventRejection.WaitCancelled);
+        Assert.False(Data(late).Approved);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task ASagaRetrySendsANewRequestAndTheOldTokenCannotAnswerIt()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("RetriedRequest")
+            .Step<StartActivity>()
+            .Saga(saga => saga
+                .Request<RequestApproval>("approval", step => step
+                    .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount))
+                .Step<FailOnceActivity>()
+                .WaitFor<ApprovalDecision>("approval", configure: wait => wait
+                    .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved)))
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
+            .Build();
+
+        var started = await engine.RunAsync(definition, new OrderData { Amount = 10 });
+
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        Assert.Equal(2, outbox.Sent.Count);
+        var (first, second) = (outbox.Sent[0].Token, outbox.Sent[1].Token);
+        Assert.NotEqual(first, second);
+        EventAssert.Rejected(await engine.ReplyAsync(first, new ApprovalDecision { Approved = true }),
+            EventRejection.WaitCancelled);
+        var answered = await engine.ReplyAsync(second, new ApprovalDecision { Approved = true });
+        EventAssert.Consumed(answered);
+        Assert.Equal(WorkflowExecutionStatus.Success, answered.Status);
+        Assert.True(Data(answered).Approved);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task AnAnswerTakenBeforeASagaFailsIsNotTakenAgainByTheRetry()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("AnsweredThenRetried")
+            .Step<StartActivity>()
+            .Saga(saga => saga
+                .Request<RequestApproval>("approval", step => step
+                    .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount))
+                .WaitFor<ApprovalDecision>("approval", configure: wait => wait
+                    .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved))
+                .Step<FailOnceActivity>())
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
+            .Build();
+        await engine.RunAsync(definition, new OrderData { Amount = 10 });
+        var first = Assert.Single(outbox.Sent).Token;
+
+        // The answer completes the wait; the next step fails and the retry asks again.
+        var retried = await engine.ReplyAsync(first, new ApprovalDecision { Approved = true });
+
+        EventAssert.Consumed(retried);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, retried.Status);
+        Assert.Equal(2, outbox.Sent.Count);
+        EventAssert.Rejected(await engine.ReplyAsync(first, new ApprovalDecision { Approved = true }),
+            EventRejection.WaitAnswered);
+        var finished = await engine.ReplyAsync(outbox.Sent[1].Token, new ApprovalDecision { Approved = true });
+        EventAssert.Consumed(finished);
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task ASagaTerminatedInThePassThatAbandonedItsRequestClosesTheWaitAsCancelled()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("TerminatedRequest")
+            .Step<StartActivity>()
+            .Saga(saga => saga
+                .Request<RequestApproval>("approval")
+                .OutcomeOn(ctx => ctx.WorkflowData.Broken, outcomes => outcomes
+                    .Outcome(true, branch => branch.Step<StartActivity>())
+                    .DefaultOutcome(branch => branch.Step<StartActivity>()))
+                .WaitFor<ApprovalDecision>("approval"))
+            // Keeping the request would be refused at build: its answer would be lost with the saga (D-36).
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenTerminate())
+            .Build();
+
+        var started = await engine.RunAsync(definition, new OrderData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, started.Status);
+        EventAssert.Rejected(await engine.ReplyAsync(Assert.Single(outbox.Sent).Token,
+            new ApprovalDecision { Approved = true }), EventRejection.WaitCancelled);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task ARetryOnAnotherPathKeepsReplayingWhatThatPathAccepted()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("DivergingRetries")
+            .Step<StartActivity>()
+            .Saga(saga => saga
+                .Request<RequestApproval>("approval")
+                .WaitFor<ApprovalDecision>("approval", configure: wait => wait
+                    .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved))
+                .OutcomeOn(ctx => ctx.WorkflowData.Approved, outcomes => outcomes
+                    .Outcome(true, branch => branch.WaitFor<OtherAnswer>("approved-note"))
+                    .DefaultOutcome(branch => branch.WaitFor<OtherAnswer>("rejected-note")))
+                .Step<FailTwiceActivity>())
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(2))
+            .Build();
+        var started = await engine.RunAsync(definition, new OrderData());
+
+        // The first attempt is approved and takes the approved note, then fails.
+        await engine.ReplyAsync(outbox.Sent[0].Token, new ApprovalDecision { Approved = true });
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approved-note", new OtherAnswer()));
+        // The second is rejected and takes the rejected note, then fails.
+        await engine.ReplyAsync(outbox.Sent[1].Token, new ApprovalDecision { Approved = false });
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "rejected-note", new OtherAnswer()));
+        // The third is rejected again: the rejected note is replayed and the saga completes.
+        var finished = await engine.ReplyAsync(outbox.Sent[2].Token, new ApprovalDecision { Approved = false });
+
+        EventAssert.Consumed(finished);
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task CancellingWhileABranchAwaitsResolutionClosesItsRequestsWait()
+    {
+        var store = new FaultInjectingRepository();
+        var outbox = new Outbox();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var definition = Workflow.Create<OrderData>("ResolutionThenCancel")
+            .Step<StartActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch
+                    .Request<RequestApproval>("approval")
+                    .Step<SetLinesActivity>(step => step
+                        .Output(activity => activity.Lines).To(ctx => ctx.WorkflowData.Lines))
+                    .WaitFor<ApprovalDecision>("approval"))
+                .Do(branch => branch.WaitFor<OtherAnswer>("other")))
+            .Build();
+        // The host dies as it saves the step after the request, which then awaits an operator while the
+        // other branch waits.
+        store.FailCommit = instance => instance.ExecutionStateJson.Contains("\"Path\":[\"Lines\"],\"Value\":\"7\"");
+        using (var first = HostOn(store, outbox))
+            await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new OrderData(), new WorkflowOptions { InstanceId = instanceId }));
+        store.FailCommit = _ => false;
+        using var second = HostOn(store, outbox);
+        var engine = second.GetRequiredService<IWorkflowClient>();
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, (await engine.RecoverAsync(instanceId)).Status);
+
+        await engine.CancelAsync(instanceId, new CancellationReason { ReasonCode = "withdrawn" });
+
+        EventAssert.Rejected(await engine.ReplyAsync(Assert.Single(outbox.Sent).Token,
+            new ApprovalDecision { Approved = true }), EventRejection.WaitCancelled);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task CancellingARunWhileABranchAwaitsResolutionClosesItsRequestsWait()
+    {
+        var store = new FaultInjectingRepository();
+        var outbox = new Outbox();
+        var gate = new StepGate();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var definition = Workflow.Create<OrderData>("ResolutionThenCancelWhileRunning")
+            .Step<StartActivity>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch
+                    .Request<RequestApproval>("approval")
+                    .Step<SetLinesActivity>(step => step
+                        .Output(activity => activity.Lines).To(ctx => ctx.WorkflowData.Lines))
+                    .WaitFor<ApprovalDecision>("approval"))
+                .Do(branch => branch.WaitFor<OtherAnswer>("go").Step<GatedActivity>()))
+            .Build();
+        store.FailCommit = instance => instance.ExecutionStateJson.Contains("\"Path\":[\"Lines\"],\"Value\":\"7\"");
+        using (var first = HostOn(store, outbox, gate))
+            await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new OrderData(), new WorkflowOptions { InstanceId = instanceId }));
+        store.FailCommit = _ => false;
+        using var second = HostOn(store, outbox, gate);
+        var engine = second.GetRequiredService<IWorkflowClient>();
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await engine.RecoverAsync(instanceId);
+
+        // The other branch runs; the first is back to awaiting resolution when the cancellation arrives.
+        var running = engine.ResumeAsync(instanceId, "go", new OtherAnswer());
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await engine.CancelAsync(instanceId, new CancellationReason { ReasonCode = "withdrawn" });
+        await running.WaitAsync(TimeSpan.FromSeconds(10));
+
+        EventAssert.Rejected(await engine.ReplyAsync(Assert.Single(outbox.Sent).Token,
+            new ApprovalDecision { Approved = true }), EventRejection.WaitCancelled);
+    }
+
+    private static ServiceProvider HostOn(IWorkflowStateRepository store, Outbox outbox, StepGate? gate = null)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(store);
+        services.AddSingleton(outbox);
+        services.AddSingleton(gate ?? new StepGate());
+        services.AddTransient<RequestApproval>();
+        services.AddTransient<GatedActivity>();
+        services.AddIxIFlow();
+        return services.BuildServiceProvider();
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public async Task ARetryOnAnotherPathKeepsEveryWaitItAcceptsThere()
+    {
+        using var services = Services();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var outbox = services.GetRequiredService<Outbox>();
+        var definition = Workflow.Create<OrderData>("DivergingRetriesTwoWaits")
+            .Step<StartActivity>()
+            .Saga(saga => saga
+                .Request<RequestApproval>("approval")
+                .WaitFor<ApprovalDecision>("approval", configure: wait => wait
+                    .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved))
+                .OutcomeOn(ctx => ctx.WorkflowData.Approved, outcomes => outcomes
+                    .Outcome(true, branch => branch.WaitFor<OtherAnswer>("approved-note"))
+                    .DefaultOutcome(branch => branch
+                        .WaitFor<OtherAnswer>("rejected-note")
+                        .WaitFor<OtherAnswer>("rejected-sign")))
+                .Step<FailTwiceActivity>())
+            .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(2))
+            .Build();
+        var started = await engine.RunAsync(definition, new OrderData());
+
+        await engine.ReplyAsync(outbox.Sent[0].Token, new ApprovalDecision { Approved = true });
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approved-note", new OtherAnswer()));
+        // The second attempt takes the other path and accepts two waits there, then fails.
+        await engine.ReplyAsync(outbox.Sent[1].Token, new ApprovalDecision { Approved = false });
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "rejected-note", new OtherAnswer()));
+        EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "rejected-sign", new OtherAnswer()));
+        // The third replays both and completes.
+        var finished = await engine.ReplyAsync(outbox.Sent[2].Token, new ApprovalDecision { Approved = false });
+
+        EventAssert.Consumed(finished);
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+    }
+
+    [Fact]
+    [Trait("Spec", "D-16")]
+    public void ARequestInASagaNeedsItsWaitForInTheSaga()
+    {
+        EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<OrderData>("SagaWithoutWait")
+            .Step<StartActivity>()
+            .Saga(saga => saga.Request<RequestApproval>("approval"))
+            .WaitFor<ApprovalDecision>("approval")
+            .Build());
+    }
+
     private static OrderData Data(WorkflowExecutionResult result) => Assert.IsType<OrderData>(result.WorkflowData);
 
     private static ServiceProvider Services()
@@ -245,6 +535,9 @@ public sealed class RequestStepTests
         services.AddSingleton<StepGate>();
         services.AddTransient<RequestApproval>();
         services.AddTransient<GatedActivity>();
+        services.AddSingleton<Attempts>();
+        services.AddTransient<FailOnceActivity>();
+        services.AddTransient<FailTwiceActivity>();
         services.AddIxIFlow();
         return services.BuildServiceProvider();
     }
@@ -254,6 +547,10 @@ public sealed class RequestStepTests
         public decimal Amount { get; set; }
         public bool Approved { get; set; }
         public int Lines { get; set; }
+        public bool Withdrawn { get; set; }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool Broken => throw new InvalidOperationException("broken");
     }
 
     public sealed class ApprovalDecision
@@ -288,6 +585,57 @@ public sealed class RequestStepTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             outbox.Send(context.Reply!.Token, Amount);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class WithdrawRequest : IAsyncActivity
+    {
+        public bool Withdrawn { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Withdrawn = true;
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class FailingActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("stock unavailable");
+    }
+
+    public sealed class Attempts
+    {
+        public int Count;
+    }
+
+    /// <summary>Fails on its first attempt in the test only.</summary>
+    public sealed class FailOnceActivity(Attempts attempts) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Interlocked.Increment(ref attempts.Count) == 1
+                ? throw new InvalidOperationException("first attempt")
+                : Task.CompletedTask;
+    }
+
+    /// <summary>Fails on its first two attempts in the test.</summary>
+    public sealed class FailTwiceActivity(Attempts attempts) : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Interlocked.Increment(ref attempts.Count) <= 2
+                ? throw new InvalidOperationException("not yet")
+                : Task.CompletedTask;
+    }
+
+    public sealed class SetLinesActivity : IAsyncActivity
+    {
+        public int Lines { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Lines = 7;
             return Task.CompletedTask;
         }
     }
