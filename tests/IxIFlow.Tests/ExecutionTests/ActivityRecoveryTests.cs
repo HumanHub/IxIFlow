@@ -135,10 +135,9 @@ public sealed class ActivityRecoveryTests
 
         var saved = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         Assert.Equal(1, ledger.ChargeCount);
-        Assert.Equal(1, saved.ExecutionHistory.Count(entry =>
-            entry.EntryType == TraceEntryType.ActivityStarted));
-        Assert.DoesNotContain(saved.ExecutionHistory, entry =>
-            entry.EntryType == TraceEntryType.ActivityCompleted);
+        var trace = await TraceAsync(store, saved.InstanceId);
+        Assert.Equal(1, trace.Count(entry => entry.EntryType == TraceEntryType.ActivityStarted));
+        Assert.DoesNotContain(trace, entry => entry.EntryType == TraceEntryType.ActivityCompleted);
 
         var recovered = await engine.RecoverAsync(saved.InstanceId);
 
@@ -185,8 +184,7 @@ public sealed class ActivityRecoveryTests
         var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         var unresolved = await engine.RecoverAsync(running.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, unresolved.Status);
-        var pending = (await store.GetWorkflowInstanceAsync(running.InstanceId))!;
-        var invocationId = pending.ExecutionHistory.Last(entry =>
+        var invocationId = (await TraceAsync(store, running.InstanceId)).Last(entry =>
             entry.EntryType == TraceEntryType.ActivityStarted).Metadata["InvocationId"].ToString()!;
 
         var resolved = await engine.ResolveAsync(running.InstanceId, invocationId,
@@ -198,7 +196,7 @@ public sealed class ActivityRecoveryTests
         Assert.Equal(WorkflowExecutionStatus.Success, resolved.Status);
         Assert.Equal("observed-charge", ((ChargeData)resolved.WorkflowData!).ChargeId);
         Assert.Equal(1, ledger.ChargeCount);
-        var history = (await store.GetWorkflowInstanceAsync(running.InstanceId))!.ExecutionHistory;
+        var history = await TraceAsync(store, running.InstanceId);
         var decision = history.Last(entry => entry.EntryType == TraceEntryType.ActivityStarted);
         Assert.Equal("OperatorCompleted", decision.Metadata["Kind"].ToString());
         Assert.Equal("operator-1", decision.Metadata["DecidedBy"].ToString());
@@ -217,8 +215,7 @@ public sealed class ActivityRecoveryTests
         var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
             (await engine.RecoverAsync(running.InstanceId)).Status);
-        var pending = (await store.GetWorkflowInstanceAsync(running.InstanceId))!;
-        var invocationId = pending.ExecutionHistory.Last(entry =>
+        var invocationId = (await TraceAsync(store, running.InstanceId)).Last(entry =>
             entry.EntryType == TraceEntryType.ActivityStarted).Metadata["InvocationId"].ToString()!;
 
         var resolved = await engine.ResolveAsync(running.InstanceId, invocationId,
@@ -360,8 +357,7 @@ public sealed class ActivityRecoveryTests
             OrdinaryChargeWorkflow(), new ChargeData { OrderId = "missing-output" }));
         var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         await engine.RecoverAsync(running.InstanceId);
-        var pending = (await store.GetWorkflowInstanceAsync(running.InstanceId))!;
-        var invocationId = pending.ExecutionHistory.Last(entry =>
+        var invocationId = (await TraceAsync(store, running.InstanceId)).Last(entry =>
             entry.EntryType == TraceEntryType.ActivityStarted).Metadata["InvocationId"].ToString()!;
 
         await Assert.ThrowsAsync<ArgumentException>(() => engine.ResolveAsync(
@@ -384,8 +380,7 @@ public sealed class ActivityRecoveryTests
             OrdinaryChargeWorkflow(), new ChargeData { OrderId = "resolution-crash" }));
         var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         await engine.RecoverAsync(running.InstanceId);
-        var pending = (await store.GetWorkflowInstanceAsync(running.InstanceId))!;
-        var invocationId = pending.ExecutionHistory.Last(entry =>
+        var invocationId = (await TraceAsync(store, running.InstanceId)).Last(entry =>
             entry.EntryType == TraceEntryType.ActivityStarted).Metadata["InvocationId"].ToString()!;
         store.FailCompletionBeforeApply = 3;
 
@@ -668,11 +663,11 @@ public sealed class ActivityRecoveryTests
         var data = Assert.IsType<ChargeData>(result.WorkflowData);
         Assert.Equal(0, data.FirstIndex);
         Assert.Equal(1, data.SecondIndex);
-        var saved = (await store.GetWorkflowInstanceAsync(result.InstanceId))!;
-        Assert.Equal([0, 1], saved.ExecutionHistory
+        var trace = await TraceAsync(store, result.InstanceId);
+        Assert.Equal([0, 1], trace
             .Where(entry => entry.EntryType == TraceEntryType.ActivityStarted)
             .Select(entry => entry.StepNumber));
-        Assert.Equal([0, 1], saved.ExecutionHistory
+        Assert.Equal([0, 1], trace
             .Where(entry => entry.EntryType == TraceEntryType.ActivityCompleted)
             .Select(entry => entry.StepNumber));
     }
@@ -809,11 +804,10 @@ public sealed class ActivityRecoveryTests
 
         public async Task<string> ChargeAsync(string instanceId, string invocationId)
         {
-            var saved = await store.GetWorkflowInstanceAsync(instanceId);
-            SawCommittedStart = saved?.ExecutionHistory.Any(entry =>
+            SawCommittedStart = (await TraceAsync(store, instanceId)).Any(entry =>
                 entry.EntryType == TraceEntryType.ActivityStarted &&
                 entry.Metadata.TryGetValue("InvocationId", out var id) &&
-                id?.ToString() == invocationId) == true;
+                id?.ToString() == invocationId);
             if (!_charges.TryGetValue(invocationId, out var chargeId))
             {
                 chargeId = $"charge-{++ChargeCount}";
@@ -910,16 +904,16 @@ public sealed class ActivityRecoveryTests
 
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            var instance = commit.ReadTrunk();
             if (FailNextCommits-- > 0)
             {
                 throw new IOException("Checkpoint unavailable");
             }
             if (instance.Status == WorkflowStatus.Failed && FailFailureCommits-- > 0)
                 throw new IOException("Checkpoint unavailable");
-            var started = instance.ExecutionHistory.LastOrDefault()?.EntryType ==
+            var started = commit.ReadTraceEntries().LastOrDefault()?.EntryType ==
                 TraceEntryType.ActivityStarted;
-            var completed = instance.ExecutionHistory.LastOrDefault()?.EntryType ==
+            var completed = commit.ReadTraceEntries().LastOrDefault()?.EntryType ==
                 TraceEntryType.ActivityCompleted;
             if (completed && FailCompletionBeforeApply-- > 0)
                 throw new IOException("Completion commit unavailable");
@@ -943,6 +937,9 @@ public sealed class ActivityRecoveryTests
             _inner.GetWorkflowInstancesByStatusAsync(status);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
             _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+            int limit = 1000) =>
+            _inner.GetTraceAsync(instanceId, afterSequence, limit);
         public Task DeleteWorkflowInstanceAsync(string instanceId) =>
             _inner.DeleteWorkflowInstanceAsync(instanceId);
     }
@@ -992,4 +989,9 @@ public sealed class ActivityRecoveryTests
             return Task.CompletedTask;
         }
     }
+
+    // What the instance's commits stored of its trace (G-01).
+    private static async Task<IReadOnlyList<ExecutionTraceEntry>> TraceAsync(IWorkflowStateRepository store,
+        string instanceId) =>
+        (await store.GetTraceAsync(instanceId)).Select(stored => stored.Entry).ToArray();
 }

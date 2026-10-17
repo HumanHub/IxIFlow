@@ -146,6 +146,18 @@ public interface IWorkflowClient
 
     /// <summary>Lists the saved activity attempts awaiting an operator decision.</summary>
     Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId);
+
+    /// <summary>
+    /// Where the instance's branches are and which scopes they are in, computed from its saved checkpoint and
+    /// its registered definition; null when the instance does not exist.
+    /// </summary>
+    Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId);
+
+    /// <summary>
+    /// The instance's trace: what its runs recorded and committed, in order (G-01). A run's result carries the
+    /// entries of that run.
+    /// </summary>
+    Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId);
 }
 
 /// <summary>What <see cref="IWorkflowClient.AwaitAsync"/> waits for.</summary>

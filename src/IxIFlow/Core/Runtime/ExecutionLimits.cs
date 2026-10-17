@@ -35,6 +35,9 @@ internal sealed record ExecutionLimits
     /// lease back and is resumed on time (C-03); a shorter backoff is slept through in the slot.
     /// </summary>
     public TimeSpan ParkRetriesLongerThan { get; init; } = DefaultParkRetriesLongerThan;
+
+    /// <summary>Serialize every part at each commit and fail it when one changed without being marked (A-08).</summary>
+    public bool VerifyCheckpointParts { get; init; }
 }
 
 /// <summary>A configured limit would be exceeded; nothing over it was committed (D-28).</summary>

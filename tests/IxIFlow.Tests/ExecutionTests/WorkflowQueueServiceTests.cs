@@ -50,9 +50,8 @@ public sealed class WorkflowQueueServiceTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             processing.WaitAsync(TimeSpan.FromSeconds(5)));
 
-        var saved = (await provider.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstanceAsync(instanceId))!;
-        Assert.Contains(saved.ExecutionHistory, entry =>
+        var trace = await provider.GetRequiredService<IWorkflowStateRepository>().GetTraceAsync(instanceId);
+        Assert.Contains(trace.Select(stored => stored.Entry), entry =>
             entry.EntryType == TraceEntryType.ActivityCompleted &&
             entry.ActivityName.Contains("BlockingActivity"));
         var recovered = await provider.GetRequiredService<IWorkflowClient>()
@@ -810,6 +809,10 @@ public sealed class WorkflowQueueServiceTests
             string eventId, CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
         public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
+            throw new NotSupportedException();
+        public Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId) =>
+            throw new NotSupportedException();
+        public Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
             throw new NotSupportedException();
     }
 

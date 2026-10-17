@@ -53,8 +53,8 @@ public class ParallelApprovalContractTests
         Assert.True(started.Status == WorkflowExecutionStatus.Suspended, started.ErrorMessage);
         Assert.Equal(1, (await Saved(services, started)).FinanceStarted);
         Assert.Equal(1, (await Saved(services, started)).LegalStarted);
-        Assert.Equal(2, (await repository.GetWorkflowInstanceAsync(started.InstanceId))!
-            .ExecutionSnapshot!.Pointers.Count(pointer => pointer.Status == "Waiting"));
+        Assert.Equal(2, (await engine.GetSnapshotAsync(started.InstanceId))!
+            .Pointers.Count(pointer => pointer.Status == "Waiting"));
 
         var firstReply = await engine.ResumeAsync(started.InstanceId, first,
             Reply(first, approved: true));
@@ -217,8 +217,8 @@ public class ParallelApprovalContractTests
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, unmatched.Status);
         EventAssert.Rejected(unmatched, EventRejection.NotMatched);
-        var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
-        Assert.Equal(2, saved!.ExecutionSnapshot!.Pointers.Count(pointer => pointer.Status == "Waiting"));
+        Assert.Equal(2, (await engine.GetSnapshotAsync(started.InstanceId))!.Pointers
+            .Count(pointer => pointer.Status == "Waiting"));
 
         await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true));
         var completed = await engine.ResumeAsync(started.InstanceId, "legal",
@@ -375,8 +375,9 @@ public class ParallelApprovalContractTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(WorkflowStatus.Failed, saved!.Status);
-        Assert.Equal(WorkflowStatus.Failed, saved.ExecutionSnapshot!.Status);
-        Assert.DoesNotContain(saved.ExecutionSnapshot.Pointers, pointer => pointer.Status == "Waiting");
+        var snapshot = (await engine.GetSnapshotAsync(result.InstanceId))!;
+        Assert.Equal(WorkflowStatus.Failed, snapshot.Status);
+        Assert.DoesNotContain(snapshot.Pointers, pointer => pointer.Status == "Waiting");
     }
 
     [Fact]
@@ -1672,11 +1673,13 @@ public class ParallelApprovalContractTests
             return _inner.SaveWorkflowInstanceAsync(instance);
         }
 
-        public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            // The whole instance the commit saves: the commit applied to the instance it was based on.
+            var instance = commit.ReadInstance(
+                commit.ReplacesParts ? null : await _inner.GetWorkflowInstanceAsync(commit.InstanceId));
             ObserveSave(instance);
-            return _inner.CommitWorkflowInstanceAsync(commit);
+            return await _inner.CommitWorkflowInstanceAsync(commit);
         }
 
         private void ObserveSave(WorkflowInstance instance)
@@ -1708,6 +1711,9 @@ public class ParallelApprovalContractTests
 
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
             _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+            int limit = 1000) =>
+            _inner.GetTraceAsync(instanceId, afterSequence, limit);
 
         public Task DeleteWorkflowInstanceAsync(string instanceId) => _inner.DeleteWorkflowInstanceAsync(instanceId);
     }
