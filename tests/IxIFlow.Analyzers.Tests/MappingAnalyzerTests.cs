@@ -64,6 +64,15 @@ public sealed class MappingAnalyzerTests
             public override int Amount { get; set; }
         }
 
+        public sealed class ChildFlow : IxIFlow.Builders.Interfaces.IWorkflow<ChildData>
+        {
+            public int Version => 1;
+
+            public void Build(IxIFlow.Builders.Interfaces.IWorkflowBuilder<ChildData> builder)
+            {
+            }
+        }
+
         // Child data that happens to be an activity too: as a child's data it follows the data rules.
         public sealed class HybridData : IAsyncActivity
         {
@@ -276,6 +285,73 @@ public sealed class MappingAnalyzerTests
             }
             """ + Types,
             Diagnostic(Descriptors.NotAnInput, 0, "Child workflow", "HybridData.Fixed", "public setter"));
+    }
+
+    // Every builder call that adds an activity is checked: a request, a catch step, and a compensation for an
+    // earlier step of the chain.
+    [Fact]
+    public async Task EveryStepThatAddsAnActivityIsChecked()
+    {
+        await Analyzer<MappingAnalyzer>("""
+            public static class Flows
+            {
+                public static object Request() => Workflow.Create<Data>("Ask")
+                    .{|#0:Request<Marked>|}("ask")
+                    .Build();
+
+                public static object Catch() => Workflow.Create<Data>("Catch")
+                    .Step<Plain>()
+                    .Try(attempt => attempt.Step<Plain>())
+                    .Catch<Exception>(handler => handler.{|#1:Step<Marked>|}());
+
+                public static object Saga() => Workflow.Create<Data>("Saga")
+                    .Step<Plain>()
+                    .Saga(saga => saga
+                        .Step<Plain>()
+                        .Step<Plain>(step => step.{|#2:CompensateWith<Marked, Plain>|}(compensation => compensation
+                            .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Number))))
+                    .Build();
+            }
+            """ + Types,
+            Diagnostic(Descriptors.RequiredInputNotMapped, 0, "Activity", "Marked.Amount"),
+            Diagnostic(Descriptors.RequiredInputNotMapped, 1, "Activity", "Marked.Amount"),
+            Diagnostic(Descriptors.RequiredInputNotMapped, 2, "Activity", "Marked.Amount"));
+    }
+
+    [Fact]
+    public async Task ATypedChildAndASuspendFollowTheDataRules()
+    {
+        await Analyzer<MappingAnalyzer>("""
+            public static class Flows
+            {
+                public static object Build() => Workflow.Create<Data>("Typed")
+                    .Step<Plain>()
+                    .Invoke<ChildFlow, ChildData>(step => step
+                        .Input(child => child.{|#0:Fixed|}).From(ctx => ctx.WorkflowData.Number))
+                    .Suspend<Go>("wait", configure: wait => wait
+                        .Output(go => go.{|#1:Hidden|}).To(ctx => ctx.WorkflowData.Number))
+                    .Build();
+            }
+            """ + Types,
+            Diagnostic(Descriptors.NotAnInput, 0, "Child workflow", "ChildData.Fixed", "public setter"),
+            Diagnostic(Descriptors.NotAnOutput, 1, "Event", "Go.Hidden", "public getter"));
+    }
+
+    [Fact]
+    public async Task ACompilationWithoutTheEngineIsLeftAlone()
+    {
+        await AnalyzerWithoutEngine<MappingAnalyzer>("""
+            public sealed class Workflow
+            {
+                public int Input { get; private set; }
+            }
+            """);
+        await AnalyzerWithoutEngine<PurityAnalyzer>("""
+            public static class Clock
+            {
+                public static System.DateTime Now() => System.DateTime.Now;
+            }
+            """);
     }
 
     [Fact]

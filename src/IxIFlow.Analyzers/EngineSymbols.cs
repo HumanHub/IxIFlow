@@ -16,6 +16,7 @@ internal sealed class EngineSymbols
         Combiner = compilation.GetTypeByMetadataName("IxIFlow.Core.ICombiner`1");
         Context = compilation.GetTypeByMetadataName("IxIFlow.Core.WorkflowContext`1");
         Expression = compilation.GetTypeByMetadataName("System.Linq.Expressions.Expression`1");
+        Builders = compilation.GetTypeByMetadataName("IxIFlow.Builders.Workflow")?.ContainingAssembly;
     }
 
     public Compilation Compilation { get; }
@@ -26,6 +27,9 @@ internal sealed class EngineSymbols
     public INamedTypeSymbol? Context { get; }
     public INamedTypeSymbol? Expression { get; }
 
+    // The assembly of the fluent builders, the engine as the compilation references it.
+    private IAssemblySymbol? Builders { get; }
+
     /// <summary>The engine's symbols, or none when the compilation does not reference IxIFlow.</summary>
     public static EngineSymbols? For(Compilation compilation) =>
         compilation.GetTypeByMetadataName("IxIFlow.Core.IAsyncActivity") is { } activity
@@ -34,12 +38,9 @@ internal sealed class EngineSymbols
 
     /// <summary>True for a method of the engine's fluent builders, not one the compilation declares itself.</summary>
     public bool IsBuilderMethod(IMethodSymbol method) =>
-        IsEngine(method) && InNamespace(method.ContainingType, "IxIFlow.Builders");
-
-    /// <summary>True for a member of the engine, declared in an IxIFlow namespace of a referenced assembly.</summary>
-    public bool IsEngine(ISymbol member) =>
-        member.ContainingType != null && InNamespace(member.ContainingType, "IxIFlow") &&
-        !SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, Compilation.Assembly);
+        Builders != null && SymbolEqualityComparer.Default.Equals(method.ContainingAssembly, Builders) &&
+        !SymbolEqualityComparer.Default.Equals(Builders, Compilation.Assembly) &&
+        InNamespace(method.ContainingType, "IxIFlow.Builders");
 
     public static bool InNamespace(ITypeSymbol type, string name)
     {
