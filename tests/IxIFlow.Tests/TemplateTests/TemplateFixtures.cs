@@ -4,7 +4,6 @@ using IxIFlow.Core;
 using IxIFlow.Extensions;
 using IxIFlow.Templates;
 using IxIFlow.Templates.Liquid;
-using IxIFlow.Templates.Razor;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -25,7 +24,7 @@ public static class TemplateFixtures
         if (engine != null)
             services.AddSingleton(engine);
         else
-            templates.AddLiquid().AddRazor();
+            templates.AddLiquid();
         services.AddSingleton(sender ?? new RecordingSender());
         return services.BuildServiceProvider();
     }

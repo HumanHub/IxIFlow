@@ -19,7 +19,7 @@ public sealed class TemplateVersion
 
     /// <param name="key">The template's key, such as <c>order-confirmation</c>.</param>
     /// <param name="version">The version number, from 1.</param>
-    /// <param name="engine">The name of the engine that renders it, such as <c>liquid</c> or <c>razor</c>.</param>
+    /// <param name="engine">The name of the engine that renders it, such as <c>liquid</c>.</param>
     /// <param name="format">Whether the output is plain text or HTML, which decides how values are encoded.</param>
     /// <param name="modelType">The model type it is written against, as <see cref="ModelTypeName"/> names it.</param>
     /// <param name="variants">Its text per culture, the base variant included.</param>

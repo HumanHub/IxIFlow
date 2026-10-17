@@ -7,8 +7,7 @@ public static class TemplateServiceCollectionExtensions
 {
     /// <summary>
     /// Adds template publishing and rendering, with an <see cref="InMemoryTemplateStore"/> unless another
-    /// <see cref="ITemplateStore"/> is registered. Add engines on the returned builder, such as <c>AddLiquid()</c>
-    /// and <c>AddRazor()</c>.
+    /// <see cref="ITemplateStore"/> is registered. Add engines on the returned builder, such as <c>AddLiquid()</c>.
     /// </summary>
     public static TemplatesBuilder AddIxIFlowTemplates(this IServiceCollection services)
     {

@@ -16,14 +16,14 @@ namespace IxIFlow.Tests.TemplateTests;
 [Trait("Spec", "H-02")]
 public sealed class TemplateActivityTests
 {
-    [Theory]
-    [InlineData("liquid", "Order {{ Number }} for {{ Customer.Name }}: {% for line in Lines %}{{ line.Quantity }} {{ line.Sku }}{% unless forloop.last %}, {% endunless %}{% endfor %}")]
-    [InlineData("razor", "Order @Model.Number for @Model.Customer.Name: @string.Join(\", \", Model.Lines.Select(line => $\"{line.Quantity} {line.Sku}\"))")]
-    public async Task AWorkflowRendersAndSendsThroughEitherEngine(string engine, string content)
+    [Fact]
+    public async Task AWorkflowRendersAndSends()
     {
         var sender = new RecordingSender();
         using var services = Services(sender: sender);
-        await services.PublishAsync<Order>("order-confirmation", 1, engine, TemplateFormat.Text, Base(content));
+        await services.PublishAsync<Order>("order-confirmation", 1, "liquid", TemplateFormat.Text, Base(
+            "Order {{ Number }} for {{ Customer.Name }}: {% for line in Lines %}{{ line.Quantity }} {{ line.Sku }}" +
+            "{% unless forloop.last %}, {% endunless %}{% endfor %}"));
 
         var result = await services.GetRequiredService<IWorkflowClient>()
             .RunAsync(RenderAndSend("order-confirmation"), new OrderData());
@@ -127,8 +127,8 @@ public sealed class TemplateActivityTests
     {
         var sender = new RecordingSender();
         using var services = Services(sender: sender);
-        await services.PublishAsync<Order>("order-confirmation", 1, "razor", TemplateFormat.Html,
-            Base("<p>Order @Model.Number</p>"));
+        await services.PublishAsync<Order>("order-confirmation", 1, "liquid", TemplateFormat.Html,
+            Base("<p>Order {{ Number }}</p>"));
         var definition = Workflow.Create<OrderData>("SendPerRecipient")
             .Step<RenderTemplate<Order>>(step => step
                 .Input(activity => activity.Template).From(_ => new TemplateReference("order-confirmation", 1))
