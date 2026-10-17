@@ -115,7 +115,8 @@ public sealed class ResourceLimitTests
         var instanceId = Guid.NewGuid().ToString("N");
         var run = Client(services).RunAsync(definition, new LimitData(), new WorkflowOptions { InstanceId = instanceId });
         await Probe(services).Started.Task.WaitAsync(Patience);
-        await Task.Delay(200);
+        // The other branch has run its activity and goes on to the fork that hits the limit.
+        await Probe(services).WaitForQuickAsync(2);
 
         await Client(services).CancelAsync(instanceId, new CancellationReason { ReasonCode = "operator" });
         Probe(services).Gate.SetResult();
@@ -418,6 +419,16 @@ public sealed class ResourceLimitTests
             while (Gated < count)
             {
                 Assert.True(DateTime.UtcNow < deadline, "The activities did not start");
+                await Task.Delay(10);
+            }
+        }
+
+        public async Task WaitForQuickAsync(int count)
+        {
+            var deadline = DateTime.UtcNow + Patience;
+            while (Quick < count)
+            {
+                Assert.True(DateTime.UtcNow < deadline, $"Only {Quick} of {count} quick activities ran");
                 await Task.Delay(10);
             }
         }
