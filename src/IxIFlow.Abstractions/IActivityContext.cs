@@ -73,12 +73,14 @@ public interface IActivityContext
     ILogger Logger { get; }
 
     /// <summary>
-    ///     Workflow data (untyped - cast to your known type)
+    /// The workflow data itself (untyped: cast to your known type), not a copy. Mapped inputs are copies of what the
+    /// attempt saved, and an activity's results reach the data through its output mappings; a change made here goes
+    /// straight into the data instead, and is saved by the next commit with everything else the step changed.
     /// </summary>
     object WorkflowData { get; }
 
     /// <summary>
-    ///     Previous step data (untyped - cast to your known type)
+    /// The previous step's value itself (untyped: cast to your known type), not a copy, as <see cref="WorkflowData"/>.
     /// </summary>
     object? PreviousStepData { get; }
 
