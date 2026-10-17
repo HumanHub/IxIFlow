@@ -460,7 +460,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var join = checkpoint.Joins.Single(item => item.Id == child.ParentJoinId);
         if (join.IsCompleting)
             return;
-        var children = checkpoint.Continuations.Where(item => join.ChildContinuationIds.Contains(item.Id)).ToList();
+        var children = checkpoint.BranchesOf(join);
         if (scopes.Step(join.StepId) is { StepType: WorkflowStepType.ForEach } forEach)
         {
             CompleteItemJoin(scopes, checkpoint, join, forEach, children);
@@ -596,8 +596,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         foreach (var join in checkpoint.Joins.Where(item => item.ParentContinuationId == continuation.Id).ToList())
         {
             join.IsCompleting = true;
-            foreach (var childId in join.ChildContinuationIds)
-                CancelTree(checkpoint, checkpoint.Continuations.Single(item => item.Id == childId));
+            foreach (var branch in checkpoint.BranchesOf(join))
+                CancelTree(checkpoint, branch);
         }
         continuation.Status = checkpoint.Joins.Any(item => item.ParentContinuationId == continuation.Id)
             ? ContinuationStatus.Joining
@@ -690,7 +690,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var completed = false;
         foreach (var join in checkpoint.Joins.Where(item => item.IsCompleting).ToList())
         {
-            var children = checkpoint.Continuations.Where(item => join.ChildContinuationIds.Contains(item.Id)).ToList();
+            var children = checkpoint.BranchesOf(join);
             if (!children.All(item => item.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled))
                 continue;
             var parent = ParentOf(checkpoint, join);
@@ -808,8 +808,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             var join = checkpoint.Joins.Single(item => item.Id == continuation.ParentJoinId);
             join.IsCompleting = true;
             join.ResumeParentWithoutAdvance = true;
-            foreach (var childId in join.ChildContinuationIds)
-                CancelTree(checkpoint, checkpoint.Continuations.Single(item => item.Id == childId));
+            foreach (var branch in checkpoint.BranchesOf(join))
+                CancelTree(checkpoint, branch);
             continuation = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
             if (continuation.CancellationUnwind)
                 return CaptureFailure(scopes, checkpoint, continuation, error);
@@ -858,9 +858,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             if (join == null)
                 return;
             join.IsCompleting = true;
-            foreach (var siblingId in join.ChildContinuationIds.Where(id => id != continuation.Id))
-                CancelTree(checkpoint,
-                    checkpoint.Continuations.Single(item => item.Id == siblingId));
+            foreach (var sibling in checkpoint.BranchesOf(join).Where(item => item != continuation))
+                CancelTree(checkpoint, sibling);
             continuation = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
         }
     }
