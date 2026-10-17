@@ -13,35 +13,77 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class StoredCheckpoint
 {
-    private StoredCheckpoint(string trunk, SortedDictionary<string, string> parts)
+    private StoredCheckpoint(string trunk, Dictionary<string, string> parts, PartMarks marks)
     {
         Trunk = trunk;
         Parts = parts;
+        Marks = marks;
     }
+
+    /// <summary>
+    /// Set by the engine's test assemblies: every split is checked against one that serializes every part, so a
+    /// missed mark fails the test that made it.
+    /// </summary>
+    internal static bool VerifyAlways { get; set; }
+
+    /// <summary>The marks the split wrote by; a commit that is not saved gives them back.</summary>
+    public PartMarks Marks { get; }
 
     /// <summary>The execution state's trunk, as JSON; for a state that is not structured, the state itself.</summary>
     public string Trunk { get; }
 
     /// <summary>Every part by key, the workflow data's included.</summary>
-    public SortedDictionary<string, string> Parts { get; }
+    public Dictionary<string, string> Parts { get; }
 
     /// <summary>The size a checkpoint limit applies to: the trunk and every part, as UTF-8 (D-28).</summary>
     public long Bytes => Encoding.UTF8.GetByteCount(Trunk) +
                          Parts.Values.Sum(part => (long)Encoding.UTF8.GetByteCount(part));
 
     public static string BranchKey(string continuationId) => $"c/{continuationId}";
-    public static string ListKey(string activationId) => $"f/{activationId}";
-    public static string ResultKey(string activationId, int index) => $"r/{activationId}/{index}";
+    public static string ListKey(string forEachId) => $"f/{forEachId}";
+    public static string ResultKey(string forEachId, int index) => $"r/{forEachId}/{index}";
 
-    /// <summary>Splits a checkpoint and its workflow data into the trunk and parts it is stored as.</summary>
-    public static StoredCheckpoint Split(ExecutionCheckpoint checkpoint, string dataJson)
+    /// <summary>
+    /// Splits a checkpoint and its workflow data into the trunk and parts it is stored as. The trunk and the data are
+    /// serialized every time. A branch is serialized when it is marked or <paramref name="saved"/> lacks it, and
+    /// otherwise keeps the JSON it was saved with; a list or a result never changes once saved, so it is serialized
+    /// only when <paramref name="saved"/> lacks it. With <paramref name="verify"/>, the result is checked against a
+    /// split that serializes everything.
+    /// </summary>
+    public static StoredCheckpoint Split(ExecutionCheckpoint checkpoint, string dataJson,
+        IReadOnlyDictionary<string, string>? saved = null, PartMarks? marks = null, bool verify = false)
     {
-        var parts = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        marks ??= PartMarks.All;
+        var stored = Build(checkpoint, dataJson, saved, marks);
+        if (saved != null && (verify || VerifyAlways))
+        {
+            var whole = Build(checkpoint, dataJson, null, PartMarks.All);
+            foreach (var key in whole.Parts.Keys.Union(stored.Parts.Keys))
+                if (whole.Parts.GetValueOrDefault(key) != stored.Parts.GetValueOrDefault(key))
+                    throw new InvalidOperationException(
+                        $"The stored part '{key}' of the checkpoint changed without being marked");
+        }
+        return stored;
+    }
+
+    private static StoredCheckpoint Build(ExecutionCheckpoint checkpoint, string dataJson,
+        IReadOnlyDictionary<string, string>? saved, PartMarks marks)
+    {
+        var parts = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [CheckpointParts.DataKey] = dataJson
         };
-        var trunk = JsonSerializer.Serialize(checkpoint, Stored);
         var branchIds = BranchIds(checkpoint);
+        string trunk;
+        try
+        {
+            checkpoint.SplitBranches = branchIds;
+            trunk = JsonSerializer.Serialize(checkpoint, Stored);
+        }
+        finally
+        {
+            checkpoint.SplitBranches = null;
+        }
         if (branchIds.Count > 0)
         {
             var joins = checkpoint.Joins.Where(join => branchIds.Contains(join.ParentContinuationId))
@@ -51,7 +93,10 @@ internal sealed class StoredCheckpoint
             var replies = checkpoint.BoundReplies.Where(reply => branchIds.Contains(reply.ContinuationId))
                 .ToLookup(reply => reply.ContinuationId, StringComparer.Ordinal);
             foreach (var branch in checkpoint.Continuations.Where(item => item.ParentJoinId != null))
-                parts[BranchKey(branch.Id)] = JsonSerializer.Serialize(new BranchPart
+                parts[BranchKey(branch.Id)] = saved != null && !marks.Has(branch.Id) &&
+                                              saved.TryGetValue(BranchKey(branch.Id), out var kept)
+                    ? kept
+                    : JsonSerializer.Serialize(new BranchPart
                 {
                     Continuation = branch,
                     Joins = joins[branch.Id].ToList() is { Count: > 0 } ownJoins ? ownJoins : null,
@@ -63,12 +108,13 @@ internal sealed class StoredCheckpoint
         {
             if (frame.ForEach is not { } state)
                 continue;
-            parts[ListKey(frame.ActivationId)] = JsonSerializer.Serialize(state.Items);
+            parts[ListKey(state.Id)] = saved?.GetValueOrDefault(ListKey(state.Id)) ??
+                                       JsonSerializer.Serialize(state.Items);
             for (var index = 0; index < (state.Results?.Count ?? 0); index++)
                 if (state.Results![index] is { } result)
-                    parts[ResultKey(frame.ActivationId, index)] = result;
+                    parts[ResultKey(state.Id, index)] = saved?.GetValueOrDefault(ResultKey(state.Id, index)) ?? result;
         }
-        return new StoredCheckpoint(trunk, parts);
+        return new StoredCheckpoint(trunk, parts, marks);
     }
 
     /// <summary>
@@ -82,10 +128,10 @@ internal sealed class StoredCheckpoint
             return stored;
         var state = instance.ExecutionStateJson;
         if (!ExecutionCheckpoint.IsStructured(state))
-            return new StoredCheckpoint(state, new SortedDictionary<string, string>(StringComparer.Ordinal)
+            return new StoredCheckpoint(state, new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 [CheckpointParts.DataKey] = instance.WorkflowDataJson
-            });
+            }, PartMarks.All);
         if (IsTrunk(state))
             state = AssembleState(state, instance.SavedParts ?? throw new InvalidOperationException(
                 "The instance holds the trunk of its state without the parts it was saved with"));
@@ -115,11 +161,11 @@ internal sealed class StoredCheckpoint
         {
             if (frame.ForEach is not { } state)
                 continue;
-            state.Items = parts.TryGetValue(ListKey(frame.ActivationId), out var items)
+            state.Items = parts.TryGetValue(ListKey(state.Id), out var items)
                 ? JsonSerializer.Deserialize<List<string>>(items)!
-                : throw new InvalidOperationException($"The saved list of ForEach frame '{frame.ActivationId}' is missing");
+                : throw new InvalidOperationException($"The saved list of ForEach '{state.Id}' is missing");
             for (var index = 0; index < (state.Results?.Count ?? 0); index++)
-                state.Results![index] = parts.GetValueOrDefault(ResultKey(frame.ActivationId, index));
+                state.Results![index] = parts.GetValueOrDefault(ResultKey(state.Id, index));
         }
         checkpoint.StoredTrunk = false;
         return JsonSerializer.Serialize(checkpoint);
@@ -138,7 +184,7 @@ internal sealed class StoredCheckpoint
     // What the trunk keeps: whatever no branch owns.
     private static Func<T, bool> NotOf<T>(ExecutionCheckpoint checkpoint, Func<T, string> owner)
     {
-        var branches = BranchIds(checkpoint);
+        var branches = checkpoint.SplitBranches ?? BranchIds(checkpoint);
         return item => !branches.Contains(owner(item));
     }
 

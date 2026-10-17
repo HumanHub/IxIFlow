@@ -24,6 +24,7 @@ internal sealed class ActivityAttempts(
         IExecutionHost host,
         CancellationTokenSource activityCancellation)
     {
+        checkpoint.Touch(continuation);
         var pending = continuation.PendingActivity;
         var isRecovery = pending != null;
         if (pending != null && pending.StepId != scopes.Id(step))
@@ -236,7 +237,7 @@ internal sealed class ActivityAttempts(
             ScopeActivationId = position.ActivationId,
             Subject = subject
         };
-        checkpoint.Waits.Add(wait);
+        checkpoint.AddWait(wait);
         return new ReplyAddress(ReplyToken.Create(instance.InstanceId, wait.Id, subject));
     }
 
@@ -267,6 +268,7 @@ internal sealed class ActivityAttempts(
         IExecutionHost host,
         CancellationTokenSource cancellation)
     {
+        checkpoint.Touch(continuation);
         var stepNumber = continuation.Stack[^1].NextStepIndex;
         RunningActivity Settles(ActivityRunResult outcome) =>
             new(continuation, step, Task.FromResult(outcome), cancellation, null, stepNumber);
@@ -368,6 +370,7 @@ internal sealed class ActivityAttempts(
         WorkflowInstance instance,
         IExecutionHost host)
     {
+        checkpoint.Touch(activity.Continuation);
         // The branch's copy may have changed while its activity ran; it is recorded at the next commit.
         activity.Continuation.DataChanged = activity.Continuation.ParentJoinId != null;
         try

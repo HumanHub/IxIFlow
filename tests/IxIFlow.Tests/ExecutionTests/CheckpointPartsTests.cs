@@ -37,6 +37,51 @@ public sealed class CheckpointPartsTests
     public Task ASqlServerReadNeverMixesTwoCommits() =>
         ReadsNeverMixTwoCommitsAsync(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
 
+    // A commit serializes only the branches marked as changed; the verifying mode the tests run with fails a commit
+    // whose branch changed without a mark, and a marked branch is written again.
+    [Fact]
+    public void TheVerifyingModeFailsACommitWhoseBranchChangedWithoutAMark()
+    {
+        var (state, data) = State(1, 2);
+        var checkpoint = ExecutionCheckpoint.Read(state);
+        var saved = StoredCheckpoint.Split(checkpoint, data, marks: checkpoint.TakeMarks()).Parts;
+        var branch = checkpoint.Continuations[1];
+
+        branch.Status = ContinuationStatus.Active;
+
+        var unmarked = Assert.Throws<InvalidOperationException>(() =>
+            StoredCheckpoint.Split(checkpoint, data, saved, checkpoint.TakeMarks(), verify: true));
+        Assert.Contains(StoredCheckpoint.BranchKey(branch.Id), unmarked.Message);
+        checkpoint.Touch(branch);
+        var marked = StoredCheckpoint.Split(checkpoint, data, saved, checkpoint.TakeMarks(), verify: true);
+        Assert.NotEqual(saved[StoredCheckpoint.BranchKey(branch.Id)], marked.Parts[StoredCheckpoint.BranchKey(branch.Id)]);
+        Assert.Same(saved[StoredCheckpoint.BranchKey(checkpoint.Continuations[2].Id)],
+            marked.Parts[StoredCheckpoint.BranchKey(checkpoint.Continuations[2].Id)]);
+    }
+
+    // A list is written once, under its own ForEach run: a second ForEach in the same frame saves its own list
+    // rather than finding the first one's under the frame.
+    [Fact]
+    public async Task ASecondForEachInTheSameFrameSavesItsOwnList()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository, new Outbox());
+        var definition = Workflow.Create<Approvals>("TwoListsOneFrame")
+            .Step<Noop>()
+            .ForEach(ctx => ctx.WorkflowData.Signatures, (body, _) => body.Step<Noop>())
+            .ForEach(ctx => ctx.WorkflowData.Approvers, (body, _) => body.WaitFor<Answer>("go"))
+            .Build();
+
+        var started = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition,
+            new Approvals { Signatures = ["first", "second"], Approvers = ["ann", "bob", "cid"] });
+
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        var whole = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
+        var list = Assert.Single(ExecutionCheckpoint.Read(whole.ExecutionStateJson).Continuations[0].Stack,
+            frame => frame.ForEach != null).ForEach!;
+        Assert.Equal(["\"ann\"", "\"bob\"", "\"cid\""], list.Items);
+    }
+
     // A value is serialized when it is set, not at each commit, so a branch that has not moved is not rewritten even
     // when its value would serialize differently each time.
     [Fact]

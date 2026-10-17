@@ -151,6 +151,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         StoredWorkflowEvent stored, WaitState wait, object payload)
     {
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
+        checkpoint.Touch(continuation);
         // A saga request's compensation, and a retry that keeps the request, read the answer it got (D-36).
         if (wait.IsReply)
             SagaScopeTransitions.NoteReply(continuation, wait.InvocationId, SerializedValue.From(payload)!,
