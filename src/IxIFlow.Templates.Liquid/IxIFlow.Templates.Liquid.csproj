@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>1.0.0</Version>
+    <Description>Liquid template engine for IxIFlow templates, built on Fluid.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\IxIFlow.Templates\IxIFlow.Templates.csproj" />
+    <PackageReference Include="Fluid.Core" Version="2.40.0" />
+  </ItemGroup>
+</Project>
