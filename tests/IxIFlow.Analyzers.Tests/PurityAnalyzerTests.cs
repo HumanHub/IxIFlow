@@ -147,6 +147,108 @@ public sealed class PurityAnalyzerTests
             Diagnostic(Descriptors.ImpureExpression, 2, "DateTimeOffset.Now through new Stamp(...)"));
     }
 
+    // Code kept in a local is reported where it is written; code kept in a field or property, or made by a method,
+    // is reported where it is given, naming where it is kept.
+    [Fact]
+    public async Task StoredWorkflowCodeIsChecked()
+    {
+        await Analyzer<PurityAnalyzer>("""
+            using System.Linq.Expressions;
+
+            public static class Flows
+            {
+                private static readonly Func<Go, WorkflowContext<Data>, bool> Matches = (go, ctx) => go.Hour < DateTime.Now.Hour;
+
+                private static Expression<Func<WorkflowContext<Data, Takes>, bool>> Late => ctx => DateTime.Today.Day > 1;
+
+                public static object Build()
+                {
+                    Expression<Func<WorkflowContext<Data, Takes>, bool>> condition = ctx => {|#0:DateTime.UtcNow|}.Hour > 12;
+                    return Workflow.Create<Data>("Stored")
+                        .Step<Takes>()
+                        .If(condition, then => then.Step<Takes>())
+                        .If({|#2:Late|}, then => then.Step<Takes>())
+                        .WaitFor<Go>("go", {|#1:Matches|})
+                        .Build();
+                }
+            }
+            """ + Types,
+            Diagnostic(Descriptors.ImpureExpression, 0, "DateTime.UtcNow"),
+            Diagnostic(Descriptors.ImpureExpression, 1, "DateTime.Now through Flows.Matches"),
+            Diagnostic(Descriptors.ImpureExpression, 2, "DateTime.Today through Flows.Late"));
+    }
+
+    // A selector only names its property and a destination sets its property, so their getters never run; a local
+    // function runs where it is called, not where it is declared.
+    [Fact]
+    public async Task OnlyCodeThatRunsIsChecked()
+    {
+        await Analyzer<PurityAnalyzer>("""
+            public static class Flows
+            {
+                public static object Build() => Workflow.Create<Stamps>("Runs")
+                    .Step<Stamping>(step => step
+                        .Input(activity => activity.Stamp).From(ctx => ctx.UtcNow.UtcDateTime)
+                        .Output(activity => activity.Stamp).To(ctx => ctx.WorkflowData.Stamp))
+                    .WhileDo(ctx =>
+                    {
+                        bool Unused() => DateTime.UtcNow.Hour > 0;
+                        return false;
+                    }, body => body.Step<Stamping>())
+                    .WhileDo(ctx =>
+                    {
+                        bool Used() => DateTime.UtcNow.Hour > 0;
+                        return {|#0:Used()|};
+                    }, body => body.Step<Stamping>())
+                    .Build();
+            }
+
+            public sealed class Stamping : IAsyncActivity
+            {
+                public DateTime Stamp { get => DateTime.UtcNow; set { } }
+
+                public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+                    Task.CompletedTask;
+            }
+
+            public sealed class Stamps
+            {
+                public DateTime Stamp { get => DateTime.UtcNow; set { } }
+            }
+            """,
+            Diagnostic(Descriptors.ImpureExpression, 0, "DateTime.UtcNow through Used()"));
+    }
+
+    // User-defined operators and conversions run, and so do the base constructors a constructor calls implicitly.
+    [Fact]
+    public async Task OperatorsAndBaseConstructorsAreLookedInto()
+    {
+        await Analyzer<PurityAnalyzer>("""
+            public static class Flows
+            {
+                public static object Build() => Workflow.Create<Data>("Operators")
+                    .Step<Takes>()
+                    .If(ctx => {|#0:new Flag()|}, then => then.Step<Takes>())
+                    .WhileDo(ctx => {|#1:new Derived()|}.Seed > 0, body => body.Step<Takes>())
+                    .Build();
+            }
+
+            public sealed class Flag
+            {
+                public static implicit operator bool(Flag flag) => DateTime.UtcNow.Hour > 0;
+            }
+
+            public class Base
+            {
+                public int Seed { get; } = Environment.TickCount;
+            }
+
+            public sealed class Derived : Base;
+            """ + Types,
+            Diagnostic(Descriptors.ImpureExpression, 0, "DateTime.UtcNow through Flag.implicit operator bool(Flag)"),
+            Diagnostic(Descriptors.ImpureExpression, 1, "Environment.TickCount through new Base(...) through new Derived(...)"));
+    }
+
     [Fact]
     public async Task AnImpureCombinerIsReported()
     {
@@ -159,6 +261,20 @@ public sealed class PurityAnalyzerTests
                     branchValues.Count > _seed ? {|#1:DateTime.UtcNow|} : original;
             }
 
+            public sealed class Seeded : ICombiner<int>
+            {
+                private static readonly int Seed = {|#2:Environment.TickCount|};
+
+                public int Combine(int original, IReadOnlyList<int> branchValues) => original + Seed;
+            }
+
+            public class Picker
+            {
+                public int Combine(int original, IReadOnlyList<int> branchValues) => Environment.ProcessId;
+            }
+
+            public sealed class {|#3:Inherited|} : Picker, ICombiner<int>;
+
             public sealed class Totals : ICombiner<int>
             {
                 public int Combine(int original, IReadOnlyList<int> branchValues) => branchValues.Sum() + original;
@@ -168,7 +284,9 @@ public sealed class PurityAnalyzerTests
             }
             """,
             Diagnostic(Descriptors.ImpureCombiner, 0, "Stamped", "Environment.ProcessId"),
-            Diagnostic(Descriptors.ImpureCombiner, 1, "Stamped", "DateTime.UtcNow"));
+            Diagnostic(Descriptors.ImpureCombiner, 1, "Stamped", "DateTime.UtcNow"),
+            Diagnostic(Descriptors.ImpureCombiner, 2, "Seeded", "Environment.TickCount"),
+            Diagnostic(Descriptors.ImpureCombiner, 3, "Inherited", "Environment.ProcessId through Picker.Combine()"));
     }
 
     // Pure members of the same types and namespaces, the run's clock, a stream in memory, nameof, builder code that

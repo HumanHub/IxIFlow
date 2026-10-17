@@ -44,8 +44,21 @@
   <ItemGroup>
     <ProjectReference Include="..\IxIFlow.Analyzers\IxIFlow.Analyzers.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
     <ProjectReference Include="..\IxIFlow.Analyzers.CodeFixes\IxIFlow.Analyzers.CodeFixes.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
-    <None Include="..\IxIFlow.Analyzers\bin\$(Configuration)\netstandard2.0\IxIFlow.Analyzers.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
-    <None Include="..\IxIFlow.Analyzers.CodeFixes\bin\$(Configuration)\netstandard2.0\IxIFlow.Analyzers.CodeFixes.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);PackAnalyzers</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+
+  <!-- The analyzer assemblies from wherever their projects build them, such as an artifacts path. -->
+  <Target Name="PackAnalyzers">
+    <MSBuild Projects="..\IxIFlow.Analyzers\IxIFlow.Analyzers.csproj;..\IxIFlow.Analyzers.CodeFixes\IxIFlow.Analyzers.CodeFixes.csproj"
+             Targets="GetTargetPath" RemoveProperties="TargetFramework;RuntimeIdentifier">
+      <Output TaskParameter="TargetOutputs" ItemName="AnalyzerAssembly" />
+    </MSBuild>
+    <ItemGroup>
+      <TfmSpecificPackageFile Include="@(AnalyzerAssembly)" PackagePath="analyzers/dotnet/cs" />
+    </ItemGroup>
+  </Target>
 
 </Project>
