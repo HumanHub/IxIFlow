@@ -2,7 +2,9 @@ namespace IxIFlow.Core;
 
 /// <summary>
 /// An activity that can resolve an invocation whose result was not committed before execution stopped.
-/// The activity receives the same invocation ID and mapped inputs during recovery.
+/// The activity receives the same invocation ID and mapped inputs during recovery: copies read back from what the
+/// attempt saved, as on its first attempt. The recovery state is captured after the inputs are set, from the copies
+/// the activity runs on.
 /// </summary>
 public interface IRecoverableActivity : IAsyncActivity
 {
@@ -36,7 +38,8 @@ public interface IRecoverableActivity<TRecoveryState> : IRecoverableActivity
     TRecoveryState CaptureRecoveryState(IActivityContext context);
 
     /// <summary>
-    /// Resolves a prior invocation. A completed result must restore this activity's output properties.
+    /// Resolves a prior invocation. A completed result must restore this activity's output properties, and every other
+    /// property a later step reads, since the completed activity is the next step's previous value.
     /// An exception thrown by this method leaves the invocation unresolved.
     /// </summary>
     Task<ActivityRecoveryResult<TRecoveryState>> RecoverAsync(

@@ -66,7 +66,7 @@ internal sealed class ActivityAttempts(
                     StartedAtUtc = Now,
                     Id = invocationId,
                     StepId = scopes.Id(step),
-                    Inputs = ActivityInputSnapshot.Capture(prepared.Activity, step),
+                    Inputs = prepared.Inputs,
                     RecoveryState = SerializedValue.From(recoveryState)
                 };
                 continuation.PendingActivity = pending;
