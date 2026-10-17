@@ -544,7 +544,7 @@ public class ActivityExecutor : IActivityExecutor
                 {
                     // The activity gets a copy of what its attempt saves, set once (A-09).
                     var (saved, convertedValue) = Runtime.ActivityInputValue.Of(targetProperty,
-                        ConvertValue(sourceValue, targetProperty.PropertyType), _serviceProvider);
+                        ConvertValue(sourceValue, activity.GetType(), targetProperty), _serviceProvider);
                     inputs.Properties[targetProperty.Name] = saved;
                     targetProperty.SetValue(activity, convertedValue);
                     trace.TargetValue = convertedValue;
@@ -649,27 +649,20 @@ public class ActivityExecutor : IActivityExecutor
         }
     }
 
-    private object? ConvertValue(object? value, Type targetType)
+    // A value the input cannot take is an invalid definition, never passed on unconverted (F-23).
+    private static object? ConvertValue(object? value, Type activityType, PropertyInfo target)
     {
-        if (value == null) return null;
-        if (targetType.IsAssignableFrom(value.GetType())) return value;
-
+        if (value == null || target.PropertyType.IsInstanceOfType(value)) return value;
+        var underlying = Nullable.GetUnderlyingType(target.PropertyType) ?? target.PropertyType;
         try
         {
-            // Handle nullable types
-            if (targetType.IsGenericType && targetType.GetGenericTypeDefinition() == typeof(Nullable<>))
-            {
-                var underlyingType = Nullable.GetUnderlyingType(targetType);
-                return underlyingType != null ? Convert.ChangeType(value, underlyingType) : value;
-            }
-
-            return Convert.ChangeType(value, targetType);
+            return Convert.ChangeType(value, underlying);
         }
-        catch (Exception ex)
+        catch (Exception error) when (error is InvalidCastException or FormatException or OverflowException)
         {
-            _logger.LogWarning(ex, "Failed to convert value {Value} from {SourceType} to {TargetType}",
-                value, value.GetType(), targetType);
-            return value;
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Activity input '{activityType.Name}.{target.Name}' takes {target.PropertyType.Name}, " +
+                $"not {value.GetType().Name}", error);
         }
     }
 }

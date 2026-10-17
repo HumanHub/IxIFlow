@@ -925,6 +925,48 @@ public sealed class StructuredChildWaitTests
         Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
     }
 
+    // An input mapped to a property the child's data does not have is an invalid definition, not skipped (F-23).
+    [Fact]
+    [Trait("Spec", "F-23")]
+    public async Task AChildInputTheChildsDataCannotTakeFailsTheInvocation()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("NarrowChild"));
+        var parent = Workflow.Create<ParentData>("ParentOfNarrowChild")
+            .Step<NoopActivity>()
+            .Invoke<WideChildData>("NarrowChild", 1, step => step
+                .Input(child => child.Extra).From(_ => "lost before"))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("Child workflow input 'ChildData.Extra' is not a property of its data", result.ErrorMessage);
+        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+    }
+
+    // A value the child's data property cannot take is an invalid definition, not passed on unconverted (F-23).
+    [Fact]
+    [Trait("Spec", "F-23")]
+    public async Task AChildInputOfAnotherTypeFailsTheInvocation()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("StrictChild"));
+        var parent = Workflow.Create<ParentData>("ParentOfStrictChild")
+            .Step<NoopActivity>()
+            .Invoke<WideChildData>("StrictChild", 1, step => step
+                .Input(child => child.Approved).From(_ => "perhaps"))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("Child workflow input 'ChildData.Approved' takes Boolean, not String", result.ErrorMessage);
+        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+    }
+
     // An engine failure ends the parent at once, without unwinding its branches; the children it waits for are
     // still asked to cancel, since nothing will take their completions.
     [Fact]
@@ -1116,6 +1158,14 @@ public sealed class StructuredChildWaitTests
     }
 
     public sealed class ChildFailureException(string message) : Exception(message);
+
+    /// <summary>A child data type that does not match the registered child's data: one property it lacks, one of
+    /// another type.</summary>
+    public sealed class WideChildData
+    {
+        public string Extra { get; set; } = "";
+        public string Approved { get; set; } = "";
+    }
 
     /// <summary>Its constructor's parameter names no property, so it cannot be read back from JSON.</summary>
     public sealed class UnreadableValue(int seed)
