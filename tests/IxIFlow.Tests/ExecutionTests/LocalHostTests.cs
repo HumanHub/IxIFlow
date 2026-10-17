@@ -356,6 +356,12 @@ public sealed class LocalHostTests
     public Task SqlStoreReadsCancellationRequestsInOneCall() =>
         VerifyBatchCancellationReads(new SqlWorkflowStateRepository(SqlTestDatabase<LocalHostTests>.ConnectionString));
 
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "B-10")]
+    public Task PostgreSqlStoreReadsCancellationRequestsInOneCall() =>
+        VerifyBatchCancellationReads(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<LocalHostTests>.ConnectionString));
+
     private static async Task VerifyBatchCancellationReads(IWorkflowStateRepository repository)
     {
         var ids = Enumerable.Range(0, 3).Select(_ => Guid.NewGuid().ToString("N")).ToArray();

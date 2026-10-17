@@ -75,11 +75,12 @@ IxIFlow/
 │   ├── IxIFlow/                # Fluent API, engine, DI extensions
 │   ├── IxIFlow.Authoring/      # YAML documents and activity catalog
 │   ├── IxIFlow.Distributed/    # Hosts, coordinator, queue service
-│   └── IxIFlow.SqlServer/      # SQL Server store, registry, message bus
+│   ├── IxIFlow.SqlServer/      # SQL Server store, registry, message bus
+│   └── IxIFlow.PostgreSql/     # PostgreSQL store and LISTEN/NOTIFY wake-ups
 ├── tests/
 │   ├── IxIFlow.Tests/          # Unit, execution and syntax tests
 │   ├── IxIFlow.Conformance/    # Scenarios run in every store profile
-│   └── IxIFlow.TestSupport/    # Shared test infrastructure (SQL Server via Testcontainers)
+│   └── IxIFlow.TestSupport/    # Shared test infrastructure (SQL Server and PostgreSQL via Testcontainers)
 └── samples/
     └── IxIFlow.DemoActivities/ # Sample activity package
 ```

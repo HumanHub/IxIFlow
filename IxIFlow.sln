@@ -33,6 +33,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IxIFlow.Analyzers.CodeFixes
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IxIFlow.Analyzers.Tests", "tests\IxIFlow.Analyzers.Tests\IxIFlow.Analyzers.Tests.csproj", "{FB7ED322-5CE2-434E-978F-D8B3F2608F00}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IxIFlow.PostgreSql", "src\IxIFlow.PostgreSql\IxIFlow.PostgreSql.csproj", "{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -187,6 +189,18 @@ Global
 		{FB7ED322-5CE2-434E-978F-D8B3F2608F00}.Release|x64.Build.0 = Release|Any CPU
 		{FB7ED322-5CE2-434E-978F-D8B3F2608F00}.Release|x86.ActiveCfg = Release|Any CPU
 		{FB7ED322-5CE2-434E-978F-D8B3F2608F00}.Release|x86.Build.0 = Release|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Debug|x64.Build.0 = Debug|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Debug|x86.Build.0 = Debug|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Release|x64.ActiveCfg = Release|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Release|x64.Build.0 = Release|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Release|x86.ActiveCfg = Release|Any CPU
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -204,6 +218,7 @@ Global
 		{1826563A-726C-4D15-B6A2-6AB6F058D35F} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{02647A2D-0B07-4383-A271-68453B1B5172} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{FB7ED322-5CE2-434E-978F-D8B3F2608F00} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{84AD60DD-6FDE-4FA9-B05A-8571EDDFD36A} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {8D5D7E22-F7E0-402B-8513-7C386281C933}
