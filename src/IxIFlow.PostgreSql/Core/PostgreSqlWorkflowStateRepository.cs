@@ -909,7 +909,9 @@ public sealed class PostgreSqlWorkflowStateRepository :
         // The payload is stored as the start carries it; the child's revision and runnable time live in their columns.
         if (commit.ChildStarts.Count > 0)
         {
-            var children = commit.ChildStarts.Select(start => (start, Child: start.Instance!)).ToArray();
+            // In key order, so two commits that start the same children wait for each other rather than deadlock.
+            var children = commit.ChildStarts.Select(start => (start, Child: start.Instance!))
+                .OrderBy(child => child.Child.InstanceId, StringComparer.Ordinal).ToArray();
             await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_instances
                     (instance_id, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
@@ -1202,39 +1204,70 @@ public sealed class PostgreSqlWorkflowStateRepository :
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        await using var transaction = await connection.BeginTransactionAsync();
-        // A child its parent still waits for ends that wait as terminated. The parent's row is locked before
-        // the child's, as a child's terminal commit locks them.
-        var deleted = await connection.QuerySingleOrDefaultAsync<string>("""
-            SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId
-            """, new { InstanceId = instanceId }, transaction) is { } json
-            ? JsonSerializer.Deserialize<WorkflowInstance>(json) : null;
-        if (deleted is { ParentInstanceId: { } parentId, ParentWaitId: { } waitId } &&
-            deleted.Status is not (WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
-                WorkflowStatus.Terminated or WorkflowStatus.TimedOut))
+        while (!await TryDeleteAsync(connection, instanceId))
         {
-            var (parent, now) = await LockInboxAsync(connection, transaction, parentId);
-            var gone = ToEvent(WorkflowStoreRules.ChildGone(instanceId, parentId, waitId));
-            if ((await AppendAsync(connection, transaction, gone, gone.ContentHash(), parent, now)).MadeRunnable)
-                await NotifyRunnableAsync(connection, transaction);
         }
-        // The instance is locked as commits and claims lock it, so none runs until the delete is over, even when
-        // the row does not exist yet; then its row, as appends lock it, and its lease row. The lease row stays so a
-        // recreated instance never reuses an epoch; its crashes go. The rows in the other tables are deleted by key.
-        await LockIdentityAsync(connection, transaction, instanceId);
-        await connection.ExecuteAsync("""
-            SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE;
-            UPDATE ixiflow_workflow_leases SET expires_at_utc = '-infinity', crash_count = 0
-            WHERE instance_id = @InstanceId;
-            DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
-            DELETE FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId;
-            DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId;
-            DELETE FROM ixiflow_workflow_events WHERE instance_id = @InstanceId;
-            DELETE FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId;
-            DELETE FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId;
-            """, new { InstanceId = instanceId }, transaction);
-        await transaction.CommitAsync();
     }
+
+    // A child its parent still waits for ends that wait as terminated. The parent's row is locked before the
+    // child's, as a child's terminal commit locks them, so the parent is read before any lock is taken, and read
+    // again once the instance is locked; when it changed in between, nothing is done and the delete starts over.
+    private static async Task<bool> TryDeleteAsync(NpgsqlConnection connection, string instanceId)
+    {
+        await using var transaction = await connection.BeginTransactionAsync();
+        var parameters = new { InstanceId = instanceId };
+        var seen = WaitingParent(await connection.QuerySingleOrDefaultAsync<string>("""
+            SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId
+            """, parameters, transaction));
+        var parent = seen is { } waiting ? await LockInboxAsync(connection, transaction, waiting.ParentId) : default;
+        // The instance is locked as commits and claims lock it, so none runs until the delete is over, then its row,
+        // as appends lock it. Only the row found here is deleted: an instance created after this read, which a save
+        // or a parent's commit can do without the lock on its ID, is left whole.
+        await LockIdentityAsync(connection, transaction, instanceId);
+        var locked = await connection.QuerySingleOrDefaultAsync<string>("""
+            SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE
+            """, parameters, transaction);
+        if (WaitingParent(locked) != seen)
+        {
+            await transaction.RollbackAsync();
+            return false;
+        }
+        // The lease row stays so a recreated instance never reuses an epoch; its crashes go.
+        await connection.ExecuteAsync("""
+            UPDATE ixiflow_workflow_leases SET expires_at_utc = '-infinity', crash_count = 0
+            WHERE instance_id = @InstanceId
+            """, parameters, transaction);
+        if (locked != null)
+        {
+            if (seen is { } answering)
+            {
+                var gone = ToEvent(WorkflowStoreRules.ChildGone(instanceId, answering.ParentId, answering.WaitId));
+                if ((await AppendAsync(connection, transaction, gone, gone.ContentHash(), parent.Instance,
+                        parent.Now)).MadeRunnable)
+                    await NotifyRunnableAsync(connection, transaction);
+            }
+            // Its rows in the other tables are deleted by key.
+            await connection.ExecuteAsync("""
+                DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
+                DELETE FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId;
+                DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId;
+                DELETE FROM ixiflow_workflow_events WHERE instance_id = @InstanceId;
+                DELETE FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId;
+                DELETE FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId;
+                """, parameters, transaction);
+        }
+        await transaction.CommitAsync();
+        return true;
+    }
+
+    // The parent and its wait that an instance saved as this JSON would still answer, if any.
+    private static (string ParentId, string WaitId)? WaitingParent(string? json) =>
+        json != null && JsonSerializer.Deserialize<WorkflowInstance>(json) is
+            { ParentInstanceId: { } parentId, ParentWaitId: { } waitId } instance &&
+        instance.Status is not (WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
+            WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
+            ? (parentId, waitId)
+            : null;
 
     private async Task<IEnumerable<WorkflowInstance>> QueryAsync(string predicate, string value)
     {

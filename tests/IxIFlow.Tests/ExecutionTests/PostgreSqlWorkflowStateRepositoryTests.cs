@@ -179,6 +179,55 @@ public class PostgreSqlWorkflowStateRepositoryTests
         }
     }
 
+    // A delete reads the parent to tell before it takes its locks. A child its parent starts in between is found
+    // under the locks, and the delete starts over, so the parent's wait still ends as the child's termination.
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-06")]
+    public async Task ADeleteThatMeetsAChildStartedMeanwhileTellsItsParent()
+    {
+        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
+        var repository = new PostgreSqlWorkflowStateRepository(connectionString);
+        var parent = new WorkflowInstance
+        {
+            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Parent", Status = WorkflowStatus.Suspended,
+            WorkflowDataJson = "{}"
+        };
+        var child = new WorkflowInstance
+        {
+            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Child", Status = WorkflowStatus.Running,
+            WorkflowDataJson = "{}", ParentInstanceId = parent.InstanceId, ParentWaitId = "child"
+        };
+        Assert.Equal(WorkflowCommitStatus.Applied,
+            (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, 0))).Status);
+        parent.Revision = 1;
+        try
+        {
+            Task deleting;
+            await using (var holder = await HoldIdentityAsync(connectionString, child.InstanceId))
+            {
+                deleting = repository.DeleteWorkflowInstanceAsync(child.InstanceId);
+                await Task.Delay(TimeSpan.FromMilliseconds(500));
+                Assert.False(deleting.IsCompleted);
+                Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
+                    CheckpointCommit.Create(parent, 0, 1,
+                        openedWaits: [new OpenedWait("child", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
+                        childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child")])))
+                    .Status);
+            }
+            await deleting;
+
+            Assert.Null(await repository.GetWorkflowInstanceAsync(child.InstanceId));
+            Assert.Equal("child",
+                (await repository.GetEventAsync(parent.InstanceId, $"child-completed-{child.InstanceId}"))!.TargetWaitId);
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(child.InstanceId);
+            await repository.DeleteWorkflowInstanceAsync(parent.InstanceId);
+        }
+    }
+
     // A transaction holding the lock the store takes on an instance's ID, until it is disposed.
     private static async Task<IdentityHold> HoldIdentityAsync(string connectionString, string instanceId)
     {
