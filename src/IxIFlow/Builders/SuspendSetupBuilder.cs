@@ -115,7 +115,7 @@ public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevio
         {
             TargetProperty = propertyName,
             SourceFunction = wrappedFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             SourceType = typeof(WorkflowContext<TWorkflowData, TPreviousStepData>),
             TargetType = typeof(TResumeEvent),
             Direction = PropertyMappingDirection.Input
@@ -214,7 +214,8 @@ public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevi
             TargetProperty = propertyName,
             SourceFunction = dummySourceFunction, // Not used for outputs
             TargetAssignmentFunction = assignmentFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(destination),
+            TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = typeof(TResumeEvent),
             TargetType = typeof(WorkflowContext<TWorkflowData>),
             Direction = PropertyMappingDirection.Output
@@ -270,7 +271,7 @@ public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevi
 
         // Create the property access expression by replacing the parameter
         var propertyAccess = Expression.Property(
-            ReplaceParameter(memberExpression.Expression, destination.Parameters[0], contextParameter),
+            ReplaceParameterVisitor.Replace(memberExpression.Expression!, destination.Parameters[0], contextParameter),
             propertyInfo
         );
 
@@ -282,26 +283,6 @@ public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevi
             Expression.Lambda<Action<WorkflowContext<TWorkflowData>, TProperty>>(assignment, contextParameter,
                 valueParameter);
         return lambda.Compile();
-    }
-
-    /// <summary>
-    ///     Replaces a parameter in an expression with a new parameter
-    /// </summary>
-    private Expression ReplaceParameter(Expression? expression, ParameterExpression oldParameter,
-        ParameterExpression newParameter)
-    {
-        if (expression == null) return newParameter;
-
-        if (expression == oldParameter)
-            return newParameter;
-
-        if (expression is MemberExpression memberExpr)
-            return Expression.MakeMemberAccess(
-                ReplaceParameter(memberExpr.Expression, oldParameter, newParameter),
-                memberExpr.Member
-            );
-
-        return expression;
     }
 
     private string GetPropertyName<T>(Expression<Func<TResumeEvent, T>> propertyExpression)

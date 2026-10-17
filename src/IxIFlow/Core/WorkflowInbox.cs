@@ -219,6 +219,26 @@ public sealed record ArmedWait(string WaitId, TimeSpan Timeout);
 /// <summary>A wait a commit closes, and why.</summary>
 public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
 
+/// <summary>
+/// A child workflow a parent's commit starts (D-17): the child's whole initial instance as JSON, which
+/// the store saves as the child's revision 1, runnable at once, in the same transaction as the parent's
+/// wait for it.
+/// </summary>
+public sealed record ChildStart(string ChildInstanceId, string Payload, string ParentWaitId);
+
+/// <summary>
+/// A cancellation request a parent's commit writes for a child it no longer waits to finish normally, and the
+/// parent's wait for that child: if the child is gone, the store ends that wait as the child's termination.
+/// </summary>
+public sealed record ChildCancellation(string ChildInstanceId, CancellationReason Reason, string ParentWaitId);
+
+/// <summary>
+/// The completion a child's terminal commit appends to its parent's inbox, addressed to the parent's
+/// wait for it (D-17). The child's commit applies whatever becomes of it.
+/// </summary>
+public sealed record ParentNotice(string ParentInstanceId, string ParentWaitId, string EventId, string EventType,
+    string PayloadJson);
+
 /// <summary>A row of the waits table (D-33): open, or closed with its reason.</summary>
 public sealed record StoredWait(
     string InstanceId,

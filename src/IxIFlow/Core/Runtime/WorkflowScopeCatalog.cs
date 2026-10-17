@@ -8,13 +8,16 @@ internal sealed class WorkflowScopeCatalog
     private readonly Dictionary<string, IReadOnlyList<WorkflowStep>> _scopes = new();
     private readonly Dictionary<string, WorkflowStep> _steps = new();
     private readonly Dictionary<WorkflowStep, string> _ids = new();
+    private readonly Dictionary<ItemScope, string> _handles = new(ReferenceEqualityComparer.Instance);
 
     public WorkflowScopeCatalog(WorkflowDefinition definition)
     {
         AddScope("root", definition.Steps);
         ValidateSupportedSteps();
         RequestPairing.Pair(definition.Steps);
-        Fingerprint = ComputeFingerprint();
+        ForEachRules.Validate(definition.Steps);
+        ParallelRules.Validate(definition.Steps);
+        Fingerprint = ComputeFingerprint(definition);
     }
 
     public string Fingerprint { get; }
@@ -44,6 +47,7 @@ internal sealed class WorkflowScopeCatalog
     public string ThenScope(WorkflowStep step) => $"{Id(step)}/then";
     public string ElseScope(WorkflowStep step) => $"{Id(step)}/else";
     public string LoopScope(WorkflowStep step) => $"{Id(step)}/loop";
+    public string ForEachScope(WorkflowStep step) => $"{Id(step)}/foreach";
     public string SagaScope(WorkflowStep step) => SequenceScope(step);
     public string CompensationScope(WorkflowStep saga, WorkflowStep source) =>
         $"{Id(saga)}/compensation/{Id(source)}";
@@ -62,10 +66,14 @@ internal sealed class WorkflowScopeCatalog
             var stepId = $"{id}/{index}";
             _steps.Add(stepId, step);
             _ids.Add(step, stepId);
+            if (step.ForEachItem != null && !_handles.TryAdd(step.ForEachItem, stepId))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"{step.ForEachItem} belongs to two ForEach steps, '{_handles[step.ForEachItem]}' and '{stepId}'");
             AddScope(SequenceScope(step), step.SequenceSteps);
             AddScope(ThenScope(step), step.ThenSteps);
             AddScope(ElseScope(step), step.ElseSteps);
             AddScope(LoopScope(step), step.LoopBodySteps);
+            AddScope(ForEachScope(step), step.ForEachBodySteps);
             AddScope(FinallyScope(step), step.FinallySteps);
             AddScope(TimeoutScope(step), step.TimeoutSteps);
             AddScope($"{stepId}/catch", step.CatchBlocks);
@@ -129,9 +137,12 @@ internal sealed class WorkflowScopeCatalog
         }
     }
 
-    private string ComputeFingerprint()
+    private string ComputeFingerprint(WorkflowDefinition definition)
     {
-        var signature = string.Join("\n", _steps.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+        // Combiners declared on the data type decide how joins merge, so they are part of it (spec E-05).
+        var combiners = ParallelRules.CombinerSignature(definition.WorkflowDataType);
+        var signature = (combiners.Length == 0 ? "" : "combiners:" + combiners + "\n") +
+            string.Join("\n", _steps.OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .Select(pair =>
             {
                 var step = pair.Value;
@@ -141,34 +152,51 @@ internal sealed class WorkflowScopeCatalog
                     WorkflowTypeIdentity.StableName(step.PreviousStepDataType),
                     WorkflowTypeIdentity.StableName(step.ActivityType),
                     WorkflowTypeIdentity.StableName(step.WorkflowType),
-                    step.WorkflowName, step.WorkflowVersion,
+                    step.WorkflowName, step.WorkflowVersion, step.CancelWithParent,
                     WorkflowTypeIdentity.StableName(step.ResumeEventType), waitKey,
                     step.WaitTimeout?.Ticks, step.DelayDuration?.Ticks, step.ParallelJoinMode,
                     step.LoopType, WorkflowTypeIdentity.StableName(step.ExceptionType),
                     WorkflowTypeIdentity.StableName(step.FaultType),
-                    step.ConditionExpressionSignature,
-                    WorkflowCodeSignature.Of(step.CompiledCondition),
-                    WorkflowCodeSignature.Of(step.OutcomeSelector),
-                    WorkflowCodeSignature.Of(step.ParallelCompletionCondition),
+                    Shape(step.ConditionExpression),
+                    Code(step.CompiledCondition),
+                    Code(step.OutcomeSelector),
+                    Code(step.ParallelCompletionCondition),
                     string.Join(';', step.OutcomeBranches.Select(OutcomeBranchSignature)),
                     ErrorPolicySignature(step),
                     string.Join(';', step.InputMappings.Select(MappingSignature)),
                     string.Join(';', step.OutputMappings.Select(MappingSignature)),
                     step.RequestName, WorkflowTypeIdentity.StableName(step.ReplyType), step.ReplyToRequest,
-                    WorkflowCodeSignature.Of(step.RequestSubject));
+                    Code(step.RequestSubject),
+                    string.Join(';', step.ParallelCombiners.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                        .Select(pair => pair.Key + "=" + WorkflowTypeIdentity.StableName(pair.Value))),
+                    // A ForEach is sequential until a parallel mode exists; its handle is known by this step.
+                    step.ForEachItem == null
+                        ? ""
+                        : (step.ForEachParallel
+                              ? $"parallel:{step.ForEachMaxConcurrency}:{step.ParallelJoinMode}"
+                              : "sequential") + ":" + WorkflowTypeIdentity.StableName(step.ForEachItem.ItemType),
+                    Code(step.ForEachCompletionCondition),
+                    Code(step.ForEachItems),
+                    WorkflowTypeIdentity.StableName(step.ResultType), Code(step.ResultSelector),
+                    Shape(step.ForEachIntoExpression));
             }));
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature));
         return Convert.ToHexString(bytes);
     }
 
-    private static string MappingSignature(PropertyMapping mapping) => string.Join(':',
+    private string Code(Delegate? behavior) => WorkflowCodeSignature.Of(behavior, _handles);
+
+    private string Shape(System.Linq.Expressions.LambdaExpression? expression) =>
+        expression == null ? "" : WorkflowExpressionSignature.Of(expression, _handles);
+
+    private string MappingSignature(PropertyMapping mapping) => string.Join(':',
         mapping.Direction, mapping.TargetProperty,
         WorkflowTypeIdentity.StableName(mapping.SourceType),
         WorkflowTypeIdentity.StableName(mapping.TargetType),
         mapping.CompensationSource,
-        mapping.ExpressionSignature,
-        WorkflowCodeSignature.Of(mapping.SourceFunction),
-        WorkflowCodeSignature.Of(mapping.TargetAssignmentFunction));
+        Shape(mapping.Expression),
+        Code(mapping.SourceFunction),
+        Code(mapping.TargetAssignmentFunction));
 
     private static string OutcomeBranchSignature(WorkflowOutcomeBranch branch) => string.Join(':',
         branch.IsDefault,
@@ -208,7 +236,8 @@ internal sealed class WorkflowScopeCatalog
             {
                 WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.Sequence or
                     WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop or
-                    WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga => true,
+                    WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
+                    WorkflowStepType.ForEach or WorkflowStepType.ForEachResult => true,
                 WorkflowStepType.SuspendResume => step.StepMetadata.ContainsKey("WaitKey"),
                 WorkflowStepType.Delay => step.DelayDuration > TimeSpan.Zero,
                 _ => false

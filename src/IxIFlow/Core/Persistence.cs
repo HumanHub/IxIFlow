@@ -61,13 +61,27 @@ public static class WorkflowStoreRules
     /// <summary>
     /// The wait an untargeted event should be judged against among <paramref name="openWaits"/>, at the
     /// store's time <paramref name="now"/>: any that could still take it comes before one past its deadline.
+    /// Only event waits take untargeted events; a child wait takes only its child's completion, addressed
+    /// to it (D-17).
     /// </summary>
     public static IEnumerable<StoredWait> Candidates(WorkflowEvent workflowEvent, IEnumerable<StoredWait> openWaits,
         DateTime now) =>
-        openWaits.Where(wait => wait.Kind == WaitKind.Child ||
-                                (wait.Kind == WaitKind.Event && (workflowEvent.Key == null ||
-                                 string.Equals(wait.Key, workflowEvent.Key, StringComparison.Ordinal))))
-            .OrderBy(wait => wait.Kind != WaitKind.Child && wait.DeadlineUtc <= now);
+        openWaits.Where(wait => wait.Kind == WaitKind.Event && (workflowEvent.Key == null ||
+                                string.Equals(wait.Key, workflowEvent.Key, StringComparison.Ordinal)))
+            .OrderBy(wait => wait.DeadlineUtc <= now);
+
+    /// <summary>
+    /// The completion a store appends to a parent's wait when the child it waits for is gone: deleted by an
+    /// operator before it ended, or missing when the parent asks it to cancel. The parent's invocation then
+    /// ends as the child's termination (D-17).
+    /// </summary>
+    public static ParentNotice ChildGone(string childInstanceId, string parentInstanceId, string parentWaitId) =>
+        new(parentInstanceId, parentWaitId, $"child-completed-{childInstanceId}", ChildCompleted.EventType,
+            JsonSerializer.Serialize(new ChildCompleted
+            {
+                ChildInstanceId = childInstanceId,
+                Status = WorkflowStatus.Terminated
+            }));
 
     /// <summary>Why the waits still open when an instance finishes are closed (D-33).</summary>
     public static WaitCloseReason FinalWaitCloseReason(WorkflowStatus status) =>
@@ -80,8 +94,8 @@ public static class WorkflowStoreRules
     /// it, or null when it is kept for the owner (D-33, D-35). <paramref name="target"/> is the wait the
     /// event names, if it names one; otherwise <paramref name="candidates"/> are the open waits it could
     /// reach, as <see cref="Candidates"/> orders them. Any other event needs an open event wait with its
-    /// key (any key when it has none), or a child wait the child may still match. An event that arrives
-    /// when its deadline, or every candidate's, has passed is refused as timed out.
+    /// key (any key when it has none). An event that arrives when its deadline, or every candidate's, has
+    /// passed is refused as timed out.
     /// </summary>
     public static EventRejection? RejectOnArrival(WorkflowEvent workflowEvent, StoredWait? target,
         IEnumerable<StoredWait> candidates, DateTime now)
@@ -94,7 +108,6 @@ public static class WorkflowStoreRules
         return candidates.FirstOrDefault() switch
         {
             null => EventRejection.NoOpenWait,
-            { Kind: WaitKind.Child } => null,
             { DeadlineUtc: { } deadline } when deadline <= now => EventRejection.WaitTimedOut,
             _ => null
         };
@@ -178,12 +191,6 @@ public interface IWorkflowStateRepository : IWorkflowInbox
     Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token);
 
     /// <summary>
-    /// Makes a suspended instance due for recovery now, for example when a child it waits for finishes.
-    /// Stores that cannot do this leave the instance on its own schedule.
-    /// </summary>
-    Task MakeRunnableAsync(string instanceId) => Task.CompletedTask;
-
-    /// <summary>
     ///     Save workflow instance state
     /// </summary>
     Task SaveWorkflowInstanceAsync(WorkflowInstance instance);
@@ -209,7 +216,18 @@ public interface IWorkflowStateRepository : IWorkflowInbox
     Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId);
 
     /// <summary>
-    ///     Delete workflow instance
+    /// The child workflows a parent started (D-17), for operators. This fallback reads the instances that
+    /// share the parent's correlation ID; stores should override it with one query.
+    /// </summary>
+    async Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
+        await GetWorkflowInstanceAsync(parentInstanceId) is { } parent
+            ? (await GetWorkflowInstancesByCorrelationIdAsync(parent.CorrelationId))
+            .Where(instance => instance.ParentInstanceId == parentInstanceId).ToArray()
+            : [];
+
+    /// <summary>
+    /// Deletes an instance and its inbox, waits and receipts. A child whose parent still waits for it ends
+    /// that wait as terminated, in the same step (D-17).
     /// </summary>
     Task DeleteWorkflowInstanceAsync(string instanceId);
 }
@@ -339,23 +357,27 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         lock (_claimLock)
+            return Task.FromResult(RequestCancellation(instanceId, reason, Now));
+    }
+
+    // Caller holds _claimLock.
+    private bool RequestCancellation(string instanceId, CancellationReason reason, DateTime now)
+    {
+        if (!_instances.TryGetValue(instanceId, out var instance) ||
+            instance.Status is not (WorkflowStatus.Running or WorkflowStatus.Suspended or
+                WorkflowStatus.NeedsResolution))
+            return false;
+        if (!_cancellations.ContainsKey(instanceId))
         {
-            if (!_instances.TryGetValue(instanceId, out var instance) ||
-                instance.Status is not (WorkflowStatus.Running or WorkflowStatus.Suspended or
-                    WorkflowStatus.NeedsResolution))
-                return Task.FromResult(false);
-            if (!_cancellations.ContainsKey(instanceId))
-            {
-                _cancellations.Add(instanceId,
-                    JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!);
-                _acknowledgedCancellations.Remove(instanceId);
-            }
-            // A request still to be taken up makes the instance runnable now, in the same step (C-01);
-            // repeating one already unwound changes nothing.
-            if (!_acknowledgedCancellations.Contains(instanceId))
-                instance.RunnableAtUtc = Now;
-            return Task.FromResult(true);
+            _cancellations.Add(instanceId,
+                JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!);
+            _acknowledgedCancellations.Remove(instanceId);
         }
+        // A request still to be taken up makes the instance runnable now, in the same step (C-01);
+        // repeating one already unwound changes nothing.
+        if (!_acknowledgedCancellations.Contains(instanceId))
+            instance.RunnableAtUtc = now;
+        return true;
     }
 
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
@@ -437,18 +459,6 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         }
     }
 
-    public Task MakeRunnableAsync(string instanceId)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        lock (_claimLock)
-        {
-            if (_instances.TryGetValue(instanceId, out var instance) &&
-                instance.Status == WorkflowStatus.Suspended)
-                instance.RunnableAtUtc = Now;
-        }
-        return Task.CompletedTask;
-    }
-
     public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
@@ -499,6 +509,10 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+            // A child's ID is new; a commit that names an existing instance changes nothing.
+            if (commit.ChildStarts.FirstOrDefault(child => _instances.ContainsKey(child.ChildInstanceId)) is { } taken)
+                throw new InvalidOperationException(
+                    $"Child workflow '{taken.ChildInstanceId}' cannot start: an instance with its ID exists");
             // One store time for the whole commit: its deadlines, its runnable time and its records (D-35).
             var now = Now;
             var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
@@ -557,10 +571,39 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                         ? lease.ExpiresAtUtc : DateTime.MinValue,
                     CrashCount = commit.ClearsCrashCount ? 0 : lease.CrashCount
                 };
+            var madeRunnable = new List<string>();
+            // Each child starts as its own instance, runnable now, with no owner yet (D-17).
+            foreach (var start in commit.ChildStarts)
+            {
+                var child = JsonSerializer.Deserialize<WorkflowInstance>(start.Payload)!;
+                child.Revision = 1;
+                child.RunnableAtUtc = now;
+                _instances[child.InstanceId] = child;
+                madeRunnable.Add(child.InstanceId);
+            }
+            foreach (var cancellation in commit.ChildCancellations)
+            {
+                if (RequestCancellation(cancellation.ChildInstanceId, cancellation.Reason, now) &&
+                    !_acknowledgedCancellations.Contains(cancellation.ChildInstanceId))
+                    madeRunnable.Add(cancellation.ChildInstanceId);
+                // A child that is gone will never answer; its parent's wait ends as its termination.
+                else if (!_instances.ContainsKey(cancellation.ChildInstanceId))
+                    Append(ToEvent(WorkflowStoreRules.ChildGone(cancellation.ChildInstanceId, commit.InstanceId,
+                        cancellation.ParentWaitId)), now);
+            }
+            // The child's completion goes to its parent's inbox; whatever the parent's state, the child's
+            // commit stands.
+            if (commit.ParentNotice is { } notice &&
+                Append(ToEvent(notice), now) is { Status: EventAppendStatus.Stored, MadeRunnable: true })
+                madeRunnable.Add(notice.ParentInstanceId);
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
-                PendingCancellation(commit.InstanceId), parked, unread));
+                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable));
         }
     }
+
+    private static WorkflowEvent ToEvent(ParentNotice notice) =>
+        new(notice.ParentInstanceId, notice.EventId, notice.EventType, notice.PayloadJson,
+            TargetWaitId: notice.ParentWaitId);
 
     // Caller holds _claimLock.
     private bool Unread(CheckpointCommit commit) =>
@@ -571,45 +614,47 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     {
         ArgumentNullException.ThrowIfNull(workflowEvent);
         workflowEvent.Validate();
-        var hash = workflowEvent.ContentHash();
         lock (_claimLock)
+            return Task.FromResult(Append(workflowEvent, Now));
+    }
+
+    // Caller holds _claimLock.
+    private EventAppendResult Append(WorkflowEvent workflowEvent, DateTime now)
+    {
+        var hash = workflowEvent.ContentHash();
+        // A known event ID answers the same way whatever happened to the instance since.
+        if (_events.TryGetValue((workflowEvent.InstanceId, workflowEvent.EventId), out var existing))
+            return existing.Hash.SequenceEqual(hash)
+                ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Event.Sequence)
+                : new EventAppendResult(EventAppendStatus.Conflict);
+        if (!_instances.TryGetValue(workflowEvent.InstanceId, out var instance))
+            return new EventAppendResult(EventAppendStatus.NotFound);
+        var finished = IsTerminal(instance.Status);
+        // A finished instance takes no events; one sent to a wait is told why that wait closed.
+        if (finished && workflowEvent.TargetWaitId == null)
+            return new EventAppendResult(EventAppendStatus.Closed);
+        var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent,
+            workflowEvent.TargetWaitId == null ? null
+                : WaitsOf(workflowEvent.InstanceId).GetValueOrDefault(workflowEvent.TargetWaitId),
+            WorkflowStoreRules.Candidates(workflowEvent, OpenWaits(workflowEvent.InstanceId), now), now)
+            ?? (finished ? EventRejection.InstanceFinished : null);
+        // A refused event is recorded so a resend is recognized, but takes no place in the inbox.
+        if (rejection != null)
         {
-            // A known event ID answers the same way whatever happened to the instance since.
-            if (_events.TryGetValue((workflowEvent.InstanceId, workflowEvent.EventId), out var existing))
-                return Task.FromResult(existing.Hash.SequenceEqual(hash)
-                    ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Event.Sequence)
-                    : new EventAppendResult(EventAppendStatus.Conflict));
-            if (!_instances.TryGetValue(workflowEvent.InstanceId, out var instance))
-                return Task.FromResult(new EventAppendResult(EventAppendStatus.NotFound));
-            var finished = instance.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
-                WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut;
-            // A finished instance takes no events; one sent to a wait is told why that wait closed.
-            if (finished && workflowEvent.TargetWaitId == null)
-                return Task.FromResult(new EventAppendResult(EventAppendStatus.Closed));
-            var now = Now;
-            var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent,
-                workflowEvent.TargetWaitId == null ? null
-                    : WaitsOf(workflowEvent.InstanceId).GetValueOrDefault(workflowEvent.TargetWaitId),
-                WorkflowStoreRules.Candidates(workflowEvent, OpenWaits(workflowEvent.InstanceId), now), now)
-                ?? (finished ? EventRejection.InstanceFinished : null);
-            // A refused event is recorded so a resend is recognized, but takes no place in the inbox.
-            if (rejection != null)
+            _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, 0, now) with
             {
-                _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, 0, now) with
-                {
-                    Outcome = EventOutcome.Rejected, Rejection = rejection
-                }, hash);
-                return Task.FromResult(new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection));
-            }
-            var sequence = _inboxSequence.GetValueOrDefault(workflowEvent.InstanceId) + 1;
-            _inboxSequence[workflowEvent.InstanceId] = sequence;
-            _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, sequence, now), hash);
-            // A stopped instance waits for its operator; the event is consumed after the release.
-            var madeRunnable = instance.Status is WorkflowStatus.Running or WorkflowStatus.Suspended;
-            if (madeRunnable)
-                instance.RunnableAtUtc = now;
-            return Task.FromResult(new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable));
+                Outcome = EventOutcome.Rejected, Rejection = rejection
+            }, hash);
+            return new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection);
         }
+        var sequence = _inboxSequence.GetValueOrDefault(workflowEvent.InstanceId) + 1;
+        _inboxSequence[workflowEvent.InstanceId] = sequence;
+        _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, sequence, now), hash);
+        // A stopped instance waits for its operator; the event is consumed after the release.
+        var madeRunnable = instance.Status is WorkflowStatus.Running or WorkflowStatus.Suspended;
+        if (madeRunnable)
+            instance.RunnableAtUtc = now;
+        return new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable);
     }
 
     private static StoredWorkflowEvent Stored(WorkflowEvent workflowEvent, long sequence, DateTime now) =>
@@ -761,10 +806,21 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
     }
 
+    public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId)
+    {
+        lock (_claimLock)
+            return Task.FromResult<IEnumerable<WorkflowInstance>>(_instances.Values
+                .Where(instance => instance.ParentInstanceId == parentInstanceId).Select(SnapshotStructured).ToArray());
+    }
+
     public Task DeleteWorkflowInstanceAsync(string instanceId)
     {
         lock (_claimLock)
         {
+            // A child its parent still waits for ends that wait as terminated.
+            if (_instances.TryGetValue(instanceId, out var deleted) && !IsTerminal(deleted.Status) &&
+                deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
+                Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
             _instances.TryRemove(instanceId, out _);
             // The lease record stays so a recreated instance never reuses an epoch; its crashes go.
             if (_leases.TryGetValue(instanceId, out var lease))

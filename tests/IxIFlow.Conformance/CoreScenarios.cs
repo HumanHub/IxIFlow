@@ -133,13 +133,18 @@ public sealed class CoreScenarios
             .Continuations.Single(item => item.PendingActivity?.ChildWorkflowId != null)
             .PendingActivity!.ChildWorkflowId!;
 
+        // The child runs as an instance of its own (D-17); its event is addressed to it once it waits.
+        await cluster.UntilAsync(childId, WorkflowStatus.Suspended);
         var childResult = await receivingHost.ResumeAsync(childId, "approval", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, childResult.Status);
         await cluster.RecoverOnceAsync();
 
+        // The child's completion woke its parent, whichever host ran it.
+        var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
         var saved = await cluster.GetInstanceAsync(started.InstanceId);
-        Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-        Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<CounterData>(saved.WorkflowDataJson)!.Count);
+        Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<CounterData>(saved!.WorkflowDataJson)!.Count);
     }
 
     private static Task<ConformanceCluster> CreateClusterAsync(string profile,

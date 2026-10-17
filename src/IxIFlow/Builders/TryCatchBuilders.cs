@@ -92,7 +92,8 @@ public sealed class CatchBuilder<TWorkflowData, TPreviousStepData>(
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
         configure(new WorkflowBuilder<TWorkflowData, TPreviousStepData>(tryStep.FinallySteps));
-        return new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, name, workflowVersion);
+        // This builder already continues the same steps, name and version.
+        return this;
     }
 }
 
@@ -208,6 +209,15 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         return this;
     }
 
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> ForEach<TItem>(
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null)
+    {
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).ForEach(items, body, setup);
+        return this;
+    }
+
     public ITryBuilder<TWorkflowData, TPreviousStepData> Try(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure) =>
         new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).Try(configure);
@@ -245,7 +255,7 @@ public sealed class CatchActivitySetupInputBuilder<TWorkflowData, TActivity, TPr
         {
             Direction = PropertyMappingDirection.Input,
             TargetProperty = member.Member.Name,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             TargetType = typeof(TProperty),
             SourceType = typeof(TProperty),
             SourceFunction = context => compiled((FaultContext<TWorkflowData, TFault, TPreviousStepData>)context)
