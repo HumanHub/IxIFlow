@@ -323,26 +323,34 @@ public sealed class WorkflowDocumentCompiler : IWorkflowDocumentCompiler
             throw new InvalidOperationException($"Output path '{path}' must start with workflow.");
         }
 
+        // An output is never skipped: a path that cannot be followed or written fails the step (F-23).
         object? current = target.GetType().GetProperty("WorkflowData")?.GetValue(target);
         for (var index = 1; index < segments.Length - 1; index++)
         {
             if (current == null)
             {
-                return;
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    $"Output path '{path}' passes through a null value before '{segments[index]}'");
             }
 
-            current = current.GetType().GetProperty(segments[index])?.GetValue(current);
+            current = (current.GetType().GetProperty(segments[index])
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Output path '{path}' names no property '{segments[index]}'")).GetValue(current);
         }
 
-        if (current == null || segments.Length == 0)
+        if (current == null)
         {
-            return;
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"Output path '{path}' passes through a null value before '{segments[^1]}'");
         }
 
-        var targetProperty = current.GetType().GetProperty(segments[^1]);
-        if (targetProperty == null || !targetProperty.CanWrite)
+        var targetProperty = current.GetType().GetProperty(segments[^1])
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Output path '{path}' names no property '{segments[^1]}'");
+        if (!targetProperty.CanWrite)
         {
-            return;
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Output path '{path}' ends at '{segments[^1]}', which is not writable");
         }
 
         var convertedValue = ConvertValue(value, targetProperty.PropertyType);

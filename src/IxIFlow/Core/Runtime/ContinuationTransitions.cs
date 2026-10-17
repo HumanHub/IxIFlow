@@ -558,6 +558,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var first = !continuation.CancellationUnwind;
         continuation.CancellationUnwind = true;
         continuation.RetryAfterUtc = null;
+        continuation.RetryInputs = null;
         if (continuation.PendingActivity != null &&
             continuation.Status == ContinuationStatus.WaitingResolution)
         {
@@ -782,8 +783,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (WorkflowEngineException.IsEngineFailure(error))
             return false;
         checkpoint.Touch(continuation);
+        // A failed attempt's inputs are kept only for a retry of its step.
+        var retryInputs = continuation.RetryInputs;
+        continuation.RetryInputs = null;
         if (allowStepRetry && !continuation.CancellationUnwind &&
-            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, StoreNow(checkpoint)))
+            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, StoreNow(checkpoint), retryInputs))
             return true;
         if (continuation.CancellationUnwind)
         {
@@ -896,10 +900,12 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         {
             if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             {
-                if (continuation.Previous != null || continuation.AcceptedWait != null)
+                if (continuation.Previous != null || continuation.AcceptedWait != null ||
+                    continuation.RetryInputs != null)
                     checkpoint.Touch(continuation);
                 continuation.Previous = null;
                 continuation.AcceptedWait = null;
+                continuation.RetryInputs = null;
                 continue;
             }
 

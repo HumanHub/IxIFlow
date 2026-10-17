@@ -925,6 +925,100 @@ public sealed class StructuredChildWaitTests
         Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
     }
 
+    // An input mapped to a property the child's data does not have is an invalid definition, not skipped (F-23).
+    [Fact]
+    [Trait("Spec", "F-23")]
+    public async Task AChildInputTheChildsDataCannotTakeFailsTheInvocation()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("NarrowChild"));
+        var parent = Workflow.Create<ParentData>("ParentOfNarrowChild")
+            .Step<NoopActivity>()
+            .Invoke<WideChildData>("NarrowChild", 1, step => step
+                .Input(child => child.Extra).From(_ => "lost before"))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("Child workflow input 'ChildData.Extra' is not a property of its data", result.ErrorMessage);
+        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+    }
+
+    // A whole number takes a child's enum property, as reflection assigned it before conversion was checked.
+    [Fact]
+    [Trait("Spec", "F-23")]
+    public async Task AChildInputNumberTakesTheChildsEnumProperty()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+            Workflow.Create<LevelData>("LevelChild").Step<NoopActivity>().Build());
+        var parent = Workflow.Create<ParentData>("ParentOfLevelChild")
+            .Step<NoopActivity>()
+            .Invoke<LevelNumberData>("LevelChild", 1, step => step.Input(child => child.Level).From(_ => 2))
+            .Build();
+
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(parent, new ParentData());
+        var result = await FinishedAsync(engine, started.InstanceId);
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        var child = Assert.Single(await repository.GetChildInstancesAsync(result.InstanceId));
+        Assert.Contains("\"Level\":2", child.WorkflowDataJson);
+    }
+
+    // A value the child's data property cannot take is an invalid definition, not passed on unconverted (F-23).
+    [Fact]
+    [Trait("Spec", "F-23")]
+    public async Task AChildInputOfAnotherTypeFailsTheInvocation()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("StrictChild"));
+        var parent = Workflow.Create<ParentData>("ParentOfStrictChild")
+            .Step<NoopActivity>()
+            .Invoke<WideChildData>("StrictChild", 1, step => step
+                .Input(child => child.Approved).From(_ => "perhaps"))
+            .Build();
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+        Assert.Contains("Child workflow input 'ChildData.Approved' takes Boolean, not String", result.ErrorMessage);
+        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+    }
+
+    // An engine failure ends the parent at once, without unwinding its branches; the children it waits for are
+    // still asked to cancel, since nothing will take their completions.
+    [Fact]
+    [Trait("Spec", "D-09")]
+    public async Task AParentEndedByAnEngineFailureAsksItsChildToCancel()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("AbandonedChild"));
+        var parent = Workflow.Create<ParentData>("ParentEndedByEngineFailure")
+            .Step<NoopActivity>()
+            .Parallel(parallel => parallel
+                .Do(first => first.Invoke<ChildData>("AbandonedChild", 1))
+                // An input that cannot be saved and read back is an invalid definition, an engine failure.
+                .Do(second => second.WaitFor<Approval>("fail").Step<TakesUnreadableInput>(step => step
+                    .Input(activity => activity.Value).From(_ => new UnreadableValue(1)))))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(parent, new ParentData());
+        var childId = Assert.Single(await repository.GetChildInstancesAsync(started.InstanceId)).InstanceId;
+        await ChildWaitingAsync(services, childId, "approval");
+
+        var failed = await engine.ResumeAsync(started.InstanceId, "fail", new Approval());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, failed.Status);
+        Assert.Contains("cannot be saved and read back", failed.ErrorMessage);
+        Assert.NotNull(await repository.GetCancellationRequestAsync(childId));
+    }
+
     [Fact]
     [Trait("Spec", "D-09")]
     public void AParentThatFailsAsksOnlyItsAttachedChildrenToCancel()
@@ -1087,6 +1181,46 @@ public sealed class StructuredChildWaitTests
     }
 
     public sealed class ChildFailureException(string message) : Exception(message);
+
+    public enum Level
+    {
+        Low,
+        Medium,
+        High
+    }
+
+    public sealed class LevelData
+    {
+        public Level Level { get; set; }
+    }
+
+    /// <summary>The child's data as the parent names it: its enum as a number.</summary>
+    public sealed class LevelNumberData
+    {
+        public int Level { get; set; }
+    }
+
+    /// <summary>A child data type that does not match the registered child's data: one property it lacks, one of
+    /// another type.</summary>
+    public sealed class WideChildData
+    {
+        public string Extra { get; set; } = "";
+        public string Approved { get; set; } = "";
+    }
+
+    /// <summary>Its constructor's parameter names no property, so it cannot be read back from JSON.</summary>
+    public sealed class UnreadableValue(int seed)
+    {
+        public int Number { get; } = seed;
+    }
+
+    public sealed class TakesUnreadableInput : IAsyncActivity
+    {
+        public UnreadableValue? Value { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
 
     public sealed class ThrowChildActivity : IAsyncActivity
     {

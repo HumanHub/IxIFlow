@@ -151,7 +151,8 @@ internal static class ChildInputs
 {
     /// <summary>
     /// New data for a child of <paramref name="definition"/>, with the invocation's input mappings applied
-    /// from the parent's <paramref name="context"/>.
+    /// from the parent's <paramref name="context"/>. An input the child's data cannot take is an invalid definition,
+    /// never skipped (F-23).
     /// </summary>
     public static object NewData(WorkflowDefinition definition, WorkflowStep step, object context)
     {
@@ -161,24 +162,32 @@ internal static class ChildInputs
         foreach (var mapping in step.InputMappings.Where(item => item.Direction == PropertyMappingDirection.Input))
         {
             var target = data.GetType().GetProperty(mapping.TargetProperty);
-            if (target is { CanWrite: true })
-                target.SetValue(data, Convert(mapping.SourceFunction(context), target.PropertyType));
+            if (target is not { CanWrite: true })
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Child workflow input '{data.GetType().Name}.{mapping.TargetProperty}' is " +
+                    (target == null ? "not a property of its data" : "not writable"));
+            target.SetValue(data, Convert(mapping.SourceFunction(context), target, data.GetType()));
         }
         return data;
     }
 
-    private static object? Convert(object? value, Type targetType)
+    private static object? Convert(object? value, PropertyInfo target, Type dataType)
     {
-        if (value == null || targetType.IsInstanceOfType(value))
+        if (value == null || target.PropertyType.IsInstanceOfType(value))
             return value;
-        var underlying = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        var underlying = Nullable.GetUnderlyingType(target.PropertyType) ?? target.PropertyType;
         try
         {
-            return System.Convert.ChangeType(value, underlying);
+            // A whole number takes an enum property as reflection assigns it.
+            return underlying.IsEnum && Type.GetTypeCode(value.GetType()) is >= TypeCode.SByte and <= TypeCode.UInt64
+                ? Enum.ToObject(underlying, value)
+                : System.Convert.ChangeType(value, underlying);
         }
         catch (Exception error) when (error is InvalidCastException or FormatException or OverflowException)
         {
-            return value;
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Child workflow input '{dataType.Name}.{target.Name}' takes {target.PropertyType.Name}, " +
+                $"not {value.GetType().Name}", error);
         }
     }
 }

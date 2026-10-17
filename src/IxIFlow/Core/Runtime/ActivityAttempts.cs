@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
@@ -11,6 +13,7 @@ internal sealed class ActivityAttempts(
     TimeProvider time)
 {
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
+    private readonly ILogger _logger = LogScope.Logger(services);
 
     private DateTime Now => time.GetUtcNow().UtcDateTime;
 
@@ -32,6 +35,14 @@ internal sealed class ActivityAttempts(
                 "The saved activity does not match its continuation");
 
         var invocationId = pending?.Id ?? NewInvocationId(instance, continuation, scopes.Id(step));
+        // The attempt, its activity's own logging included, logs with its step and invocation (G-03).
+        using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), invocationId));
+        // A step retry continues the invocation its failed attempt began, from the inputs that attempt saved (D-14).
+        var retried = pending == null && continuation.RetryInputs?.InvocationId == invocationId
+            ? continuation.RetryInputs
+            : null;
+        var retryInputs = retried?.Inputs;
+        continuation.RetryInputs = null;
         var attempt = new ActivityAttemptState
         {
             StartedAtUtc = Now,
@@ -49,12 +60,13 @@ internal sealed class ActivityAttempts(
                 continuation.GetPrevious(services),
                 TryScopeTransitions.CatchFault(checkpoint, continuation, services),
                 activityCancellation.Token, invocationId, attempt.Id,
-                continuation.Stack[^1].NextStepIndex, !isRecovery,
-                pending?.Inputs.CodeInputs,
+                continuation.Stack[^1].NextStepIndex, !isRecovery && retryInputs == null,
+                (pending?.Inputs ?? retryInputs)?.CodeInputs,
                 compensationInputs, SagaScopeTransitions.ActivityMetadata(scopes, continuation, step),
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
             if (pending == null)
             {
+                retryInputs?.Restore(prepared.Activity, services);
                 recoveryState = (prepared.Activity as IRecoverableActivity)?
                     .CaptureRecoveryStateObject(prepared.Context);
                 if (prepared.Activity is IRecoverableActivity && recoveryState == null)
@@ -63,11 +75,12 @@ internal sealed class ActivityAttempts(
                 prepared.SetRecoveryState(recoveryState);
                 pending = new ActivityInvocationState
                 {
-                    StartedAtUtc = Now,
+                    StartedAtUtc = retried?.StartedAtUtc ?? Now,
                     Id = invocationId,
                     StepId = scopes.Id(step),
-                    Inputs = prepared.Inputs,
-                    RecoveryState = SerializedValue.From(recoveryState)
+                    Inputs = retryInputs ?? prepared.Inputs,
+                    RecoveryState = SerializedValue.From(recoveryState),
+                    Attempts = retried?.Attempts ?? []
                 };
                 continuation.PendingActivity = pending;
             }
@@ -268,6 +281,7 @@ internal sealed class ActivityAttempts(
         IExecutionHost host,
         CancellationTokenSource cancellation)
     {
+        using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), continuation.PendingActivity?.Id));
         checkpoint.Touch(continuation);
         var stepNumber = continuation.Stack[^1].NextStepIndex;
         RunningActivity Settles(ActivityRunResult outcome) =>
@@ -305,6 +319,7 @@ internal sealed class ActivityAttempts(
 
         pending = new ActivityInvocationState { StepId = scopes.Id(step), StartedAtUtc = Now };
         pending.ChildWorkflowId = pending.Id;
+        using var startScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), pending.Id));
         var childDefinition = await host.ResolveChildAsync(step, starting: true);
         ChildStart start;
         try
@@ -370,6 +385,8 @@ internal sealed class ActivityAttempts(
         WorkflowInstance instance,
         IExecutionHost host)
     {
+        using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(activity.Step),
+            activity.Continuation.PendingActivity?.Id));
         checkpoint.Touch(activity.Continuation);
         // The branch's copy may have changed while its activity ran; it is recorded at the next commit.
         activity.Continuation.DataChanged = activity.Continuation.ParentJoinId != null;
@@ -391,6 +408,15 @@ internal sealed class ActivityAttempts(
 
             if (outcome.Kind == ActivityRunKind.Threw)
             {
+                // Kept until the failure is handled, for a retry of the step (D-14).
+                if (activity.Continuation.PendingActivity is { } failed)
+                    activity.Continuation.RetryInputs = new KeptActivityInputs
+                    {
+                        InvocationId = failed.Id,
+                        Inputs = failed.Inputs,
+                        StartedAtUtc = failed.StartedAtUtc,
+                        Attempts = failed.Attempts
+                    };
                 MarkActivityEnd(activity, instance, "Threw", outcome.Error);
                 throw outcome.Error ?? new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "Activity failed without an exception");

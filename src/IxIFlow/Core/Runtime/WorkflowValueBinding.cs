@@ -49,8 +49,12 @@ internal static class WorkflowValueBinding
     public static void ApplyActivityOutputs(WorkflowStep step, object? output, object workflowData,
         ItemValues? items = null)
     {
-        if (output == null)
+        if (step.OutputMappings.Count == 0)
             return;
+        // Outputs are never skipped for want of a value to read them from (F-23).
+        if (output == null)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"Step '{step.Id}' has outputs, but its child workflow ended without data");
 
         var context = EvaluationContext(workflowData, null, null, items);
         foreach (var mapping in step.OutputMappings)
