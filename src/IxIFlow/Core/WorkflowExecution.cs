@@ -315,6 +315,7 @@ public class WorkflowInstance
     /// <summary>
     ///     Serialized execution state at suspension point (for resume operations)
     /// </summary>
+    [System.Text.Json.Serialization.JsonConverter(typeof(RawJsonText))]
     public string ExecutionStateJson { get; set; } = "";
 
     /// <summary>
@@ -337,22 +338,62 @@ public class WorkflowInstance
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
 
-    /// <summary>Whether optional execution history entries are recorded.</summary>
+    /// <summary>Whether trace entries are recorded (G-01).</summary>
     public bool TracingEnabled { get; set; } = true;
 
     /// <summary>
-    ///     Execution history entries
+    /// The trace entries this run recorded, and how many of them its commits carried. The trace is not part of
+    /// the instance: each commit carries the entries since the last one to the store's trace (G-01).
     /// </summary>
-    public List<ExecutionTraceEntry> ExecutionHistory { get; set; } = new();
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal TraceBuffer Trace { get; } = new();
 
     /// <summary>
-    ///     Structured execution snapshot for resume, replay, and debugging
+    /// The parts the instance's state is stored in as of its last commit or read, by key, or null when that is not
+    /// known; a commit writes only the parts that differ, and deletes those that are gone (A-08).
     /// </summary>
-    public WorkflowExecutionSnapshot? ExecutionSnapshot { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal IReadOnlyDictionary<string, string>? SavedParts { get; private set; }
+
+    // The instance and the revision SavedParts are stored at.
+    private string? _savedPartsInstanceId;
+    private long _savedPartsRevision;
+
+    /// <summary>Records the parts the instance is stored in at <paramref name="revision"/>.</summary>
+    internal void Saved(IReadOnlyDictionary<string, string> parts, long revision)
+    {
+        SavedParts = parts;
+        _savedPartsInstanceId = InstanceId;
+        _savedPartsRevision = revision;
+    }
+
+    /// <summary>
+    /// The parts the instance is stored in at <paramref name="revision"/>, or null when they are not known for it: the
+    /// object changed revision, or names another instance, since it was read or last committed through the engine.
+    /// </summary>
+    internal IReadOnlyDictionary<string, string>? PartsAt(long revision) =>
+        SavedParts != null && _savedPartsRevision == revision && _savedPartsInstanceId == InstanceId
+            ? SavedParts : null;
+
+    /// <summary>The stored form the last preparation made of the instance's state and data.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal Runtime.StoredCheckpoint? Stored { get; set; }
+
+    /// <summary>The instance's fields with <paramref name="trunk"/> as its state and no data, to store as a trunk.</summary>
+    internal WorkflowInstance AsTrunk(string trunk)
+    {
+        var copy = (WorkflowInstance)MemberwiseClone();
+        copy.ExecutionStateJson = trunk;
+        copy.WorkflowDataJson = "";
+        return copy;
+    }
+
+    /// <summary>
 }
 
 /// <summary>
-///     Structured execution snapshot for durable resume and future debugger support
+/// Where an instance's branches are and which scopes they are in, computed from its saved checkpoint when
+/// asked through <see cref="IWorkflowClient.GetSnapshotAsync"/>; it is not stored.
 /// </summary>
 public class WorkflowExecutionSnapshot
 {
@@ -391,9 +432,7 @@ public class WorkflowExecutionSnapshot
     /// </summary>
     public Dictionary<string, string> Values { get; set; } = new();
 
-    /// <summary>
-    ///     When the snapshot was captured
-    /// </summary>
+    /// <summary>When the snapshot was computed from the saved checkpoint.</summary>
     public DateTime CapturedAtUtc { get; set; }
 }
 

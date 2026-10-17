@@ -621,7 +621,7 @@ public sealed class LocalHostTests
 
         public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            var instance = commit.ReadTrunk();
             if (instance.WorkflowName == HeldInstanceName && instance.Revision >= 1)
             {
                 Holding.TrySetResult();

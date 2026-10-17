@@ -175,9 +175,8 @@ public class StructuredTryWaitTests
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("boom", Data(result).Error);
         Assert.Equal(1, Data(result).Finally);
-        var saved = await services.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstanceAsync(result.InstanceId);
-        Assert.DoesNotContain(saved!.ExecutionSnapshot!.Pointers, pointer => pointer.Status == "Waiting");
+        var snapshot = await services.GetRequiredService<IWorkflowClient>().GetSnapshotAsync(result.InstanceId);
+        Assert.DoesNotContain(snapshot!.Pointers, pointer => pointer.Status == "Waiting");
     }
 
     [Fact]
@@ -1618,7 +1617,7 @@ public class StructuredTryWaitTests
 
         public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            var instance = commit.ReadTrunk();
             if (Interlocked.Increment(ref _commits) > 80)
                 throw new InvalidOperationException("Parallel cleanup exceeded the checkpoint budget");
             return _inner.CommitWorkflowInstanceAsync(commit);
@@ -1634,6 +1633,9 @@ public class StructuredTryWaitTests
             _inner.GetWorkflowInstancesByStatusAsync(status);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
             _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+            int limit = 1000) =>
+            _inner.GetTraceAsync(instanceId, afterSequence, limit);
         public Task DeleteWorkflowInstanceAsync(string instanceId) =>
             _inner.DeleteWorkflowInstanceAsync(instanceId);
     }

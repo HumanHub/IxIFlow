@@ -227,7 +227,11 @@ public sealed class ParallelForEachTests
         {
             instanceId = (await Engine(first).RunAsync(definition,
                 new Approvals { Approvers = ["ann", "bob", "cid"] })).InstanceId;
-            store.FailCommit = instance => instance.ExecutionStateJson.Contains("\"Finished\":[1]");
+            // The commit that records item 1 as the only one finished.
+            store.FailCommit = instance => IxIFlow.Core.Runtime.ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) &&
+                IxIFlow.Core.Runtime.ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations
+                    .SelectMany(continuation => continuation.Stack)
+                    .Any(frame => frame.ForEach?.Finished is { } finished && finished.SequenceEqual([1]));
             await IgnoreFailureAsync(Engine(first).ReplyAsync(outbox.TokenOf("bob"), new Answer { Approved = true }));
             Assert.True(store.FailedCommits > 0);
         }

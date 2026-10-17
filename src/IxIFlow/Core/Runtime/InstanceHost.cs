@@ -55,7 +55,7 @@ internal sealed class InstanceHost(
         cancellationToken.ThrowIfCancellationRequested();
         if (!await _store.RequestCancellationAsync(instanceId, reason))
         {
-            var existing = await _store.GetWorkflowInstanceAsync(instanceId);
+            var existing = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             if (existing == null)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"Workflow instance '{instanceId}' does not exist");
@@ -66,7 +66,7 @@ internal sealed class InstanceHost(
             return ExistingResult(existing);
         }
 
-        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+        var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
         if (instance?.Status == WorkflowStatus.Running)
             return new WorkflowExecutionResult
             {
@@ -84,7 +84,7 @@ internal sealed class InstanceHost(
     public async Task<WorkflowExecutionResult?> ReadAsync(string instanceId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+        var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
         return instance == null ? null : ReadResult(instance);
     }
 
@@ -92,7 +92,7 @@ internal sealed class InstanceHost(
     public async Task<WorkflowExecutionStatus?> ReadStatusAsync(string instanceId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
-        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+        var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
         return instance == null ? null : StatusOf(instance.Status);
     }
 
@@ -126,7 +126,7 @@ internal sealed class InstanceHost(
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 "This step cannot be resolved by an operator");
         var child = pending.ChildWorkflowId == null
-            ? null : await _store.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
+            ? null : await _store.GetWorkflowInstanceSummaryAsync(pending.ChildWorkflowId);
         if (ChildIsActive(child))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Resolve child workflow '{pending.ChildWorkflowId}' before recovering its parent invocation");
@@ -144,7 +144,7 @@ internal sealed class InstanceHost(
             _store, instance, _leaseSettings, _watch, _time);
         if (owner == null)
             return WorkflowExecutor.Busy(instanceId);
-        var current = await _store.GetWorkflowInstanceAsync(instanceId);
+        var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
         if (current?.Revision != instance.Revision || current.Status != instance.Status)
             return current?.Status == WorkflowStatus.Running
                 ? WorkflowExecutor.Busy(instanceId)
@@ -189,7 +189,7 @@ internal sealed class InstanceHost(
             var pending = continuation.PendingActivity!;
             var step = scopes.Step(pending.StepId);
             var child = pending.ChildWorkflowId == null
-                ? null : await _store.GetWorkflowInstanceAsync(pending.ChildWorkflowId);
+                ? null : await _store.GetWorkflowInstanceSummaryAsync(pending.ChildWorkflowId);
             pendingActivities.Add(new PendingActivityInfo(pending.Id, pending.StepId,
                 step.ActivityType?.Name ?? step.Name, pending.ResolutionReason,
                 pending.StartedAtUtc,
@@ -199,6 +199,42 @@ internal sealed class InstanceHost(
                 step.StepType == WorkflowStepType.WorkflowInvocation && !ChildIsActive(child)));
         }
         return pendingActivities;
+    }
+
+    /// <summary>The instance's whole trace, in the order its commits stored it (G-01).</summary>
+    public async Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        var trace = new List<ExecutionTraceEntry>();
+        for (long after = 0;;)
+        {
+            var page = await _store.GetTraceAsync(instanceId, after);
+            trace.AddRange(page.Select(entry => entry.Entry));
+            if (page.Count == 0)
+                return trace;
+            after = page[^1].Sequence;
+        }
+    }
+
+    /// <summary>
+    /// Where the instance's branches are, computed from its saved checkpoint and its registered definition; none
+    /// for an instance that does not exist or has no structured checkpoint.
+    /// </summary>
+    public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+        if (instance == null || !HasStructuredCheckpoint(instance))
+            return null;
+        var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "The registered workflow definition is unavailable");
+        var scopes = new WorkflowScopeCatalog(definition);
+        var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+        if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "The registered workflow definition differs from the saved version");
+        return ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
     }
 
     private static bool ChildIsActive(WorkflowInstance? child) =>
@@ -313,7 +349,7 @@ internal sealed class InstanceHost(
             // A repeated start of an existing instance is answered without claiming it, so retries
             // never count as crashes of an instance another host lost (B-08).
             if (options.InstanceId != null &&
-                await _store.GetWorkflowInstanceAsync(instance.InstanceId) is { } started)
+                await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } started)
                 return ExistingStart(started, definition, scopes);
             await using var owner = options.PersistState
                 ? await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, _time)
@@ -326,7 +362,7 @@ internal sealed class InstanceHost(
                 return WorkflowExecutor.Busy(instance.InstanceId);
             // Another start may have saved the instance since the first read.
             if (options.InstanceId != null &&
-                await _store.GetWorkflowInstanceAsync(instance.InstanceId) is { } existing)
+                await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } existing)
                 return ExistingStart(existing, definition, scopes);
             var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
             if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true &&
@@ -334,7 +370,6 @@ internal sealed class InstanceHost(
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Workflow {definition.Name} v{definition.Version} is deactivated");
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-            instance.ExecutionSnapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
             if (options.PersistState)
             {
                 await registry.RegisterWorkflowAsync(definition);
@@ -552,7 +587,7 @@ internal sealed class InstanceHost(
             _store, instance, _leaseSettings, _watch, _time);
         if (owner == null)
             return WorkflowExecutor.Busy(instanceId);
-        var current = await _store.GetWorkflowInstanceAsync(instanceId);
+        var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
         if (current?.Revision != instance.Revision || current.Status != instance.Status)
             return current?.Status == WorkflowStatus.Running
                 ? WorkflowExecutor.Busy(instanceId)
@@ -620,7 +655,7 @@ internal sealed class InstanceHost(
     private static WorkflowExecutionResult ExistingStart(WorkflowInstance existing, WorkflowDefinition definition,
         WorkflowScopeCatalog scopes)
     {
-        var checkpoint = ExecutionCheckpoint.Read(existing.ExecutionStateJson);
+        var checkpoint = ExecutionCheckpoint.ReadTrunk(existing.ExecutionStateJson);
         if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version ||
             checkpoint.DefinitionFingerprint != scopes.Fingerprint)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
@@ -655,7 +690,7 @@ internal sealed class InstanceHost(
         WorkflowData = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType) is { } dataType
             ? JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
             : null,
-        TraceEntries = instance.ExecutionHistory.ToList(),
+        TraceEntries = [],
         ErrorMessage = instance.LastError,
         ErrorStackTrace = instance.LastErrorStackTrace
     };
@@ -763,7 +798,7 @@ internal sealed class InstanceHost(
     {
         InstanceId = instance.InstanceId,
         Status = WorkflowExecutionStatus.NeedsResolution,
-        TraceEntries = instance.ExecutionHistory.ToList(),
+        TraceEntries = [],
         ErrorMessage = stop.Describe()
     };
 

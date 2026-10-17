@@ -44,7 +44,6 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
         
         // Workflow tracing and monitoring
-        services.AddScoped<IWorkflowTracer, WorkflowTracer>();
         
         // Expression evaluation
         services.AddScoped<IExpressionEvaluator, ExpressionEvaluator>();
@@ -85,7 +84,8 @@ public static class ServiceCollectionExtensions
             MaxActiveBranches = options.MaxActiveBranches,
             MaxActivitiesPerRun = options.MaxActivitiesPerRun,
             MaxForEachItems = options.MaxForEachItems,
-            ParkRetriesLongerThan = options.ParkRetriesLongerThan
+            ParkRetriesLongerThan = options.ParkRetriesLongerThan,
+            VerifyCheckpointParts = options.VerifyCheckpointParts
         }));
         if (options.Slots <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The slot count must be positive");
@@ -98,11 +98,6 @@ public static class ServiceCollectionExtensions
         if (options.UseCustomStateRepository != null)
         {
             services.Replace(ServiceDescriptor.Singleton(typeof(IWorkflowStateRepository), options.UseCustomStateRepository));
-        }
-
-        if (options.UseCustomTracer != null)
-        {
-            services.AddScoped(typeof(IWorkflowTracer), options.UseCustomTracer);
         }
 
         return services;
@@ -362,16 +357,17 @@ public class IxIFlowOptions
     public Type? UseCustomStateRepository { get; set; }
 
     /// <summary>
-    /// Custom workflow tracer implementation
-    /// </summary>
-    public Type? UseCustomTracer { get; set; }
-
-    /// <summary>
     /// The largest checkpoint, in bytes of workflow data and execution state, that an instance may
     /// save. A run that would exceed it stops at NeedsResolution with its last checkpoint; raise the
     /// limit and release the instance to continue.
     /// </summary>
     public long MaxCheckpointBytes { get; set; } = ExecutionLimits.DefaultMaxCheckpointBytes;
+
+    /// <summary>
+    /// A diagnostic: at each commit, serialize every part of the checkpoint and fail the commit, naming the part,
+    /// when one changed without being marked. Off by default; it costs a serialization of every branch per commit.
+    /// </summary>
+    public bool VerifyCheckpointParts { get; set; }
 
     /// <summary>
     /// How many owners in a row may lose an instance while it runs, by crashing or losing their

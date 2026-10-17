@@ -197,7 +197,7 @@ public sealed class WorkflowExecutorHostTests
             if (_commits.Count + 1 == LoseOwnershipAtCommit)
                 return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Conflict,
                     Error: new InvalidOperationException("Another owner committed")));
-            _commits.Add(commit.ReadInstance().Status);
+            _commits.Add(commit.ReadTrunk().Status);
             ChildStarts.AddRange(commit.ChildStarts);
             probe.Commits = _commits.Count;
             // Like a store, the commit reply reports a pending cancellation request.
