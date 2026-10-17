@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Extensions;
@@ -69,6 +70,8 @@ namespace IxIFlow.Tests.ExecutionTests
             var services = new ServiceCollection();
             services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
             services.AddIxIFlow();
+            services.AddSingleton<BranchGate>();
+            services.AddTransient<GatedBranchActivity>();
 
             _serviceProvider = services.BuildServiceProvider();
             _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
@@ -164,7 +167,8 @@ namespace IxIFlow.Tests.ExecutionTests
         [Fact]
         public async Task TestParallelWithDifferentDurations()
         {
-            // Test branches with different execution times
+            // Each branch's activity holds until the test releases it, which it does only once both have
+            // started: the branches finish only if they run at the same time.
             var definition = Workflow
                 .Create<ParallelTestData>("DifferentDurationsWorkflow")
                 .Step<StepExecutionAsyncActivity>(setup => setup
@@ -174,15 +178,15 @@ namespace IxIFlow.Tests.ExecutionTests
                 {
                     parallelBuilder
                         .Do(branch => branch
-                            .Step<DelayedActivity>(setup => setup
-                                .Input(act => act.DelayMs).From(ctx => 100)
+                            .Step<GatedBranchActivity>(setup => setup
+                                .Input(act => act.Branch).From(ctx => "A")
                                 .Input(act => act.Input).From(ctx => ctx.WorkflowData.InputA)
                                 .Input(act => act.Multiplier).From(ctx => 2)
                                 .Output(act => act.Output).To(ctx => ctx.WorkflowData.OutputA)));
                     parallelBuilder
                         .Do(branch => branch
-                            .Step<DelayedActivity>(setup => setup
-                                .Input(act => act.DelayMs).From(ctx => 300)
+                            .Step<GatedBranchActivity>(setup => setup
+                                .Input(act => act.Branch).From(ctx => "B")
                                 .Input(act => act.Input).From(ctx => ctx.WorkflowData.InputB)
                                 .Input(act => act.Multiplier).From(ctx => 3)
                                 .Output(act => act.Output).To(ctx => ctx.WorkflowData.OutputB)));
@@ -198,16 +202,23 @@ namespace IxIFlow.Tests.ExecutionTests
                 InputA = 10,
                 InputB = 20
             };
+            var gate = _serviceProvider.GetRequiredService<BranchGate>();
 
             // Act
-            var startTime = DateTime.UtcNow;
-            var result = await _workflowEngine.RunAsync(definition, workflowData);
-            var duration = DateTime.UtcNow - startTime;
+            var run = _workflowEngine.RunAsync(definition, workflowData);
+            try
+            {
+                // Both branches are running before either is released.
+                await Task.WhenAll(gate.Started("A"), gate.Started("B")).WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            finally
+            {
+                gate.Release();
+            }
+            var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
 
             // Assert
             Assert.True(result.IsSuccess);
-            Assert.True(duration.TotalMilliseconds >= 290 && duration.TotalMilliseconds < 400,
-                "Parallel execution should take approximately 300ms (max duration), not the sum of durations");
             var finalData = (ParallelTestData)result.WorkflowData;
             Assert.Equal(80, finalData.FinalResult); // 10*2 + 20*3 = 20+60=80
         }
@@ -310,16 +321,37 @@ namespace IxIFlow.Tests.ExecutionTests
         }
     }
 
-    public class DelayedActivity : IAsyncActivity
+    /// <summary>Holds each branch's activity, once it has started, until the test releases them all.</summary>
+    public sealed class BranchGate
     {
+        private readonly ConcurrentDictionary<string, TaskCompletionSource> _started = new();
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Completes once the activity of <paramref name="branch"/> has started.</summary>
+        public Task Started(string branch) => Signal(branch).Task;
+
+        public void Release() => _released.TrySetResult();
+
+        public async Task EnterAsync(string branch, CancellationToken cancellationToken)
+        {
+            Signal(branch).TrySetResult();
+            await _released.Task.WaitAsync(cancellationToken);
+        }
+
+        private TaskCompletionSource Signal(string branch) =>
+            _started.GetOrAdd(branch, _ => new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+    }
+
+    public class GatedBranchActivity(BranchGate gate) : IAsyncActivity
+    {
+        public string Branch { get; set; } = "";
         public int Input { get; set; }
-        public int DelayMs { get; set; }
         public int Multiplier { get; set; } = 1;
         public int Output { get; set; }
 
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
-            await Task.Delay(DelayMs, cancellationToken);
+            await gate.EnterAsync(Branch, cancellationToken);
             Output = Input * Multiplier;
         }
     }
