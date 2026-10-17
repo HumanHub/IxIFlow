@@ -160,7 +160,7 @@ public sealed class CancellationWatchTests
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "B-10")]
     public Task SqlStoreReportsAPendingRequestWithACommit() =>
-        VerifyCommitReportsPendingCancellation(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyCommitReportsPendingCancellation(new SqlWorkflowStateRepository(SqlTestDatabase<CancellationWatchTests>.ConnectionString));
 
     private static async Task VerifyCommitReportsPendingCancellation(IWorkflowStateRepository repository)
     {
