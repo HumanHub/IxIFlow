@@ -297,16 +297,17 @@ public sealed class CrashAccountingTests
         await Task.Delay(Short * 2);
     }
 
-    // Claims the instance as soon as the lease it had has expired.
+    // Claims the instance as soon as the lease it had has expired, which is within one lease length of the call,
+    // since the lease was taken before it; a slow store is allowed three seconds more.
     private static async Task<ExecutionLeaseGrant> ReclaimAfterExpiryAsync(IWorkflowStateRepository repository,
         string instanceId, string token, TimeSpan lease)
     {
-        var deadline = DateTime.UtcNow + lease * 10;
+        var deadline = DateTime.UtcNow + lease + TimeSpan.FromSeconds(3);
         while (true)
         {
             if (await repository.TryAcquireExecutionLeaseAsync(instanceId, token, lease) is { } grant)
                 return grant;
-            Assert.True(DateTime.UtcNow < deadline, "The lease did not expire");
+            Assert.True(DateTime.UtcNow < deadline, "The lease did not expire on time");
             await Task.Delay(50);
         }
     }

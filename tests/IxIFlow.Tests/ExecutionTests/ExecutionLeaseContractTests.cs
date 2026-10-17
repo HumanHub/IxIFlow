@@ -1287,16 +1287,17 @@ public sealed class ExecutionLeaseContractTests
             });
             Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 instance => instance.InstanceId == instanceId);
-            // Long enough for the next query on a slow store; the expiry is then polled for.
+            // Long enough for the next query on a slow store; the expiry is then polled for, and must come within
+            // the lease's length, with three seconds more for a slow store.
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2) + TimeSpan.FromSeconds(3);
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "worker",
                 TimeSpan.FromSeconds(2)));
             Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
                 instance => instance.InstanceId == instanceId);
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
             while (!(await repository.GetRunnableInstancesAsync(100)).Any(
                        instance => instance.InstanceId == instanceId))
             {
-                Assert.True(DateTime.UtcNow < deadline, "The expired lease was not found");
+                Assert.True(DateTime.UtcNow < deadline, "The expired lease was not found on time");
                 await Task.Delay(50);
             }
         }
