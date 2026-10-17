@@ -4,6 +4,7 @@ using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -269,7 +270,8 @@ public sealed class ParallelDataTests
     [Trait("Spec", "E-02")]
     public async Task EachBranchReadsItsOwnCopyOfThePreviousStep()
     {
-        using var services = Services();
+        var time = new FakeTimeProvider();
+        using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<Data>("OwnPrevious")
             .Step<MakeList>()
@@ -277,12 +279,14 @@ public sealed class ParallelDataTests
                 .Do(first => first.Step<Grow>(step => step
                     .Input(activity => activity.Items).From(ctx => ctx.PreviousStep.Items)))
                 .Do(second => second
-                    .Delay(TimeSpan.FromMilliseconds(200))
+                    .Delay(TimeSpan.FromMinutes(1))
                     .Step<Record>(step => step
                         .Input(activity => activity.Value).From(ctx => ctx.PreviousStep.Items.Count.ToString()))))
             .Build();
 
         var started = await engine.RunAsync(definition, new Data());
+        // The second branch reads the previous step only after its delay, once the first branch has run.
+        time.Advance(TimeSpan.FromMinutes(2));
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -349,10 +353,12 @@ public sealed class ParallelDataTests
         Assert.Equal("a+b", Assert.IsType<Explicit>(result.WorkflowData).Tag);
     }
 
-    private static ServiceProvider Services()
+    private static ServiceProvider Services(TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        if (time != null)
+            services.AddSingleton(time);
         services.AddSingleton<Seen>();
         services.AddTransient<Record>();
         services.AddIxIFlow();
