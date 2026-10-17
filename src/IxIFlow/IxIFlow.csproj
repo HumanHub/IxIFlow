@@ -40,4 +40,12 @@
     <ProjectReference Include="..\IxIFlow.Abstractions\IxIFlow.Abstractions.csproj" />
   </ItemGroup>
 
+  <!-- The contract and purity analyzers ship in the package and run in every project that references it (F-24, D-42). -->
+  <ItemGroup>
+    <ProjectReference Include="..\IxIFlow.Analyzers\IxIFlow.Analyzers.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="..\IxIFlow.Analyzers.CodeFixes\IxIFlow.Analyzers.CodeFixes.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <None Include="..\IxIFlow.Analyzers\bin\$(Configuration)\netstandard2.0\IxIFlow.Analyzers.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="..\IxIFlow.Analyzers.CodeFixes\bin\$(Configuration)\netstandard2.0\IxIFlow.Analyzers.CodeFixes.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
+
 </Project>
