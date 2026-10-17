@@ -26,7 +26,7 @@ public sealed class CrashAccountingTests
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlStoreCountsLeasesLostWhileRunning() =>
-        VerifyCrashCounting(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyCrashCounting(new SqlWorkflowStateRepository(SqlTestDatabase<CrashAccountingTests>.ConnectionString));
 
     private static async Task VerifyCrashCounting(IWorkflowStateRepository repository)
     {

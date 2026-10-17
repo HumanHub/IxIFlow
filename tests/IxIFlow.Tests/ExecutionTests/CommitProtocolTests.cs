@@ -23,7 +23,7 @@ public sealed class CommitProtocolTests
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlEpochsRiseAndFenceFormerOwners() =>
-        VerifyEpochFencing(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyEpochFencing(new SqlWorkflowStateRepository(SqlTestDatabase<CommitProtocolTests>.ConnectionString));
 
     [Fact]
     public Task MemoryStaleEpochAndRevisionConflictAreDistinct() =>
@@ -32,7 +32,7 @@ public sealed class CommitProtocolTests
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlStaleEpochAndRevisionConflictAreDistinct() =>
-        VerifyDistinctResults(new SqlWorkflowStateRepository(SqlServerTestServer.ConnectionString));
+        VerifyDistinctResults(new SqlWorkflowStateRepository(SqlTestDatabase<CommitProtocolTests>.ConnectionString));
 
     [Fact]
     public async Task StoreRetryResendsTheSameCommit()
