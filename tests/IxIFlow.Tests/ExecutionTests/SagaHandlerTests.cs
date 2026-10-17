@@ -263,6 +263,44 @@ public sealed class SagaHandlerTests
             journal.Entries);
     }
 
+    // The same inside a parallel branch: the kept request and its wait belong to the branch, which another host
+    // reads back from its own stored part (A-08), and the answer still reaches the retried saga.
+    [Fact]
+    [Trait("Spec", "A-11")]
+    public async Task AKeptRequestInsideAParallelBranchKeepsItsWaitThroughTheRetryAndAnotherHost()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var journal = new Journal { ShippingFailures = 1 };
+        var definition = Workflow.Create<ShopData>("KeptInABranch")
+            .Step<ValidateOrder>()
+            .Parallel(parallel => parallel
+                .Do(branch => branch
+                    .Step<ValidateOrder>()
+                    .Saga(saga => saga
+                        .Request<CreatePayment>("payment")
+                        .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
+                        .Step<ShipOrder>()
+                        .WaitFor<PaymentReceived>("payment", configure: wait => wait
+                            .Output(received => received.Status).To(ctx => ctx.WorkflowData.PaymentStatus)))
+                    .OnError<ShippingFailed>(handler => handler.CompensateUpTo<ReserveStock>().ThenRetry(2)))
+                .Do(branch => branch.Step<ValidateOrder>()))
+            .Build();
+        using (var first = Services(repository, journal))
+            Assert.Equal(WorkflowExecutionStatus.Suspended, (await first.GetRequiredService<IWorkflowClient>()
+                .RunAsync(definition, new ShopData())).Status);
+
+        using var second = Services(repository, journal);
+        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        var result = await second.GetRequiredService<IWorkflowClient>()
+            .ReplyAsync(Assert.Single(journal.Tokens), new PaymentReceived { Status = "paid" });
+
+        EventAssert.Consumed(result);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal("paid", Data(result).PaymentStatus);
+        Assert.Equal(["CreatePayment", "ReserveStock", "ShipOrder", "undo ReserveStock", "ReserveStock", "ShipOrder"],
+            journal.Entries);
+    }
+
     [Fact]
     [Trait("Spec", "A-11")]
     public async Task AnAnswerThatArrivesWhileTheSagaUndoesIsKeptForTheRetry()

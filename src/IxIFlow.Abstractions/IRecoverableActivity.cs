@@ -33,7 +33,8 @@ public interface IRecoverableActivity<TRecoveryState> : IRecoverableActivity
 {
     /// <summary>
     /// Captures the information needed for recovery before the activity is invoked.
-    /// This method must not perform an external effect.
+    /// This method must not perform an external effect, and must not change the activity's inputs: they are saved
+    /// before it runs, and a recovered attempt gets them as saved.
     /// </summary>
     TRecoveryState CaptureRecoveryState(IActivityContext context);
 

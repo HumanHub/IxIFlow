@@ -40,7 +40,8 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = Core.Runtime.ParallelRules.Checked(Core.Runtime.ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(_steps))))
+            Steps = Core.Runtime.MappingRules.Checked(Core.Runtime.ParallelRules.Checked(
+                Core.Runtime.ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(_steps)))))
         };
     }
 
@@ -171,6 +172,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             Name = typeof(TWorkflow).Name,
             StepType = WorkflowStepType.WorkflowInvocation,
             WorkflowType = typeof(TWorkflow),
+            InvokedDataType = typeof(TInvokedData),
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             Order = _steps.Count
@@ -198,6 +200,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             Name = workflowName,
             StepType = WorkflowStepType.WorkflowInvocation,
             WorkflowName = workflowName,
+            InvokedDataType = typeof(TInvokedData),
             WorkflowVersion = version,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
@@ -568,7 +571,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = Core.Runtime.ParallelRules.Checked(Core.Runtime.ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(_steps))))
+            Steps = Core.Runtime.MappingRules.Checked(Core.Runtime.ParallelRules.Checked(
+                Core.Runtime.ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(_steps)))))
         };
     }
 

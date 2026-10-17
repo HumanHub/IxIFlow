@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core.Runtime;
 
@@ -13,10 +14,12 @@ internal sealed class WorkflowExecutor
     private readonly ContinuationTransitions _transitions;
     private readonly ActivityAttempts _attempts;
     private readonly EventIntake _intake;
+    private readonly ILogger _logger;
 
     public WorkflowExecutor(IServiceProvider services, IActivityExecutor activityExecutor, TimeProvider time)
     {
         _time = time;
+        _logger = LogScope.Logger(services);
         _transitions = new ContinuationTransitions(services, time);
         _attempts = new ActivityAttempts(services, activityExecutor, _transitions, time);
         _intake = new EventIntake(services, time);
@@ -32,6 +35,8 @@ internal sealed class WorkflowExecutor
         IExecutionHost host,
         CancellationToken cancellationToken)
     {
+        // Everything logged during the run carries its instance (G-03).
+        using var logScope = _logger.BeginScope(LogScope.ForInstance(instance));
         checkpoint.RootData = workflowData;
         var inFlight = new Dictionary<string, RunningActivity>();
         // Set when a step hit a resource limit: the run starts nothing new and stops once its
