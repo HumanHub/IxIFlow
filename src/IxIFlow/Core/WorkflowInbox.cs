@@ -224,7 +224,31 @@ public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
 /// the store saves as the child's revision 1, runnable at once, in the same transaction as the parent's
 /// wait for it.
 /// </summary>
-public sealed record ChildStart(string ChildInstanceId, string Payload, string ParentWaitId);
+public sealed record ChildStart(string ChildInstanceId, string Payload, string ParentWaitId)
+{
+    private readonly WorkflowInstance? _child = Read(Payload);
+
+    /// <summary>
+    /// What a store saves the child by, read from the payload once when the start is made, so a store writes the
+    /// payload as it comes and takes its columns from here (D-03).
+    /// </summary>
+    public CommittedInstance? Instance => _child is { } child ? CommittedInstance.Of(child) : null;
+
+    /// <summary>The child's instance as the payload holds it, for the commit to check; null when it is not one.</summary>
+    internal WorkflowInstance? Child => _child;
+
+    private static WorkflowInstance? Read(string payload)
+    {
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(payload);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+}
 
 /// <summary>
 /// A cancellation request a parent's commit writes for a child it no longer waits to finish normally, and the

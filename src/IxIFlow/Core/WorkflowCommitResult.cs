@@ -310,7 +310,7 @@ public sealed class CheckpointCommit
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(child.ChildInstanceId, nameof(childStarts));
             ArgumentException.ThrowIfNullOrWhiteSpace(child.ParentWaitId, nameof(childStarts));
-            var childInstance = JsonSerializer.Deserialize<WorkflowInstance>(child.Payload)
+            var childInstance = child.Child
                 ?? throw new ArgumentException("A child start carries the child's instance", nameof(childStarts));
             if (childInstance.InstanceId != child.ChildInstanceId || childInstance.ParentInstanceId != instance.InstanceId ||
                 childInstance.ParentWaitId != child.ParentWaitId || childInstance.Status != WorkflowStatus.Running ||
