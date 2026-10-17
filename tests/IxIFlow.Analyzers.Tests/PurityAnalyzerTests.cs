@@ -178,6 +178,55 @@ public sealed class PurityAnalyzerTests
             Diagnostic(Descriptors.ImpureExpression, 2, "DateTime.Today through Flows.Late"));
     }
 
+    // A local is followed through other locals and the calls that make its value, while nothing writes it again;
+    // a destination kept elsewhere is left to the build.
+    [Fact]
+    public async Task StoredCodeIsFollowedWhileItIsKnown()
+    {
+        await Analyzer<PurityAnalyzer>("""
+            using System.Linq.Expressions;
+
+            public static class Flows
+            {
+                private static readonly Expression<Func<WorkflowContext<Stamps>, DateTime>> Destination =
+                    ctx => ctx.WorkflowData.Stamp;
+
+                public static object Build()
+                {
+                    Func<WorkflowContext<Stamps, Stamping>, bool> first = ctx => {|#0:DateTime.Now|}.Hour > 0;
+                    var condition = first;
+                    var wrapped = Wrap(ctx => {|#1:DateTime.Today|}.Day > 0);
+                    Func<WorkflowContext<Stamps, Stamping>, bool> replaced = ctx => DateTime.UtcNow.Hour > 0;
+                    (replaced, _) = ((Func<WorkflowContext<Stamps, Stamping>, bool>)(ctx => false), 0);
+                    return Workflow.Create<Stamps>("Stored")
+                        .Step<Stamping>(step => step.Output(activity => activity.Stamp).To(Destination))
+                        .WhileDo(condition, body => body.Step<Stamping>())
+                        .WhileDo(wrapped, body => body.Step<Stamping>())
+                        .WhileDo(replaced, body => body.Step<Stamping>())
+                        .Build();
+                }
+
+                private static Func<WorkflowContext<Stamps, Stamping>, bool> Wrap(
+                    Func<WorkflowContext<Stamps, Stamping>, bool> condition) => condition;
+            }
+
+            public sealed class Stamping : IAsyncActivity
+            {
+                public DateTime Stamp { get; set; }
+
+                public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+                    Task.CompletedTask;
+            }
+
+            public sealed class Stamps
+            {
+                public DateTime Stamp { get => DateTime.UtcNow; set { } }
+            }
+            """,
+            Diagnostic(Descriptors.ImpureExpression, 0, "DateTime.Now"),
+            Diagnostic(Descriptors.ImpureExpression, 1, "DateTime.Today"));
+    }
+
     // A selector only names its property and a destination sets its property, so their getters never run; a local
     // function runs where it is called, not where it is declared.
     [Fact]
@@ -230,8 +279,29 @@ public sealed class PurityAnalyzerTests
                     .Step<Takes>()
                     .If(ctx => {|#0:new Flag()|}, then => then.Step<Takes>())
                     .WhileDo(ctx => {|#1:new Derived()|}.Seed > 0, body => body.Step<Takes>())
+                    .WhileDo(ctx => new Chosen() != null, body => body.Step<Takes>())
+                    .WhileDo(ctx => {|#2:new Primary(1)|} != null, body => body.Step<Takes>())
                     .Build();
             }
+
+            // The compiler binds the parameterless base constructor, not the one with an optional parameter.
+            public class Overloads
+            {
+                public Overloads(int seed = 0) => _ = Environment.TickCount;
+
+                public Overloads()
+                {
+                }
+            }
+
+            public sealed class Chosen : Overloads;
+
+            public class Seeded(int seed)
+            {
+                public int Seed { get; } = seed;
+            }
+
+            public sealed class Primary(int value) : Seeded(Environment.TickCount + value);
 
             public sealed class Flag
             {
@@ -246,7 +316,8 @@ public sealed class PurityAnalyzerTests
             public sealed class Derived : Base;
             """ + Types,
             Diagnostic(Descriptors.ImpureExpression, 0, "DateTime.UtcNow through Flag.implicit operator bool(Flag)"),
-            Diagnostic(Descriptors.ImpureExpression, 1, "Environment.TickCount through new Base(...) through new Derived(...)"));
+            Diagnostic(Descriptors.ImpureExpression, 1, "Environment.TickCount through new Base(...) through new Derived(...)"),
+            Diagnostic(Descriptors.ImpureExpression, 2, "Environment.TickCount through new Primary(...)"));
     }
 
     [Fact]

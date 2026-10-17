@@ -1,4 +1,7 @@
+using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Operations;
 
@@ -71,27 +74,61 @@ internal sealed class EngineSymbols
         return false;
     }
 
-    /// <summary>The value a local is declared with, when nothing assigns it afterwards; none otherwise.</summary>
-    public static IOperation? Initializer(ILocalReferenceOperation reference)
+    // The locals each operation tree writes after declaring them, found once per tree.
+    private static readonly ConditionalWeakTable<IOperation, HashSet<ILocalSymbol>> Written = new();
+
+    /// <summary>The value a local is declared with, when nothing writes it afterwards; none otherwise.</summary>
+    public static IOperation? Initializer(ILocalReferenceOperation reference, CancellationToken cancellation)
     {
         var local = reference.Local;
         if (local.DeclaringSyntaxReferences.Length != 1 || reference.SemanticModel == null ||
-            reference.SemanticModel.GetOperation(local.DeclaringSyntaxReferences[0].GetSyntax())
+            reference.SemanticModel.GetOperation(local.DeclaringSyntaxReferences[0].GetSyntax(cancellation), cancellation)
                 is not IVariableDeclaratorOperation { Initializer.Value: { } value })
             return null;
         var root = (IOperation)reference;
         while (root.Parent != null)
             root = root.Parent;
-        return root.Descendants().Any(operation => operation switch
+        return Written.GetValue(root, WrittenLocals).Contains(local) ? null : value;
+    }
+
+    private static HashSet<ILocalSymbol> WrittenLocals(IOperation root)
+    {
+        var written = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
+        foreach (var operation in root.Descendants())
+            switch (operation)
+            {
+                case IAssignmentOperation assignment:
+                    Writes(assignment.Target, written);
+                    break;
+                case IIncrementOrDecrementOperation step:
+                    Writes(step.Target, written);
+                    break;
+                case IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out } argument:
+                    Writes(argument.Value, written);
+                    break;
+            }
+        return written;
+    }
+
+    // The locals a target writes: itself, or each element of a tuple it deconstructs into.
+    private static void Writes(IOperation target, HashSet<ILocalSymbol> written)
+    {
+        switch (target)
         {
-            IAssignmentOperation { Target: ILocalReferenceOperation target } =>
-                SymbolEqualityComparer.Default.Equals(target.Local, local),
-            IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out, Value: ILocalReferenceOperation target } =>
-                SymbolEqualityComparer.Default.Equals(target.Local, local),
-            _ => false
-        })
-            ? null
-            : value;
+            case ILocalReferenceOperation local:
+                written.Add(local.Local);
+                break;
+            case ITupleOperation tuple:
+                foreach (var element in tuple.Elements)
+                    Writes(element, written);
+                break;
+            case IDeclarationExpressionOperation declaration:
+                Writes(declaration.Expression, written);
+                break;
+            case IConversionOperation conversion:
+                Writes(conversion.Operand, written);
+                break;
+        }
     }
 
     /// <summary>The value an argument carries, without the conversions and delegate creation around it.</summary>
