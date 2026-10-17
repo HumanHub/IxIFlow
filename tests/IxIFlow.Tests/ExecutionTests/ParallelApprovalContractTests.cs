@@ -1673,11 +1673,13 @@ public class ParallelApprovalContractTests
             return _inner.SaveWorkflowInstanceAsync(instance);
         }
 
-        public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            // The whole instance the commit saves: the commit applied to the instance it was based on.
+            var instance = commit.ReadInstance(
+                commit.ReplacesParts ? null : await _inner.GetWorkflowInstanceAsync(commit.InstanceId));
             ObserveSave(instance);
-            return _inner.CommitWorkflowInstanceAsync(commit);
+            return await _inner.CommitWorkflowInstanceAsync(commit);
         }
 
         private void ObserveSave(WorkflowInstance instance)

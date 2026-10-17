@@ -163,6 +163,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             {
                 WaitId = wait.Id,
                 EventId = stored.EventId,
+                ContinuationId = wait.ContinuationId,
                 StepId = wait.StepId,
                 ScopeActivationId = wait.ScopeActivationId ?? "",
                 InvocationId = wait.InvocationId,

@@ -1732,7 +1732,7 @@ public class StructuredSagaWaitTests
 
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
-            var instance = commit.ReadInstance();
+            var instance = commit.ReadTrunk();
             var handlerStarted = commit.ReadTraceEntries().LastOrDefault() is
             { EntryType: TraceEntryType.ActivityStarted, ActivityName: nameof(RecoverableHandlerActivity) };
             var result = await _inner.CommitWorkflowInstanceAsync(commit);

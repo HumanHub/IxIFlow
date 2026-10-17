@@ -14,6 +14,17 @@ internal sealed class ExecutionCheckpoint
     public List<ParallelJoinState> Joins { get; set; } = [];
     public List<WaitState> Waits { get; set; } = [];
 
+    /// <summary>How many branches the instance has started; the next one's <see cref="ContinuationState.Sequence"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int BranchesStarted { get; set; }
+
+    /// <summary>
+    /// Set on the trunk of a saved checkpoint, which holds neither its branches nor its lists (A-08): only a read that
+    /// assembles them can run it.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool StoredTrunk { get; set; }
+
     /// <summary>
     /// Answers to requests that arrived before their <c>WaitFor</c> was reached (D-33). Each is taken
     /// by the <c>WaitFor</c> of its request's scope occurrence, or dropped when that scope ends.
@@ -85,12 +96,30 @@ internal sealed class ExecutionCheckpoint
 
     public static ExecutionCheckpoint Read(string json)
     {
+        var checkpoint = ReadTrunk(json);
+        if (checkpoint.StoredTrunk)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                "The execution state was read without its branches and lists");
+        // Each branch names its join; a join lists them in the order they started, which is the saved order.
+        var joins = checkpoint.Joins.ToDictionary(join => join.Id, StringComparer.Ordinal);
+        foreach (var branch in checkpoint.Continuations)
+            if (branch.ParentJoinId != null && joins.TryGetValue(branch.ParentJoinId, out var join))
+                join.ChildContinuationIds.Add(branch.Id);
+        // Every wait in a saved checkpoint was committed with it.
+        checkpoint.Inbox = InboxProgress.Committed(checkpoint);
+        return checkpoint;
+    }
+
+    /// <summary>
+    /// Reads a checkpoint whole, or only the trunk a summary read returns: enough for what belongs to the instance,
+    /// such as its definition's fingerprint and its operator stop, but not to run it.
+    /// </summary>
+    public static ExecutionCheckpoint ReadTrunk(string json)
+    {
         var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(json);
         if (checkpoint?.Runtime != "structured-v2" || checkpoint.SchemaVersion != 2)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 "Unsupported execution checkpoint version");
-        // Every wait in a saved checkpoint was committed with it.
-        checkpoint.Inbox = InboxProgress.Committed(checkpoint);
         return checkpoint;
     }
 
@@ -195,7 +224,7 @@ internal sealed class ExecutionCheckpoint
 
     /// <summary>The operator stop of a saved instance, read without its workflow data.</summary>
     public static OperatorStopState? StopOf(WorkflowInstance instance) =>
-        IsStructured(instance.ExecutionStateJson) ? Read(instance.ExecutionStateJson).OperatorStop : null;
+        IsStructured(instance.ExecutionStateJson) ? ReadTrunk(instance.ExecutionStateJson).OperatorStop : null;
 
     public static bool IsStructured(string json)
     {
@@ -247,6 +276,11 @@ internal sealed class ContinuationState
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string? ParentJoinId { get; set; }
+
+    /// <summary>For a branch, its place in the order the instance's branches started; the root's is zero.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int Sequence { get; set; }
+
     public ContinuationStatus Status { get; set; } = ContinuationStatus.Active;
     public bool CancellationUnwind { get; set; }
     public List<ScopePosition> Stack { get; set; } = [];
@@ -423,9 +457,9 @@ internal sealed class ForEachState
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<string?>? Results { get; set; }
 
-    /// <summary>In parallel, the items whose branches completed, in completion order.</summary>
+    /// <summary>In parallel, the items whose branches completed.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public List<int>? Finished { get; set; }
+    public ItemSet? Finished { get; set; }
 
     /// <summary>In parallel, set when the join is done and merged; the step then stores its results.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -589,6 +623,12 @@ internal sealed class ParallelJoinState
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string StepId { get; set; } = "";
     public string ParentContinuationId { get; set; } = "";
+
+    /// <summary>
+    /// The join's branches, in the order they started. Not saved: each branch names its join, and reading a
+    /// checkpoint lists them again (A-08).
+    /// </summary>
+    [JsonIgnore]
     public List<string> ChildContinuationIds { get; set; } = [];
     public ParallelJoinMode Mode { get; set; }
     public bool IsCompleting { get; set; }
@@ -665,6 +705,9 @@ internal sealed class BoundReplyState
 {
     public string WaitId { get; set; } = "";
     public string EventId { get; set; } = "";
+
+    /// <summary>The continuation whose request it answers, which keeps it (A-08).</summary>
+    public string ContinuationId { get; set; } = "";
 
     /// <summary>The <c>WaitFor</c> step that takes it.</summary>
     public string StepId { get; set; } = "";

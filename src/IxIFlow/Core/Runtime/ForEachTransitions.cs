@@ -123,6 +123,7 @@ internal static class ForEachTransitions
         var child = new ContinuationState
         {
             ParentJoinId = join.Id,
+            Sequence = ++checkpoint.BranchesStarted,
             Data = BranchData.Copy(snapshot, checkpoint.DataOf(parent).GetType()),
             InheritedItems = inherited,
             Previous = parent.RuntimePrevious != null ? SerializedValue.From(parent.RuntimePrevious) : parent.Previous,
@@ -145,8 +146,7 @@ internal static class ForEachTransitions
             return;
         var state = StateOf(checkpoint, join, step);
         state.Finished ??= [];
-        if (!state.Finished.Contains(index))
-            state.Finished.Add(index);
+        state.Finished.Add(index);
         if (state.Results != null)
             state.Results[index] = finished.ForEachResult ?? throw NoResult(step);
     }
