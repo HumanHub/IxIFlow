@@ -925,6 +925,35 @@ public sealed class StructuredChildWaitTests
         Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
     }
 
+    // An engine failure ends the parent at once, without unwinding its branches; the children it waits for are
+    // still asked to cancel, since nothing will take their completions.
+    [Fact]
+    [Trait("Spec", "D-09")]
+    public async Task AParentEndedByAnEngineFailureAsksItsChildToCancel()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        using var services = Services(repository);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("AbandonedChild"));
+        var parent = Workflow.Create<ParentData>("ParentEndedByEngineFailure")
+            .Step<NoopActivity>()
+            .Parallel(parallel => parallel
+                .Do(first => first.Invoke<ChildData>("AbandonedChild", 1))
+                // An input that cannot be saved and read back is an invalid definition, an engine failure.
+                .Do(second => second.WaitFor<Approval>("fail").Step<TakesUnreadableInput>(step => step
+                    .Input(activity => activity.Value).From(_ => new UnreadableValue(1)))))
+            .Build();
+        var engine = services.GetRequiredService<IWorkflowClient>();
+        var started = await engine.RunAsync(parent, new ParentData());
+        var childId = Assert.Single(await repository.GetChildInstancesAsync(started.InstanceId)).InstanceId;
+        await ChildWaitingAsync(services, childId, "approval");
+
+        var failed = await engine.ResumeAsync(started.InstanceId, "fail", new Approval());
+
+        Assert.Equal(WorkflowExecutionStatus.Faulted, failed.Status);
+        Assert.Contains("cannot be saved and read back", failed.ErrorMessage);
+        Assert.NotNull(await repository.GetCancellationRequestAsync(childId));
+    }
+
     [Fact]
     [Trait("Spec", "D-09")]
     public void AParentThatFailsAsksOnlyItsAttachedChildrenToCancel()
@@ -1087,6 +1116,20 @@ public sealed class StructuredChildWaitTests
     }
 
     public sealed class ChildFailureException(string message) : Exception(message);
+
+    /// <summary>Its constructor's parameter names no property, so it cannot be read back from JSON.</summary>
+    public sealed class UnreadableValue(int seed)
+    {
+        public int Number { get; } = seed;
+    }
+
+    public sealed class TakesUnreadableInput : IAsyncActivity
+    {
+        public UnreadableValue? Value { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
 
     public sealed class ThrowChildActivity : IAsyncActivity
     {
