@@ -51,9 +51,10 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         var input = completion.TargetMethod.Name == "From";
         if (!input && completion.TargetMethod.Name != "To" || completion.Instance == null ||
-            EngineSymbols.Unwrapped(completion.Instance) is not IInvocationOperation mapping ||
+            Resolved(completion.Instance) is not IInvocationOperation mapping ||
             mapping.TargetMethod.Name != (input ? "Input" : "Output") || !engine.IsBuilderMethod(mapping.TargetMethod) ||
-            Selected(mapping) is not ({ } owner, { } name, { } location) || Kind(engine, owner, mapping.TargetMethod) is not { } kind)
+            Selected(mapping) is not ({ } owner, { } name, { } location) ||
+            Kind(engine, owner, mapping.TargetMethod.ContainingType) is not { } kind)
             return;
         // The engine does not check the inputs of an event, which a wait does not use.
         if (input && kind == "Event")
@@ -61,12 +62,12 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         var properties = PublicProperties(owner);
         if (!properties.TryGetValue(name, out var property))
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.NoPublicProperty, location, kind, owner.Name, name));
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.NoPublicProperty, location, kind, owner.MetadataName, name));
             return;
         }
         var marked = kind == ActivityKind && properties.Values.Any(each =>
             Attribute(engine.Input, each) != null || Attribute(engine.Output, each) != null);
-        var qualified = $"{owner.Name}.{property.Name}";
+        var qualified = $"{owner.MetadataName}.{property.Name}";
         if (input && marked && Attribute(engine.Input, property) == null)
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnInput, location, kind, qualified, "[WorkflowInput]"));
         else if (input && !marked && property.SetMethod is not { DeclaredAccessibility: Accessibility.Public })
@@ -99,7 +100,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         var location = NameLocation(invocation);
         foreach (var property in required.Where(property => !mapped.Contains(property.Name)))
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.RequiredInputNotMapped, location, ActivityKind,
-                $"{activity.Name}.{property.Name}"));
+                $"{activity.MetadataName}.{property.Name}"));
     }
 
     // The activity a builder call adds, and the argument that sets it up: the Action whose builder maps into the
@@ -112,7 +113,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                 action.ContainingNamespace?.ToDisplayString() == "System" &&
                 action.TypeArguments[0] is INamedTypeSymbol builder && EngineSymbols.InNamespace(builder, "IxIFlow.Builders") &&
                 InputOwner(builder) is INamedTypeSymbol owner)
-                return engine.IsActivity(owner) ? (owner, argument) : (null, null);
+                return Kind(engine, owner, builder) == ActivityKind ? (owner, argument) : (null, null);
         var method = invocation.TargetMethod;
         if (method.Name is "Step" or "CompensateWith" &&
             !method.Parameters.Any(parameter => parameter.Type is INamedTypeSymbol { Name: "Action" }) &&
@@ -157,10 +158,12 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                     return null;
                 case IInvocationOperation { TargetMethod.Name: "From", Instance: { } instance } completion
                     when engine.IsBuilderMethod(completion.TargetMethod) &&
-                         EngineSymbols.Unwrapped(instance) is IInvocationOperation { TargetMethod.Name: "Input" } input &&
+                         Resolved(instance) is IInvocationOperation { TargetMethod.Name: "Input", Instance: { } receiver } input &&
                          engine.IsBuilderMethod(input.TargetMethod) &&
                          Selected(input) is ({ } owner, { } name, _) &&
-                         SymbolEqualityComparer.Default.Equals(owner, activity):
+                         SymbolEqualityComparer.Default.Equals(owner, activity) &&
+                         Root(engine, receiver) is IParameterReferenceOperation root &&
+                         SymbolEqualityComparer.Default.Equals(root.Parameter, setup.Symbol.Parameters.FirstOrDefault()):
                     mapped.Add(name);
                     break;
             }
@@ -214,14 +217,42 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         return (owner, member.Member.Name, syntax.GetLocation());
     }
 
-    private static string? Kind(EngineSymbols engine, INamedTypeSymbol owner, IMethodSymbol mapping)
+    // What the mapped type is to the step, by the builder that maps it: a child's data or an event whatever it
+    // implements, and otherwise an activity when it is one.
+    private static string? Kind(EngineSymbols engine, INamedTypeSymbol owner, INamedTypeSymbol builder)
     {
-        if (engine.IsActivity(owner))
-            return ActivityKind;
-        var builder = mapping.ContainingType.Name;
-        if (builder.Contains("WorkflowInvocationSetup"))
+        if (builder.Name.Contains("WorkflowInvocationSetup"))
             return "Child workflow";
-        return builder.Contains("SuspendSetup") ? "Event" : null;
+        if (builder.Name.Contains("Suspend"))
+            return "Event";
+        return engine.IsActivity(owner) ? ActivityKind : null;
+    }
+
+    // The value an operation stands for, through locals that are set once where they are declared.
+    private static IOperation Resolved(IOperation operation)
+    {
+        for (var depth = 0; depth < 8; depth++)
+        {
+            operation = EngineSymbols.Unwrapped(operation);
+            if (operation is not ILocalReferenceOperation reference ||
+                EngineSymbols.Initializer(reference) is not { } value)
+                return operation;
+            operation = value;
+        }
+        return operation;
+    }
+
+    // Where a chain of builder calls starts: the receiver of its first call, through locals.
+    private static IOperation Root(EngineSymbols engine, IOperation receiver)
+    {
+        for (var depth = 0; depth < 64; depth++)
+        {
+            receiver = Resolved(receiver);
+            if (receiver is not IInvocationOperation { Instance: { } instance } call || !engine.IsBuilderMethod(call.TargetMethod))
+                return receiver;
+            receiver = instance;
+        }
+        return receiver;
     }
 
     // Public instance properties by name, the most derived first, as reflection's GetProperty finds them.

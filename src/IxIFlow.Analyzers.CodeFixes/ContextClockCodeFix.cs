@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Composition;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
@@ -33,6 +34,11 @@ public sealed class ContextClockCodeFix : CodeFixProvider
                 replacement == null)
                 continue;
             var node = root.FindNode(diagnostic.Location.SourceSpan, getInnermostNodeForTie: true);
+            // A comment or directive inside the member access would be lost with it.
+            if (node.DescendantTrivia().Any(trivia => trivia.Span.Length > 0 && node.Span.Contains(trivia.Span) &&
+                                                      !trivia.IsKind(SyntaxKind.WhitespaceTrivia) &&
+                                                      !trivia.IsKind(SyntaxKind.EndOfLineTrivia)))
+                continue;
             var document = context.Document;
             context.RegisterCodeFix(CodeAction.Create(Title, _ =>
             {

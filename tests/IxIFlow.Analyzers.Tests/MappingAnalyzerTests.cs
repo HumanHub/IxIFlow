@@ -63,6 +63,21 @@ public sealed class MappingAnalyzerTests
         {
             public override int Amount { get; set; }
         }
+
+        // Child data that happens to be an activity too: as a child's data it follows the data rules.
+        public sealed class HybridData : IAsyncActivity
+        {
+            [WorkflowInput(Required = true)]
+            public int Needed { get; set; }
+
+            public int Open { get; set; }
+
+            [WorkflowInput]
+            public int Fixed { get; private set; }
+
+            public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+                Task.CompletedTask;
+        }
         """;
 
     [Fact]
@@ -219,6 +234,48 @@ public sealed class MappingAnalyzerTests
             }
             """ + Types,
             Diagnostic(Descriptors.NotAnOutput, 0, "Event", "Go.Hidden", "public getter"));
+    }
+
+    // A mapping split over a local is still one mapping, for the contract and for the required inputs.
+    [Fact]
+    public async Task AMappingSplitOverALocalIsFollowed()
+    {
+        await Analyzer<MappingAnalyzer>("""
+            public static class Flows
+            {
+                public static object Build() => Workflow.Create<Data>("Split")
+                    .Step<Marked>(step =>
+                    {
+                        var amount = step.Input(activity => activity.Amount);
+                        amount.From(ctx => 1);
+                    })
+                    .Step<Plain>(step =>
+                    {
+                        var computed = step.Input(activity => activity.{|#0:Computed|});
+                        computed.From(ctx => 1);
+                    })
+                    .Build();
+            }
+            """ + Types,
+            Diagnostic(Descriptors.NotAnInput, 0, "Activity", "Plain.Computed", "public setter"));
+    }
+
+    [Fact]
+    public async Task ChildDataThatIsAlsoAnActivityFollowsTheDataRules()
+    {
+        await Analyzer<MappingAnalyzer>("""
+            public static class Flows
+            {
+                public static object Build() => Workflow.Create<Data>("Hybrid")
+                    .Step<Plain>()
+                    .Invoke<HybridData>("Child", 1, step => step
+                        .Input(child => child.Open).From(ctx => ctx.WorkflowData.Number)
+                        .Input(child => child.{|#0:Fixed|}).From(ctx => ctx.WorkflowData.Number))
+                    .Invoke<HybridData>("Child", 1)
+                    .Build();
+            }
+            """ + Types,
+            Diagnostic(Descriptors.NotAnInput, 0, "Child workflow", "HybridData.Fixed", "public setter"));
     }
 
     [Fact]

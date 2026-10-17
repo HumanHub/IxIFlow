@@ -70,6 +70,29 @@ internal sealed class EngineSymbols
         return false;
     }
 
+    /// <summary>The value a local is declared with, when nothing assigns it afterwards; none otherwise.</summary>
+    public static IOperation? Initializer(ILocalReferenceOperation reference)
+    {
+        var local = reference.Local;
+        if (local.DeclaringSyntaxReferences.Length != 1 || reference.SemanticModel == null ||
+            reference.SemanticModel.GetOperation(local.DeclaringSyntaxReferences[0].GetSyntax())
+                is not IVariableDeclaratorOperation { Initializer.Value: { } value })
+            return null;
+        var root = (IOperation)reference;
+        while (root.Parent != null)
+            root = root.Parent;
+        return root.Descendants().Any(operation => operation switch
+        {
+            IAssignmentOperation { Target: ILocalReferenceOperation target } =>
+                SymbolEqualityComparer.Default.Equals(target.Local, local),
+            IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out, Value: ILocalReferenceOperation target } =>
+                SymbolEqualityComparer.Default.Equals(target.Local, local),
+            _ => false
+        })
+            ? null
+            : value;
+    }
+
     /// <summary>The value an argument carries, without the conversions and delegate creation around it.</summary>
     public static IOperation Unwrapped(IOperation operation)
     {
