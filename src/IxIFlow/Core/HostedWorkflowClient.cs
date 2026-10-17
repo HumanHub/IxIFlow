@@ -3,7 +3,7 @@ using IxIFlow.Core.Runtime;
 namespace IxIFlow.Core;
 
 /// <summary>
-/// The client every application uses (D-02): calls become work for the local host, which runs
+/// The client every application uses (D-02): calls become work for the <see cref="WorkflowHost"/>, which runs
 /// them in slots. Reads and cancellation requests take no slot.
 /// </summary>
 internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time) : IWorkflowClient

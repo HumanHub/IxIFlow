@@ -5,9 +5,9 @@ namespace IxIFlow.Core;
 public sealed partial class WorkflowHost
 {
     /// <summary>
-    /// Runs instance operations inline on the current scope's <see cref="InstanceOperations"/>. The host
-    /// uses it for each work item, and a running parent uses it for its children, which run inside
-    /// the parent's slot until children become independent instances (D-17).
+    /// Runs instance operations inline on the current scope's <see cref="InstanceOperations"/>. The host uses it for
+    /// each work item, and a call made from inside a slot, such as an activity calling the client, uses it to run in
+    /// that slot. Children are independent instances that the host schedules on their own (D-17).
     /// </summary>
     internal sealed class SlotClient
     {
