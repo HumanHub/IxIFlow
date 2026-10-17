@@ -15,6 +15,13 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(Workflo
 {
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
 
+    /// <inheritdoc/>
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> CancelWithParent(bool cancel)
+    {
+        _step.CancelWithParent = cancel;
+        return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(_step);
+    }
+
     /// <summary>
     ///     Configures an input property mapping for the invoked workflow
     /// </summary>
@@ -44,6 +51,17 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPrevio
     where TPreviousStepData : class
 {
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
+
+    /// <inheritdoc/>
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> CancelWithParent(bool cancel)
+    {
+        _step.CancelWithParent = cancel;
+        return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(_step);
+    }
+
+    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>
+        IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.CancelWithParent(bool cancel) =>
+        CancelWithParent(cancel);
 
     /// <summary>
     ///     Configures an input property mapping with previous step access
@@ -89,6 +107,13 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
 
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
 
+    /// <inheritdoc/>
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> CancelWithParent(bool cancel)
+    {
+        _step.CancelWithParent = cancel;
+        return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(_step);
+    }
+
     /// <summary>
     ///     Specifies the source expression for this input mapping
     /// </summary>
@@ -114,7 +139,7 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         {
             TargetProperty = propertyName,
             SourceFunction = wrappedFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Input
@@ -165,6 +190,17 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
 
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
 
+    /// <inheritdoc/>
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> CancelWithParent(bool cancel)
+    {
+        _step.CancelWithParent = cancel;
+        return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(_step);
+    }
+
+    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>
+        IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.CancelWithParent(bool cancel) =>
+        CancelWithParent(cancel);
+
     /// <summary>
     ///     Specifies the source expression for this input mapping with previous step access
     /// </summary>
@@ -191,7 +227,7 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         {
             TargetProperty = propertyName,
             SourceFunction = wrappedFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Input
@@ -261,6 +297,13 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
 
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
 
+    /// <inheritdoc/>
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> CancelWithParent(bool cancel)
+    {
+        _step.CancelWithParent = cancel;
+        return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(_step);
+    }
+
     /// <summary>
     ///     Specifies the destination expression for this output mapping
     /// </summary>
@@ -295,7 +338,8 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
             TargetProperty = propertyName,
             SourceFunction = dummySourceFunction, // Not used for outputs
             TargetAssignmentFunction = assignmentFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(destination),
+            TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Output
@@ -351,7 +395,7 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
 
         // Create the property access expression by replacing the parameter
         var propertyAccess = Expression.Property(
-            ReplaceParameter(memberExpression.Expression, destination.Parameters[0], contextParameter),
+            ReplaceParameterVisitor.Replace(memberExpression.Expression!, destination.Parameters[0], contextParameter),
             propertyInfo);
 
         // Create the assignment expression
@@ -363,27 +407,6 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
                 assignment, contextParameter,
                 valueParameter);
         return lambda.Compile();
-    }
-
-    /// <summary>
-    ///     Replaces a parameter in an expression with a new parameter
-    /// </summary>
-    private Expression ReplaceParameter(
-        Expression? expression,
-        ParameterExpression oldParameter,
-        ParameterExpression newParameter)
-    {
-        if (expression == null) return newParameter;
-
-        if (expression == oldParameter)
-            return newParameter;
-
-        if (expression is MemberExpression memberExpr)
-            return Expression.MakeMemberAccess(
-                ReplaceParameter(memberExpr.Expression, oldParameter, newParameter),
-                memberExpr.Member);
-
-        return expression;
     }
 
     private string GetPropertyName<T>(Expression<Func<TInvokedData, T>> propertyExpression)

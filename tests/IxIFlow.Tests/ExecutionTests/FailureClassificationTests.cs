@@ -17,7 +17,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class FailureClassificationTests
 {
     [Fact]
-    public async Task StoreFailureWhileCheckingAChildLeavesTheParentRecoverable()
+    public async Task StoreFailureWhileAChildTellsItsParentLeavesBothRecoverable()
     {
         var time = new FakeTimeProvider();
         var repository = new FaultInjectingRepository(time);
@@ -41,17 +41,27 @@ public sealed class FailureClassificationTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var parentId = started.InstanceId;
 
-        repository.FailRead = id => id != parentId;
+        // The child's terminal commit, which also tells its parent, fails: neither is lost.
+        repository.FailCommit = instance => instance.WorkflowName == "ClassifiedTimedChild";
         time.Advance(TimeSpan.FromMinutes(11));
-        await RecoverOnceAsync(services, repository, time);
-        Assert.True(repository.FailedReads > 0);
-        Assert.NotEqual(WorkflowStatus.Failed, (await repository.GetWorkflowInstanceAsync(parentId))!.Status);
+        // The child's own timer, or the scan, runs it into the failing commit.
+        using (var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            while (repository.FailedCommits == 0)
+            {
+                await RecoverOnceAsync(services, repository, time);
+                await Task.Delay(20, patience.Token);
+            }
+        Assert.Equal(WorkflowStatus.Suspended, (await repository.GetWorkflowInstanceAsync(parentId))!.Status);
+        Assert.NotEqual(WorkflowStatus.Failed,
+            Assert.Single(await repository.GetWorkflowInstancesByNameAsync("ClassifiedTimedChild")).Status);
 
         // The host's own timers fired with the clock as well; scan until the parent has finished.
-        repository.FailRead = _ => false;
+        repository.FailCommit = _ => false;
         WorkflowInstance? saved = null;
         for (var pass = 0; pass < 40 && saved?.Status != WorkflowStatus.Completed; pass++)
         {
+            // The scan defers what just failed for a while, on the store's clock.
+            time.Advance(TimeSpan.FromMinutes(1));
             await RecoverOnceAsync(services, repository, time);
             saved = await repository.GetWorkflowInstanceAsync(parentId);
             if (saved?.Status != WorkflowStatus.Completed)
@@ -83,26 +93,26 @@ public sealed class FailureClassificationTests
         await registry.RegisterWorkflowAsync(parent);
         repository.FailCommit = instance => instance.WorkflowName == "ClassifiedChild";
 
-        string parentId;
-        try
-        {
-            var result = await Engine(services).RunAsync(parent, new ParentData());
-            parentId = result.InstanceId;
-        }
-        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure)
-        {
-            parentId = (await repository.GetWorkflowInstancesByNameAsync("ClassifiedParent")).Single().InstanceId;
-        }
-        Assert.True(repository.FailedCommits > 0);
+        // The child's run fails on its own commits; that is the store's failure, not the child's, so the
+        // parent hears nothing and catches nothing.
+        var parentId = (await Engine(services).RunAsync(parent, new ParentData())).InstanceId;
+        using (var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            while (repository.FailedCommits < 3)
+                await Task.Delay(10, patience.Token);
         var interrupted = await repository.GetWorkflowInstanceAsync(parentId);
         Assert.DoesNotContain("\"Caught\":true", interrupted!.WorkflowDataJson);
-        Assert.NotEqual(WorkflowStatus.Failed, interrupted.Status);
+        Assert.Equal(WorkflowStatus.Suspended, interrupted.Status);
 
         repository.FailCommit = _ => false;
         time.Advance(TimeSpan.FromMinutes(1));
-        await RecoverOnceAsync(services, repository, time);
-        await RecoverOnceAsync(services, repository, time);
-        var saved = await repository.GetWorkflowInstanceAsync(parentId);
+        WorkflowInstance? saved = null;
+        for (var pass = 0; pass < 40 && saved?.Status != WorkflowStatus.Completed; pass++)
+        {
+            await RecoverOnceAsync(services, repository, time);
+            saved = await repository.GetWorkflowInstanceAsync(parentId);
+            if (saved?.Status != WorkflowStatus.Completed)
+                await Task.Delay(50);
+        }
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
         Assert.DoesNotContain("\"Caught\":true", saved.WorkflowDataJson);
     }

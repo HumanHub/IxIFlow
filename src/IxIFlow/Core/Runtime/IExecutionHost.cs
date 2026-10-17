@@ -2,8 +2,8 @@ namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// What the executor needs from the host for one run: committing checkpoints, observing
-/// cancellation and ownership, and reaching child workflows. The executor never touches the
-/// state store, the lease or another instance directly.
+/// cancellation and ownership, and preparing the children its commits start. The executor never
+/// touches the state store, the lease or another instance directly.
 /// </summary>
 internal interface IExecutionHost
 {
@@ -15,9 +15,6 @@ internal interface IExecutionHost
     /// be committed, then return. The instance continues on recovery.
     /// </summary>
     CancellationToken Drain { get; }
-
-    /// <summary>True when a child commits its start before it runs, so an unsaved child was never started.</summary>
-    bool ChildStartIsCheckpointed { get; }
 
     /// <summary>Completes when the host stops owning the instance.</summary>
     Task? OwnershipLoss { get; }
@@ -55,24 +52,20 @@ internal interface IExecutionHost
     /// <summary>A pending cancellation request learned from a commit reply.</summary>
     void ObserveCancellation(CancellationReason reason);
 
-    Task<WorkflowInstance?> ReadChildAsync(string childInstanceId);
-
-    Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step, WorkflowDefinition definition,
-        WorkflowInstance instance, object workflowData, object? previous, string invocationId,
-        CancellationToken cancellationToken);
-
-    Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,
-        CancellationToken cancellationToken = default);
-
-    Task<WorkflowExecutionResult> CancelChildAsync(string childInstanceId, CancellationReason reason,
-        CancellationToken cancellationToken);
+    /// <summary>
+    /// The definition an invocation step invokes. When <paramref name="starting"/>, it is checked to be active
+    /// and registered, so any host can run the child (D-17); a child already started is read as it is.
+    /// </summary>
+    Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting);
 
     /// <summary>
-    /// Sends a child an event its parent took for one of the child's waits, under the same event ID,
-    /// and runs the child until it decides it. The result carries the child's receipt.
+    /// The start of a child of <paramref name="definition"/> with <paramref name="data"/>, for this run's
+    /// next commit to carry: its initial instance, as a client start saves one, with
+    /// <paramref name="parent"/> and <paramref name="parentWaitId"/> to notify when it ends. Throws
+    /// <see cref="CheckpointLimitExceededException"/> for a child over the checkpoint limit.
     /// </summary>
-    Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key, object @event,
-        string eventId, CancellationToken cancellationToken);
+    ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent, string childInstanceId,
+        string parentWaitId);
 
     /// <summary>Pending events of this instance after <paramref name="afterSequence"/>, and its open waits.</summary>
     Task<InboxPage> ReadInboxAsync(long afterSequence, int limit);

@@ -10,14 +10,10 @@ internal static class ExecutionCheckpointWriter
 {
     private const int MaxAttempts = 3;
 
-    /// <summary>How often an idle parent checks on its children when nothing else wakes it.</summary>
-    public static readonly TimeSpan ChildCheckInterval = TimeSpan.FromSeconds(5);
-
     /// <summary>
     /// Commits the run's state. <paramref name="workflowData"/> may be null only with
     /// <paramref name="preserveSavedWorkflowData"/>. <paramref name="clearsCrashCount"/> is false for a
-    /// commit that records no progress: claiming an activity or child before it starts, or only
-    /// rescheduling a check (B-08). With <paramref name="parkFor"/> the run stops that long and the
+    /// commit that records no progress, such as claiming an activity before it starts (B-08). With <paramref name="parkFor"/> the run stops that long and the
     /// store releases its lease (C-03); returns true when it did. <paramref name="now"/> is the host's time.
     /// </summary>
     public static async Task<bool> CommitAsync(IExecutionHost host, WorkflowInstance instance,
@@ -42,13 +38,15 @@ internal static class ExecutionCheckpointWriter
         // It says how long, not until when: the store stamps deadlines and the runnable time (D-35).
         var (opened, armed, closed) = checkpoint.Inbox.WaitChanges(checkpoint);
         var idle = instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
-        var checksChildren = idle && checkpoint.Waits.Any(wait => wait.ChildWorkflowId != null);
+        // Children start, and are asked to cancel, in the commit that records the parent's waits for
+        // them; a child's terminal commit tells its parent (D-17).
         var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,
             clearsCrashCount: clearsCrashCount, parks: parkFor != null,
             settlements: checkpoint.Inbox.Settlements, inboxReadThrough: checkpoint.Inbox.ReadThrough,
-            openedWaits: opened, closedWaits: closed, armedWaits: armed,
-            wakeAfter: parkFor ?? (checksChildren ? ChildCheckInterval : null),
-            stopped: checkpoint.OperatorStop != null);
+            openedWaits: opened, closedWaits: closed, armedWaits: armed, wakeAfter: parkFor,
+            stopped: checkpoint.OperatorStop != null, childStarts: checkpoint.ChildStarts.ToArray(),
+            childCancellations: checkpoint.ChildCancellations.ToArray(),
+            parentNotice: ChildCompleted.NoticeOf(instance, checkpoint));
         for (var attempt = 1; ; attempt++)
         {
             var reply = await host.CommitAsync(commit);
@@ -56,6 +54,8 @@ internal static class ExecutionCheckpointWriter
             {
                 case CheckpointReplyKind.Acknowledged:
                     instance.Revision = reply.Revision;
+                    checkpoint.ChildStarts.Clear();
+                    checkpoint.ChildCancellations.Clear();
                     checkpoint.Inbox.Acknowledged(checkpoint, reply.UnreadEvents);
                     EstimateDeadlines(checkpoint, opened, armed, now);
                     // The host looks again when the store will next make the instance runnable; an idle
@@ -106,10 +106,10 @@ internal static class ExecutionCheckpointWriter
         try
         {
             ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
+            checkpoint.RecordBranchChanges();
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson
-                : JsonSerializer.Serialize(workflowData ?? throw new ArgumentNullException(nameof(workflowData)),
-                    workflowData.GetType());
+                : BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData)));
             var stateJson = JsonSerializer.Serialize(checkpoint);
             var snapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, now);
             instance.WorkflowDataJson = dataJson;

@@ -212,11 +212,13 @@ namespace IxIFlow.Tests.ExecutionTests
             Assert.Equal(80, finalData.FinalResult); // 10*2 + 20*3 = 20+60=80
         }
 
+        // Each branch works on its own copy of the data, so two branches incrementing one counter
+        // without a combiner would lose an update; the build refuses it (D-14, spec E-04).
         [Fact]
-        public async Task ParallelReadModifyWriteCanLoseAnUpdate()
+        [Trait("Spec", "E-04")]
+        public void BranchesWritingOnePropertyWithoutACombinerAreABuildError()
         {
-            // Test branches accessing shared workflow data
-            var definition = Workflow
+            var error = Assert.Throws<WorkflowEngineException>(() => Workflow
                 .Create<SharedDataTestData>("CommonDataAccessWorkflow")
                 .Step<InitializeCounterActivity>(setup => setup
                     .Output(act => act.Counter).To(ctx => ctx.WorkflowData.Counter))
@@ -233,18 +235,67 @@ namespace IxIFlow.Tests.ExecutionTests
                                 .Input(act => act.Counter).From(ctx => ctx.WorkflowData.Counter)
                                 .Output(act => act.Result).To(ctx => ctx.WorkflowData.Counter)));
                 })
-                .Build(); // Added Build() call
+                .Build());
 
-            var workflowData = new SharedDataTestData();
+            Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
+            Assert.Contains("no combiner", error.Message);
+        }
 
-            // Act
-            var result = await _workflowEngine.RunAsync(definition, workflowData);
+        // With Sum, the join adds every branch's change to the value at the fork, also when a branch
+        // finishes in a later run, rebuilt from its saved changes (spec E-01, E-06).
+        [Fact]
+        [Trait("Spec", "E-06")]
+        [Trait("Spec", "E-01")]
+        public async Task SumAddsEveryBranchsChangeToTheValueAtTheForkAcrossARestart()
+        {
+            var definition = Workflow
+                .Create<SummedCounterData>("SummedCounter")
+                .Step<InitializeCounterActivity>()
+                .Parallel(parallel => parallel
+                    .Do(branch => branch
+                        .Step<IncrementCounterActivity>(setup => setup
+                            .Input(act => act.Counter).From(ctx => ctx.WorkflowData.Counter)
+                            .Output(act => act.Result).To(ctx => ctx.WorkflowData.Counter)))
+                    .Do(branch => branch
+                        .Step<IncrementCounterActivity>(setup => setup
+                            .Input(act => act.Counter).From(ctx => ctx.WorkflowData.Counter)
+                            .Output(act => act.Result).To(ctx => ctx.WorkflowData.Counter))
+                        .WaitFor<GoOn>("go")))
+                .Build();
 
-            // Assert
-            Assert.True(result.IsSuccess);
-            var finalData = (SharedDataTestData)result.WorkflowData;
-            // Both branches can read the same value before either output is applied.
-            Assert.Equal(1, finalData.Counter);
+            var started = await _workflowEngine.RunAsync(definition, new SummedCounterData { Counter = 5 });
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            Assert.Equal(5, ((SummedCounterData)started.WorkflowData!).Counter);
+            var finished = await _workflowEngine.ResumeAsync(started.InstanceId, "go", new GoOn());
+
+            Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+            Assert.Equal(7, ((SummedCounterData)finished.WorkflowData!).Counter);
+        }
+
+        // A conflict the build cannot see, here activity code changing its branch's copy directly, fails
+        // the parallel step, where a Catch can handle it, and leaves the data as it was at the fork (spec E-04).
+        [Fact]
+        [Trait("Spec", "E-04")]
+        [Trait("Spec", "E-07")]
+        public async Task ConflictingBranchesFailTheParallelStepWithoutChangingTheData()
+        {
+            var definition = Workflow
+                .Create<SharedDataTestData>("ConflictingBranches")
+                .Step<InitializeCounterActivity>()
+                .Try(attempt => attempt.Parallel(parallel => parallel
+                    .Do(branch => branch.Step<BumpCounterInPlaceActivity>())
+                    .Do(branch => branch.Step<BumpCounterInPlaceActivity>())))
+                .Catch<JoinConflictException>(handler => handler
+                    .Step<IncrementCounterActivity>(setup => setup
+                        .Input(act => act.Counter).From(_ => 41)
+                        .Output(act => act.Result).To(ctx => ctx.WorkflowData.Caught)))
+                .Build();
+
+            var result = await _workflowEngine.RunAsync(definition, new SharedDataTestData { Counter = 3 });
+
+            Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+            var data = (SharedDataTestData)result.WorkflowData!;
+            Assert.Equal((3, 42), (data.Counter, data.Caught));
         }
     }
 
@@ -276,7 +327,26 @@ namespace IxIFlow.Tests.ExecutionTests
     public class SharedDataTestData
     {
         public int Counter { get; set; }
+        public int Caught { get; set; }
     }
+
+    /// <summary>Changes its branch's copy of the data in place, which no output mapping shows.</summary>
+    public class BumpCounterInPlaceActivity : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            ((SharedDataTestData)context.WorkflowData).Counter++;
+            return Task.CompletedTask;
+        }
+    }
+
+    public class SummedCounterData
+    {
+        [Combine<Sum<int>>]
+        public int Counter { get; set; }
+    }
+
+    public class GoOn;
 
     public class InitializeCounterActivity : IAsyncActivity
     {

@@ -64,6 +64,22 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         return new SagaActivityBuilder<TWorkflowData, TActivity>(_steps, _sagaSteps);
     }
 
+    public ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(string name,
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
+        where TActivity : class, IAsyncActivity
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var replyType = RequestPairing.ReplyTypeOf(typeof(TActivity));
+        var next = Step(configure);
+        var step = _steps[^1];
+        step.RequestName = name;
+        step.ReplyType = replyType;
+        if (subject != null)
+            step.RequestSubject = context => subject((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
+        return next;
+    }
+
     public ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? resumeCondition = null,
@@ -100,7 +116,8 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
                     var workflowContext = new WorkflowContext<TWorkflowData, TPreviousStepData>
                     {
                         WorkflowData = typed.WorkflowData,
-                        PreviousStep = typed.PreviousStep
+                        PreviousStep = typed.PreviousStep,
+                        Items = typed.Items
                     };
                     return resumeCondition(typed.ResumeEvent, workflowContext);
                 }
@@ -108,7 +125,8 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
                 {
                     var workflowContext = new WorkflowContext<TWorkflowData, TPreviousStepData>
                     {
-                        WorkflowData = resumeContext.WorkflowData
+                        WorkflowData = resumeContext.WorkflowData,
+                        Items = resumeContext.Items
                     };
                     return resumeCondition(resumeContext.ResumeEvent, workflowContext);
                 }
@@ -177,56 +195,6 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         // Return the current builder for chaining
         return this;
     }
-
-    
-    //public ISagaActivityBuilder<TWorkflowData, TNextActivity, TActivity> Step<TNextActivity>(
-    //    Action<ISagaActivitySetupBuilder<TWorkflowData, TNextActivity, TActivity>> configure)
-    //    where TNextActivity : class, IAsyncActivity
-    //{
-    //    var stepId = Guid.NewGuid().ToString();
-    //    var workflowStep = new WorkflowStep
-    //    {
-    //        Id = stepId,
-    //        Name = typeof(TNextActivity).Name,
-    //        StepType = WorkflowStepType.Activity,
-    //        ActivityType = typeof(TNextActivity),
-    //        WorkflowDataType = typeof(TWorkflowData),
-    //        PreviousStepDataType = typeof(TActivity),
-    //        InputMappings = [],
-    //        OutputMappings = [],
-    //        StepMetadata = new Dictionary<string, object>
-    //        {
-    //            ["IsSagaStep"] = true,
-    //            ["SagaStepOrder"] = _sagaSteps.Count
-    //        }
-    //    };
-
-    //    // Create saga step info for compensation tracking
-    //    var sagaStepInfo = new SagaStepInfo
-    //    {
-    //        StepId = stepId,
-    //        ActivityType = typeof(TNextActivity),
-    //        Order = _sagaSteps.Count,
-    //        CompensationActivities = []
-    //    };
-
-    //    // Create the setup builder
-    //    var setupBuilder = new SagaActivitySetupBuilder<TWorkflowData, TNextActivity, TActivity>(
-    //        workflowStep, sagaStepInfo);
-
-    //    // Configure the step
-    //    configure(setupBuilder);
-
-    //    // Add to collections
-    //    _steps.Add(workflowStep);
-    //    _sagaSteps.Add(sagaStepInfo);
-
-    //    // Create next activity builder for chaining
-    //    return new SagaActivityBuilder<TWorkflowData, TNextActivity, TActivity>(
-    //        _steps, _sagaSteps);
-    //}
-
-
 }
 
 /// <summary>
@@ -335,6 +303,8 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
         return this;
     }
 
+    // Preferred over the answer overload when a lambda fits both, as on the interface.
+    [System.Runtime.CompilerServices.OverloadResolutionPriority(1)]
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
         TPreviousChainActivity>(
         Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
@@ -363,6 +333,25 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
         // Transfer to WorkflowStep metadata for WorkflowEngine
         _workflowStep.StepMetadata["CompensationActivities"] = _sagaStepInfo.CompensationActivities;
 
+        return this;
+    }
+
+    public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
+        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure)
+        where TCompensationActivity : IAsyncActivity
+        where TReply : class
+    {
+        var compensationInfo = new CompensationActivityInfo
+        {
+            ActivityType = typeof(TCompensationActivity),
+            InputMappings = [],
+            OutputMappings = [],
+            ReplyType = typeof(TReply)
+        };
+        configure(new RequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>(
+            compensationInfo));
+        _sagaStepInfo.CompensationActivities.Add(compensationInfo);
+        _workflowStep.StepMetadata["CompensationActivities"] = _sagaStepInfo.CompensationActivities;
         return this;
     }
 }
@@ -401,7 +390,7 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
         {
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(source),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             SourceType = typeof(WorkflowContext<TWorkflowData, TPreviousStepData>),
             TargetType = propertyType,
             Direction = PropertyMappingDirection.Input
@@ -449,6 +438,8 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
         return _setupBuilder.CompensateWith(configure);
     }
 
+    // Preferred over the answer overload when a lambda fits both, as on the interface.
+    [System.Runtime.CompilerServices.OverloadResolutionPriority(1)]
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
         CompensateWith<TCompensationActivity, TPreviousChainActivity>(
             Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
@@ -457,6 +448,12 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
     {
         return _setupBuilder.CompensateWith(configure);
     }
+
+    public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
+        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure)
+        where TCompensationActivity : IAsyncActivity
+        where TReply : class =>
+        _setupBuilder.CompensateWith<TCompensationActivity, TReply>(configure);
 
     private string GetPropertyName<T, TProp>(Expression<Func<T, TProp>> expression)
     {
@@ -511,7 +508,8 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
         {
             TargetProperty = propertyName,
             TargetAssignmentFunction = targetAssignmentFunction,
-            ExpressionSignature = Core.Runtime.WorkflowExpressionSignature.Of(destination),
+            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(destination),
+            TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = propertyType,
             TargetType = typeof(WorkflowContext<TWorkflowData>),
             Direction = PropertyMappingDirection.Output
@@ -559,6 +557,8 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
         return _setupBuilder.CompensateWith(configure);
     }
 
+    // Preferred over the answer overload when a lambda fits both, as on the interface.
+    [System.Runtime.CompilerServices.OverloadResolutionPriority(1)]
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
         CompensateWith<TCompensationActivity, TPreviousChainActivity>(
             Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
@@ -567,6 +567,12 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
     {
         return _setupBuilder.CompensateWith(configure);
     }
+
+    public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
+        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure)
+        where TCompensationActivity : IAsyncActivity
+        where TReply : class =>
+        _setupBuilder.CompensateWith<TCompensationActivity, TReply>(configure);
 
     private string GetPropertyName<T, TProp>(Expression<Func<T, TProp>> expression)
     {
@@ -598,7 +604,7 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
 
         // Create the property access expression by replacing the parameter
         var propertyAccess = Expression.Property(
-            ReplaceParameter(memberExpression.Expression, expression.Parameters[0], contextParameter),
+            ReplaceParameterVisitor.Replace(memberExpression.Expression!, expression.Parameters[0], contextParameter),
             propertyInfo
         );
 
@@ -622,25 +628,6 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
         };
     }
 
-    /// <summary>
-    ///     Replaces a parameter in an expression with a new parameter
-    /// </summary>
-    private Expression ReplaceParameter(Expression? expression, ParameterExpression oldParameter,
-        ParameterExpression newParameter)
-    {
-        if (expression == null) return newParameter;
-
-        if (expression == oldParameter)
-            return newParameter;
-
-        if (expression is MemberExpression memberExpr)
-            return Expression.MakeMemberAccess(
-                ReplaceParameter(memberExpr.Expression, oldParameter, newParameter),
-                memberExpr.Member
-            );
-
-        return expression;
-    }
 }
 
 /// <summary>
@@ -734,11 +721,6 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}, {typeof(TPreviousStepData).Name}>, got {context.GetType().Name}");
         };
 
-        // Store configuration in step metadata
-        _outcomeStep.StepMetadata["PropertySelector"] = selectorWrapper;
-        _outcomeStep.StepMetadata["OutcomeBranches"] = _outcomeBranches;
-        _outcomeStep.StepMetadata["DefaultBranch"] = _defaultBranch;
-        _outcomeStep.StepMetadata["PropertyType"] = typeof(TProperty);
         _outcomeStep.OutcomeSelector = selectorWrapper;
         _outcomeStep.OutcomeBranches =
             _defaultBranch == null ? [.. _outcomeBranches] : [.. _outcomeBranches, _defaultBranch];

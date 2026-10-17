@@ -49,9 +49,38 @@ public sealed class WorkflowExecutorHostTests
 
         var result = await RunAsync(services, definition, host);
 
-        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        // The parent waits for its child, whose start travels in the parent's commit (D-17).
+        Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
         var invocation = Assert.Single(host.Invocations);
         Assert.Equal("ExecutorChildTarget", invocation.WorkflowName);
+        Assert.Equal(WorkflowStatus.Suspended, host.Commits[^1]);
+        Assert.Single(host.ChildStarts);
+    }
+
+    [Fact]
+    [Trait("Spec", "E-12")]
+    public async Task ADrainBetweenAnItemsCompletionAndTheNextAdmissionLeavesTheRestToRecovery()
+    {
+        using var services = Services();
+        var host = new RecordingHost(Probe(services));
+        Draining = host.Draining;
+        // The host starts draining as the join decides on the first item, before the next is admitted.
+        var definition = Workflow.Create<ExecutorData>("DrainedBetweenItems")
+            .Step<FirstActivity>()
+            .ForEach(_ => new[] { 1, 2 }, (body, _) => body.Step<SecondActivity>().Result(_ => 1),
+                setup => setup.Parallel(maxConcurrency: 1).WaitConditionally<int>((_, _) =>
+                {
+                    Draining?.Cancel();
+                    return false;
+                }))
+            .Build();
+
+        var result = await RunAsync(services, definition, host);
+
+        // Nothing is active and nothing waits, but an item is still to start: the run stops to continue on
+        // recovery, rather than finding nothing to do.
+        Assert.Equal(WorkflowExecutionStatus.Running, result.Status);
+        Assert.Single(Probe(services).Seen, seen => seen.Activity == "second");
     }
 
     [Fact]
@@ -135,6 +164,9 @@ public sealed class WorkflowExecutorHostTests
 
     private static ExecutorProbe Probe(IServiceProvider services) => services.GetRequiredService<ExecutorProbe>();
 
+    // The drain a definition's condition starts; read through a static, as a definition may not capture a host.
+    private static CancellationTokenSource? Draining;
+
     /// <summary>A host with no store: it records what the executor asks of it.</summary>
     private sealed class RecordingHost(ExecutorProbe probe) : IExecutionHost
     {
@@ -142,14 +174,15 @@ public sealed class WorkflowExecutorHostTests
 
         public IReadOnlyList<WorkflowStatus> Commits => _commits;
         public List<WorkflowStep> Invocations { get; } = [];
+        public List<ChildStart> ChildStarts { get; } = [];
         public int LoseOwnershipAtCommit { get; init; }
         public Func<bool> CancellationWhen { get; init; } = () => false;
 
         public bool PersistsState => true;
-        public CancellationToken Drain => CancellationToken.None;
+        public CancellationTokenSource Draining { get; } = new();
+        public CancellationToken Drain => Draining.Token;
         public long Epoch => 1;
         public ExecutionLimits Limits { get; } = new() { MaxCheckpointBytes = long.MaxValue };
-        public bool ChildStartIsCheckpointed => true;
         public bool CanPark => false;
         public Task? OwnershipLoss => null;
         public Task<CancellationReason>? CancellationSignal => null;
@@ -165,6 +198,7 @@ public sealed class WorkflowExecutorHostTests
                 return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Conflict,
                     Error: new InvalidOperationException("Another owner committed")));
             _commits.Add(commit.ReadInstance().Status);
+            ChildStarts.AddRange(commit.ChildStarts);
             probe.Commits = _commits.Count;
             // Like a store, the commit reply reports a pending cancellation request.
             return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, _commits.Count,
@@ -175,28 +209,19 @@ public sealed class WorkflowExecutorHostTests
 
         public void ObserveCancellation(CancellationReason reason) => ObservedCancellation ??= reason;
 
-        public Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step,
-            WorkflowDefinition definition, WorkflowInstance instance, object workflowData, object? previous,
-            string invocationId, CancellationToken cancellationToken)
+        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting)
         {
             Invocations.Add(step);
-            return Task.FromResult(new WorkflowInvocationTransitionResult(invocationId, new ExecutorData(), false));
+            return Task.FromResult(Workflow.Create<ExecutorData>(step.WorkflowName!).Step<FirstActivity>().Build());
         }
 
-        public Task<WorkflowInstance?> ReadChildAsync(string childInstanceId) =>
-            throw new NotSupportedException("No child is saved in this test");
-
-        public Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException("No child is recovered in this test");
-
-        public Task<WorkflowExecutionResult> CancelChildAsync(string childInstanceId, CancellationReason reason,
-            CancellationToken cancellationToken) =>
-            throw new NotSupportedException("No child is cancelled in this test");
-
-        public Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key, object @event,
-            string eventId, CancellationToken cancellationToken) =>
-            throw new NotSupportedException("No child is resumed in this test");
+        public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
+            string childInstanceId, string parentWaitId) =>
+            new(childInstanceId, System.Text.Json.JsonSerializer.Serialize(new WorkflowInstance
+            {
+                InstanceId = childInstanceId, WorkflowName = definition.Name, Status = WorkflowStatus.Running,
+                ParentInstanceId = parent.InstanceId, ParentWaitId = parentWaitId
+            }), parentWaitId);
 
         public long ObservedInboxSequence => 0;
         public Task? InboxChanged => null;

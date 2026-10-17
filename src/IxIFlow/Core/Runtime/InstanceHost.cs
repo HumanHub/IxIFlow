@@ -7,13 +7,12 @@ namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// Owns workflow instances: it validates requests, holds the instance gate and execution lease,
-/// commits checkpoints, and coordinates child workflows. The <see cref="WorkflowExecutor"/> runs
-/// the instance between commits.
+/// commits checkpoints, and prepares the children a run starts. The <see cref="WorkflowExecutor"/>
+/// runs the instance between commits.
 /// </summary>
 internal sealed class InstanceHost(
     IServiceProvider services,
     IActivityExecutor activityExecutor,
-    IWorkflowInvoker workflowInvoker,
     IWorkflowStateRepository repository,
     IWorkflowVersionRegistry registry,
     InProcessInstanceGate gate,
@@ -25,8 +24,7 @@ internal sealed class InstanceHost(
 {
     private readonly IWorkflowStateRepository _store = GuardedStateRepository.Wrap(repository);
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
-    private readonly WorkflowInvocationTransitionExecutor _invocations = new(workflowInvoker);
-    private readonly bool _childStartIsCheckpointed = workflowInvoker is ICheckpointedWorkflowInvoker;
+    private readonly ChildWorkflows _children = new(services, registry, timeProvider ?? TimeProvider.System);
     private readonly ExecutionLeaseSettings _leaseSettings = leaseSettings ?? ExecutionLeaseSettings.Default;
     private readonly ExecutionLimits _limits = limits ?? ExecutionLimits.Default;
     private readonly RunControl _control = control ?? new RunControl();
@@ -36,7 +34,8 @@ internal sealed class InstanceHost(
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
-    public static bool HasStructuredCheckpoint(WorkflowInstance? instance) =>
+    public static bool HasStructuredCheckpoint(
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] WorkflowInstance? instance) =>
         instance != null && ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson);
 
     public async Task<WorkflowExecutionResult> CancelAsync(string instanceId,
@@ -303,43 +302,10 @@ internal sealed class InstanceHost(
         if (options.InstanceId != null && !options.PersistState)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 "An explicit workflow instance ID requires state persistence");
-        WorkflowDefinitionIdentity.AssignImplicitName(definition);
-        var instance = new WorkflowInstance
-        {
-            InstanceId = options.InstanceId ?? Guid.NewGuid().ToString("N"),
-            WorkflowName = definition.Name,
-            WorkflowVersion = definition.Version,
-            WorkflowDataType = workflowData.GetType().AssemblyQualifiedName!,
-            WorkflowDataJson = JsonSerializer.Serialize(workflowData),
-            Status = WorkflowStatus.Running,
-            CorrelationId = options.CorrelationId ?? Guid.NewGuid().ToString("N"),
-            ParentInstanceId = options.ParentInstanceId,
-            CreatedAt = Now,
-            StartedAt = Now,
-            TotalSteps = definition.Steps.Count,
-            TracingEnabled = options.EnableTracing,
-            Properties = new Dictionary<string, object>(options.Properties)
-        };
-        var scopes = new WorkflowScopeCatalog(definition);
+        var (instance, checkpoint, scopes) = NewInstance(definition, workflowData, options, Now);
         if (!options.PersistState && scopes.RequiresPersistence)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 "A workflow with waits or child workflows requires state persistence");
-        var checkpoint = new ExecutionCheckpoint
-        {
-            DefinitionFingerprint = scopes.Fingerprint,
-            // The store stamps the execution deadline when the start is committed (D-35); a run that
-            // saves nothing keeps its own.
-            ExecutionTimeout = options.ExecutionTimeout,
-            ExecutionTimerId = options.ExecutionTimeout != null ? Guid.NewGuid().ToString("N") : null,
-            ExecutionDeadlineUtc = instance.StartedAt + options.ExecutionTimeout,
-            Continuations =
-            [
-                new ContinuationState
-                {
-                    Stack = [new ScopePosition { ScopeId = "root" }]
-                }
-            ]
-        };
 
         try
         {
@@ -388,6 +354,50 @@ internal sealed class InstanceHost(
             error.At(instance.InstanceId);
             throw;
         }
+    }
+
+    /// <summary>
+    /// A new instance of <paramref name="definition"/> with <paramref name="workflowData"/>, as a start
+    /// saves it, and its initial checkpoint: a client's start, or a child a parent's commit starts (D-17).
+    /// </summary>
+    public static (WorkflowInstance Instance, ExecutionCheckpoint Checkpoint, WorkflowScopeCatalog Scopes)
+        NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now)
+    {
+        WorkflowDefinitionIdentity.AssignImplicitName(definition);
+        var instance = new WorkflowInstance
+        {
+            InstanceId = options.InstanceId ?? Guid.NewGuid().ToString("N"),
+            WorkflowName = definition.Name,
+            WorkflowVersion = definition.Version,
+            WorkflowDataType = workflowData.GetType().AssemblyQualifiedName!,
+            WorkflowDataJson = BranchData.Snapshot(workflowData),
+            Status = WorkflowStatus.Running,
+            CorrelationId = options.CorrelationId ?? Guid.NewGuid().ToString("N"),
+            ParentInstanceId = options.ParentInstanceId,
+            CreatedAt = now,
+            StartedAt = now,
+            TotalSteps = definition.Steps.Count,
+            TracingEnabled = options.EnableTracing,
+            Properties = new Dictionary<string, object>(options.Properties)
+        };
+        var scopes = new WorkflowScopeCatalog(definition);
+        var checkpoint = new ExecutionCheckpoint
+        {
+            DefinitionFingerprint = scopes.Fingerprint,
+            // The store stamps the execution deadline when the start is committed (D-35); a run that
+            // saves nothing keeps its own.
+            ExecutionTimeout = options.ExecutionTimeout,
+            ExecutionTimerId = options.ExecutionTimeout != null ? Guid.NewGuid().ToString("N") : null,
+            ExecutionDeadlineUtc = instance.StartedAt + options.ExecutionTimeout,
+            Continuations =
+            [
+                new ContinuationState
+                {
+                    Stack = [new ScopePosition { ScopeId = "root" }]
+                }
+            ]
+        };
+        return (instance, checkpoint, scopes);
     }
 
     /// <summary>
@@ -511,7 +521,7 @@ internal sealed class InstanceHost(
         var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
         var canRecover = instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
             instance?.Status == WorkflowStatus.Suspended &&
-            (cancellationReason != null || HasChildWait(instance) || await HasInboxWorkAsync(instanceId));
+            (cancellationReason != null || await HasInboxWorkAsync(instanceId));
         // Another run may have decided the event since the instance was read, so it is read again.
         if (!canRecover || !HasStructuredCheckpoint(instance))
             return forEvent && await ReadAsync(instanceId) is { } latest ? latest
@@ -607,11 +617,6 @@ internal sealed class InstanceHost(
     private static WorkflowExecutionResult ReadResult(WorkflowInstance instance) =>
         ExecutionCheckpoint.StopOf(instance) is { } stop ? Stopped(instance, stop) : ExistingResult(instance);
 
-    private bool HasChildWait(WorkflowInstance instance) =>
-        HasStructuredCheckpoint(instance) &&
-        ExecutionCheckpoint.Read(instance.ExecutionStateJson).Waits.Any(wait =>
-            wait.ChildWorkflowId != null);
-
     private static WorkflowExecutionResult ExistingStart(WorkflowInstance existing, WorkflowDefinition definition,
         WorkflowScopeCatalog scopes)
     {
@@ -654,24 +659,6 @@ internal sealed class InstanceHost(
         ErrorMessage = instance.LastError,
         ErrorStackTrace = instance.LastErrorStackTrace
     };
-
-    // A finished child makes its parent due now instead of waiting for the parent's next check.
-    // If this fails, the parent still finds the result when it next checks its children.
-    private async Task MakeParentRunnableAsync(WorkflowInstance instance)
-    {
-        if (instance.ParentInstanceId == null || instance.Status is not (WorkflowStatus.Completed or
-                WorkflowStatus.Failed or WorkflowStatus.Cancelled or WorkflowStatus.TimedOut or
-                WorkflowStatus.Terminated))
-            return;
-        try
-        {
-            await _store.MakeRunnableAsync(instance.ParentInstanceId);
-        }
-        catch (Exception)
-        {
-            // Not a commit failure: the child's result is already saved.
-        }
-    }
 
     // Runs nested in this scope's run, such as children and inline client calls, never park: the
     // slot they would need to resume is held by the run they are nested in.
@@ -745,7 +732,10 @@ internal sealed class InstanceHost(
         switch (result.Status)
         {
             case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
-                await MakeParentRunnableAsync(instance);
+                // A child the commit started, or a parent its completion woke, runs here without waiting
+                // for the poll (D-17).
+                foreach (var runnable in result.MadeRunnable)
+                    _control.Runnable(runnable);
                 return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision,
                     PendingCancellation: result.PendingCancellation, Parked: result.Parked,
                     UnreadEvents: result.UnreadEvents);
@@ -800,12 +790,6 @@ internal sealed class InstanceHost(
         return Stopped(instance, stop);
     }
 
-    // Children run inline in the parent's slot and scope (D-17 makes them independent later).
-    private DirectInstanceClient Children =>
-        (DirectInstanceClient?)services.GetService(typeof(DirectInstanceClient))
-        ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-            "The workflow engine is not registered");
-
     /// <summary>The host side of one run: the instance's lease, its saved state and its children.</summary>
     private sealed class HostedRun(InstanceHost host, WorkflowInstance instance, WorkflowExecutionLease? owner,
         bool persistState, bool canPark = false) : IExecutionHost
@@ -815,7 +799,6 @@ internal sealed class InstanceHost(
         public CancellationToken Drain => host._control.Drain;
         public long Epoch => owner?.Epoch ?? 0;
         public ExecutionLimits Limits => host._limits;
-        public bool ChildStartIsCheckpointed => host._childStartIsCheckpointed;
         public Task? OwnershipLoss => owner?.Loss;
         public Task<CancellationReason>? CancellationSignal => owner?.Cancellation;
         public long ObservedInboxSequence => owner?.InboxSequence ?? 0;
@@ -831,32 +814,12 @@ internal sealed class InstanceHost(
 
         public void ObserveCancellation(CancellationReason reason) => owner?.ObserveCancellation(reason);
 
-        public Task<WorkflowInstance?> ReadChildAsync(string childInstanceId) =>
-            host._store.GetWorkflowInstanceAsync(childInstanceId);
+        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) =>
+            host._children.ResolveAsync(step, starting);
 
-        public Task<WorkflowInvocationTransitionResult> InvokeChildAsync(WorkflowStep step,
-            WorkflowDefinition definition, WorkflowInstance instance, object workflowData, object? previous,
-            string invocationId, CancellationToken cancellationToken) =>
-            host._invocations.ExecuteAsync(step, definition, instance, workflowData, previous, invocationId,
-                cancellationToken);
-
-        public Task<WorkflowExecutionResult> RecoverChildAsync(string childInstanceId,
-            CancellationToken cancellationToken = default) =>
-            host.Children.RecoverAsync(childInstanceId, cancellationToken);
-
-        public Task<WorkflowExecutionResult> CancelChildAsync(string childInstanceId, CancellationReason reason,
-            CancellationToken cancellationToken) =>
-            host.Children.CancelAsync(childInstanceId, reason, cancellationToken);
-
-        public async Task<WorkflowExecutionResult> ResumeChildAsync(string childInstanceId, string? key,
-            object @event, string eventId, CancellationToken cancellationToken)
-        {
-            var method = typeof(DirectInstanceClient).GetMethods().Single(candidate =>
-                candidate.Name == nameof(DirectInstanceClient.ResumeAsync) && candidate.GetParameters().Length == 5);
-            var task = (Task<WorkflowExecutionResult>)method.MakeGenericMethod(@event.GetType())
-                .Invoke(host.Children, [childInstanceId, key, @event, eventId, cancellationToken])!;
-            return await task;
-        }
+        public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
+            string childInstanceId, string parentWaitId) =>
+            host._children.Start(definition, data, parent, childInstanceId, parentWaitId, host._limits);
 
         public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) =>
             host._store.GetPendingEventsAsync(instance.InstanceId, afterSequence, limit);

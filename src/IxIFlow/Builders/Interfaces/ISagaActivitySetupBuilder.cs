@@ -63,12 +63,28 @@ public interface ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousSt
     /// <typeparam name="TCompensationActivity">Type of the compensation activity</typeparam>
     /// <typeparam name="TPreviousChainActivity">Type of the previous activity to access</typeparam>
     /// <param name="configure">Configuration for the compensation activity</param>
+    // Preferred over the answer overload when a lambda fits both, such as one that configures nothing.
+    [System.Runtime.CompilerServices.OverloadResolutionPriority(1)]
     ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
         TPreviousChainActivity>(
         Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
             TPreviousChainActivity>> configure)
         where TCompensationActivity : IAsyncActivity
         where TPreviousChainActivity : class, IAsyncActivity;
+
+    /// <summary>
+    /// Configures the compensation of a request step that reads the request's answer (D-36): its inputs map from
+    /// <see cref="RequestCompensationContext{TWorkflowData,TCurrentStepData,TReply}"/>, with <c>Reply</c> and
+    /// <c>Answered</c>. <typeparamref name="TReply"/> must be the request's answer type; the build refuses
+    /// another, and this overload on a step that is not a request.
+    /// </summary>
+    /// <typeparam name="TCompensationActivity">Type of the compensation activity</typeparam>
+    /// <typeparam name="TReply">The answer type of the request</typeparam>
+    /// <param name="configure">Configuration for the compensation activity</param>
+    ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity, TReply>(
+        Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure)
+        where TCompensationActivity : IAsyncActivity
+        where TReply : class;
 }
 
 /// <summary>

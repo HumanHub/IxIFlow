@@ -260,6 +260,12 @@ public class WorkflowInstance
     public string? ParentInstanceId { get; set; }
 
     /// <summary>
+    /// The parent's wait for this child, which the child's terminal commit answers with its completion
+    /// (D-17).
+    /// </summary>
+    public string? ParentWaitId { get; set; }
+
+    /// <summary>
     ///     When the workflow was created
     /// </summary>
     public DateTime CreatedAt { get; set; }
@@ -745,8 +751,9 @@ public class WorkflowStep
     /// </summary>
     public Func<object, bool>? CompiledCondition { get; set; }
 
-    /// <summary>Stable source shape for expression-based conditions.</summary>
-    public string? ConditionExpressionSignature { get; set; }
+    /// <summary>For an expression-based condition, the expression it was compiled from; its shape and captures are fingerprinted.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? ConditionExpression { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
     public Func<object, object?>? OutcomeSelector { get; set; }
@@ -785,6 +792,12 @@ public class WorkflowStep
     public Func<object, bool>? ParallelCompletionCondition { get; set; }
 
     /// <summary>
+    /// For a parallel step, combiners it chooses for properties of the workflow data, by JSON property
+    /// path; they take precedence over those declared on the data type (spec E-05).
+    /// </summary>
+    public Dictionary<string, Type> ParallelCombiners { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     ///     Catch blocks for try/catch error handling
     /// </summary>
     public List<WorkflowStep> CatchBlocks { get; set; } = new();
@@ -812,6 +825,54 @@ public class WorkflowStep
     ///     Type of loop construct (for loop steps)
     /// </summary>
     public LoopType LoopType { get; set; }
+
+    /// <summary>For a <c>ForEach</c> step, the body run once per item (D-34).</summary>
+    public List<WorkflowStep> ForEachBodySteps { get; set; } = new();
+
+    /// <summary>For a <c>ForEach</c> step, its body's handle on the current item.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ItemScope? ForEachItem { get; set; }
+
+    /// <summary>For a <c>ForEach</c> step, the list it runs over, read from the context when the step starts.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, System.Collections.IEnumerable?>? ForEachItems { get; set; }
+
+    /// <summary>
+    /// For a <c>ForEach</c> step, where its results go: given the context and each item's result in order,
+    /// stores a <c>List&lt;ItemResult&lt;TResult&gt;&gt;</c>.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Action<object, IReadOnlyList<(ItemStatus Status, object? Value)>>? ForEachInto { get; set; }
+
+    /// <summary>
+    /// For a <c>ForEach</c> step, true when its items run as parallel branches (D-34); its join is
+    /// <see cref="ParallelJoinMode"/>.
+    /// </summary>
+    public bool ForEachParallel { get; set; }
+
+    /// <summary>For a parallel <c>ForEach</c> step, how many items run at once, or null for all of them.</summary>
+    public int? ForEachMaxConcurrency { get; set; }
+
+    /// <summary>
+    /// For a parallel <c>ForEach</c> step joined conditionally, decides on the provisional merge of the
+    /// completed items' data and their results so far, by index (D-34, spec E-09).
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, IReadOnlyList<(int Index, object? Value)>, bool>? ForEachCompletionCondition { get; set; }
+
+    /// <summary>For a <c>ForEach</c> step, the member path its results are stored to, such as <c>WorkflowData.Results</c>.</summary>
+    public string? ForEachIntoPath { get; set; }
+
+    /// <summary>For a <c>ForEach</c> step that stores results, its target expression; its shape and captures are fingerprinted.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? ForEachIntoExpression { get; set; }
+
+    /// <summary>For a <c>.Result(...)</c> step, or a <c>ForEach</c> step that stores results, the result type.</summary>
+    public Type? ResultType { get; set; }
+
+    /// <summary>For a <c>.Result(...)</c> step, the value it gives for its item.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, object?>? ResultSelector { get; set; }
 
     /// <summary>
     ///     Context type information for compilation
@@ -853,6 +914,12 @@ public class WorkflowStep
     public string? ReplyToRequest { get; set; }
 
     /// <summary>
+    /// For a child workflow invocation: whether cancelling the invoking branch, or failing the parent, cancels the
+    /// child and waits for it to end (the default), or leaves it running on its own (D-09).
+    /// </summary>
+    public bool CancelWithParent { get; set; } = true;
+
+    /// <summary>
     ///     Step execution order
     /// </summary>
     public int Order { get; set; }
@@ -876,10 +943,11 @@ public class WorkflowStep
             WorkflowType = WorkflowType,
             WorkflowName = WorkflowName,
             WorkflowVersion = WorkflowVersion,
+            CancelWithParent = CancelWithParent,
             InputMappings = InputMappings.Select(m => m.Clone()).ToList(),
             OutputMappings = OutputMappings.Select(m => m.Clone()).ToList(),
             CompiledCondition = CompiledCondition,
-            ConditionExpressionSignature = ConditionExpressionSignature,
+            ConditionExpression = ConditionExpression,
             OutcomeSelector = OutcomeSelector,
             OutcomeBranches = OutcomeBranches.Select(branch => new WorkflowOutcomeBranch
             {
@@ -894,6 +962,7 @@ public class WorkflowStep
             ParallelBranches = ParallelBranches.Select(branch => branch.Select(s => s.Clone()).ToList()).ToList(),
             ParallelJoinMode = ParallelJoinMode,
             ParallelCompletionCondition = ParallelCompletionCondition,
+            ParallelCombiners = new Dictionary<string, Type>(ParallelCombiners, StringComparer.Ordinal),
             CatchBlocks = CatchBlocks.Select(s => s.Clone()).ToList(),
             FinallySteps = FinallySteps.Select(s => s.Clone()).ToList(),
             WaitTimeout = WaitTimeout,
@@ -901,6 +970,17 @@ public class WorkflowStep
             TimeoutSteps = TimeoutSteps.Select(s => s.Clone()).ToList(),
             LoopBodySteps = LoopBodySteps.Select(s => s.Clone()).ToList(),
             LoopType = LoopType,
+            ForEachBodySteps = ForEachBodySteps.Select(s => s.Clone()).ToList(),
+            ForEachItem = ForEachItem,
+            ForEachItems = ForEachItems,
+            ForEachInto = ForEachInto,
+            ForEachIntoPath = ForEachIntoPath,
+            ForEachParallel = ForEachParallel,
+            ForEachMaxConcurrency = ForEachMaxConcurrency,
+            ForEachCompletionCondition = ForEachCompletionCondition,
+            ForEachIntoExpression = ForEachIntoExpression,
+            ResultType = ResultType,
+            ResultSelector = ResultSelector,
             WorkflowDataType = WorkflowDataType,
             PreviousStepDataType = PreviousStepDataType,
             ExceptionType = ExceptionType,
@@ -980,7 +1060,13 @@ public enum WorkflowStepType
     Loop,
 
     /// <summary>Park until a durable timer becomes due.</summary>
-    Delay
+    Delay,
+
+    /// <summary>Run a body once per item of a list (D-34).</summary>
+    ForEach,
+
+    /// <summary>The last step of a <c>ForEach</c> body: the value it gives for its item.</summary>
+    ForEachResult
 }
 
 /// <summary>
@@ -1014,8 +1100,15 @@ public class PropertyMapping
     /// </summary>
     public string TargetProperty { get; set; } = string.Empty;
 
-    /// <summary>Stable source or destination expression used to bind this property.</summary>
-    public string? ExpressionSignature { get; set; }
+    /// <summary>The source or destination expression the mapping was built from; its shape and captures are fingerprinted.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? Expression { get; set; }
+
+    /// <summary>
+    /// For an output, the member path it writes, such as <c>WorkflowData.Total</c>, or null when the
+    /// destination is not a plain member chain.
+    /// </summary>
+    public string? TargetPath { get; set; }
 
     /// <summary>
     ///     Compiled source function from context (fast execution)
@@ -1053,7 +1146,8 @@ public class PropertyMapping
         {
             Id = Id,
             TargetProperty = TargetProperty,
-            ExpressionSignature = ExpressionSignature,
+            Expression = Expression,
+            TargetPath = TargetPath,
             SourceFunction = SourceFunction,
             TargetAssignmentFunction = TargetAssignmentFunction,
             SourceType = SourceType,

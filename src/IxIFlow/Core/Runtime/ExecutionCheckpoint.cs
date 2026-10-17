@@ -21,6 +21,17 @@ internal sealed class ExecutionCheckpoint
     public List<BoundReplyState> BoundReplies { get; set; } = [];
 
     /// <summary>
+    /// Children this run starts, carried by its next commit with the waits it opened for them (D-17).
+    /// Never saved: a run lost before that commit started neither.
+    /// </summary>
+    [JsonIgnore]
+    public List<ChildStart> ChildStarts { get; } = [];
+
+    /// <summary>Cancellation requests for children, carried by the run's next commit.</summary>
+    [JsonIgnore]
+    public List<ChildCancellation> ChildCancellations { get; } = [];
+
+    /// <summary>
     /// How long the instance may run in all, or null. The store stamps the deadline when it records the
     /// execution deadline's row, <see cref="ExecutionTimerId"/>, in the waits table (D-35).
     /// </summary>
@@ -90,35 +101,86 @@ internal sealed class ExecutionCheckpoint
     public void ReadDeadlines(InboxPage page)
     {
         var deadlines = page.Deadlines ?? new Dictionary<string, DateTime>();
-        foreach (var wait in Waits.Where(wait => wait.TableKind is not (null or WaitKind.Child)))
+        foreach (var wait in Waits.Where(wait => wait.TableKind is not WaitKind.Child))
             wait.DeadlineUtc = deadlines.TryGetValue(wait.Id, out var deadline) ? deadline : null;
         if (ExecutionTimerId != null)
             ExecutionDeadlineUtc = deadlines.TryGetValue(ExecutionTimerId, out var execution) ? execution : null;
     }
 
-    /// <summary>
-    /// The earliest time, in the host's clock, at which a wait or the execution deadline may be due, or
-    /// a child is to be checked.
-    /// </summary>
+    /// <summary>The earliest time, in the host's clock, at which a wait or the execution deadline may be due.</summary>
     public DateTime? NextDeadlineLocal() =>
-        Waits.Select(wait => wait.ChildWorkflowId == null && wait.DeadlineUtc is { } deadline
-                ? Clock.ToLocal(deadline) : wait.DeadlineUtc)
+        Waits.Select(wait => wait.DeadlineUtc is { } deadline ? Clock.ToLocal(deadline) : (DateTime?)null)
             .Append(ExecutionTimerOpen && ExecutionDeadlineUtc is { } execution ? Clock.ToLocal(execution) : null)
             .Min();
+
+    private object? _rootData;
+
+    /// <summary>The instance's workflow data, which the root continuation reads and writes.</summary>
+    [JsonIgnore]
+    public object RootData
+    {
+        get => _rootData ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+            "The run has no workflow data");
+        set => _rootData = value;
+    }
+
+    /// <summary>The workflow data <paramref name="continuation"/> reads and writes.</summary>
+    public object DataOf(ContinuationState continuation)
+    {
+        if (continuation.ParentJoinId == null)
+            return RootData;
+        return continuation.Data ??= BranchData.Rebuild(DataOf(ForkParent(continuation)),
+            continuation.DataChanges ?? []);
+    }
+
+    /// <summary>The continuation a branch was forked from.</summary>
+    public ContinuationState ForkParent(ContinuationState branch)
+    {
+        var join = Joins.Single(item => item.Id == branch.ParentJoinId);
+        return Continuations.Single(item => item.Id == join.ParentContinuationId);
+    }
+
+    /// <summary>
+    /// Records, for every branch whose copy may have changed, its changes against the data it was forked
+    /// from, so a recovery rebuilds the same copy (spec E-01). A branch is never recorded while its own
+    /// activity runs: it is marked only when it settles or advances.
+    /// </summary>
+    public void RecordBranchChanges()
+    {
+        // Branches of one fork share their baseline, which is serialized once.
+        foreach (var fork in Continuations.Where(item => item.ParentJoinId != null && item.DataChanged &&
+                                                         item.Data != null).GroupBy(ForkParent))
+        {
+            var baseline = DataOf(fork.Key);
+            var baselineNode = BranchData.Node(baseline);
+            foreach (var branch in fork)
+            {
+                var changes = BranchData.Changes(baselineNode, branch.Data!, baseline.GetType());
+                branch.DataChanges = changes.Count == 0 ? null : changes;
+                branch.DataChanged = false;
+            }
+        }
+    }
 
     /// <summary>
     /// Closes the reply waits, and drops the answers kept, of scope occurrences that have ended: their
     /// iteration or branch finished, failed or was cancelled before the request's <c>WaitFor</c> took the
     /// answer (D-33).
     /// </summary>
+    /// A request a saga retry keeps stays open while the saga compensates, until the retry restores it (D-36).
     public void CloseEndedRequests()
     {
-        var live = Continuations
+        var running = Continuations
             .Where(item => item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled))
-            .SelectMany(item => item.Stack.Select(position => position.ActivationId))
+            .ToArray();
+        var live = running.SelectMany(item => item.Stack.Select(position => position.ActivationId))
             .ToHashSet(StringComparer.Ordinal);
-        RemoveWaits(wait => wait.IsReply && !live.Contains(wait.ScopeActivationId ?? ""), WaitCloseReason.Cancelled);
-        BoundReplies.RemoveAll(reply => !live.Contains(reply.ScopeActivationId));
+        var kept = running.SelectMany(item => item.Stack)
+            .SelectMany(position => position.SagaState?.KeptWaitIds ?? [])
+            .ToHashSet(StringComparer.Ordinal);
+        RemoveWaits(wait => wait.IsReply && !live.Contains(wait.ScopeActivationId ?? "") && !kept.Contains(wait.Id),
+            WaitCloseReason.Cancelled);
+        BoundReplies.RemoveAll(reply => !live.Contains(reply.ScopeActivationId) && !kept.Contains(reply.WaitId));
     }
 
     /// <summary>Removes the waits that match and records why each one closed, for the next commit (D-33).</summary>
@@ -192,11 +254,31 @@ internal sealed class ContinuationState
     public ActivityInvocationState? PendingActivity { get; set; }
     public AcceptedWaitState? AcceptedWait { get; set; }
 
+    /// <summary>For a branch, the <c>ForEach</c> items in force where it was forked (D-34).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<InheritedItem>? InheritedItems { get; set; }
+
     /// <summary>When the continuation's retry is due, on the store's clock as the run last read it (D-35).</summary>
     public DateTime? RetryAfterUtc { get; set; }
 
     [JsonIgnore]
     public object? RuntimePrevious { get; set; }
+
+    /// <summary>
+    /// For a branch, its own copy of the workflow data (D-14); null until it is needed, when it is
+    /// rebuilt from the data it was forked from and <see cref="DataChanges"/>. The root reads and writes
+    /// the instance's data, <see cref="ExecutionCheckpoint.RootData"/>.
+    /// </summary>
+    [JsonIgnore]
+    public object? Data { get; set; }
+
+    /// <summary>For a branch, its changes to the data it was forked from, as of the last commit (spec E-01).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<DataChange>? DataChanges { get; set; }
+
+    /// <summary>Set when the branch may have changed its copy since its changes were last recorded.</summary>
+    [JsonIgnore]
+    public bool DataChanged { get; set; }
 
     public object? GetPrevious(IServiceProvider services) =>
         RuntimePrevious ??= Previous?.Read(services);
@@ -312,8 +394,42 @@ internal sealed class ScopePosition
     public bool RestorePreviousOnExit { get; set; }
     public bool ExitParentScopeOnExit { get; set; }
 
+    /// <summary>While the step at <see cref="NextStepIndex"/> is a <c>ForEach</c>: its saved list, next item and results (D-34).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ForEachState? ForEach { get; set; }
+
+    /// <summary>For an item's frame of a <c>ForEach</c> body, the item's position in the list.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ForEachIndex { get; set; }
+
+    /// <summary>For an item's frame, the value its result step gave, as JSON of the result type.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ForEachResult { get; set; }
+
     [JsonIgnore]
     public object? RuntimeEntryPrevious { get; set; }
+}
+
+/// <summary>
+/// A <c>ForEach</c>'s list, saved once in item order as JSON of the item type, the next item to run, and,
+/// when the step stores results, the results of the items that ran (D-34). The step's definition gives
+/// the types.
+/// </summary>
+internal sealed class ForEachState
+{
+    public List<string> Items { get; set; } = [];
+    public int Next { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string?>? Results { get; set; }
+
+    /// <summary>In parallel, the items whose branches completed, in completion order.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<int>? Finished { get; set; }
+
+    /// <summary>In parallel, set when the join is done and merged; the step then stores its results.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Joined { get; set; }
 }
 
 internal enum TryPhase
@@ -371,6 +487,20 @@ internal sealed class SagaScopeState
     public bool IsCancellationCleanup { get; set; }
     public SerializedValue? PreviousCompensation { get; set; }
 
+    /// <summary>The saga's frames, each recorded once by activation, so a retry can restore a restart point (D-36).</summary>
+    public Dictionary<string, SagaFrameRecord> Frames { get; set; } = [];
+
+    /// <summary>Where a retry starts again, with the <c>Previous</c> that step saw; none starts at the saga's first step.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SagaRestartPoint? RestartAt { get; set; }
+
+    /// <summary>The reply waits and kept answers of requests a retry keeps, live until the retry restores them.</summary>
+    public List<string> KeptWaitIds { get; set; } = [];
+
+    /// <summary>The failure of a retry handler's own steps, which ends the saga once the kept steps are undone.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SerializedException? HandlerError { get; set; }
+
     [JsonIgnore]
     public Exception? RuntimeError { get; set; }
 
@@ -391,6 +521,9 @@ internal sealed class SagaAcceptedWait
 {
     public string StepId { get; set; } = "";
     public SerializedValue Event { get; set; } = null!;
+
+    /// <summary>How many saga steps had completed when the wait accepted its event.</summary>
+    public int Completed { get; set; }
 }
 
 internal sealed class SagaCompletedStep
@@ -398,6 +531,57 @@ internal sealed class SagaCompletedStep
     public string StepId { get; set; } = "";
     public SerializedValue? Output { get; set; }
     public SerializedValue? Previous { get; set; }
+
+    /// <summary>The frame the step ran in and its index there: the step's restart point (D-36).</summary>
+    public string FrameId { get; set; } = "";
+    public int StepIndex { get; set; }
+
+    /// <summary>For a request, its invocation, whose reply wait and answer carry it.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? InvocationId { get; set; }
+
+    /// <summary>For a request, the answer it received, taken by its <c>WaitFor</c> or kept for it.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SagaReply? Reply { get; set; }
+
+    /// <summary>For a request, whether its answer's wait timed out.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ReplyTimedOut { get; set; }
+}
+
+/// <summary>A request's answer, as its compensation and a retried <c>WaitFor</c> read it.</summary>
+internal sealed class SagaReply
+{
+    public SerializedValue Event { get; set; } = new();
+    public string EventId { get; set; } = "";
+    public string WaitId { get; set; } = "";
+}
+
+/// <summary>A saga frame as it was entered: enough to push it again at a restart point.</summary>
+internal sealed class SagaFrameRecord
+{
+    public string ScopeId { get; set; } = "";
+
+    /// <summary>The frame it was pushed from, and that frame's step index then; none for the saga body.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ParentFrameId { get; set; }
+    public int IndexInParent { get; set; }
+
+    public SerializedValue? EntryPrevious { get; set; }
+    public bool RestorePreviousOnExit { get; set; }
+    public bool ExitParentScopeOnExit { get; set; }
+}
+
+/// <summary>A step position in a saga's frames, and the <c>Previous</c> the step saw.</summary>
+internal sealed class SagaRestartPoint
+{
+    public string FrameId { get; set; } = "";
+    public int StepIndex { get; set; }
+    public SerializedValue? Previous { get; set; }
+
+    /// <summary>For the step that failed, its ID: a wait it accepted before its outputs failed is replayed.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? StepId { get; set; }
 }
 
 internal sealed class ParallelJoinState
@@ -409,6 +593,13 @@ internal sealed class ParallelJoinState
     public ParallelJoinMode Mode { get; set; }
     public bool IsCompleting { get; set; }
     public bool ResumeParentWithoutAdvance { get; set; }
+
+    /// <summary>Set when a provisional merge found branches in conflict; the join fails with it (spec E-09).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ConflictPath { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Conflict { get; set; }
 }
 
 internal sealed class WaitState
@@ -422,7 +613,7 @@ internal sealed class WaitState
 
     /// <summary>
     /// For a wait the store times out, its deadline as the store stamped it, or the run's estimate until
-    /// the run reads it (D-35). For a child's wait, when the parent next checks the child, in the host's clock.
+    /// the run reads it (D-35).
     /// </summary>
     public DateTime? DeadlineUtc { get; set; }
 
@@ -432,8 +623,15 @@ internal sealed class WaitState
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TimeSpan? Timeout { get; set; }
+    /// <summary>For a child's wait, the child: only its completion, addressed to this wait, answers it (D-17).</summary>
     public string? ChildWorkflowId { get; set; }
-    public string? ChildWaitId { get; set; }
+
+    /// <summary>
+    /// For a child's wait, set when the invocation says <c>CancelWithParent(false)</c>: cancelling the branch, or
+    /// failing the parent, closes the wait and leaves the child running (D-09).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Detached { get; set; }
 
     /// <summary>
     /// True for the answer to a request: opened when the request's activity starts, answered only by
@@ -450,12 +648,9 @@ internal sealed class WaitState
     /// <summary>For a reply wait, the digest of what the request is about; an answer must carry it.</summary>
     public string? Subject { get; set; }
 
-    /// <summary>
-    /// How the waits table knows this wait, or null for a child shown only as running (D-33, D-35).
-    /// </summary>
+    /// <summary>How the waits table knows this wait (D-33, D-35).</summary>
     [JsonIgnore]
-    public WaitKind? TableKind => string.IsNullOrEmpty(EventType)
-            ? ChildWorkflowId == null ? WaitKind.Delay : null
+    public WaitKind TableKind => string.IsNullOrEmpty(EventType) ? WaitKind.Delay
         : IsReply ? WaitKind.Reply
         : ChildWorkflowId != null ? WaitKind.Child
         : WaitKind.Event;
@@ -489,12 +684,6 @@ internal sealed class AcceptedWaitState
 
     /// <summary>The wait that took it.</summary>
     public string WaitId { get; set; } = "";
-
-    /// <summary>For a child's wait, the key the event is forwarded with.</summary>
-    public string? Key { get; set; }
-
-    /// <summary>For a child's wait, true once the child has decided the event and the parent settled its copy.</summary>
-    public bool Forwarded { get; set; }
 }
 
 internal sealed class SerializedValue

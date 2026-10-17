@@ -23,7 +23,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     /// nothing has no store, so its own clock decides its execution deadline.
     /// </summary>
     public async Task<bool> TakeAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        object workflowData, IExecutionHost host)
+        IExecutionHost host)
     {
         var inbox = checkpoint.Inbox;
         if (!host.PersistsState)
@@ -52,11 +52,9 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             }
             foreach (var stored in page.Events)
             {
-                // An event taken for a child is settled once the child has decided it.
-                if (inbox.IsDecided(stored.EventId) || checkpoint.Continuations.Any(item =>
-                        item.AcceptedWait?.EventId == stored.EventId))
+                if (inbox.IsDecided(stored.EventId))
                     continue;
-                await DecideAsync(scopes, checkpoint, workflowData, host, stored, page);
+                await DecideAsync(scopes, checkpoint, host, stored, page);
                 decided = true;
             }
             inbox.Read(page.ReadThrough);
@@ -71,7 +69,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     }
 
     private async Task DecideAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        object workflowData, IExecutionHost host, StoredWorkflowEvent stored, InboxPage page)
+        IExecutionHost host, StoredWorkflowEvent stored, InboxPage page)
     {
         var payload = Read(stored);
         if (payload == null)
@@ -81,13 +79,13 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         }
         var eventType = payload.GetType();
         // The waits this event is addressed to and that were open for it. A request's answer is
-        // addressed by its token only, and is taken even before its WaitFor is reached.
+        // addressed by its token only, and is taken even before its WaitFor is reached; a child's
+        // completion only by the wait its parent opened for it.
         var addressed = checkpoint.Waits.Where(wait => wait.Answerable &&
             (stored.TargetWaitId != null
                 ? wait.Id == stored.TargetWaitId
-                : wait.TableKind != WaitKind.Reply && (stored.Key == null || wait.Key == stored.Key) &&
-                  (wait.TableKind == WaitKind.Child ||
-                   page.OpenWaits.TryGetValue(wait.Id, out var opened) && opened < stored.Sequence)) &&
+                : wait.TableKind == WaitKind.Event && (stored.Key == null || wait.Key == stored.Key) &&
+                  page.OpenWaits.TryGetValue(wait.Id, out var opened) && opened < stored.Sequence) &&
             checkpoint.Continuations.Any(item => item.Id == wait.ContinuationId &&
                 (item.Status == ContinuationStatus.Waiting || wait.IsReply &&
                  item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled)))).ToList();
@@ -101,7 +99,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         var aboutIt = typed.Where(wait => wait.Subject == null ||
                                           string.Equals(wait.Subject, stored.Subject, StringComparison.Ordinal))
             .ToList();
-        var matching = aboutIt.Where(wait => Accepts(scopes, checkpoint, wait, payload, workflowData)).ToList();
+        var matching = aboutIt.Where(wait => Accepts(scopes, checkpoint, wait, payload)).ToList();
         if (matching.Count == 1)
         {
             Consume(scopes, checkpoint, stored, matching[0], payload);
@@ -130,18 +128,18 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         }
     }
 
-    // A child decides its own waits' conditions when the event is forwarded to it. A condition that
-    // throws does not accept the event; the instance keeps waiting.
+    // A child's completion has no condition. A condition that throws does not accept the event; the
+    // instance keeps waiting.
     private bool Accepts(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, WaitState wait,
-        object payload, object workflowData)
+        object payload)
     {
-        if (wait.ChildWorkflowId != null)
-            return true;
+        if (wait.TableKind == WaitKind.Child)
+            return payload is ChildCompleted completed && completed.ChildInstanceId == wait.ChildWorkflowId;
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
         try
         {
-            return WorkflowValueBinding.Matches(scopes.Step(wait.StepId), payload, workflowData,
-                continuation.GetPrevious(services));
+            return WorkflowValueBinding.Matches(scopes.Step(wait.StepId), payload, checkpoint.DataOf(continuation),
+                continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
@@ -153,6 +151,10 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         StoredWorkflowEvent stored, WaitState wait, object payload)
     {
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
+        // A saga request's compensation, and a retry that keeps the request, read the answer it got (D-36).
+        if (wait.IsReply)
+            SagaScopeTransitions.NoteReply(continuation, wait.InvocationId, SerializedValue.From(payload)!,
+                stored.EventId, wait.Id);
         if (wait.IsReply && !IsAt(scopes, continuation, wait))
         {
             // The request's WaitFor is not reached yet: the answer is kept for it.
@@ -175,19 +177,11 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             StepId = wait.StepId,
             Event = SerializedValue.From(payload)!,
             EventId = stored.EventId,
-            WaitId = wait.Id,
-            Key = wait.ChildWorkflowId == null ? null : wait.Key
+            WaitId = wait.Id
         };
         continuation.Status = ContinuationStatus.Active;
         checkpoint.RemoveWaits(item => item.Id == wait.Id, WaitCloseReason.Answered);
-        if (wait.ChildWorkflowId == null)
-        {
-            checkpoint.Inbox.Settle(new EventSettlement(stored.EventId, EventOutcome.Consumed, wait.Id));
-            return;
-        }
-        // The child's other waits are shown again once it has taken the event.
-        checkpoint.RemoveWaits(item => item.ChildWorkflowId == wait.ChildWorkflowId &&
-                                       item.ContinuationId == continuation.Id, WaitCloseReason.Replaced);
+        checkpoint.Inbox.Settle(new EventSettlement(stored.EventId, EventOutcome.Consumed, wait.Id));
     }
 
     // A continuation waits at a request's WaitFor when its current step is that WaitFor.

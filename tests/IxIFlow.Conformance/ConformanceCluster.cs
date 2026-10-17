@@ -64,6 +64,17 @@ internal sealed class ConformanceCluster : IAsyncDisposable
     public IWorkflowStateRepository NewRepository() => _store.NewRepository();
 
     /// <summary>Reads an instance directly from the shared store.</summary>
+    /// <summary>
+    /// Waits until the instance is saved with <paramref name="status"/>: a child runs as an instance of
+    /// its own, when a slot takes it (D-17).
+    /// </summary>
+    public async Task UntilAsync(string instanceId, WorkflowStatus status)
+    {
+        using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        while ((await GetInstanceAsync(instanceId))?.Status != status)
+            await Task.Delay(20, patience.Token);
+    }
+
     public Task<WorkflowInstance?> GetInstanceAsync(string instanceId) =>
         _store.NewRepository().GetWorkflowInstanceAsync(instanceId);
 

@@ -30,7 +30,6 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DirectInstanceClient>();
         services.AddScoped<RunControl>();
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
-        services.AddScoped<IWorkflowInvoker, WorkflowInvoker>();
         services.AddScoped<InstanceHost>();
         services.AddHostedService<WorkflowRecoveryService>();
         // Registered after the scanner so it stops first: hosted services stop in reverse order,
@@ -73,6 +72,8 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The branch limit must be positive");
         if (options.MaxActivitiesPerRun <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The activity limit must be positive");
+        if (options.MaxForEachItems <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The ForEach item limit must be positive");
         if (options.ParkRetriesLongerThan < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(configure), "The park threshold cannot be negative");
         if (options.PollInterval <= TimeSpan.Zero)
@@ -83,6 +84,7 @@ public static class ServiceCollectionExtensions
             MaxCrashes = options.MaxCrashes,
             MaxActiveBranches = options.MaxActiveBranches,
             MaxActivitiesPerRun = options.MaxActivitiesPerRun,
+            MaxForEachItems = options.MaxForEachItems,
             ParkRetriesLongerThan = options.ParkRetriesLongerThan
         }));
         if (options.Slots <= 0)
@@ -140,7 +142,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-            var definition = (WorkflowDefinition)buildMethod.Invoke(null, new object[] { workflow, name })!;
+            var definition = (WorkflowDefinition)buildMethod.Invoke(null, new object?[] { workflow, name })!;
             return new RegisteredWorkflowDefinition<TWorkflow>(definition);
         });
         services.AddSingleton(serviceProvider =>
@@ -250,7 +252,7 @@ public static class ServiceCollectionExtensions
             .MakeGenericMethod(typeof(TWorkflow), workflowDataType);
         
         var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-        return (WorkflowDefinition)buildMethod.Invoke(null, new object[] { workflow, null })!;
+        return (WorkflowDefinition)buildMethod.Invoke(null, new object?[] { workflow, null })!;
     }
 
     /// <summary>
@@ -393,6 +395,12 @@ public class IxIFlowOptions
     /// enough room to run together.
     /// </summary>
     public int MaxActivitiesPerRun { get; set; } = ExecutionLimits.DefaultMaxActivitiesPerRun;
+
+    /// <summary>
+    /// The longest list a <c>ForEach</c> takes. A longer one stops the instance at NeedsResolution before
+    /// any item runs; raise the limit and release the instance to continue, or split the list.
+    /// </summary>
+    public int MaxForEachItems { get; set; } = ExecutionLimits.DefaultMaxForEachItems;
 
     /// <summary>
     /// A run with nothing else to do whose next retry is further away than this gives its slot back

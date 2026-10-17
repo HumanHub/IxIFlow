@@ -101,6 +101,16 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         return _workflowBuilder.WhileDo(condition, configure);
     }
 
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null) =>
+        _workflowBuilder.ForEach(items, body, setup);
+
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult> value) =>
+        _workflowBuilder.Result(value);
+
     public ITryBuilder<TWorkflowData, TPreviousStepData> Try(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
     {

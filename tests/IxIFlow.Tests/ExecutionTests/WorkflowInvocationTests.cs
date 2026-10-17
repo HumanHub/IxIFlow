@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using IxIFlow.Builders;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
@@ -36,7 +37,7 @@ public class WorkflowInvocationTests
         new ParentWorkflow().Build(builder);
 
         var result = await provider.GetRequiredService<IWorkflowClient>()
-            .RunAsync(builder.Build(), new ParentWorkflowData { OrderId = "O-1" });
+            .RunToEndAsync(builder.Build(), new ParentWorkflowData { OrderId = "O-1" });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var saved = await provider.GetRequiredService<IWorkflowStateRepository>()
@@ -76,7 +77,7 @@ public class WorkflowInvocationTests
         };
 
         // Act
-        var result = await _workflowEngine.RunAsync(definition, workflowData);
+        var result = await _workflowEngine.RunToEndAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -125,7 +126,7 @@ public class WorkflowInvocationTests
         };
 
         // Act
-        var result = await _workflowEngine.RunAsync(definition, workflowData);
+        var result = await _workflowEngine.RunToEndAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);
@@ -160,7 +161,7 @@ public class WorkflowInvocationTests
                 .Output(child => child.ProcessedResult).To(ctx => ctx.WorkflowData.ValidationResult))
             .Build();
 
-        var result = await _workflowEngine.RunAsync(definition,
+        var result = await _workflowEngine.RunToEndAsync(definition,
             new ParentWorkflowData { OrderId = "ORD-004", ProcessingCount = 4 });
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
@@ -200,7 +201,7 @@ public class WorkflowInvocationTests
         };
 
         // Act
-        var result = await _workflowEngine.RunAsync(definition, workflowData);
+        var result = await _workflowEngine.RunToEndAsync(definition, workflowData);
 
         // Assert
         Assert.True(result.IsSuccess);

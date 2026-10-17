@@ -14,6 +14,7 @@ The Site project contains matching Vue designers under `src/activities/demo` and
 | --- | --- |
 | `OneApproverRecipe` | A request with a reply token, a subject the answer must match, a timeout path, and a second click refused as already answered |
 | `PaymentRecipe` | Requesting now and waiting later: a provider callback that arrives during the fraud check is kept, "pending" is refused while the wait stays open, and a callback received before the deadline beats it |
+| `SagaPaymentRecipe` | A request inside a saga: a later failure refunds the payment and closes its wait, so a later callback is refused as cancelled (one that arrived before the failure is not taken by the wait, and its token is then refused as already answered), and the saga's retry pays again with a new token |
 | `AnyApproverRecipe` | Any one of several approvers: a rejection keeps waiting, the first approval wins, and the other approver's late click is refused as cancelled |
 | `EveryApproverRecipe` | Every approver must answer, in any order |
 | `ApprovalPerLineRecipe` | An approval per loop iteration: an earlier line's token can never approve a later line |
@@ -21,5 +22,10 @@ The Site project contains matching Vue designers under `src/activities/demo` and
 | `DeliveryRecipe` | A notification by key: taken by a wait that is open when it arrives, refused if sent earlier |
 | `FraudRecipe` | One workflow cancelling another, whose late answers are refused as cancelled |
 | `ChildApprovalRecipe` | A child workflow sends the request; the answer goes to the child and the parent continues |
+| `PriceLinesRecipe` | A step per order line with `ForEach`: each line sees the running total of the lines before it, and each line's total is kept in line order with `.Result(...)` and `Into` |
+| `InvoiceCustomersRecipe` | Nested lists: a `ForEach` over customers holds a `ForEach` over their lines, and the inner body reads both items |
+| `AnyApproverFromListRecipe` | Any one of a list of approvers with a parallel `ForEach`: a rejection keeps waiting, the first approval wins, the others are cancelled, and the decisions show who approved, rejected or was cancelled; an empty list or all rejections take the rejection path |
+| `EveryApproverFromListRecipe` | Every approver from a list, decisions kept in approver order; with a cap only that many requests are out at once; if asking one fails, the others are cancelled and nothing is stored |
+| `ChargeCustomersRecipe` | A child workflow per customer, no more than the cap at once, results in customer order |
 
 An answer that must not reach the wrong wait goes through `IWorkflowClient.ReplyAsync(token, answer)`. The token comes from `IActivityContext.Reply` in a request activity, or from `GetOpenWaitsAsync` for a wait without a request.

@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using System.Collections.Concurrent;
 using IxIFlow.Builders;
 using IxIFlow.Builders.Interfaces;
@@ -21,7 +22,7 @@ public sealed class OptionalSetupTests
             .Step<RecordActivity>()
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, new ParentData());
+        var result = await Engine(services).RunToEndAsync(definition, new ParentData());
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["activity-default"], Probe(services).Seen);
@@ -54,7 +55,7 @@ public sealed class OptionalSetupTests
             .Invoke<ChildData>("SetupChild", 1)
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, new ParentData());
+        var result = await Engine(services).RunToEndAsync(definition, new ParentData());
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["activity-default", "child-default"], Probe(services).Seen);
@@ -69,7 +70,7 @@ public sealed class OptionalSetupTests
             .Invoke<ChildWorkflow, ChildData>()
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, new ParentData());
+        var result = await Engine(services).RunToEndAsync(definition, new ParentData());
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["activity-default", "child-default"], Probe(services).Seen);
@@ -87,7 +88,7 @@ public sealed class OptionalSetupTests
                 .Output(child => child.Result).To(ctx => ctx.WorkflowData.Result))
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, new ParentData { Value = "from-parent" });
+        var result = await Engine(services).RunToEndAsync(definition, new ParentData { Value = "from-parent" });
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["activity-default", "from-parent"], Probe(services).Seen);
@@ -108,7 +109,7 @@ public sealed class OptionalSetupTests
             .Invoke<ChildData>("SetupChild", 1)
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, new ParentData());
+        var result = await Engine(services).RunToEndAsync(definition, new ParentData());
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         Assert.Equal(["activity-default", "child-default", "activity-default", "child-default"],
