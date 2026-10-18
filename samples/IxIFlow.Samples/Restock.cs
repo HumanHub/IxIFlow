@@ -24,13 +24,13 @@ public static class Restock
 {
     public static WorkflowDefinition Definition() =>
         new WorkflowBuilder<StockData, object>([], "Restock")
-            .WhileDo(ctx => ctx.WorkflowData.Count < 2, body => body
+            .WhileDo(conditionExpression: ctx => ctx.WorkflowData.Count < 2, body => body
                 .Step<AddStock>(step => step
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Count)
                     .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Count)))
             .DoWhile(body => body.Step<AddStock>(step => step
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Count)
                     .Output(activity => activity.Count).To(ctx => ctx.WorkflowData.Count)),
-                ctx => ctx.WorkflowData.Count < 3)
+                conditionExpression: ctx => ctx.WorkflowData.Count < 3)
             .Build();
 }

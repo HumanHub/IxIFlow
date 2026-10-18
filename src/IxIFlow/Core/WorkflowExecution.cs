@@ -352,6 +352,9 @@ public class WorkflowInstance
 /// </summary>
 public class WorkflowExecutionSnapshot
 {
+    /// <summary>True when only the instance's removal tombstone remains; all collections are empty.</summary>
+    public bool IsRemoved { get; set; }
+
     /// <summary>
     ///     Workflow instance identifier that owns this snapshot
     /// </summary>
@@ -814,6 +817,12 @@ public class WorkflowStep
     public System.Linq.Expressions.LambdaExpression? ConditionExpression { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? ParallelCompletionExpression { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? RequestSubjectExpression { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
     public System.Linq.Expressions.LambdaExpression? ForEachItemsExpression { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
@@ -1031,6 +1040,8 @@ public class WorkflowStep
             OutcomeExpression = OutcomeExpression,
             CompiledCondition = CompiledCondition,
             ConditionExpression = ConditionExpression,
+            ParallelCompletionExpression = ParallelCompletionExpression,
+            RequestSubjectExpression = RequestSubjectExpression,
             OutcomeSelector = OutcomeSelector,
             OutcomeBranches = OutcomeBranches.Select(branch => new WorkflowOutcomeBranch
             {

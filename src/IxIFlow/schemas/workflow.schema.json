@@ -481,7 +481,18 @@
             "sequence",
             "forEach",
             "suspend",
-            "invokeWorkflow"
+            "invokeWorkflow",
+            "parallel",
+            "whileDo",
+            "doWhile",
+            "try",
+            "saga",
+            "outcome",
+            "delay",
+            "request",
+            "waitFor",
+            "result",
+            "invokeWorkflowType"
           ],
           "description": "The discriminator selecting the concrete document variant."
         }
@@ -606,6 +617,171 @@
           "then": {
             "$ref": "#/definitions/invokeWorkflowStep"
           }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "parallel"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/parallelStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "whileDo"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/whileDoStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "doWhile"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/doWhileStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "try"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/tryStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "saga"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/sagaStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "outcome"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/outcomeStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "delay"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/delayStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "request"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/requestStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "waitFor"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/waitForStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "result"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/resultStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "invokeWorkflowType"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/invokeWorkflowTypeStep"
+          }
         }
       ],
       "required": [
@@ -666,12 +842,140 @@
             "$ref": "#/definitions/outputMapping"
           },
           "description": "Mappings from activity outputs to workflow data."
+        },
+        "compensation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/compensation"
+          },
+          "description": "The compensation configured for a saga activity or request."
+        },
+        "onError": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/stepErrorPolicy"
+          },
+          "description": "The ordered error policies configured for a saga activity or request."
         }
       },
       "required": [
         "kind",
         "activity"
       ]
+    },
+    "compensation": {
+      "type": "object",
+      "description": "The compensation of one saga activity or request.",
+      "additionalProperties": false,
+      "properties": {
+        "activity": {
+          "type": "string",
+          "description": "The compensation activity CLR type or catalog key."
+        },
+        "replyType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The reply type selecting the request-answer compensation overload."
+        },
+        "previousActivity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The earlier compensation activity type selecting the previous-chain overload."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Inputs from workflow/currentStep, or reply/answered with replyType; workflow only with previousActivity."
+        },
+        "previousStepInput": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Inputs from the incoming previous step in the previous-chain overload."
+        },
+        "previousCompensationInput": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Inputs from the earlier compensation in the previous-chain overload."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Outputs mapped into workflow data."
+        }
+      },
+      "required": [
+        "activity"
+      ]
+    },
+    "stepErrorPolicy": {
+      "type": "object",
+      "description": "One saga activity\u0027s typed or general error policy.",
+      "additionalProperties": false,
+      "properties": {
+        "exception": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The exception CLR type, or a general handler when omitted."
+        },
+        "then": {
+          "type": "string",
+          "description": "The action taken when this step fails.",
+          "enum": [
+            "retry",
+            "terminate",
+            "ignore"
+          ],
+          "default": "retry"
+        },
+        "retry": {
+          "$ref": "#/definitions/retryPolicy",
+          "description": "The optional retry policy; omission selects ThenRetry(3), supplied objects use RetryPolicy defaults."
+        }
+      },
+      "required": [
+        "then"
+      ]
+    },
+    "retryPolicy": {
+      "type": "object",
+      "description": "The public RetryPolicy settings, with the same defaults.",
+      "additionalProperties": false,
+      "properties": {
+        "maximumAttempts": {
+          "type": "integer",
+          "description": "The maximum number of attempts.",
+          "default": 3
+        },
+        "initialInterval": {
+          "type": "string",
+          "description": "The initial retry interval as an invariant TimeSpan.",
+          "default": "00:00:01"
+        },
+        "maximumInterval": {
+          "type": "string",
+          "description": "The maximum retry interval as an invariant TimeSpan.",
+          "default": "00:00:10"
+        },
+        "backoffCoefficient": {
+          "type": "number",
+          "description": "The exponential backoff coefficient.",
+          "default": 2
+        }
+      }
     },
     "activityReferenceStep": {
       "type": "object",
@@ -942,8 +1246,39 @@
         "condition": {
           "$ref": "#/definitions/expression",
           "description": "The completion expression required for a conditional join, with workflow and results in scope."
+        },
+        "combine": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/joinCombiner"
+          },
+          "description": "Combiner overrides used when merging parallel item outputs."
         }
       }
+    },
+    "joinCombiner": {
+      "type": "object",
+      "description": "A combiner selected for a workflow data property at a parallel join.",
+      "additionalProperties": false,
+      "properties": {
+        "property": {
+          "$ref": "#/definitions/pathExpression",
+          "description": "The workflow data property merged by this combiner."
+        },
+        "propertyType": {
+          "type": "string",
+          "description": "The CLR type of the selected property."
+        },
+        "combiner": {
+          "type": "string",
+          "description": "The CLR type implementing ICombiner of the property type."
+        }
+      },
+      "required": [
+        "property",
+        "propertyType",
+        "combiner"
+      ]
     },
     "suspendStep": {
       "type": "object",
@@ -975,29 +1310,43 @@
         },
         "event": {
           "type": "string",
-          "description": "The resume event CLR type or resolved catalog key."
-        },
-        "reason": {
-          "type": "string",
-          "description": "The suspension key, falling back to the step identifier when empty."
+          "description": "The event CLR type or resolved catalog key."
         },
         "resumeCondition": {
           "$ref": "#/definitions/expression",
-          "description": "The optional expression deciding whether a resume event is accepted."
+          "description": "The optional expression deciding whether an event is accepted."
         },
         "input": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/inputMapping"
           },
-          "description": "Input mappings configured for the suspension."
+          "description": "Input mappings configured for the wait."
         },
         "output": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/outputMapping"
           },
-          "description": "Mappings from resume event outputs to workflow data."
+          "description": "Mappings from the event or reply to workflow data."
+        },
+        "timeout": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The positive invariant TimeSpan after which the wait times out."
+        },
+        "onTimeout": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The optional steps executed when the wait times out."
+        },
+        "reason": {
+          "type": "string",
+          "description": "The suspension key, falling back to the step identifier when empty."
         }
       },
       "required": [
@@ -1032,6 +1381,11 @@
             "null"
           ],
           "description": "The step description retained in the document."
+        },
+        "cancelWithParent": {
+          "type": "boolean",
+          "description": "Whether cancelling the invoking branch cancels the child and waits for it to finish.",
+          "default": true
         },
         "workflow": {
           "$ref": "#/definitions/workflowReference",
@@ -1076,6 +1430,756 @@
       },
       "required": [
         "name"
+      ]
+    },
+    "parallelStep": {
+      "type": "object",
+      "description": "Parallel branches whose output changes are merged when the join completes.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "parallel",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/parallelBranch"
+          },
+          "description": "The branches configured with Do, in declaration order."
+        },
+        "join": {
+          "type": "string",
+          "description": "The completion policy: all, any or conditionally.",
+          "enum": [
+            "all",
+            "any",
+            "conditionally"
+          ],
+          "default": "all"
+        },
+        "condition": {
+          "$ref": "#/definitions/expression",
+          "description": "The expression over provisional merged workflow data required for a conditional join."
+        },
+        "combine": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/joinCombiner"
+          },
+          "description": "Combiner overrides used when merging branch outputs."
+        }
+      },
+      "required": [
+        "kind",
+        "branches"
+      ]
+    },
+    "parallelBranch": {
+      "type": "object",
+      "description": "One parallel branch, with its steps in execution order.",
+      "additionalProperties": false,
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Steps executed in this branch."
+        }
+      }
+    },
+    "whileDoStep": {
+      "type": "object",
+      "description": "A loop that tests its condition before executing its body.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "whileDo",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "condition": {
+          "$ref": "#/definitions/expression",
+          "description": "The Boolean loop condition."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Steps executed on each iteration."
+        }
+      },
+      "required": [
+        "kind",
+        "condition"
+      ]
+    },
+    "doWhileStep": {
+      "type": "object",
+      "description": "A loop that tests its condition after executing its body.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "doWhile",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "condition": {
+          "$ref": "#/definitions/expression",
+          "description": "The Boolean loop condition."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Steps executed on each iteration."
+        }
+      },
+      "required": [
+        "kind",
+        "condition"
+      ]
+    },
+    "tryStep": {
+      "type": "object",
+      "description": "A try body with ordered catches and an optional finally body.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "try",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Steps executed in the try body."
+        },
+        "catches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/catch"
+          },
+          "description": "Ordered typed or catch-all handlers."
+        },
+        "finally": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The finally body; an empty list still declares a finally."
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "catch": {
+      "type": "object",
+      "description": "A catch handler with an optional exception type and saved fault type.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The stable handler block identifier, generated from its structural path when omitted."
+        },
+        "exception": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The exception CLR type, or a catch-all when omitted."
+        },
+        "faultType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The saved fault CLR type for Catch of exception and fault."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Steps executed by the handler."
+        }
+      }
+    },
+    "sagaStep": {
+      "type": "object",
+      "description": "A saga with compensable activities and ordered recovery handlers.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "saga",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Saga activities, requests, waits and outcome branches."
+        },
+        "onError": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/sagaErrorHandler"
+          },
+          "description": "Ordered typed or catch-all saga error handlers."
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "sagaErrorHandler": {
+      "type": "object",
+      "description": "A saga recovery handler\u0027s steps, undo choice and continuation choice.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The stable handler block identifier, generated from its structural path when omitted."
+        },
+        "exception": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The exception CLR type, or a catch-all when omitted."
+        },
+        "faultType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The saved fault CLR type for a typed saga handler."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Activities and waits executed by the handler before its continuation."
+        },
+        "compensate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "How much to undo: all or none. Use compensateUpTo to undo through an activity. Omission emits no undo call.",
+          "enum": [
+            "all",
+            "none",
+            null
+          ]
+        },
+        "compensateUpTo": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The saga activity type undone inclusively; selects the up-to compensation strategy."
+        },
+        "then": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What follows the undo: continue, terminate or retry. Omission rethrows the original error.",
+          "enum": [
+            "continue",
+            "terminate",
+            "retry",
+            null
+          ]
+        },
+        "retry": {
+          "$ref": "#/definitions/retryPolicy",
+          "description": "The optional retry policy; omission selects ThenRetry(3), supplied objects use RetryPolicy defaults."
+        },
+        "ignoreCompensationErrors": {
+          "type": "boolean",
+          "description": "Whether ThenContinue ignores compensation errors.",
+          "default": false
+        }
+      }
+    },
+    "outcomeStep": {
+      "type": "object",
+      "description": "Saga branching selected by a typed value.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "outcome",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "value": {
+          "$ref": "#/definitions/expression",
+          "description": "The expression selecting an outcome value."
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outcomeBranch"
+          },
+          "description": "Ordered typed outcome labels and saga bodies."
+        },
+        "default": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The saga body selected when no label matches."
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "outcomeBranch": {
+      "type": "object",
+      "description": "One typed outcome label and its saga body.",
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "$ref": "#/definitions/expression",
+          "description": "The label expression evaluated at build time and passed to Outcome."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Saga steps executed for this label."
+        }
+      },
+      "required": [
+        "value"
+      ]
+    },
+    "delayStep": {
+      "type": "object",
+      "description": "A durable timer that retains the incoming previous step.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "delay",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "duration": {
+          "type": "string",
+          "description": "The positive delay as an invariant TimeSpan."
+        }
+      },
+      "required": [
+        "kind",
+        "duration"
+      ]
+    },
+    "requestStep": {
+      "type": "object",
+      "description": "A request activity whose reply token is issued by the engine.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "request",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "activity": {
+          "type": "string",
+          "description": "The activity CLR type or resolved catalog key."
+        },
+        "activityVersion": {
+          "type": "string",
+          "description": "The version that must match the resolved activity contract when supplied."
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "Scalar activity input defaults overridden by explicit input mappings."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Mappings from expressions to activity inputs."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from activity outputs to workflow data."
+        },
+        "compensation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/compensation"
+          },
+          "description": "The compensation configured for a saga activity or request."
+        },
+        "onError": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/stepErrorPolicy"
+          },
+          "description": "The ordered error policies configured for a saga activity or request."
+        },
+        "key": {
+          "type": "string",
+          "description": "The name pairing this request with exactly one WaitFor in the same body."
+        },
+        "subject": {
+          "$ref": "#/definitions/expression",
+          "description": "The optional subject expression computed when request inputs are captured."
+        }
+      },
+      "required": [
+        "kind",
+        "activity",
+        "key"
+      ]
+    },
+    "waitForStep": {
+      "type": "object",
+      "description": "A named event or request-reply wait.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "waitFor",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "event": {
+          "type": "string",
+          "description": "The event CLR type or resolved catalog key."
+        },
+        "resumeCondition": {
+          "$ref": "#/definitions/expression",
+          "description": "The optional expression deciding whether an event is accepted."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Input mappings configured for the wait."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from the event or reply to workflow data."
+        },
+        "timeout": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The positive invariant TimeSpan after which the wait times out."
+        },
+        "onTimeout": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The optional steps executed when the wait times out."
+        },
+        "key": {
+          "type": "string",
+          "description": "The wait key, paired with a request of the same name when there is one."
+        }
+      },
+      "required": [
+        "kind",
+        "event",
+        "key"
+      ]
+    },
+    "resultStep": {
+      "type": "object",
+      "description": "A ForEach result at the end of its body or of a timeout path leaving it.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "result",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "value": {
+          "$ref": "#/definitions/expression",
+          "description": "The value returned for the current item."
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "invokeWorkflowTypeStep": {
+      "type": "object",
+      "description": "A child invocation through the workflow CLR type and its data contract.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "invokeWorkflowType",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "workflowType": {
+          "type": "string",
+          "description": "The CLR type implementing IWorkflow of dataType."
+        },
+        "dataType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The child workflow data CLR type fallback when IWorkflow\u003CT\u003E cannot be inferred from resolved symbols."
+        },
+        "cancelWithParent": {
+          "type": "boolean",
+          "description": "Whether cancelling the invoking branch cancels the child and waits for it to finish.",
+          "default": true
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Mappings from expressions to child workflow inputs."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from child workflow outputs to workflow data."
+        }
+      },
+      "required": [
+        "kind",
+        "workflowType"
       ]
     },
     "codeAsset": {

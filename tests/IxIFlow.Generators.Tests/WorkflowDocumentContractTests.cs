@@ -47,6 +47,20 @@ public sealed class WorkflowDocumentContractTests
                 Parallel = new() { Join = value, ResultType = "int", Condition = new ConstantExpressionDocument { Value = true } },
                 Result = new ConstantExpressionDocument { Value = 1 }, Into = new() { Path = "workflow.Results" }
             }),
+        [(typeof(ParallelStepDocument), nameof(ParallelStepDocument.Join))] = value =>
+            Document(new ParallelStepDocument
+            {
+                Join = value, Condition = value == "conditionally" ? new ConstantExpressionDocument { Value = true } : null
+            }),
+        [(typeof(SagaErrorHandlerDocument), nameof(SagaErrorHandlerDocument.Compensate))] = value =>
+            Document(new SagaStepDocument { OnError = [new() { Compensate = value }] }),
+        [(typeof(SagaErrorHandlerDocument), nameof(SagaErrorHandlerDocument.Then))] = value =>
+            Document(new SagaStepDocument { OnError = [new() { Compensate = "all", Then = value }] }),
+        [(typeof(StepErrorPolicyDocument), nameof(StepErrorPolicyDocument.Then))] = value =>
+            Document(new SagaStepDocument { Steps = [new ActivityStepDocument
+            {
+                Activity = "Multiply", OnError = [new() { Then = value }]
+            }] }),
         [(typeof(OutputMappingDocument), nameof(OutputMappingDocument.SourceContext))] = value =>
             Document(new ActivityStepDocument
             {

@@ -89,31 +89,35 @@ This snippet is compiled and exercised in [ReadmeExamples.cs](tests/IxIFlow.Samp
 
 ## YAML authoring
 
-The engine package includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files automatically. This example is [review-child.workflow.yaml](samples/IxIFlow.Samples/Definitions/review-child.workflow.yaml):
+The engine package includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files automatically. This delay example is [reminder.workflow.yaml](samples/IxIFlow.Samples/Definitions/reminder.workflow.yaml), compiled in the sample project and compared with its C# twin:
 
 ```yaml
-# A child adds its handling fee and returns the updated amount.
+# Park for an hour, then stamp the reminder with the workflow clock.
 workflow:
-  name: ReviewChild
-  dataType: IxIFlow.Samples.QuoteData
+  name: Reminder
+  dataType: IxIFlow.Samples.ReminderData
+code:
+  now:
+    language: csharp-expression
+    source: ctx.UtcNow
 definitions:
+  - kind: delay
+    duration: '01:00:00'
   - kind: activity
-    activity: samples.add-fee
+    activity: samples.stamp-time
     input:
-      - target: Customer
-        from: { kind: path, path: workflow.Customer }
-      - target: Amount
-        from: { kind: path, path: workflow.Amount }
+      - target: At
+        from: { kind: function, function: now }
     output:
-      - source: Amount
-        to: { kind: path, path: workflow.Amount }
+      - source: At
+        to: { path: workflow.SentAt }
 ```
 
-The generator emits a static `Build()` method under `<RootNamespace>.Generated`; this file becomes `Workflow_review_child_workflow.Build()`. Activity keys resolve from `[WorkflowActivity]` metadata. YAML and fluent definitions go through the same builder rules. Paths name CLR members, such as `workflow.Amount` and `previousStep.Receipt`.
+The generator emits a static `Build()` method under `<RootNamespace>.Generated`; this file becomes `Workflow_reminder_workflow.Build()`. Activity keys resolve from `[WorkflowActivity]` metadata; fully qualified CLR types also work. YAML and fluent definitions go through the same builder rules. Paths name CLR members, such as `workflow.Amount` and `previousStep.Receipt`.
 
-Supported documents contain activities, activity/step references, sequences, conditions, suspension, pinned child invocations, and sequential or parallel `forEach`. Local templates accept parameters and defaults; expression assets use `language: csharp-expression`. YAML number literals with a fraction are doubles; decimal expressions can use a C# expression asset, while activity attribute defaults retain their declared types.
+YAML covers every fluent control-flow construct: activities and references, sequences, conditions, `WhileDo`/`DoWhile`, general parallel branches and combiners, sequential or parallel `forEach`, typed catch/finally blocks, sagas with compensation and retry, delays, requests with replies and timeouts, event waits and child invocations. Local templates accept parameters and defaults; expression assets use `language: csharp-expression`. YAML number literals with a fraction are doubles; decimal expressions can use a C# expression asset, while activity attribute defaults retain their declared types.
 
-General parallel blocks, `WhileDo`/`DoWhile`, exception handling, sagas, delays, request pairing and wait timeout setup are currently C# only. Imports need a publishing host to resolve and pin dependencies; the built-in publishing pipeline is not available. See the [generator guide](src/IxIFlow.Generators/README.md) for custom filenames, MSBuild settings and project-reference setup, and [samples](samples/README.md) for tested pairs.
+Hosting, store selection, telemetry, template publication and client operations use application C# APIs. Imports need a publishing host to resolve and pin dependencies; the built-in publishing pipeline is not available. See the [generator guide](src/IxIFlow.Generators/README.md) for custom filenames, MSBuild settings and project-reference setup, and [samples](samples/README.md) for tested pairs.
 
 The reader is strict: an unknown or wrongly cased key fails the build with IXIYAML001 at that key. The package ships a JSON Schema for workflow YAML at `schemas/workflow.schema.json`, so editors complete and check documents as you type; [editor support](src/IxIFlow.Generators/README.md#editor-support) shows how to bind it.
 

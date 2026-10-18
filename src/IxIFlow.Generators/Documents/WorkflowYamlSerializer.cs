@@ -42,6 +42,8 @@ public static class WorkflowYamlSerializer
         {
             if (Scalar(scalar) == null && (type == typeof(string) || Nullable.GetUnderlyingType(type) != null)) return null;
             if (type == typeof(string)) return scalar.Value;
+            if (type == typeof(double) && double.TryParse(scalar.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) &&
+                !double.IsNaN(number) && !double.IsInfinity(number)) return number;
             if (type == typeof(int) || type == typeof(int?))
             {
                 if (int.TryParse(scalar.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer)) return integer;
@@ -91,7 +93,14 @@ public static class WorkflowYamlSerializer
         }
         var value = Activator.CreateInstance(type) ?? throw Invalid(type, node);
         foreach (var property in DocumentModel.GetMembers(type))
-            if (entries.TryGetValue(DocumentModel.GetName(property), out var child)) property.SetValue(value, ReadValue(property.PropertyType, child));
+            if (entries.TryGetValue(DocumentModel.GetName(property), out var child))
+            {
+                var memberValue = ReadValue(property.PropertyType, child);
+                var values = DocumentModel.GetValues(type, property.Name);
+                if (memberValue is string choice && values.Count > 0 && !values.Contains(choice))
+                    throw new YamlException(child.Start, child.End, $"{(property.Name == nameof(WorkflowDocument.SchemaVersion) ? "Unsupported schema version" : "Unknown " + DocumentModel.GetName(property))} '{choice}'; use {string.Join(", ", values)}");
+                property.SetValue(value, memberValue);
+            }
         if (value is DocumentNode document)
         {
             document.Location = Location(node);

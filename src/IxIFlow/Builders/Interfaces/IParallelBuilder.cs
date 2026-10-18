@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+using System.Linq.Expressions;
 namespace IxIFlow.Builders.Interfaces;
 
 /// <summary>
@@ -10,6 +12,11 @@ public interface IParallelBuilder<TWorkflowData, TPreviousStepData>
     /// Continue when the first branch completes and cancel the other branches.
     /// </summary>
     IParallelBuilder<TWorkflowData, TPreviousStepData> WaitAny();
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    IParallelBuilder<TWorkflowData, TPreviousStepData> WaitConditionally(
+        Expression<Func<TWorkflowData, bool>> completeWhenExpression);
 
     /// <summary>
     /// Continue when a completed branch makes the condition true, or when all branches complete.
@@ -33,4 +40,5 @@ public interface IParallelBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the parallel branch</param>
     IParallelBuilder<TWorkflowData, TPreviousStepData> Do(
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure);
+
 }

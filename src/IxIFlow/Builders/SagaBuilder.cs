@@ -1,3 +1,4 @@
+using IxIFlow.Core.Runtime;
 using System.Runtime.CompilerServices;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
@@ -74,6 +75,20 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         return new SagaActivityBuilder<TWorkflowData, TActivity>(_steps, _sagaSteps);
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(
+        string name,
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null)
+        where TActivity : class, IAsyncActivity
+    {
+        var expression = subjectExpression == null ? null : WorkflowExpressionSignature.Checked(subjectExpression);
+        var result = Request<TActivity>(name, configure, subjectExpression?.Compile());
+        _steps[^1].RequestSubjectExpression = expression;
+        return result;
+    }
+
     public ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(string name,
         Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
@@ -89,6 +104,20 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         if (subject != null)
             step.RequestSubject = context => subject((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
         return next;
+    }
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
+        string suspendReason,
+        Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>>? resumeExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class
+    {
+        var expression = resumeExpression == null ? null : WorkflowExpressionSignature.Checked(resumeExpression);
+        var result = Suspend<TResumeEvent>(suspendReason, resumeExpression?.Compile(), configure);
+        _steps[^1].ConditionExpression = expression;
+        return result;
     }
 
     public ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
@@ -162,6 +191,20 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         return new SagaActivityBuilder<TWorkflowData, TResumeEvent>(_steps,sagaSteps);
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
+        string key,
+        Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>>? matchesExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class
+    {
+        var expression = matchesExpression == null ? null : WorkflowExpressionSignature.Checked(matchesExpression);
+        var result = WaitFor<TResumeEvent>(key, matchesExpression?.Compile(), configure);
+        _steps[^1].ConditionExpression = expression;
+        return result;
+    }
+
     public ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
         string key,
         Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? matches = null,
@@ -209,6 +252,7 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         // Return the current builder for chaining
         return this;
     }
+
 }
 
 /// <summary>

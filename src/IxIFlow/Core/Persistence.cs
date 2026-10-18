@@ -38,6 +38,9 @@ public static class WorkflowStoreRules
     /// <summary>Encodes a stored trace entry, omitting empty metadata while preserving its non-nullable API.</summary>
     public static string SerializeTrace(ExecutionTraceEntry entry) => JsonSerializer.Serialize(entry, TraceJson);
 
+    public static bool IsTerminal(WorkflowStatus status) => status is WorkflowStatus.Completed or WorkflowStatus.Failed
+        or WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut;
+
     /// <summary>
     /// True when a saved instance is runnable from the moment it is saved, whatever time it carries
     /// (C-01): an idle save that leaves a cancellation request unacknowledged, so the request is
@@ -157,8 +160,15 @@ public static class WorkflowStoreRules
     }
 }
 
-public interface IWorkflowStateRepository : IWorkflowInbox
+public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 {
+    /// <summary>Runs one bounded retention pass; pending deliveries and unfinished children keep their instance.</summary>
+    Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>The active retention tombstone, or null when the ID is not reserved.</summary>
+    Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId);
+
     /// <summary>
     /// Records a cancellation request outside the revisioned checkpoint so a remote
     /// caller never overwrites the running owner's state. The first request wins.
@@ -283,26 +293,17 @@ public interface IWorkflowStateRepository : IWorkflowInbox
 
     /// <summary>
     /// Deletes an instance and its inbox, waits and receipts. A child whose parent still waits for it ends
-    /// that wait as terminated, in the same step (D-17).
+    /// that wait as terminated, in the same step (D-17). Leaves a tombstone for the supplied retention
+    /// period, or 90 days by default. Pass the same TombstoneRetention used for automatic retention.
+    /// Deleting an unknown or already removed ID does not create or extend a tombstone.
     /// </summary>
-    Task DeleteWorkflowInstanceAsync(string instanceId);
-}
-
-/// <summary>Tracks terminal checkpoints whose completion event still needs publication.</summary>
-public interface IWorkflowCompletionOutbox
-{
-    Task<WorkflowInstance?> GetUnpublishedCompletionAsync(string instanceId);
-    Task<IEnumerable<WorkflowInstance>> GetUnpublishedCompletionsAsync();
-    Task<IEnumerable<WorkflowInstance>> ClaimUnpublishedCompletionsAsync(
-        string? instanceId, string token, TimeSpan duration);
-    Task<bool> MarkCompletionPublishedAsync(string instanceId, long revision, string token);
-    Task ReleaseCompletionClaimAsync(string instanceId, string token);
+    Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null);
 }
 
 /// <summary>
 ///     In-memory implementation of workflow state repository
 /// </summary>
-public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkflowCompletionOutbox, IWorkflowInbox
+public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 {
     private readonly TimeProvider _time;
 
@@ -334,82 +335,6 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     private readonly Dictionary<string, Dictionary<string, StoredWait>> _waits = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<string>> _traces = new(StringComparer.Ordinal);
     private readonly HashSet<string> _acknowledgedCancellations = new();
-    private readonly HashSet<string> _publishedCompletions = new();
-    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc)> _completionClaims = new();
-
-    public Task<WorkflowInstance?> GetUnpublishedCompletionAsync(string instanceId)
-    {
-        lock (_claimLock)
-        {
-            return Task.FromResult(_instances.TryGetValue(instanceId, out var instance) &&
-                IsTerminal(instance.Status) && !_publishedCompletions.Contains(instanceId)
-                ? SnapshotStructured(instance) : null);
-        }
-    }
-
-    public Task<IEnumerable<WorkflowInstance>> GetUnpublishedCompletionsAsync()
-    {
-        lock (_claimLock)
-        {
-            var instances = _instances.Values
-                .Where(instance => IsTerminal(instance.Status) &&
-                    !_publishedCompletions.Contains(instance.InstanceId))
-                .Take(100)
-                .Select(SnapshotStructured)
-                .ToArray();
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(instances);
-        }
-    }
-
-    public Task<IEnumerable<WorkflowInstance>> ClaimUnpublishedCompletionsAsync(
-        string? instanceId, string token, TimeSpan duration)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(token);
-        if (duration <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(duration));
-        lock (_claimLock)
-        {
-            var now = Now;
-            var instances = _instances.Values
-                .Where(instance => (instanceId == null || instance.InstanceId == instanceId) &&
-                    IsTerminal(instance.Status) && !_publishedCompletions.Contains(instance.InstanceId) &&
-                    (!_completionClaims.TryGetValue(instance.InstanceId, out var claim) ||
-                     claim.ExpiresAtUtc <= now))
-                .Take(100).ToArray();
-            foreach (var instance in instances)
-                _completionClaims[instance.InstanceId] = (token, now.Add(duration));
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(
-                instances.Select(SnapshotStructured).ToArray());
-        }
-    }
-
-    public Task<bool> MarkCompletionPublishedAsync(string instanceId, long revision, string token)
-    {
-        lock (_claimLock)
-        {
-            if (!_instances.TryGetValue(instanceId, out var instance) ||
-                instance.Revision != revision || !IsTerminal(instance.Status) ||
-                !_completionClaims.TryGetValue(instanceId, out var claim) ||
-                claim.Token != token || claim.ExpiresAtUtc <= Now)
-                return Task.FromResult(false);
-            _completionClaims.Remove(instanceId);
-            return Task.FromResult(_publishedCompletions.Add(instanceId));
-        }
-    }
-
-    public Task ReleaseCompletionClaimAsync(string instanceId, string token)
-    {
-        lock (_claimLock)
-        {
-            if (_completionClaims.TryGetValue(instanceId, out var claim) && claim.Token == token)
-                _completionClaims.Remove(instanceId);
-        }
-        return Task.CompletedTask;
-    }
-
-    private static bool IsTerminal(WorkflowStatus status) => status is
-        WorkflowStatus.Completed or WorkflowStatus.Failed or
-        WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut;
 
     public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
     {
@@ -538,6 +463,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         var snapshot = commit.ReadTrunk();
         lock (_claimLock)
         {
+            RefuseRemoved(commit.InstanceId, Now);
             var key = (commit.InstanceId, commit.CommitId);
             var revision = _instances.TryGetValue(commit.InstanceId, out var stored) ? stored.Revision : 0;
             var owns = OwnsInstance(commit);
@@ -567,6 +493,8 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+            foreach (var child in commit.ChildStarts)
+                RefuseRemoved(child.ChildInstanceId, Now);
             // A child's ID is new; a commit that names an existing instance changes nothing.
             if (commit.ChildStarts.FirstOrDefault(child => _instances.ContainsKey(child.ChildInstanceId)) is { } taken)
                 throw new InvalidOperationException(
@@ -605,8 +533,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 WorkflowStoreRules.UnwindsNow(snapshot, unacknowledged),
                 now, OpenWaits(commit.InstanceId).Min(open => open.DeadlineUtc));
             // A finished instance takes no more events; those still pending are closed, and so are its waits.
-            if (snapshot.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
-                WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
+            if (WorkflowStoreRules.IsTerminal(snapshot.Status))
             {
                 foreach (var open in _events.Where(item => item.Key.InstanceId == commit.InstanceId &&
                                                            item.Value.Event.Outcome == EventOutcome.Pending)
@@ -626,6 +553,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             foreach (var part in commit.Parts)
                 parts[part.Key] = part.Json;
             _instances[commit.InstanceId] = snapshot;
+            RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (commit.TraceEntries.Count > 0)
             {
@@ -700,8 +628,9 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Event.Sequence)
                 : new EventAppendResult(EventAppendStatus.Conflict);
         if (!_instances.TryGetValue(workflowEvent.InstanceId, out var instance))
-            return new EventAppendResult(EventAppendStatus.NotFound);
-        var finished = IsTerminal(instance.Status);
+            return new EventAppendResult(ActiveTombstone(workflowEvent.InstanceId, now) != null
+                ? EventAppendStatus.Closed : EventAppendStatus.NotFound);
+        var finished = WorkflowStoreRules.IsTerminal(instance.Status);
         // A finished instance takes no events; one sent to a wait is told why that wait closed.
         if (finished && workflowEvent.TargetWaitId == null)
         {
@@ -858,6 +787,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
     {
         lock (_claimLock)
         {
+            RefuseRemoved(instance.InstanceId, Now);
             if (instance.Revision != 0 ||
                 (_instances.TryGetValue(instance.InstanceId, out var stored) && stored.Revision != 0))
                 throw new InvalidOperationException("Revisioned instances require an atomic commit");
@@ -866,6 +796,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 : instance;
             saved.RunnableAtUtc = WorkflowStoreRules.RunnableAt(saved, false, Now);
             _instances[instance.InstanceId] = saved;
+            RecordCompletion(saved, Now);
             _parts.Remove(instance.InstanceId);
         }
         return Task.CompletedTask;
@@ -932,32 +863,46 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
                 .Where(instance => instance.ParentInstanceId == parentInstanceId).Select(SnapshotStructured).ToArray());
     }
 
-    public Task DeleteWorkflowInstanceAsync(string instanceId)
+    public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
     {
+        var period = tombstoneRetention ?? RetentionSettings.Default.TombstoneRetention;
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(period, TimeSpan.Zero);
         lock (_claimLock)
         {
-            // A child its parent still waits for ends that wait as terminated.
-            if (_instances.TryGetValue(instanceId, out var deleted) && !IsTerminal(deleted.Status) &&
-                deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
-                Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
-            _instances.TryRemove(instanceId, out _);
-            // The lease record stays so a recreated instance never reuses an epoch; its crashes go.
-            if (_leases.TryGetValue(instanceId, out var lease))
-                _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue, CrashCount = 0 };
-            _cancellations.Remove(instanceId);
-            _acknowledgedCancellations.Remove(instanceId);
-            _publishedCompletions.Remove(instanceId);
-            foreach (var key in _events.Keys.Where(key => key.InstanceId == instanceId).ToArray())
-                _events.Remove(key);
-            _inboxSequence.Remove(instanceId);
-            _inboxReadThrough.Remove(instanceId);
-            _waits.Remove(instanceId);
-            _traces.Remove(instanceId);
-            _parts.Remove(instanceId);
-            foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
-                _commits.Remove(key);
+            if (_instances.ContainsKey(instanceId))
+            {
+                var now = Now;
+                DeleteInstance(instanceId);
+                _tombstones[instanceId] = new WorkflowTombstone(instanceId, now, now + period);
+            }
         }
         return Task.CompletedTask;
+    }
+
+    // Caller holds _claimLock. Keep the compact lease fence so ID reuse never reuses an epoch.
+    private void DeleteInstance(string instanceId)
+    {
+        // A child its parent still waits for ends that wait as terminated.
+        if (_instances.TryGetValue(instanceId, out var deleted) && !WorkflowStoreRules.IsTerminal(deleted.Status) &&
+            deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
+            Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
+        _instances.TryRemove(instanceId, out _);
+        // The lease record stays so a recreated instance never reuses an epoch; its crashes go.
+        if (_leases.TryGetValue(instanceId, out var lease))
+            _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue, CrashCount = 0 };
+        _endedAt.Remove(instanceId);
+        _cancellations.Remove(instanceId);
+        _acknowledgedCancellations.Remove(instanceId);
+        DeleteOutbox(instanceId);
+        foreach (var key in _events.Keys.Where(key => key.InstanceId == instanceId).ToArray())
+            _events.Remove(key);
+        _inboxSequence.Remove(instanceId);
+        _inboxReadThrough.Remove(instanceId);
+        _waits.Remove(instanceId);
+        _traces.Remove(instanceId);
+        _parts.Remove(instanceId);
+        foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
+            _commits.Remove(key);
     }
 
     // The whole instance, its trunk with its parts, as a copy. Caller holds _claimLock.

@@ -163,13 +163,13 @@ internal sealed class WorkflowScopeCatalog
                     Shape(step.ConditionExpression),
                     step.ConditionExpression == null ? Code(step.ConditionBehavior ?? step.CompiledCondition) : "",
                     step.OutcomeExpression == null ? Code(step.OutcomeSelector) : Shape(step.OutcomeExpression),
-                    Code(step.ParallelCompletionBehavior ?? step.ParallelCompletionCondition),
+                    step.ParallelCompletionExpression == null ? Code(step.ParallelCompletionBehavior ?? step.ParallelCompletionCondition) : Shape(step.ParallelCompletionExpression),
                     string.Join(';', step.OutcomeBranches.Select(OutcomeBranchSignature)),
                     ErrorPolicySignature(step),
                     string.Join(';', step.InputMappings.Select(MappingSignature)),
                     string.Join(';', step.OutputMappings.Select(MappingSignature)),
                     step.RequestName, WorkflowTypeIdentity.StableName(step.ReplyType), step.ReplyToRequest,
-                    Code(step.RequestSubjectBehavior ?? step.RequestSubject),
+                    step.RequestSubjectExpression == null ? Code(step.RequestSubjectBehavior ?? step.RequestSubject) : Shape(step.RequestSubjectExpression),
                     string.Join(';', step.ParallelCombiners.OrderBy(pair => pair.Key, StringComparer.Ordinal)
                         .Select(pair => pair.Key + "=" + WorkflowTypeIdentity.StableName(pair.Value))),
                     // A ForEach is sequential until a parallel mode exists; its handle is known by this step.

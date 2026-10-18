@@ -22,6 +22,8 @@ internal static class ExpressionRules
             try
             {
                 Check(step, step.ConditionExpression);
+                Check(step, step.ParallelCompletionExpression);
+                Check(step, step.RequestSubjectExpression);
                 Check(step, step.ForEachIntoExpression);
                 Check(step, step.ForEachItemsExpression);
                 Check(step, step.ResultExpression);
