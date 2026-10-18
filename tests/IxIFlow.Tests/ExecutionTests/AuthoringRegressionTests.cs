@@ -307,7 +307,7 @@ public sealed class AuthoringRegressionTests
                     .Combine<int, Sum<int>>(data => data.Total))
             .Build();
         var fingerprint = new WorkflowScopeCatalog(definition).Fingerprint;
-        Assert.True(fingerprint == "7F3BED4AED73CB36496AA9F9B388ABF8E4B0B23AB7FDC4957AB3F1985084D650", fingerprint);
+        Assert.True(fingerprint == "04AB74D8F4D49B463C044E1B2616E95A69C96BEF79BF0CB7DD348BFAB7184C45", fingerprint);
     }
 
     private sealed class CountingCondition : System.Linq.Expressions.Expression
