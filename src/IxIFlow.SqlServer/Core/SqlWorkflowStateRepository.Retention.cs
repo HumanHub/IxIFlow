@@ -4,15 +4,14 @@ public sealed partial class SqlWorkflowStateRepository
 {
     private const string RetentionSchema = """
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowTombstones', N'U') IS NULL
-        CREATE TABLE dbo.IxIFlowWorkflowTombstones (
-            InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
-            RemovedAtUtc DATETIME2 NOT NULL,
-            ExpiresAtUtc DATETIME2 NOT NULL
-        );
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.IxIFlowWorkflowTombstones') AND name=N'IX_IxIFlowTombstones_Expiry')
+        BEGIN
+            CREATE TABLE dbo.IxIFlowWorkflowTombstones (
+                InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
+                RemovedAtUtc DATETIME2 NOT NULL,
+                ExpiresAtUtc DATETIME2 NOT NULL
+            );
             CREATE INDEX IX_IxIFlowTombstones_Expiry ON dbo.IxIFlowWorkflowTombstones (ExpiresAtUtc, InstanceId);
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.IxIFlowWorkflowInstances') AND name=N'IX_IxIFlowInstances_Ended')
-            CREATE INDEX IX_IxIFlowInstances_Ended ON dbo.IxIFlowWorkflowInstances (EndedAtUtc, InstanceId) WHERE EndedAtUtc IS NOT NULL;
+        END
         """;
 
     private static string? RetentionSql(Statement statement) => statement switch

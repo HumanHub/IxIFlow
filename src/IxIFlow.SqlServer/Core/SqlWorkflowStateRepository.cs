@@ -676,7 +676,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     if (lockResult < 0)
         throw new InvalidOperationException($"Could not lock the workflow schema ({lockResult})");
     await connection.ExecuteAsync("""
-        DECLARE @RunnableAdded BIT = 0;
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NULL
         BEGIN
             CREATE TABLE dbo.IxIFlowWorkflowInstances (
@@ -689,7 +688,11 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 StateJson NVARCHAR(MAX) NOT NULL,
                 CancellationJson NVARCHAR(MAX) NULL,
                 CancellationAcknowledged BIT NOT NULL DEFAULT 0,
-                Revision BIGINT NOT NULL DEFAULT 0
+                Revision BIGINT NOT NULL DEFAULT 0,
+                InboxSequence BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_InboxSequence DEFAULT 0,
+                InboxReadThrough BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_InboxReadThrough DEFAULT 0,
+                Incarnation UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_Incarnation DEFAULT NEWID(),
+                ParentInstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL
             );
             CREATE INDEX IX_IxIFlowWorkflowInstances_Status
                 ON dbo.IxIFlowWorkflowInstances (Status);
@@ -697,22 +700,13 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 ON dbo.IxIFlowWorkflowInstances (WorkflowName);
             CREATE INDEX IX_IxIFlowWorkflowInstances_CorrelationId
                 ON dbo.IxIFlowWorkflowInstances (CorrelationId);
-        END
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'InboxSequence') IS NULL
-            ALTER TABLE dbo.IxIFlowWorkflowInstances
-                ADD InboxSequence BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_InboxSequence DEFAULT 0;
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'InboxReadThrough') IS NULL
-            ALTER TABLE dbo.IxIFlowWorkflowInstances
-                ADD InboxReadThrough BIGINT NOT NULL
-                    CONSTRAINT DF_IxIFlowWorkflowInstances_InboxReadThrough DEFAULT 0;
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'Incarnation') IS NULL
-            ALTER TABLE dbo.IxIFlowWorkflowInstances ADD Incarnation UNIQUEIDENTIFIER NOT NULL
-                CONSTRAINT DF_IxIFlowWorkflowInstances_Incarnation DEFAULT NEWID();
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'ParentInstanceId') IS NULL
-        BEGIN
-            ALTER TABLE dbo.IxIFlowWorkflowInstances ADD ParentInstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL;
             EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_Parent
                 ON dbo.IxIFlowWorkflowInstances (ParentInstanceId) WHERE ParentInstanceId IS NOT NULL');
+            EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_Runnable
+                ON dbo.IxIFlowWorkflowInstances (RunnableAtUtc, InstanceId)
+                WHERE RunnableAtUtc IS NOT NULL');
+            EXEC(N'CREATE INDEX IX_IxIFlowInstances_Ended
+                ON dbo.IxIFlowWorkflowInstances (EndedAtUtc, InstanceId) WHERE EndedAtUtc IS NOT NULL');
         END
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowEvents', N'U') IS NULL
         BEGIN
@@ -769,26 +763,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             EXEC(N'CREATE INDEX IX_IxIFlowWorkflowWaits_Open
                 ON dbo.IxIFlowWorkflowWaits (WaitKey, EventType, WaitId) WHERE CloseReason IS NULL');
         END
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowWaits', N'DefaultPayloadJson') IS NULL
-            ALTER TABLE dbo.IxIFlowWorkflowWaits ADD DefaultPayloadJson NVARCHAR(MAX) NULL;
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'RunnableAtUtc') IS NULL
-        BEGIN
-            ALTER TABLE dbo.IxIFlowWorkflowInstances ADD RunnableAtUtc DATETIME2 NULL;
-            SET @RunnableAdded = 1;
-        END
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes
-            WHERE name = N'IX_IxIFlowWorkflowInstances_Runnable'
-              AND object_id = OBJECT_ID(N'dbo.IxIFlowWorkflowInstances'))
-            EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_Runnable
-                ON dbo.IxIFlowWorkflowInstances (RunnableAtUtc, InstanceId)
-                WHERE RunnableAtUtc IS NOT NULL');
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'Revision') IS NULL
-            ALTER TABLE dbo.IxIFlowWorkflowInstances ADD Revision BIGINT NOT NULL DEFAULT 0;
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CancellationJson') IS NULL
-            ALTER TABLE dbo.IxIFlowWorkflowInstances ADD CancellationJson NVARCHAR(MAX) NULL;
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'CancellationAcknowledged') IS NULL
-            ALTER TABLE dbo.IxIFlowWorkflowInstances
-                ADD CancellationAcknowledged BIT NOT NULL DEFAULT 0;
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowCommits', N'U') IS NULL
             CREATE TABLE dbo.IxIFlowWorkflowCommits (
                 InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
@@ -804,33 +778,11 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
                 Token NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 ExpiresAtUtc DATETIME2 NOT NULL,
-                Epoch BIGINT NOT NULL
+                Epoch BIGINT NOT NULL,
+                CrashCount INT NOT NULL CONSTRAINT DF_IxIFlowWorkflowLeases_CrashCount DEFAULT 0
             );
             CREATE INDEX IX_IxIFlowWorkflowLeases_ExpiresAt
                 ON dbo.IxIFlowWorkflowLeases (ExpiresAtUtc);
-        END
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowLeases', N'Epoch') IS NULL
-            ALTER TABLE dbo.IxIFlowWorkflowLeases
-                ADD Epoch BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowLeases_Epoch DEFAULT 1;
-        IF COL_LENGTH(N'dbo.IxIFlowWorkflowLeases', N'CrashCount') IS NULL
-            ALTER TABLE dbo.IxIFlowWorkflowLeases
-                ADD CrashCount INT NOT NULL CONSTRAINT DF_IxIFlowWorkflowLeases_CrashCount DEFAULT 0;
-        -- Rows saved before the runnable time existed, once every column above is in place:
-        -- running ones and ones with a cancellation to unwind are runnable now, idle ones at
-        -- their earlier due time.
-        IF @RunnableAdded = 1
-        BEGIN
-            IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'NextDueAtUtc') IS NOT NULL
-                EXEC(N'UPDATE dbo.IxIFlowWorkflowInstances
-                    SET RunnableAtUtc = CASE WHEN Status = ''Running''
-                            OR (CancellationJson IS NOT NULL AND CancellationAcknowledged = 0)
-                        THEN SYSUTCDATETIME() ELSE NextDueAtUtc END
-                    WHERE Status IN (''Running'', ''Suspended'', ''NeedsResolution'')');
-            ELSE
-                EXEC(N'UPDATE dbo.IxIFlowWorkflowInstances SET RunnableAtUtc = SYSUTCDATETIME()
-                    WHERE Status = ''Running''
-                        OR (Status IN (''Suspended'', ''NeedsResolution'')
-                            AND CancellationJson IS NOT NULL AND CancellationAcknowledged = 0)');
         END
         """, transaction: transaction);
     await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
