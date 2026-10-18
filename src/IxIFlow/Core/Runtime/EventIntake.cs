@@ -23,7 +23,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     /// nothing has no store, so its own clock decides its execution deadline.
     /// </summary>
     public async Task<bool> TakeAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        IExecutionHost host)
+        IExecutionHost host, WorkflowInstance instance)
     {
         var inbox = checkpoint.Inbox;
         if (!host.PersistsState)
@@ -54,7 +54,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             {
                 if (inbox.IsDecided(stored.EventId))
                     continue;
-                await DecideAsync(scopes, checkpoint, host, stored, page);
+                await DecideAsync(scopes, checkpoint, host, stored, page, instance);
                 decided = true;
             }
             inbox.Read(page.ReadThrough);
@@ -69,12 +69,12 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     }
 
     private async Task DecideAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        IExecutionHost host, StoredWorkflowEvent stored, InboxPage page)
+        IExecutionHost host, StoredWorkflowEvent stored, InboxPage page, WorkflowInstance instance)
     {
         var payload = Read(stored);
         if (payload == null)
         {
-            Reject(checkpoint, stored, EventRejection.NotMatched);
+            Reject(instance, checkpoint, stored, EventRejection.NotMatched);
             return;
         }
         var eventType = payload.GetType();
@@ -103,6 +103,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         if (matching.Count == 1)
         {
             Consume(scopes, checkpoint, stored, matching[0], payload);
+            Record(checkpoint, stored, matching[0], null);
             return;
         }
         var rejection = matching.Count > 1 ? EventRejection.Ambiguous
@@ -111,7 +112,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             : addressed.Count > 0 ? EventRejection.WaitTimedOut
             : stored.TargetWaitId != null ? await ClosedTargetAsync(checkpoint, host, stored.TargetWaitId)
             : EventRejection.NoOpenWait;
-        Reject(checkpoint, stored, rejection);
+        Reject(instance, checkpoint, stored, rejection);
     }
 
     private object? Read(StoredWorkflowEvent stored)
@@ -196,8 +197,24 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         return position.NextStepIndex < steps.Count && scopes.Id(steps[position.NextStepIndex]) == wait.StepId;
     }
 
-    private static void Reject(ExecutionCheckpoint checkpoint, StoredWorkflowEvent stored, EventRejection rejection) =>
+    private void Reject(WorkflowInstance instance, ExecutionCheckpoint checkpoint, StoredWorkflowEvent stored,
+        EventRejection rejection)
+    {
         checkpoint.Inbox.Settle(new EventSettlement(stored.EventId, EventOutcome.Rejected, Rejection: rejection));
+        Record(checkpoint, stored, null, rejection);
+    }
+
+    private void Record(ExecutionCheckpoint checkpoint, StoredWorkflowEvent stored, WaitState? wait, EventRejection? refusal)
+    {
+        if (checkpoint.Trace.Accepts(refusal == null ? TraceEntryType.EventReceived : TraceEntryType.EventRefused, Now))
+            checkpoint.Trace.Add(new ExecutionTraceEntry
+            {
+                Timestamp = Now,
+                EntryType = refusal == null ? TraceEntryType.EventReceived : TraceEntryType.EventRefused,
+                Payload = new ReceivedEventTrace(stored.EventId, stored.Key ?? wait?.Key, stored.EventType,
+                    wait?.Id ?? stored.TargetWaitId, wait?.StepId, refusal)
+            });
+    }
 
     // The named wait is gone: closed by this run, or before the event was read.
     private static async Task<EventRejection> ClosedTargetAsync(ExecutionCheckpoint checkpoint,

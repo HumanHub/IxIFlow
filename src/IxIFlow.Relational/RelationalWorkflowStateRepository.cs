@@ -453,7 +453,10 @@ public abstract class RelationalWorkflowStateRepository :
             return new EventAppendResult(EventAppendStatus.NotFound);
         var finished = instance.Status is "Completed" or "Failed" or "Cancelled" or "Terminated" or "TimedOut";
         if (finished && workflowEvent.TargetWaitId == null)
+        {
+            await TraceRefusalAsync(connection, transaction, workflowEvent, EventRejection.InstanceFinished, now, instance.TracingEnabled);
             return new EventAppendResult(EventAppendStatus.Closed);
+        }
         var waits = (await connection.QueryAsync<WaitRow>(RequiredSql(Statement.CandidateWait), WithTimes(WithIntegers(new
         {
             workflowEvent.InstanceId,
@@ -483,9 +486,21 @@ public abstract class RelationalWorkflowStateRepository :
             await connection.ExecuteAsync(RequireSql(Statement.AdvanceInbox, advanceSql),
                 WithTimes(new { workflowEvent.InstanceId, Sequence = sequence, MadeRunnable = madeRunnable }, ("Now", now)), transaction);
         await connection.ExecuteAsync(RequiredSql(Statement.InsertEvent), parameters, transaction);
+        // A refusal on arrival never reaches an executor pass. Store its one entry atomically with the
+        // refusal, using the shared trace append and the same instance lock as checkpoint commits.
+        if (rejection is { } refused)
+            await TraceRefusalAsync(connection, transaction, workflowEvent, refused, now, instance.TracingEnabled);
         return rejection == null
             ? new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable)
             : new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection);
+    }
+
+    private async Task TraceRefusalAsync(DbConnection connection, DbTransaction transaction,
+        WorkflowEvent workflowEvent, EventRejection rejection, DateTime now, bool tracingEnabled)
+    {
+        if (tracingEnabled)
+            await AppendTraceAsync(connection, transaction, workflowEvent.InstanceId,
+                [WorkflowStoreRules.SerializeTrace(WorkflowStoreRules.RefusedEventTrace(workflowEvent, rejection, now))]);
     }
 
     public async Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit)
@@ -997,6 +1012,7 @@ public abstract class RelationalWorkflowStateRepository :
 
     private sealed class InboxRow
     {
+        public bool TracingEnabled { get; set; }
         public string Status { get; set; } = "";
         public long InboxSequence { get; set; }
     }

@@ -1,25 +1,147 @@
+using IxIFlow.Core.Runtime;
+
 namespace IxIFlow.Core;
 
-/// <summary>
-/// A run's trace entries (G-01): all it recorded, for its result, and those its commits have not yet carried. An
-/// entry that no commit carries, because the progress it describes was not saved, is dropped with it.
-/// </summary>
-internal sealed class TraceBuffer
+/// <summary>Pending entries only. Acknowledgement clears them; requested results have a separate collector.</summary>
+internal sealed partial class TraceBuffer
 {
-    private readonly List<ExecutionTraceEntry> _entries = [];
-    private int _committed;
+    private readonly List<ExecutionTraceEntry> _pending = [];
+    private int _limit = ExecutionLimits.DefaultMaxTraceEntriesPerCommit;
+    private TraceTruncation? _truncated;
+    private TraceBudget? _budgetMarker;
+    private bool _enabled = true;
+    private TraceDetail _detail = TraceDetail.Full;
+    private long? _budget;
+    private ExecutionCheckpoint? _checkpoint;
+    private long _acknowledgedCount;
+    private bool _acknowledgedBudget;
+    private WorkflowScopeCatalog? _scopes;
+    private TimeProvider _time = TimeProvider.System;
 
-    /// <summary>Every entry this run recorded and kept.</summary>
-    public IReadOnlyList<ExecutionTraceEntry> Run => _entries;
+    public IReadOnlyList<ExecutionTraceEntry> Pending => _pending;
 
-    /// <summary>The entries the next commit carries.</summary>
-    public IReadOnlyList<ExecutionTraceEntry> Pending => _entries.Skip(_committed).ToArray();
+    public void Configure(int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        _limit = limit;
+    }
 
-    public void Add(ExecutionTraceEntry entry) => _entries.Add(entry);
+    public void Configure(WorkflowInstance instance, ExecutionCheckpoint checkpoint, ExecutionLimits limits,
+        TimeProvider? time, WorkflowScopeCatalog scopes)
+    {
+        Configure(limits.MaxTraceEntriesPerCommit);
+        _enabled = instance.TracingEnabled;
+        _detail = limits.TraceDetail;
+        _budget = limits.MaxTraceEntriesPerInstance;
+        if (!ReferenceEquals(_checkpoint, checkpoint))
+        {
+            _acknowledgedCount = checkpoint.TraceEntriesRecorded;
+            _acknowledgedBudget = checkpoint.TraceBudgetExhausted;
+        }
+        _checkpoint = checkpoint;
+        _scopes = scopes;
+        if (time != null)
+            _time = time;
+    }
 
-    /// <summary>The commit that carried the pending entries was applied.</summary>
-    public void Committed() => _committed = _entries.Count;
+    public bool Accepts(TraceEntryType kind, DateTime timestamp)
+    {
+        if (!_enabled || (_detail == TraceDetail.Activities || _checkpoint?.TraceBudgetExhausted == true) &&
+            IsControlFlow(kind))
+            return false;
+        if (_budget is { } budget && _checkpoint is { } checkpoint)
+        {
+            if (!checkpoint.TraceBudgetExhausted && checkpoint.TraceEntriesRecorded >= budget)
+                ReachedBudget(budget, timestamp);
+            if (checkpoint.TraceBudgetExhausted && IsControlFlow(kind))
+                return false;
+        }
+        return HasCapacity();
+    }
 
-    /// <summary>The progress since the last commit was not saved; neither are its entries.</summary>
-    public void DiscardPending() => _entries.RemoveRange(_committed, _entries.Count - _committed);
+    private void ReachedBudget(long budget, DateTime timestamp)
+    {
+        _checkpoint!.TraceBudgetExhausted = true;
+        _budgetMarker = new TraceBudget(budget);
+        var marker = new ExecutionTraceEntry
+        {
+            Timestamp = timestamp, EntryType = TraceEntryType.TraceBudgetReached, Payload = _budgetMarker
+        };
+        if (_pending.Count == _limit)
+        {
+            _budgetMarker.DroppedCount = _truncated?.DroppedCount ?? 1;
+            _truncated = null;
+            _pending[^1] = marker;
+        }
+        else
+            _pending.Add(marker);
+    }
+
+    private bool HasCapacity()
+    {
+        if (_truncated != null)
+        {
+            _truncated.DroppedCount++;
+            return false;
+        }
+        if (_pending.Count < _limit)
+            return true;
+        if (_budgetMarker != null)
+        {
+            _budgetMarker.DroppedCount++;
+            return false;
+        }
+        _truncated = new TraceTruncation(2);
+        _pending[^1] = new ExecutionTraceEntry
+        {
+            Timestamp = _pending[^1].Timestamp, EntryType = TraceEntryType.Truncated, Payload = _truncated
+        };
+        return false;
+    }
+
+    public void Add(ExecutionTraceEntry entry)
+    {
+        if (Accepts(entry.EntryType, entry.Timestamp))
+        {
+            _pending.Add(entry);
+            if (_budget is { } budget && _checkpoint != null && !_checkpoint.TraceBudgetExhausted)
+            {
+                _checkpoint.TraceEntriesRecorded++;
+                if (_checkpoint.TraceEntriesRecorded >= budget)
+                    ReachedBudget(budget, entry.Timestamp);
+            }
+        }
+    }
+
+    public static bool IsControlFlow(TraceEntryType kind) => kind is
+        TraceEntryType.StepEntered or TraceEntryType.ConditionTaken or TraceEntryType.LoopIteration or
+        TraceEntryType.LoopCompleted or TraceEntryType.BranchStarted or TraceEntryType.JoinCompleted or
+        TraceEntryType.CatchEntered or TraceEntryType.FinallyEntered or TraceEntryType.ForEachItemStarted or
+        TraceEntryType.ForEachItemEnded or TraceEntryType.CompensationStarted or TraceEntryType.CompensationCompleted or
+        TraceEntryType.CompensationFailed or TraceEntryType.WaitTimedOut or TraceEntryType.DelayFired or
+        TraceEntryType.SagaRetryStarted or TraceEntryType.StepRetryScheduled;
+
+    public void Committed()
+    {
+        if (_checkpoint != null)
+        {
+            _acknowledgedCount = _checkpoint.TraceEntriesRecorded;
+            _acknowledgedBudget = _checkpoint.TraceBudgetExhausted;
+        }
+        _pending.Clear();
+        _truncated = null;
+        _budgetMarker = null;
+    }
+
+    public void DiscardPending()
+    {
+        if (_checkpoint != null)
+        {
+            _checkpoint.TraceEntriesRecorded = _acknowledgedCount;
+            _checkpoint.TraceBudgetExhausted = _acknowledgedBudget;
+        }
+        _pending.Clear();
+        _truncated = null;
+        _budgetMarker = null;
+    }
 }

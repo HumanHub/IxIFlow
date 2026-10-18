@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
@@ -14,6 +15,29 @@ public sealed record RunnableInstance(string InstanceId, DateTime RunnableAtUtc)
 /// <summary>Rules every state store applies when it saves an instance.</summary>
 public static class WorkflowStoreRules
 {
+    private static readonly JsonSerializerOptions TraceJson = new()
+    {
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver
+        {
+            Modifiers =
+            {
+                type =>
+                {
+                    if (type.Type == typeof(ExecutionTraceEntry))
+                    {
+                        type.Properties.Single(property => property.Name == nameof(ExecutionTraceEntry.Metadata))
+                            .ShouldSerialize = (_, value) => value is Dictionary<string, object> { Count: > 0 };
+                        type.Properties.Single(property => property.Name == nameof(ExecutionTraceEntry.ActivityName))
+                            .ShouldSerialize = (_, value) => value is string { Length: > 0 };
+                    }
+                }
+            }
+        }
+    };
+
+    /// <summary>Encodes a stored trace entry, omitting empty metadata while preserving its non-nullable API.</summary>
+    public static string SerializeTrace(ExecutionTraceEntry entry) => JsonSerializer.Serialize(entry, TraceJson);
+
     /// <summary>
     /// True when a saved instance is runnable from the moment it is saved, whatever time it carries
     /// (C-01): an idle save that leaves a cancellation request unacknowledged, so the request is
@@ -92,6 +116,20 @@ public static class WorkflowStoreRules
         status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut
             ? WaitCloseReason.Cancelled
             : WaitCloseReason.InstanceFinished;
+
+    /// <summary>
+    /// An arrival refusal has no executor pass to carry its trace. Append this one entry in the inbox's
+    /// transaction when tracing is enabled: once per stored refusal, or per Closed API response (G-01).
+    /// </summary>
+    public static ExecutionTraceEntry RefusedEventTrace(WorkflowEvent workflowEvent, EventRejection rejection,
+        DateTime now) => new()
+    {
+        Timestamp = now,
+        EntryType = TraceEntryType.EventRefused,
+        Clock = TraceClock.Store,
+        Payload = new ReceivedEventTrace(workflowEvent.EventId, workflowEvent.Key, workflowEvent.EventType,
+            workflowEvent.TargetWaitId, null, rejection)
+    };
 
     /// <summary>
     /// Why an event that arrives at the store's time <paramref name="now"/> is refused before anyone reads
@@ -665,7 +703,10 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         var finished = IsTerminal(instance.Status);
         // A finished instance takes no events; one sent to a wait is told why that wait closed.
         if (finished && workflowEvent.TargetWaitId == null)
+        {
+            TraceRefusal(instance, workflowEvent, EventRejection.InstanceFinished, now);
             return new EventAppendResult(EventAppendStatus.Closed);
+        }
         var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent,
             workflowEvent.TargetWaitId == null ? null
                 : WaitsOf(workflowEvent.InstanceId).GetValueOrDefault(workflowEvent.TargetWaitId),
@@ -678,6 +719,7 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
             {
                 Outcome = EventOutcome.Rejected, Rejection = rejection
             }, hash);
+            TraceRefusal(instance, workflowEvent, rejection.Value, now);
             return new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection);
         }
         var sequence = _inboxSequence.GetValueOrDefault(workflowEvent.InstanceId) + 1;
@@ -688,6 +730,16 @@ public class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkfl
         if (madeRunnable)
             instance.RunnableAtUtc = now;
         return new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable);
+    }
+
+    // Caller holds _claimLock. A refusal's single entry is atomic with its inbox receipt (G-01).
+    private void TraceRefusal(WorkflowInstance instance, WorkflowEvent workflowEvent, EventRejection rejection, DateTime now)
+    {
+        if (!instance.TracingEnabled)
+            return;
+        if (!_traces.TryGetValue(workflowEvent.InstanceId, out var trace))
+            _traces[workflowEvent.InstanceId] = trace = [];
+        trace.Add(WorkflowStoreRules.SerializeTrace(WorkflowStoreRules.RefusedEventTrace(workflowEvent, rejection, now)));
     }
 
     private static StoredWorkflowEvent Stored(WorkflowEvent workflowEvent, long sequence, DateTime now) =>

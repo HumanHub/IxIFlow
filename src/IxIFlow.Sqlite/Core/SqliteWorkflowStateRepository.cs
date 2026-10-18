@@ -314,7 +314,9 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
                 WHERE instance_id = @InstanceId AND token = @Token AND expires_at_utc > @Now
                 """,
         Statement.LockInbox or Statement.ParentInbox or Statement.DeleteParentInbox => """
-            SELECT status AS Status, inbox_sequence AS InboxSequence FROM ixiflow_workflow_instances
+            SELECT status AS Status, inbox_sequence AS InboxSequence,
+                COALESCE(json_extract(state_json, '$.TracingEnabled'), 1) AS TracingEnabled
+            FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             """,
         Statement.CommitState => """
