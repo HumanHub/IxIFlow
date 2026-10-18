@@ -12,7 +12,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "durability")]
 [Trait("Spec", "A-03")]
-[Trait("Spec", "D-41")]
+[Trait("Spec", "H-05")]
 public sealed class LeaseIncarnationContractTests
 {
     [Fact]
