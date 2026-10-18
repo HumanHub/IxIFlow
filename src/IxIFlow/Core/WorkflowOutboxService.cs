@@ -234,14 +234,3 @@ public sealed record OutboxSettings
 
 internal sealed record OutboxPublisherStart(string Name, bool ReplayRetained);
 internal sealed record OutboxPublisherRemoval(string Name);
-
-internal sealed class InProcessOutboxPublisher(WorkflowHost host) : IOutboxPublisher
-{
-    public string Name => "ixiflow.in-process";
-    public IReadOnlyCollection<string> EventTypes => [OutboxEvent.WorkflowCompleted];
-    public Task<OutboxPublishResult> PublishAsync(OutboxPublishContext delivery, CancellationToken cancellationToken)
-    {
-        host.NotifyCompletion(delivery.Event.InstanceId);
-        return Task.FromResult(OutboxPublishResult.Delivered());
-    }
-}
