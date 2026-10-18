@@ -120,12 +120,23 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "third"));
 
             // Deletion removes the lease and reserves the ID against a former owner.
-            await repository.DeleteWorkflowInstanceAsync(instanceId);
-            Assert.Equal(1, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10)))?.Epoch);
+            await repository.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention: TimeSpan.FromSeconds(1));
+            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10)));
             instance.Status = WorkflowStatus.Running;
             instance.Revision = 0;
             Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
                 repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 3, 0)))).Kind);
+
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            ExecutionLeaseGrant? fourth = null;
+            while (fourth == null && elapsed.Elapsed < TimeSpan.FromSeconds(3))
+            {
+                fourth = await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10));
+                if (fourth == null)
+                    await Task.Delay(50);
+            }
+            Assert.NotNull(fourth);
+            Assert.Equal(1, fourth.Epoch);
         }
         finally
         {
@@ -150,6 +161,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
             instance.WorkflowDataJson = "\"next\"";
             Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1),
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, epoch, 0, "behind")));
+            instance = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 1),
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, epoch + 1, 1, "future")));
             Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 2),
