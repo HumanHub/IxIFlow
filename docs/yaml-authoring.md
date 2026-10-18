@@ -65,7 +65,7 @@ All steps support `id`, `name` and `description`. IDs are unique; omitted IDs de
 | `whileDo` | `condition` tested before each pass through `steps` |
 | `doWhile` | `steps` run before testing `condition` |
 | `parallel` | `branches`, each containing `steps`; `join: all\|any\|conditionally`, optional `condition` and `combine` |
-| `forEach` | `items`, `as` alias, body `steps`, optional `into` and `parallel` configuration |
+| `forEach` | `items`, optional `as` alias (default `item`), body `steps`, optional trailing `result` expression, `into` and `parallel` configuration |
 | `result` | `value` ends a result-producing ForEach body path, including timeout paths leaving it |
 | `try` | Body `steps`, ordered `catches`, optional `finally`; catches may specify `exception`, `faultType`, `id`, `steps` |
 | `saga` | Saga `steps` and ordered `onError` handlers |
@@ -77,9 +77,9 @@ All steps support `id`, `name` and `description`. IDs are unique; omitted IDs de
 | `invokeWorkflow` | `workflow: { name, version }`, `input`, `output`, optional `cancelWithParent` (true by default) |
 | `invokeWorkflowType` | `workflowType`, optional `dataType` fallback, mappings and `cancelWithParent`; resolves an `IWorkflow<T>` class |
 
-The schema describes possible nodes; shared builder rules also enforce where constructs are legal. Saga bodies, handlers, timeout paths and result-producing lists retain the fluent API's scope restrictions.
+The schema describes possible nodes; shared builder rules also enforce where constructs are legal. Saga bodies accept activities/references, requests, waits and outcomes. Saga handlers accept ordinary activities/references and `waitFor`; catch bodies exclude requests, delays, results and outcomes. Timeout paths and result-producing lists retain the fluent API's scope restrictions. Step `description` is retained in the document, not emitted as runtime step metadata.
 
-Plain and request waits accept `resumeCondition`, `input`, `output`, `defaultPayload`, positive `timeout` and `onTimeout` steps. A default payload is suggested discovery data, not an automatic reply. Pair requests and reply waits by key in the same body; a plain `suspend` is not a request pairing.
+Plain and request waits accept `resumeCondition`, `input`, `output`, `defaultPayload`, positive `timeout` and `onTimeout` steps. A default payload is suggested discovery data, not an automatic reply. `timeout` and a nonempty `onTimeout` must be supplied together; the timeout path exits the containing body. `defaultPayload` accepts scalar, list or object literals shaped for the event type. Wait `input` mappings are retained by the builder but are not applied to accepted events or used to construct default payloads; use `defaultPayload` and `output` for those purposes. Pair requests and reply waits by key in the same body; a plain `suspend` is not a request pairing.
 
 General parallel joins use provisional merged workflow data for `condition`. A `combine` entry declares `property: { path: workflow.Member }`, `propertyType` and `combiner`. The [parallel twins](../samples/IxIFlow.Samples/Definitions/parallel-quotes.workflow.yaml) show isolated data and sum merging.
 
@@ -89,20 +89,20 @@ ForEach `parallel` accepts `maxConcurrency`, `join`, `combine` and, for a condit
 
 An activity/request's `compensation` is an ordered list. Entries specify `activity`, `input`, `output`, and optionally `replyType` or `previousActivity` for the corresponding fluent overload. Reply compensation can read `reply` and `answered`; ordinary compensation reads `currentStep`. The previous-compensation overload supports `previousStepInput` and `previousCompensationInput`.
 
-Activity-level `onError` entries accept optional `exception`, required `then: retry|terminate|ignore`, and optional `retry`. Saga-level handlers accept `exception`, `faultType`, `id`, handler `steps`, `compensate: all|none` or `compensateUpTo`, followed by `then: continue|terminate|retry`. `ignoreCompensationErrors` applies to continuing. Omitted continuation rethrows after any selected undo.
+Activity-level `onError` entries accept optional `exception`, required `then: retry|terminate|ignore`, and optional `retry`. Saga-level handlers accept `exception`, `faultType`, `id`, handler `steps`, `compensate: all|none` or `compensateUpTo`, followed by `then: continue|terminate|retry`. Compensation runs before the handler steps. `ignoreCompensationErrors` applies to continuing. Omitted continuation rethrows after any selected undo.
 
 Retry objects mirror `RetryPolicy`: `maximumAttempts`, `initialInterval`, `maximumInterval`, `backoffCoefficient`. Omission uses the fluent count-based default; supplied objects use the policy's property defaults. See [retry-quote.workflow.yaml](../samples/IxIFlow.Samples/Definitions/retry-quote.workflow.yaml), [saga-payment.workflow.yaml](../samples/IxIFlow.Samples/Definitions/saga-payment.workflow.yaml) and [sagas](sagas.md).
 
 ## Mappings and expressions
 
-An input has `target` and `from`. An output has `source`, optional `sourceContext: activity|event|workflow`, and `to: { path: workflow.Member }`. Activity defaults apply before explicit input mappings; explicit values override them.
+An input has `target` and `from`. An output has `source`, optional `sourceContext: activity|event|workflow`, and `to: { path: workflow.Member }`. Explicit input mappings override YAML defaults and attribute defaults. `sourceContext` is accepted metadata; the step kind determines the object read (activity, event or child workflow data), and the translator does not switch that object based on `sourceContext`.
 
 | Expression `kind` | Shape |
 | --- | --- |
 | `constant` | `value`: locally translated literals are scalar |
 | `path` | `path`: a C# expression rewritten against the current context; `kind` may be omitted when `path` is present |
 | `binary` | `operator`, `left`, `right`; operators are `eq`, `ne`, `and`, `or`, `gt`, `ge`, `lt`, `le`, `add`, `subtract`, `multiply`, `divide` |
-| `function` | `function` names a code asset or C# method; `arguments` supplies method arguments; local code assets take none |
+| `function` | `function` names a local `csharp-expression` code asset; `arguments` must be empty. Put a pure C# method call inside the asset source |
 
 Use CLR member names such as `workflow.Amount`, `previousStep.Receipt`, `event.Approved` and handler `fault.Message`. The generator also resolves camel-case workflow aliases. Expression assets may use `ctx.UtcNow`; other context names depend on scope. These are trusted C# expressions and must obey [purity rules](execution-model.md#checkpoints-and-commits).
 

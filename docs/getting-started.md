@@ -51,7 +51,11 @@ Both console modes run the quote. The [sample map](../samples/README.md) covers 
 
 `RunAsync` returns when the instance is idle, including `Suspended` at a wait or `NeedsResolution` for an operator. `IsSuccess` means `Status == Success`; a suspended result still has useful saved data and an instance ID.
 
-`StartAsync` saves a durable start and returns its ID without waiting for execution. `AwaitAsync(id)` waits for idle; `AwaitAsync(id, WorkflowAwaitCondition.Finished)` waits for a terminal result. Terminal results remain readable for the configured [retention period](retention-and-tombstones.md).
+`StartAsync` saves a durable start and normally returns its ID without waiting for execution. Inside a running host slot it executes inline and returns only when that nested run ends. `AwaitAsync(id)` waits for idle; `AwaitAsync(id, WorkflowAwaitCondition.Finished)` waits for a terminal result. Terminal results remain readable for the configured [retention period](retention-and-tombstones.md).
+
+`AwaitAsync` considers a parked `Scheduled` result idle; `RunAsync` waits through that park. `RecoverAsync` may return `Running` for a busy owner or `Scheduled` for a parked retry. A `Faulted` recovery/release response can mean the operation was refused, rather than that the saved instance faulted; read its error and query the instance status.
+
+`WorkflowOptions.ExecutionTimeout` must be positive and persists an execution deadline that unwinds cleanup before `TimedOut`. `EnableDebugging = true` and a non-null `WorkflowRetryPolicy` are refused with `InvalidRequest`; configure retries on saga steps or sagas.
 
 A cancellation token interrupts the current call. Use `CancelAsync` with a `CancellationReason` to request durable workflow cancellation, including compensation and `Finally` cleanup. The token on a queued start only cancels waiting for acceptance; the host owns that execution.
 

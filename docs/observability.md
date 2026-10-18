@@ -9,7 +9,7 @@ IxIFlow exposes durable execution history through its store and runtime telemetr
 
 Trace entries are appended separately from checkpoints, in the transaction that records their progress. The store assigns increasing sequence numbers. Retrying a commit does not append the entries twice; entries from a pass that never commits are discarded.
 
-History includes workflow/activity lifecycle, control-flow entry and choices, loop iterations, branches and joins, ForEach item boundaries, catch/finally entry, compensation, retries, waits/timeouts/delays, event decisions and operator resolution/cancellation/release. Typed payloads identify steps, scopes, continuations, indexes, invocation IDs and decision reasons.
+History includes workflow/activity lifecycle, control-flow entry and choices, loop iterations, branches and joins, ForEach item boundaries, catch/finally entry, compensation, retries, waits/timeouts/delays, event decisions and operator resolution/cancellation/release. Typed `TracePayload` records identify steps, scopes, continuations, indexes, invocation IDs and decision reasons; JSON uses a `Type` discriminator. Timeout, event and child-cancellation payloads use `WaitRef`, not raw wait IDs or reply tokens. `WaitReference.Of(instanceId, waitId)` is the first 16 lowercase hex characters of SHA-256 over UTF-8 `instanceId + ":" + waitId`.
 
 Transition and operator payloads avoid copying workflow/event values, resolution outputs/notes and exception contents. Activity history can carry errors and attempt information. This is not a redaction system; configure logging/exporters and application data handling accordingly.
 
@@ -24,7 +24,7 @@ Transition and operator payloads avoid copying workflow/event values, resolution
 | `MaxTraceEntriesPerCommit` | 1,000 by default; overflow uses the final slot for a truncation marker counting omissions |
 | `MaxTraceEntriesPerInstance` | Optional budget; records a budget marker and stops further control-flow detail while other entry families continue |
 
-The per-commit limit resets after acknowledgement. It bounds pending diagnostics independently of checkpoint size; trace history does not grow the checkpoint. Entries distinguish host and store clocks where applicable, so sequence/commit ordering is the durable ordering.
+The per-commit limit resets after acknowledgement. It bounds pending diagnostics independently of checkpoint size; trace history does not grow the checkpoint. These budgets apply to executor-buffered entries; a store-side event refusal is appended in the inbox transaction and is not counted against those budgets. An untargeted event sent after completion can therefore add another refusal trace for each call. Entries distinguish host and store clocks where applicable, so sequence/commit ordering is the durable ordering.
 
 ## Snapshots
 

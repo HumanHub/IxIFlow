@@ -1,7 +1,10 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Extensions;
+using IxIFlow.Webhooks;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Samples;
@@ -9,6 +12,37 @@ namespace IxIFlow.Samples;
 /// <summary>Small application examples used by the public documentation.</summary>
 public static class DocumentationExamples
 {
+    public static async Task RunHostedAsync()
+    {
+        // snippet: hosted-run
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddIxIFlow(options => options.Slots = 8);
+        using var host = builder.Build();
+        await host.StartAsync();
+        try
+        {
+            var client = host.Services.GetRequiredService<IWorkflowClient>();
+            var result = await client.RunAsync(Quote.Definition(), new QuoteData());
+            Console.WriteLine(result.Status);
+        }
+        finally
+        {
+            await host.StopAsync();
+        }
+        // end-snippet: hosted-run
+    }
+
+    public static void RegisterWebhook(IServiceCollection services, IConfiguration configuration)
+    {
+        // snippet: webhook-registration
+        services.AddIxIFlow()
+            .ConfigureOutbox(concurrency: 8)
+            .AddWebhook(new WebhookEndpoint(
+                "orders", new Uri("https://receiver.example/workflow-events"),
+                configuration["Webhooks:Orders:Secret"]!, [OutboxEvent.WorkflowCompleted]));
+        // end-snippet: webhook-registration
+    }
+
     public static IServiceCollection RetentionServices()
     {
         var services = new ServiceCollection();

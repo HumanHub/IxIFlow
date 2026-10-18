@@ -16,11 +16,13 @@ All four registrations compile in [Hosting.Services](../samples/IxIFlow.Samples/
 
 ## Common contract
 
-`IWorkflowStateRepository` includes revisioned checkpoint commits and receipts, execution leases, instance queries, child instances, inboxes, waits, committed trace history, outbox subscriptions/deliveries, retention and tombstones. Provider schemas are initialized on first use.
+`IWorkflowStateRepository` includes revisioned checkpoint commits and receipts, execution leases, instance queries, child instances, inboxes, waits, committed trace history, outbox subscriptions/deliveries, retention and tombstones. Provider schemas are created on first use in a transaction. Creation supplies complete tables and indexes; it does not upgrade existing tables or repair their missing indexes. Before 1.0, recreate a database from an earlier schema build rather than reuse it. SQLite and PostgreSQL leave the schema alone once the instance table exists; SQL Server creates absent tables but does not alter existing ones.
 
 A commit fences the owner by epoch and expected revision. Instance changes, consumed events, wait transitions, child starts and terminal completion envelopes share the persistence transaction. Publishers use their own per-delivery leases. Cleanup atomically removes operational data and writes a tombstone.
 
 Definition/version registries are in memory for every provider. Load the matching definitions and activity code on every host that could resume work. The default template store is also in memory; workflow bundles and artifact storage remain planned.
+
+`IWorkflowVersionRegistry` already supports registration, exact lookup, latest-version lookup, version/definition listings, deactivation and default-version metadata. Latest lookup chooses the highest version even if deactivated; named invocations still require a pinned version. Re-registering a name/version rejects changed data types, descriptions, tags or runtime fingerprints. Deactivation blocks new starts while existing instances can recover.
 
 ## Memory
 
@@ -30,13 +32,15 @@ The singleton `InMemoryWorkflowStateRepository` survives DI request scopes in on
 
 Use a file connection string, for example `Data Source=workflows.db`. In-memory SQLite is not the supported durable configuration. The provider uses WAL and takes an exclusive OS handle on the normalized database path plus `.ixiflow-owner`. Ownership is enforced even when the repository is constructed directly.
 
-A second owner cannot open that database concurrently. Asynchronously dispose the service provider/repository before reopening it; a process crash releases the OS handle. Keep the database on storage suitable for that single-host ownership model. SQLite does not support coordinator or multiple-host execution.
+A second owner cannot open that database concurrently. Asynchronously dispose the service provider/repository before reopening it; a process crash releases the OS handle. Use a local file system with working file locking. UNC and network paths are rejected, and startup probes that the ownership lock is enforced. SQLite does not support coordinator or multiple-host execution.
 
 The registered `TimeProvider` supplies store time. Run it with the [core host](coordinator-and-hosts.md) for recovery scans, outbox publication and retention.
 
 ## SQL Server
 
 The provider persists state, inboxes, waits, traces, leases, outbox and tombstones in SQL Server. Multiple compatible hosts can share the database; only a fenced lease owner advances an instance.
+
+Instance, event, wait and commit IDs, parent IDs, lease tokens, checkpoint-part keys and outbox publisher identities use `Latin1_General_100_BIN2` comparisons, preserving case distinctions independently of the database default collation. Workflow names, event/wait keys and other descriptive columns retain the database collation.
 
 Database time governs event arrival and deadlines. A separate ownership/cancellation connection pool defaults to 16 connections so ordinary workflow traffic does not consume all lease-renewal capacity. For cancellation reads to avoid waiting behind unrelated commits, enable `READ_COMMITTED_SNAPSHOT` in the database.
 

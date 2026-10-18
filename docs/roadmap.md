@@ -18,7 +18,7 @@ Completion outbox publishers and outgoing signed webhooks are implemented, as ar
 | Area | Planned work |
 | --- | --- |
 | Execution and process isolation | Public executor message contract, process slots and entry point, pipe transport, process liveness/resource accounting and fenced process crash reports; commit resend backoff and host message size/metadata validation |
-| Coordinator and placement | Stateless coordinators; capabilities and demands; matching and affinity; visible unschedulable work; discovery/registry, multiple-coordinator and loss handling, secured links; batched host lease renewal and process-slot accounting |
+| Coordinator and placement | Cross-host scheduling through stateless coordinators; capabilities and demands; matching and affinity; visible unschedulable work; discovery/registry, multiple-coordinator and loss handling, secured links; batched host lease renewal and process-slot accounting |
 | Incoming events and children | Incoming webhook/HTTP trigger package and conformance; child placement demands |
 | Workflow publishing/versioning | Immutable bundles, artifact storage/verification, dependency resolution/pinning, version-isolated assemblies, host bundle fetching, declared canonical artifact fingerprints and compatibility/migration policy; draft/publish and lifecycle APIs |
 | Catalog and authoring services | Broader catalog API, code-defined workflows in the catalog, published code activities, inline workflow calls, explicit workflow input/output contracts, YAML-defined code activities and local registration beyond installed-assembly metadata |
@@ -26,7 +26,7 @@ Completion outbox publishers and outgoing signed webhooks are implemented, as ar
 | Editor and debugger | Visual editor, breakpoints, all-stop pause, stepping through loops, paused timer rules, audited data edits, Debug Adapter Protocol and inspection/replay tooling |
 | Management and operations | Management API/operator listings, unused bundle retention, large-payload storage, residency policies and redaction |
 
-The outgoing `IxIFlow.Webhooks` publisher does not provide incoming trigger endpoints. Instance retention is complete; bundle retention depends on the publishing work. The current in-memory version registry is useful for installed definitions but does not provide the planned durable publishing lifecycle.
+The outgoing `IxIFlow.Webhooks` publisher does not provide incoming trigger endpoints. Instance retention is complete; bundle retention depends on the publishing work. The current in-memory version registry supports registration, lookup/listing, deactivation and default metadata for installed definitions; the durable publishing lifecycle remains planned.
 
 ## After 1.0
 

@@ -58,6 +58,7 @@ Activity libraries can reference only `IxIFlow.Abstractions`. Add `IxIFlow.Autho
 
 The complete activity and data types are in [Quote.cs](samples/IxIFlow.Samples/Quote.cs); copy them into your application or run the sample project. `AddFee` declares a required customer input, an in-out amount and a typed decimal default of 2.50 for its fee. The same amount is mapped into and out of the activity:
 
+<!-- snippet: tests/IxIFlow.Samples.Tests/ReadmeExamples.cs -->
 ```csharp
 using IxIFlow.Builders;
 using IxIFlow.Core;
@@ -87,12 +88,13 @@ Console.WriteLine(((QuoteData)result.WorkflowData!).Amount); // 12.50
 
 This snippet is compiled and exercised in [ReadmeExamples.cs](tests/IxIFlow.Samples.Tests/ReadmeExamples.cs). Parameterless activities can be constructed by the executor; register activities with constructor dependencies in DI.
 
-`RunAsync` returns when the instance is idle, including at a wait or when operator resolution is needed. Check `Status`/`IsSuccess` and read the returned `WorkflowData`. `StartAsync` returns an instance ID after saving the start; `AwaitAsync` waits for idle or terminal state. A caller's cancellation token can interrupt the current run while leaving saved state recoverable; `CancelAsync` requests durable workflow cancellation. For a queued `StartAsync`, the host owns the run and the token only stops waiting for acceptance.
+`RunAsync` returns when the instance is idle, including at a wait or when operator resolution is needed. Check `Status`/`IsSuccess` and read the returned `WorkflowData`. `StartAsync` normally returns an instance ID after saving the start; inside a host slot it runs inline until the nested run ends. `AwaitAsync` waits for idle or terminal state. A caller's cancellation token can interrupt the current run while leaving saved state recoverable; `CancelAsync` requests durable workflow cancellation. For a queued `StartAsync`, the host owns the run and the token only stops waiting for acceptance.
 
 ## YAML authoring
 
 The engine package includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files automatically. This delay example is [reminder.workflow.yaml](samples/IxIFlow.Samples/Definitions/reminder.workflow.yaml), compiled in the sample project and compared with its C# twin:
 
+<!-- snippet: samples/IxIFlow.Samples/Definitions/reminder.workflow.yaml -->
 ```yaml
 # Park for an hour, then stamp the reminder with the workflow clock.
 workflow:
@@ -136,7 +138,7 @@ Choose one store through the builder returned by `AddIxIFlow()`. All provider ex
 
 [Hosting.cs](samples/IxIFlow.Samples/Hosting.cs) compiles all four registrations. Provider schemas are created on first use. SQLite requires a file connection string and exclusive ownership; asynchronously dispose its service provider before reopening the file. SQL Server and PostgreSQL use database time for deadlines; memory and SQLite use the registered `TimeProvider`.
 
-Before 1.0, any store schema change requires a fresh database. Recreate existing databases when the schema changes; the stores do not upgrade existing tables or add missing columns or indexes.
+Before 1.0, any store schema change requires a fresh database. Schema creation supplies whole tables and their indexes; it does not upgrade existing tables or repair their missing indexes. Recreate databases from an earlier schema build. SQL Server IDs use `Latin1_General_100_BIN2` to preserve case distinctions; see [stores](docs/stores.md) for the affected columns.
 
 Definition and version registries are currently in memory. Every host that may resume an instance must load the matching definitions and activity code. Runtime fingerprints verify definition compatibility, resolving IL member tokens rather than relying on token numbers; they are not yet the planned published artifact identity.
 
@@ -154,6 +156,7 @@ Terminal results remain readable for `FinishedInstanceRetention` (30 days by def
 
 `AddIxIFlow()` registers the in-process host and recovery scanner as hosted services. Use the generic host for background recovery and graceful shutdown:
 
+<!-- snippet: samples/IxIFlow.Samples/DocumentationExamples.cs#hosted-run -->
 ```csharp
 using IxIFlow.Core;
 using IxIFlow.Extensions;
@@ -177,7 +180,7 @@ finally
 }
 ```
 
-The equivalent is compiled and exercised through [Hosting.cs](samples/IxIFlow.Samples/Hosting.cs) and [ReadmeExamples.cs](tests/IxIFlow.Samples.Tests/ReadmeExamples.cs). `Slots` limits host work slots; nested calls can run inline in their parent's slot. Due work is recovered through local timers and store polling. Long retry backoffs park the instance and release the slot. Shutdown drains work before its configured timeout. This is the current in-process host; process executors and the coordinator are future work.
+This host lifecycle is compiled in [DocumentationExamples.cs](samples/IxIFlow.Samples/DocumentationExamples.cs) and exercised by [DocumentationTests.cs](tests/IxIFlow.Samples.Tests/DocumentationTests.cs). `Slots` limits host work slots; nested calls can run inline in their parent's slot. Due work is recovered through local timers and store polling. Long retry backoffs park the instance and release the slot. Shutdown drains work before its configured timeout. This is the current in-process host; process executors and the coordinator are future work.
 
 For time-dependent mappings and conditions, use `ctx.UtcNow`. Tests can register a `FakeTimeProvider`, as in [the sample tests](tests/IxIFlow.Samples.Tests/SampleTests.cs). Attach OpenTelemetry to source/meter `IxIFlow`, or use the standard .NET listeners shown in [Observability.cs](samples/IxIFlow.Samples/Observability.cs).
 
@@ -188,11 +191,11 @@ The following work is planned for 1.0 and is **not yet available**, or has an im
 | Area | Remaining 1.0 work |
 | --- | --- |
 | Execution and isolation | Public executor message contract; local-first process slots, pipe transport, process liveness and resource limits, fenced process crash reports; commit resend backoff and host validation of message size/metadata |
-| Coordinator and placement | Stateless coordinators, host capabilities and workflow demands, matching and affinity, visible unschedulable work, registry/discovery, multiple coordinators, loss handling and secured links; batched host lease renewal and process-slot activity accounting |
+| Coordinator and placement | Cross-host scheduling through stateless coordinators, host capabilities and workflow demands, matching and affinity, visible unschedulable work, registry/discovery, multiple coordinators, loss handling and secured links; batched host lease renewal and process-slot activity accounting |
 | Events and integrations | Incoming webhook/HTTP trigger package and conformance; child placement demands. Durable inboxes, reply tokens, child instances, suggested wait payloads, retained results, public outbox publishers and outgoing signed webhooks are implemented |
 | Publishing and versioning | Immutable workflow bundles, artifact storage and verification, dependency resolution and pinning, isolated assemblies per version, host bundle fetching, declared canonical artifact fingerprints and compatibility/migration policy; draft/publish and version lifecycle APIs |
 | Authoring and catalog | Broader catalog API, code-defined workflows in the catalog, published code activities, inline calls, explicit workflow input/output contracts, YAML code activities and planned local registration support beyond the current installed-assembly registry; Native AOT publish/run validation. Full YAML construct coverage is implemented |
-| Editor support | The JSON Schema for workflow YAML ships in the package. A visual editor and debugger integration are still being developed |
+| Editor support | The JSON Schema for workflow YAML ships in the package. A visual editor and debugger integration remain planned |
 | Debugger and audit | Breakpoints, all-stop pause, stepping including loops, audited data edits, paused timer behavior, Debug Adapter Protocol and replay. Separate committed transition/event/operator traces, snapshots, scoped logs and OpenTelemetry already work; transitions that never commit do not enter saved history |
 | Management and operations | Management API, operator listings, unused bundle retention, large-payload storage, residency policies and redaction. Instance retention, tombstones and outbox age/delivery telemetry are implemented |
 | Verification | Complete cross-configuration conformance and fault injection for the coordinator, process executors and nested joins as those paths land |
