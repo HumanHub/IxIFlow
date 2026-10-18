@@ -7,7 +7,7 @@
     <Description>SQLite store for single-host durable IxIFlow workflows.</Description>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
+    <ProjectReference Include="..\IxIFlow.Relational\IxIFlow.Relational.csproj" />
     <PackageReference Include="Dapper" Version="2.1.89" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.13" />
   </ItemGroup>
