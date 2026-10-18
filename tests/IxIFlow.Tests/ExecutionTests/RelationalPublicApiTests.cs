@@ -18,7 +18,7 @@ public class RelationalPublicApiTests
             constructor => Assert.True(constructor.IsAssembly));
         Assert.Single(protocol.GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic));
 
-        Type[] contracts = [typeof(IWorkflowStateRepository), typeof(IWorkflowCompletionOutbox), typeof(IWorkflowInbox)];
+        Type[] contracts = [typeof(IWorkflowStateRepository), typeof(IWorkflowOutbox), typeof(IWorkflowInbox)];
         var implementations = contracts.SelectMany(contract => protocol.GetInterfaceMap(contract).TargetMethods).ToHashSet();
         var members = protocol.GetMembers(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.DeclaredOnly);
         Assert.Equal(implementations.Count, members.Length);

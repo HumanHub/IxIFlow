@@ -1586,6 +1586,20 @@ public class StructuredTryWaitTests
 
     public sealed class BoundedCheckpointStore : IWorkflowStateRepository
     {
+        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
+            _inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
+        public Task UnregisterPublisherAsync(string name) => _inner.UnregisterPublisherAsync(name);
+        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
+            _inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
+        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
+            _inner.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration);
+        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result) =>
+            _inner.SettleDeliveryAsync(eventId, publisherName, token, result);
+        public Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName) =>
+            _inner.GetDeliveryAsync(eventId, publisherName);
+        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
+            _inner.GetPublisherAsync(publisherName);
+
         public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
             _inner.AppendEventAsync(workflowEvent);
         public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>

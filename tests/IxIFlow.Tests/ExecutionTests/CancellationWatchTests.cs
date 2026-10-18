@@ -279,6 +279,20 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
     /// <summary>A store that leaves the batch read to the interface's fallback.</summary>
     private sealed class SingleReadStore : IWorkflowStateRepository
     {
+        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
+            throw new NotSupportedException();
+        public Task UnregisterPublisherAsync(string name) => throw new NotSupportedException();
+        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
+            throw new NotSupportedException();
+        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
+            throw new NotSupportedException();
+        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result) =>
+            throw new NotSupportedException();
+        public Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName) =>
+            throw new NotSupportedException();
+        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
+            throw new NotSupportedException();
+
         public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
             throw new NotSupportedException();
         public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>

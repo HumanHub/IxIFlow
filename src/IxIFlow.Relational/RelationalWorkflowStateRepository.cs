@@ -7,8 +7,8 @@ using IxIFlow.Core;
 namespace IxIFlow.Relational;
 
 /// <summary>Runs the relational store protocol. Providers supply SQL and database behavior.</summary>
-public abstract class RelationalWorkflowStateRepository :
-    IWorkflowStateRepository, IWorkflowCompletionOutbox, IWorkflowInbox
+public abstract partial class RelationalWorkflowStateRepository :
+    IWorkflowStateRepository
 {
     // Only first-party friend assemblies can construct or derive from this protocol.
     internal RelationalWorkflowStateRepository() { }
@@ -16,7 +16,7 @@ public abstract class RelationalWorkflowStateRepository :
     /// <summary>The connection, transaction and admission policy for a store operation.</summary>
     internal enum Operation
     {
-        Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark, OutboxRelease,
+        Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark,
         CancellationRequest, CancellationRead, LeaseClaim, LeaseRenew, LeaseRelease,
         Append, InboxPage, Save, Commit, Delete
     }
@@ -24,13 +24,14 @@ public abstract class RelationalWorkflowStateRepository :
     /// <summary>SQL steps in the shared protocol. Optional steps return null.</summary>
     internal enum Statement
     {
-        Unpublished, UnpublishedBatch, ClaimCompletions, MarkCompletion, ReleaseCompletion,
+        OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
+        InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher,
         Cancellation, Cancellations, Runnable, Running, ClaimLease, RenewLease, ReleaseLease,
         LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
         SaveParts, Save, ReadInstance, ReadParts, Query, ByName, ByStatus, ByCorrelation, ByParent,
-        UnpublishedFilter, ClaimedFilter, LockAndReadPage, DeleteLease,
+        LockAndReadPage, DeleteLease,
         DeleteState, DeleteParentInbox, DeleteRows, Trace
     }
 
@@ -235,73 +236,6 @@ public abstract class RelationalWorkflowStateRepository :
         var row = await read.ReadSingleOrDefaultAsync<T>();
         var now = clock ? UsesLocalClock ? LocalNow() : ReadTime(await read.ReadSingleAsync<DateTime>()) : default;
         return (row, now);
-    }
-
-    public async Task<WorkflowInstance?> GetUnpublishedCompletionAsync(string instanceId)
-    {
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        await using var transaction = await BeginTransactionAsync(connection, Operation.OutboxRead);
-        var row = await connection.QuerySingleOrDefaultAsync<StoredRow>(RequiredSql(Statement.Unpublished),
-            new { InstanceId = instanceId }, transaction);
-        return row == null ? null : (await AssembleAsync(connection, [row], transaction,
-            RequiredSql(Statement.UnpublishedFilter), null)).SingleOrDefault();
-    }
-
-    public async Task<IEnumerable<WorkflowInstance>> GetUnpublishedCompletionsAsync()
-    {
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        await using var transaction = await BeginTransactionAsync(connection, Operation.OutboxRead);
-        var rows = await connection.QueryAsync<StoredRow>(RequiredSql(Statement.UnpublishedBatch), transaction: transaction);
-        return await AssembleAsync(connection, rows.ToArray(), transaction, RequiredSql(Statement.UnpublishedFilter), null);
-    }
-
-    public async Task<IEnumerable<WorkflowInstance>> ClaimUnpublishedCompletionsAsync(
-        string? instanceId, string token, TimeSpan duration)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(token);
-        if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
-            throw new ArgumentOutOfRangeException(nameof(duration));
-        await EnsureSchemaAsync();
-        return await ExecuteOperationAsync<IEnumerable<WorkflowInstance>>(Operation.OutboxClaim, async () =>
-        {
-            await using var connection = await OpenConnectionAsync();
-            await using var transaction = await BeginTransactionAsync(connection, Operation.OutboxClaim);
-            var rows = await connection.QueryAsync<StoredRow>(RequiredSql(Statement.ClaimCompletions),
-                ClaimParameters(instanceId, token, duration), transaction);
-            var instances = await AssembleAsync(connection, rows.ToArray(), transaction,
-                RequiredSql(Statement.ClaimedFilter), new { Token = token });
-            await CompleteAsync(transaction);
-            return instances;
-        });
-    }
-
-    public async Task<bool> MarkCompletionPublishedAsync(string instanceId, long revision, string token)
-    {
-        await EnsureSchemaAsync();
-        return await ExecuteOperationAsync(Operation.OutboxMark, async () =>
-        {
-            await using var connection = await OpenConnectionAsync();
-            await using var transaction = await BeginTransactionAsync(connection, Operation.OutboxMark);
-            var changed = await connection.ExecuteAsync(RequiredSql(Statement.MarkCompletion),
-                WithLocalTime(new { InstanceId = instanceId, Revision = revision, Token = token }), transaction);
-            await CompleteAsync(transaction);
-            return changed == 1;
-        });
-    }
-
-    public async Task ReleaseCompletionClaimAsync(string instanceId, string token)
-    {
-        await EnsureSchemaAsync();
-        await ExecuteOperationAsync(Operation.OutboxRelease, async () =>
-        {
-            await using var connection = await OpenConnectionAsync();
-            await using var transaction = await BeginTransactionAsync(connection, Operation.OutboxRelease);
-            await connection.ExecuteAsync(RequiredSql(Statement.ReleaseCompletion), new { InstanceId = instanceId, Token = token }, transaction);
-            await CompleteAsync(transaction);
-            return true;
-        });
     }
 
     public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
@@ -610,6 +544,9 @@ public abstract class RelationalWorkflowStateRepository :
             }
             else
                 await connection.ExecuteAsync(RequiredSql(Statement.Save), parameters, transaction);
+            if (WorkflowStoreRules.IsTerminal(instance.Status))
+                await RecordCompletionAsync(connection, transaction, instance, 0,
+                    await OutboxNowAsync(connection, transaction));
             await CompleteAsync(transaction);
             return true;
         });
@@ -739,6 +676,7 @@ public abstract class RelationalWorkflowStateRepository :
             ? RequiredSql(Statement.InsertCommit)
             : RequiredSql(Statement.UpdateCommit), values, transaction);
         await ApplyPartsAsync(connection, transaction, commit);
+        await RecordCompletionAsync(connection, transaction, WorkflowStoreRules.IsTerminal(snapshot.Status) ? commit.ReadTrunk() : null, revision, now);
         if (commit.TraceEntries.Count > 0)
             await AppendTraceAsync(connection, transaction, commit.InstanceId, commit.TraceEntries);
         // The lease row is written only when something changes, so most commits touch only their
@@ -746,8 +684,7 @@ public abstract class RelationalWorkflowStateRepository :
         var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
         var releases = (snapshot.Status != WorkflowStatus.Running || parked) && !keepsLease;
         // A finished instance takes no more events; those still pending are closed, and so are its waits.
-        if (snapshot.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
-            WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
+        if (WorkflowStoreRules.IsTerminal(snapshot.Status))
             await connection.ExecuteAsync(RequiredSql(Statement.FinishInbox), WithTimes(WithIntegers(new
             {
                 snapshot.InstanceId
@@ -844,10 +781,6 @@ public abstract class RelationalWorkflowStateRepository :
         "close_reason AS CloseReason, closed_at_utc AS ClosedAtUtc";
     internal const string RowColumns =
         "instance_id AS InstanceId, state_json AS StateJson, runnable_at_utc AS RunnableAtUtc, revision AS Revision";
-
-    internal const string UnpublishedCompletion =
-        "AND status IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut') AND NOT completion_published";
-
 
     internal const string StampedRowColumns = RowColumns + ", incarnation AS Incarnation";
 
@@ -1090,8 +1023,7 @@ public abstract class RelationalWorkflowStateRepository :
     private static (string ParentId, string WaitId)? WaitingParent(string? json) =>
         json != null && JsonSerializer.Deserialize<WorkflowInstance>(json) is
         { ParentInstanceId: { } parentId, ParentWaitId: { } waitId } instance &&
-        instance.Status is not (WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
-            WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
+        !WorkflowStoreRules.IsTerminal(instance.Status)
             ? (parentId, waitId)
             : null;
     private sealed class StoredRow
