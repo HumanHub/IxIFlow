@@ -15,7 +15,7 @@ public enum RetentionScenario
     RemovalAfterRetention, PendingDeliveriesKeepInstance, DependentRowsGone, TombstoneRefusals,
     TombstoneExpiry, ConcurrentPurge, AwaitAfterFinish, AwaitAfterRemoval, RunningChildKeepsParent,
     ChildCompletionSurvivesRemoval, BoundedAndCancelled, StoreClockAndReplay, ChildStartRefusesTombstone, DeliveredOutboxRowsGone,
-    ExplicitDeleteLeavesTombstone, DecoratedStoreKeepsRetention, UpdateKeepsParent, EpochSurvivesReuse,
+    ExplicitDeleteLeavesTombstone, DecoratedStoreKeepsRetention, UpdateKeepsParent, IncarnationFencesReuse,
     PurgeMeetsStart, PurgeMeetsChildStart, PurgeMeetsEvent
 }
 
@@ -90,7 +90,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
             case RetentionScenario.ExplicitDeleteLeavesTombstone: await ExplicitDeleteLeavesTombstone(); break;
             case RetentionScenario.DecoratedStoreKeepsRetention: await DecoratedStoreKeepsRetention(); break;
             case RetentionScenario.UpdateKeepsParent: await UpdateKeepsParent(); break;
-            case RetentionScenario.EpochSurvivesReuse: await EpochSurvivesReuse(); break;
+            case RetentionScenario.IncarnationFencesReuse: await IncarnationFencesReuse(); break;
             case RetentionScenario.PurgeMeetsStart:
             case RetentionScenario.PurgeMeetsChildStart:
             case RetentionScenario.PurgeMeetsEvent: await PurgeMeetsWriter(scenario); break;
@@ -492,7 +492,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         Assert.NotNull(await store.GetWorkflowInstanceAsync(parent.InstanceId));
     }
 
-    private async Task EpochSurvivesReuse()
+    private async Task IncarnationFencesReuse()
     {
         var instance = Instance(WorkflowStatus.Running);
         await Commit(instance);
@@ -507,11 +507,13 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var replacement = InstanceWithId(instance.InstanceId);
         await Commit(replacement);
         var current = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "current", TimeSpan.FromMinutes(1)))!;
-        Assert.True(current.Epoch > previous.Epoch);
+        Assert.Equal(1, current.Epoch);
+        Assert.NotEqual(instance.Incarnation, replacement.Incarnation);
+        Assert.Equal(previous.Epoch, current.Epoch);
         Assert.False(await store.ReleaseExecutionLeaseAsync(instance.InstanceId, "previous"));
         Assert.False(await store.RenewExecutionLeaseAsync(instance.InstanceId, "previous", TimeSpan.FromMinutes(1)));
         Assert.Equal(WorkflowCommitStatus.StaleEpoch, (await store.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(replacement, previous.Epoch, replacement.Revision))).Status);
+            CheckpointCommit.Create(instance, previous.Epoch, instance.Revision))).Status);
     }
 
     private async Task PurgeMeetsWriter(RetentionScenario scenario)
