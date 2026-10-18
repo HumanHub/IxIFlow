@@ -8,7 +8,6 @@ definitions:
     reason: answer
     output:
       - source: Value
-        sourceContext: event
         to: { kind: path, path: workflow.Value }
   - kind: invokeWorkflow
     id: child
@@ -18,5 +17,4 @@ definitions:
         from: { kind: path, path: workflow.Value }
     output:
       - source: Result
-        sourceContext: workflow
         to: { kind: path, path: workflow.Result }
