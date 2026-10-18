@@ -13,7 +13,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// lease back in its commit and the host resumes it on time (C-03, C-12).
 /// </summary>
 [Trait("Feature", "timers")]
-public sealed class ParkedRunTests
+public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunTests>>
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
 
@@ -109,6 +109,16 @@ public sealed class ParkedRunTests
     public Task PostgreSqlStoreParksAtomically() =>
         VerifyParking(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<ParkedRunTests>.ConnectionString));
 
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "C-03")]
+    public async Task SqliteStoreParksAtomically()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ParkedRunTests>.ConnectionString);
+        await VerifyParking(repository);
+    }
+
     private static async Task VerifyParking(IWorkflowStateRepository store)
     {
         var parkedId = Guid.NewGuid().ToString("N");
@@ -171,6 +181,19 @@ public sealed class ParkedRunTests
         VerifyRunnableTimes(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<ParkedRunTests>.ConnectionString));
 
     // On a fake clock the delays end by advancing it; SQL Server's clock is polled until they have ended.
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "C-01")]
+    [Trait("Spec", "C-05")]
+    public async Task SqliteStoreKeepsOneRunnableTime()
+    {
+        var time = new FakeTimeProvider();
+        await using var repository = new SqliteWorkflowStateRepository(
+            SqliteTestDatabase<ParkedRunTests>.ConnectionString, time);
+        await VerifyRunnableTimes(repository, time);
+    }
     private static async Task VerifyRunnableTimes(IWorkflowStateRepository store, FakeTimeProvider? time = null)
     {
         var ids = Enumerable.Range(0, 4).Select(_ => Guid.NewGuid().ToString("N")).ToArray();

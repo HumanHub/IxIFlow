@@ -11,7 +11,7 @@ namespace IxIFlow.Core.Runtime;
 /// instances whose leases asked, so a busy owner learns that events arrived (D-32). The watch needs a
 /// singleton store.
 /// </summary>
-internal sealed class CancellationWatch
+internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
 {
     private static readonly TimeSpan MaximumInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(10);
@@ -21,6 +21,9 @@ internal sealed class CancellationWatch
     private readonly ILogger _logger;
     private readonly object _lock = new();
     private readonly Dictionary<string, List<Subscriber>> _watched = new(StringComparer.Ordinal);
+    private readonly CancellationTokenSource _stop = new();
+    private readonly Dictionary<Task, string> _reads = [];
+    private bool _disposed;
     private Task? _loop;
     // A read past its deadline keeps running in the store; the next pass waits for it again instead
     // of queuing another call behind it.
@@ -51,6 +54,7 @@ internal sealed class CancellationWatch
             interval < MaximumInterval ? interval : MaximumInterval, Now, arrivals);
         lock (_lock)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (!_watched.TryGetValue(instanceId, out var subscribers))
                 _watched[instanceId] = subscribers = [];
             subscribers.Add(subscriber);
@@ -73,7 +77,7 @@ internal sealed class CancellationWatch
     // The loop ends when nothing is watched; the next registration starts it again.
     private async Task RunAsync()
     {
-        while (true)
+        while (!_stop.IsCancellationRequested)
         {
             string[] instanceIds;
             TimeSpan interval;
@@ -92,24 +96,40 @@ internal sealed class CancellationWatch
             {
                 await ReadAsync(instanceIds);
             }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+            {
+                return;
+            }
             catch (Exception error)
             {
                 // Keep watching: a fault here must not leave leases without cancellation or loss.
                 _logger.LogError(error, "The cancellation watch failed");
             }
-            await Task.Delay(interval, _time);
+            try
+            {
+                await Task.Delay(interval, _time, _stop.Token);
+            }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+            {
+                return;
+            }
         }
     }
 
     private async Task ReadAsync(string[] watchedIds)
     {
-        _read ??= (_store.GetCancellationRequestsAsync(watchedIds), watchedIds, Now);
+        _read ??= (TrackRead(_store.GetCancellationRequestsAsync(watchedIds),
+            $"cancellation requests for {string.Join(", ", watchedIds)}"), watchedIds, Now);
         var (read, instanceIds, readAt) = _read.Value;
         IReadOnlyDictionary<string, CancellationReason> requests;
         try
         {
-            requests = await read.WaitAsync(ReadTimeout, _time);
+            requests = await read.WaitAsync(ReadTimeout, _time, _stop.Token);
             _read = null;
+        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception error)
         {
@@ -149,12 +169,17 @@ internal sealed class CancellationWatch
             return;
         try
         {
-            var sequences = await _store.GetInboxSequencesAsync(
-                    listening.Select(item => item.InstanceId).Distinct(StringComparer.Ordinal).ToArray())
-                .WaitAsync(ReadTimeout, _time);
+            var sequences = await TrackRead(_store.GetInboxSequencesAsync(
+                    listening.Select(item => item.InstanceId).Distinct(StringComparer.Ordinal).ToArray()),
+                    $"inbox sequences for {string.Join(", ", listening.Select(item => item.InstanceId))}")
+                .WaitAsync(ReadTimeout, _time, _stop.Token);
             foreach (var subscriber in listening)
                 if (sequences.TryGetValue(subscriber.InstanceId, out var sequence))
                     subscriber.Arrivals!(sequence);
+        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception error)
         {
@@ -182,6 +207,55 @@ internal sealed class CancellationWatch
             return instanceIds
                 .SelectMany(instanceId => _watched.TryGetValue(instanceId, out var items) ? items : [])
                 .ToArray();
+    }
+
+    // A timed-out read still owns its connection. Keep it until it actually finishes, so
+    // asynchronous provider disposal can join store calls within its shutdown bound.
+    private Task<T> TrackRead<T>(Task<T> read, string description)
+    {
+        lock (_lock)
+            _reads[read] = description;
+        _ = read.ContinueWith(finished =>
+        {
+            lock (_lock)
+                _reads.Remove(finished);
+            _ = finished.Exception; // Observe failures even if shutdown had to abandon the read.
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return read;
+    }
+
+    public void Dispose()
+    {
+        lock (_lock)
+            _disposed = true;
+        _stop.Cancel();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Dispose();
+        Task? loop;
+        lock (_lock)
+            loop = _loop;
+        if (loop != null)
+            await loop;
+        KeyValuePair<Task, string>[] reads;
+        lock (_lock)
+            reads = _reads.ToArray();
+        try
+        {
+            await Task.WhenAll(reads.Select(read => read.Key)).WaitAsync(ReadTimeout, _time);
+        }
+        catch (TimeoutException) when (reads.Any(read => !read.Key.IsCompleted))
+        {
+            var abandoned = reads.Where(read => !read.Key.IsCompleted).Select(read => read.Value).ToArray();
+            _logger.LogWarning("Abandoned {Count} outstanding cancellation watch store reads after {Timeout}: {Reads}",
+                abandoned.Length, ReadTimeout, string.Join("; ", abandoned));
+        }
+        catch
+        {
+            // Failed calls have also finished and released their connections.
+        }
     }
 
     private sealed class Subscriber(CancellationWatch watch, string instanceId,

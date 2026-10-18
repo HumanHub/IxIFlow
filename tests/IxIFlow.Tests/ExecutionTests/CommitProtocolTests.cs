@@ -14,7 +14,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// </summary>
 [Trait("Feature", "durability")]
 [Trait("Spec", "A-03")]
-public sealed class CommitProtocolTests
+public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<CommitProtocolTests>>
 {
     [Fact]
     public Task MemoryEpochsRiseAndFenceFormerOwners() =>
@@ -31,6 +31,15 @@ public sealed class CommitProtocolTests
         VerifyEpochFencing(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CommitProtocolTests>.ConnectionString));
 
     [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteEpochsRiseAndFenceFormerOwners()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<CommitProtocolTests>.ConnectionString);
+        await VerifyEpochFencing(repository);
+    }
+
+    [Fact]
     public Task MemoryStaleEpochAndRevisionConflictAreDistinct() =>
         VerifyDistinctResults(new InMemoryWorkflowStateRepository());
 
@@ -43,6 +52,15 @@ public sealed class CommitProtocolTests
     [Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSqlStaleEpochAndRevisionConflictAreDistinct() =>
         VerifyDistinctResults(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CommitProtocolTests>.ConnectionString));
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteStaleEpochAndRevisionConflictAreDistinct()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<CommitProtocolTests>.ConnectionString);
+        await VerifyDistinctResults(repository);
+    }
 
     [Fact]
     public async Task StoreRetryResendsTheSameCommit()

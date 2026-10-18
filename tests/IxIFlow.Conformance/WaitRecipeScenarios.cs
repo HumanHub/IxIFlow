@@ -314,7 +314,7 @@ public sealed class WaitRecipeScenarios
     }
 
     [Theory]
-    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
     public async Task AHostDiesAfterSendingAndRecoverySendsTheSameToken(string profile)
     {
         var mailer = new RecordingMailer();

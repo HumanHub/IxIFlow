@@ -11,7 +11,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// and the store appends them, in order, to the instance's trace in the commit's own transaction.
 /// </summary>
 [Trait("Feature", "tracing")]
-public sealed class TraceSinkTests
+public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkTests>>
 {
     [Fact]
     [Trait("Spec", "G-01")]
@@ -144,62 +144,12 @@ public sealed class TraceSinkTests
     [SqlServerFact]
     [Trait("Spec", "G-01")]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlServerStoresTheTraceInOrderOncePerCommit()
-    {
-        var repository = new SqlWorkflowStateRepository(SqlTestDatabase<TraceSinkTests>.ConnectionString);
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace" };
-        try
-        {
-            var first = CheckpointCommit.Create(instance, 0, 0, traceEntries:
-                Enumerable.Range(0, 1_500).Select(index => new ExecutionTraceEntry { ActivityName = $"step-{index}" })
-                    .ToArray());
-            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
-            Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
-            instance.Revision = 1;
-            var second = CheckpointCommit.Create(instance, 0, 1, traceEntries:
-                [new ExecutionTraceEntry { ActivityName = "last" }]);
-            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(second)).Status);
-
-            var page = await repository.GetTraceAsync(instance.InstanceId, afterSequence: 1_498, limit: 10);
-            Assert.Equal([1_499L, 1_500, 1_501], page.Select(entry => entry.Sequence));
-            Assert.Equal(["step-1498", "step-1499", "last"], page.Select(entry => entry.Entry.ActivityName));
-        }
-        finally
-        {
-            await repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
-        }
-        Assert.Empty(await repository.GetTraceAsync(instance.InstanceId));
-    }
+    public Task SqlServerStoresTheTraceInOrderOncePerCommit() => VerifyTraceOrderOncePerCommit(new SqlWorkflowStateRepository(SqlTestDatabase<TraceSinkTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Spec", "G-01")]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlStoresTheTraceInOrderOncePerCommit()
-    {
-        var repository = new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<TraceSinkTests>.ConnectionString);
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace" };
-        try
-        {
-            var first = CheckpointCommit.Create(instance, 0, 0, traceEntries:
-                Enumerable.Range(0, 1_500).Select(index => new ExecutionTraceEntry { ActivityName = $"step-{index}" })
-                    .ToArray());
-            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
-            Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
-            instance.Revision = 1;
-            var second = CheckpointCommit.Create(instance, 0, 1, traceEntries:
-                [new ExecutionTraceEntry { ActivityName = "last" }]);
-            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(second)).Status);
-
-            var page = await repository.GetTraceAsync(instance.InstanceId, afterSequence: 1_498, limit: 10);
-            Assert.Equal([1_499L, 1_500, 1_501], page.Select(entry => entry.Sequence));
-            Assert.Equal(["step-1498", "step-1499", "last"], page.Select(entry => entry.Entry.ActivityName));
-        }
-        finally
-        {
-            await repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
-        }
-        Assert.Empty(await repository.GetTraceAsync(instance.InstanceId));
-    }
+    public Task PostgreSqlStoresTheTraceInOrderOncePerCommit() => VerifyTraceOrderOncePerCommit(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<TraceSinkTests>.ConnectionString));
 
     private static WorkflowDefinition TwoSteps(string name) =>
         Workflow.Create<TraceData>(name).Step<Noop>().WaitFor<Go>("go").Step<Noop>().Build();
@@ -266,4 +216,41 @@ public sealed class TraceSinkTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult<ActivityRecoveryResult<bool>>(new ActivityRecoveryResult<bool>.Execute());
     }
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteStoresTheTraceInOrderOncePerCommit()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<TraceSinkTests>.ConnectionString);
+        await VerifyTraceOrderOncePerCommit(repository);
+    }
+
+
+    private static async Task VerifyTraceOrderOncePerCommit(IWorkflowStateRepository repository)
+    {
+        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace" };
+        try
+        {
+            var first = CheckpointCommit.Create(instance, 0, 0, traceEntries:
+                Enumerable.Range(0, 1_500).Select(index => new ExecutionTraceEntry { ActivityName = $"step-{index}" })
+                    .ToArray());
+            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
+            Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
+            instance.Revision = 1;
+            var second = CheckpointCommit.Create(instance, 0, 1, traceEntries:
+                [new ExecutionTraceEntry { ActivityName = "last" }]);
+            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(second)).Status);
+
+            var page = await repository.GetTraceAsync(instance.InstanceId, afterSequence: 1_498, limit: 10);
+            Assert.Equal([1_499L, 1_500, 1_501], page.Select(entry => entry.Sequence));
+            Assert.Equal(["step-1498", "step-1499", "last"], page.Select(entry => entry.Entry.ActivityName));
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
+        }
+        Assert.Empty(await repository.GetTraceAsync(instance.InstanceId));
+    }
+
+
 }

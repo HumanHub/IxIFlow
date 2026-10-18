@@ -11,7 +11,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// A commit that has not read every arrival keeps the instance runnable and does not park.
 /// </summary>
 [Trait("Feature", "waits")]
-public sealed class InboxStoreTests
+public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStoreTests>>
 {
     [Fact]
     [Trait("Spec", "D-02")]
@@ -28,6 +28,16 @@ public sealed class InboxStoreTests
     [Trait("Spec", "D-02")]
     public Task PostgreSqlStoreAppendsEvents() =>
         VerifyAppend(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-02")]
+    public async Task SqliteStoreAppendsEvents()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<InboxStoreTests>.ConnectionString);
+        await VerifyAppend(repository);
+    }
 
     private static async Task VerifyAppend(IWorkflowStateRepository store)
     {
@@ -90,6 +100,16 @@ public sealed class InboxStoreTests
     [Trait("Spec", "D-04")]
     public Task PostgreSqlStoreSettlesEventsInTheCommit() =>
         VerifySettlement(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-04")]
+    public async Task SqliteStoreSettlesEventsInTheCommit()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<InboxStoreTests>.ConnectionString);
+        await VerifySettlement(repository);
+    }
 
     private static async Task VerifySettlement(IWorkflowStateRepository store)
     {
@@ -163,6 +183,16 @@ public sealed class InboxStoreTests
     public Task PostgreSqlStoreDoesNotParkPastAnUnreadEvent() =>
         VerifyNoParkPastUnread(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
 
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-04")]
+    public async Task SqliteStoreDoesNotParkPastAnUnreadEvent()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<InboxStoreTests>.ConnectionString);
+        await VerifyNoParkPastUnread(repository);
+    }
+
     private static async Task VerifyNoParkPastUnread(IWorkflowStateRepository store)
     {
         var inbox = (IWorkflowInbox)store;
@@ -220,6 +250,16 @@ public sealed class InboxStoreTests
     public Task PostgreSqlStoreCloses() =>
         VerifyClosed(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
 
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-02")]
+    public async Task SqliteStoreCloses()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<InboxStoreTests>.ConnectionString);
+        await VerifyClosed(repository);
+    }
+
     private static async Task VerifyClosed(IWorkflowStateRepository store)
     {
         var inbox = (IWorkflowInbox)store;
@@ -268,6 +308,16 @@ public sealed class InboxStoreTests
     [Trait("Spec", "D-03")]
     public Task PostgreSqlStoreRefusesEventsNoWaitCanTake() =>
         VerifyRefusedOnArrival(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-03")]
+    public async Task SqliteStoreRefusesEventsNoWaitCanTake()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<InboxStoreTests>.ConnectionString);
+        await VerifyRefusedOnArrival(repository);
+    }
 
     private static async Task VerifyRefusedOnArrival(IWorkflowStateRepository store)
     {
@@ -339,6 +389,16 @@ public sealed class InboxStoreTests
     [Trait("Spec", "D-03")]
     public Task PostgreSqlStoreOpensWaitsAtTheInboxSequence() =>
         VerifyWaitSequence(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-03")]
+    public async Task SqliteStoreOpensWaitsAtTheInboxSequence()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<InboxStoreTests>.ConnectionString);
+        await VerifyWaitSequence(repository);
+    }
 
     private static async Task VerifyWaitSequence(IWorkflowStateRepository store)
     {
@@ -431,6 +491,18 @@ public sealed class InboxStoreTests
     [Trait("Spec", "D-04")]
     public Task PostgreSqlStoreSettlesALargeBacklogInOneCommit() =>
         VerifyLargeCommit(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
+
+    // More events and waits than one SQL statement can carry parameters for.
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-04")]
+    public async Task SqliteStoreSettlesALargeBacklogInOneCommit()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<InboxStoreTests>.ConnectionString);
+        await VerifyLargeCommit(repository);
+    }
 
     // More events and waits than one SQL statement can carry parameters for.
     private static async Task VerifyLargeCommit(IWorkflowStateRepository store)
@@ -527,75 +599,28 @@ public sealed class InboxStoreTests
 
     // SQL Server stores a child's start as the parent's commit carries it, without reading and writing it again; the
     // child's revision and runnable time are in their columns.
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-06")]
+    public async Task SqliteStoreStartsAndCompletesChildrenInTheirCommits()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<InboxStoreTests>.ConnectionString);
+        await VerifyChildren(repository);
+    }
+
+    // SQL Server stores a child's start as the parent's commit carries it, without reading and writing it again; the
+    // child's revision and runnable time are in their columns.
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-06")]
-    public async Task SqlStoreKeepsAChildStartAsItsPayloadCarriesIt()
-    {
-        var store = new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString);
-        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
-        var childId = Guid.NewGuid().ToString("N");
-        var wait = $"{parentId}-child";
-        try
-        {
-            var parent = (await store.GetWorkflowInstanceAsync(parentId))!;
-            var payload = System.Text.Json.JsonSerializer.Serialize(Child(childId, parentId, wait));
-            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
-                parent, 0, parent.Revision,
-                openedWaits: [new OpenedWait(wait, WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
-                childStarts: [new ChildStart(childId, payload, wait)]))).Status);
-
-            await using var connection = new Microsoft.Data.SqlClient.SqlConnection(SqlTestDatabase<InboxStoreTests>.ConnectionString);
-            await connection.OpenAsync();
-            await using var read = new Microsoft.Data.SqlClient.SqlCommand(
-                "SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId", connection);
-            read.Parameters.AddWithValue("@InstanceId", childId);
-            Assert.Equal(payload, (string)(await read.ExecuteScalarAsync())!);
-            var child = (await store.GetWorkflowInstanceAsync(childId))!;
-            Assert.Equal(1, child.Revision);
-            Assert.NotNull(child.RunnableAtUtc);
-        }
-        finally
-        {
-            await store.DeleteWorkflowInstanceAsync(childId);
-            await store.DeleteWorkflowInstanceAsync(parentId);
-        }
-    }
+    public Task SqlStoreKeepsAChildStartAsItsPayloadCarriesIt() => VerifyChildStartPayload(new SqlWorkflowStateRepository(SqlTestDatabase<InboxStoreTests>.ConnectionString), () => new Microsoft.Data.SqlClient.SqlConnection(SqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "D-06")]
-    public async Task PostgreSqlStoreKeepsAChildStartAsItsPayloadCarriesIt()
-    {
-        var store = new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString);
-        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
-        var childId = Guid.NewGuid().ToString("N");
-        var wait = $"{parentId}-child";
-        try
-        {
-            var parent = (await store.GetWorkflowInstanceAsync(parentId))!;
-            var payload = System.Text.Json.JsonSerializer.Serialize(Child(childId, parentId, wait));
-            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
-                parent, 0, parent.Revision,
-                openedWaits: [new OpenedWait(wait, WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
-                childStarts: [new ChildStart(childId, payload, wait)]))).Status);
-
-            await using var connection = new Npgsql.NpgsqlConnection(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString);
-            await connection.OpenAsync();
-            await using var read = new Npgsql.NpgsqlCommand(
-                "SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId", connection);
-            read.Parameters.AddWithValue("InstanceId", childId);
-            Assert.Equal(payload, (string)(await read.ExecuteScalarAsync())!);
-            var child = (await store.GetWorkflowInstanceAsync(childId))!;
-            Assert.Equal(1, child.Revision);
-            Assert.NotNull(child.RunnableAtUtc);
-        }
-        finally
-        {
-            await store.DeleteWorkflowInstanceAsync(childId);
-            await store.DeleteWorkflowInstanceAsync(parentId);
-        }
-    }
+    public Task PostgreSqlStoreKeepsAChildStartAsItsPayloadCarriesIt() => VerifyChildStartPayload(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString), () => new Npgsql.NpgsqlConnection(PostgreSqlTestDatabase<InboxStoreTests>.ConnectionString));
 
     // A parent's commit starts a child as its own instance with the parent's wait for it; the child's
     // terminal commit appends its completion to that wait in the parent's inbox. Neither needs a relay.
@@ -725,6 +750,20 @@ public sealed class InboxStoreTests
 
     // A commit that asks two missing children to cancel appends a completion for each to its own inbox. Each takes
     // its own sequence, so a reader that pages through the inbox one event at a time meets both.
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-06")]
+    public async Task SqliteStoreGivesEachGoneChildItsOwnInboxPlace()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<InboxStoreTests>.ConnectionString);
+        await VerifyGoneChildrenTakeTheirOwnPlaces(
+            repository);
+    }
+
+    // A commit that asks two missing children to cancel appends a completion for each to its own inbox. Each takes
+    // its own sequence, so a reader that pages through the inbox one event at a time meets both.
     private static async Task VerifyGoneChildrenTakeTheirOwnPlaces(IWorkflowStateRepository store)
     {
         var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
@@ -787,4 +826,51 @@ public sealed class InboxStoreTests
             CheckpointCommit.Create(instance, 0, 0, openedWaits: [OpenApproval(instance.InstanceId)]))).Status);
         return instance.InstanceId;
     }
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-06")]
+    public async Task SqliteStoreKeepsAChildStartAsItsPayloadCarriesIt()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<InboxStoreTests>.ConnectionString);
+        await VerifyChildStartPayload(repository, () => new Microsoft.Data.Sqlite.SqliteConnection(SqliteTestDatabase<InboxStoreTests>.ConnectionString));
+    }
+
+    private static async Task VerifyChildStartPayload(IWorkflowStateRepository store, Func<System.Data.Common.DbConnection> newConnection)
+    {
+        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
+        var childId = Guid.NewGuid().ToString("N");
+        var wait = $"{parentId}-child";
+        try
+        {
+            var parent = (await store.GetWorkflowInstanceAsync(parentId))!;
+            var payload = System.Text.Json.JsonSerializer.Serialize(Child(childId, parentId, wait));
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+                parent, 0, parent.Revision,
+                openedWaits: [new OpenedWait(wait, WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
+                childStarts: [new ChildStart(childId, payload, wait)]))).Status);
+
+            await using var connection = newConnection();
+            await connection.OpenAsync();
+            await using var read = connection.CreateCommand();
+            read.CommandText = connection is Microsoft.Data.SqlClient.SqlConnection
+                ? "SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId"
+                : "SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId";
+            var parameter = read.CreateParameter();
+            parameter.ParameterName = connection is Npgsql.NpgsqlConnection ? "InstanceId" : "@InstanceId";
+            parameter.Value = childId;
+            read.Parameters.Add(parameter);
+            Assert.Equal(payload, (string)(await read.ExecuteScalarAsync())!);
+            var child = (await store.GetWorkflowInstanceAsync(childId))!;
+            Assert.Equal(1, child.Revision);
+            Assert.NotNull(child.RunnableAtUtc);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(childId);
+            await store.DeleteWorkflowInstanceAsync(parentId);
+        }
+    }
+
+
 }

@@ -6,92 +6,158 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "durability")]
 [Trait("Spec", "J-06")]
-public class PostgreSqlWorkflowStateRepositoryTests
+public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDatabase<PostgreSqlWorkflowStateRepositoryTests>>
 {
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task SuspendedDeadlineAppearsInRecoveryScanWhenDue()
-    {
-        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
-        var instanceId = Guid.NewGuid().ToString("N");
-        var repository = new PostgreSqlWorkflowStateRepository(connectionString);
-        try
-        {
-            var instance = new WorkflowInstance
-            {
-                InstanceId = instanceId,
-                Status = WorkflowStatus.Suspended,
-                RunnableAtUtc = DateTime.UtcNow.AddMinutes(1)
-            };
-            await repository.SaveWorkflowInstanceAsync(instance);
-            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
-                candidate => candidate.InstanceId == instanceId);
-
-            instance.RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1);
-            await repository.SaveWorkflowInstanceAsync(instance);
-            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
-                candidate => candidate.InstanceId == instanceId);
-
-            instance.Status = WorkflowStatus.NeedsResolution;
-            await repository.SaveWorkflowInstanceAsync(instance);
-            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
-                candidate => candidate.InstanceId == instanceId);
-        }
-        finally
-        {
-            await repository.DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
+    public Task SuspendedDeadlineAppearsInRecoveryScanWhenDue() => StateRepositoryContract.VerifySuspendedDeadlineRecoveryScan(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "A-08")]
-    public async Task ACommitIsStoredAsItCameAndReadsTakeTheRevisionAndRunnableTimeFromTheirColumns()
-    {
-        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
-        var instanceId = Guid.NewGuid().ToString("N");
-        var repository = new PostgreSqlWorkflowStateRepository(connectionString);
-        try
-        {
-            var instance = new WorkflowInstance
-            {
-                InstanceId = instanceId, WorkflowName = "Columns", Status = WorkflowStatus.Suspended,
-                ExecutionStateJson = "{\"Waits\":[]}", Revision = 0, RunnableAtUtc = DateTime.UtcNow.AddYears(5)
-            };
-            var commit = CheckpointCommit.Create(instance, 0, 0);
-            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
-
-            await using (var connection = new Npgsql.NpgsqlConnection(connectionString))
-            {
-                await connection.OpenAsync();
-                await using var read = new Npgsql.NpgsqlCommand(
-                    "SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId", connection);
-                read.Parameters.AddWithValue("InstanceId", instanceId);
-                Assert.Equal(commit.Payload, (string?)await read.ExecuteScalarAsync());
-            }
-            // The payload says revision 0 and a runnable time years away; the columns say what the store set.
-            var stored = (await repository.GetWorkflowInstanceAsync(instanceId))!;
-            Assert.Equal(1, stored.Revision);
-            Assert.Null(stored.RunnableAtUtc);
-            Assert.Equal(1, Assert.Single(await repository.GetWorkflowInstancesByNameAsync("Columns"),
-                candidate => candidate.InstanceId == instanceId).Revision);
-            Assert.Equal("{\"Waits\":[]}", stored.ExecutionStateJson);
-        }
-        finally
-        {
-            await repository.DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
+    public Task ACommitIsStoredAsItCameAndReadsTakeTheRevisionAndRunnableTimeFromTheirColumns() => StateRepositoryContract.VerifyCommitPayloadAndColumns(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString), () => new Npgsql.NpgsqlConnection(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString));
 
     // Rows are deleted by key in every table; the lease row stays, released, so a later owner gets a higher epoch.
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "C-11")]
-    public async Task DeletingAnInstanceDeletesItsRowsInEveryTable()
+    public Task DeletingAnInstanceDeletesItsRowsInEveryTable() => VerifyDeletingInstanceRows(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString), () => new Npgsql.NpgsqlConnection(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString));
+
+    // One row in each of the instance, parts, traces, waits, events and commits tables while the instance exists.
+    private static async Task<long> CountRowsAsync(Func<System.Data.Common.DbConnection> newConnection, string instanceId)
     {
-        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
+        await using var connection = newConnection();
+        await connection.OpenAsync();
+        await using var count = connection.CreateCommand();
+        count.CommandText = """
+            SELECT (SELECT count(*) FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId)
+                + (SELECT count(*) FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId)
+                + (SELECT count(*) FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId)
+                + (SELECT count(*) FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId)
+                + (SELECT count(*) FROM ixiflow_workflow_events WHERE instance_id = @InstanceId)
+                + (SELECT count(*) FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId)
+            """;
+        var parameter = count.CreateParameter();
+        parameter.ParameterName = connection is Npgsql.NpgsqlConnection ? "InstanceId" : "@InstanceId";
+        parameter.Value = instanceId;
+        count.Parameters.Add(parameter);
+        return (long)(await count.ExecuteScalarAsync())!;
+    }
+
+    // A row that does not exist cannot be locked, so a first commit, a claim and a delete of one instance take a lock
+    // on its ID instead, which SQL Server's range locks give it: a claim cannot grant a lease while a commit made
+    // without one is being applied, and a delete cannot interleave with a first commit.
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "C-11")]
+    public Task CommitsClaimsAndDeletesOfANewInstanceWaitForEachOther() => VerifyNewInstanceSerialization(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString), instanceId => HoldIdentityAsync(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString, instanceId));
+
+    // A delete reads the parent to tell before it takes its locks. A child its parent starts in between is found
+    // under the locks, and the delete starts over, so the parent's wait still ends as the child's termination.
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "D-06")]
+    public Task ADeleteThatMeetsAChildStartedMeanwhileTellsItsParent() => VerifyDeleteMeetingChildStartedMeanwhile(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString);
+
+    // A transaction holding the lock the store takes on an instance's ID, until it is disposed.
+    private static async Task<IdentityHold> HoldIdentityAsync(string connectionString, string instanceId)
+    {
+        var connection = new Npgsql.NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        var transaction = await connection.BeginTransactionAsync();
+        await using var hold = new Npgsql.NpgsqlCommand(
+            "SELECT pg_advisory_xact_lock(hashtextextended(@InstanceId, 0))", connection, transaction);
+        hold.Parameters.AddWithValue("InstanceId", instanceId);
+        await hold.ExecuteNonQueryAsync();
+        return new IdentityHold(connection, transaction);
+    }
+
+    private sealed class IdentityHold(System.Data.Common.DbConnection connection, System.Data.Common.DbTransaction transaction)
+        : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            await transaction.DisposeAsync();
+            await connection.DisposeAsync();
+        }
+    }
+
+    // Each transaction that leaves an instance due with nobody holding it notifies listening hosts once, and the
+    // steps that set the cases up notify nobody (C-13).
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "C-13")]
+    public Task EveryWayAnInstanceBecomesClaimableNotifiesListeners() => VerifyClaimableNotifications(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString);
+
+    /// <summary>Listens to the store's channel the way a host does, and counts what it hears.</summary>
+    private sealed class Notifications : IAsyncDisposable
+    {
+        private readonly Npgsql.NpgsqlConnection _connection;
+        private int _heard;
+        private int _expected;
+
+        private Notifications(Npgsql.NpgsqlConnection connection) => _connection = connection;
+
+        public static async Task<Notifications> ListenAsync(string connectionString)
+        {
+            var connection = new Npgsql.NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+            var notifications = new Notifications(connection);
+            connection.Notification += (_, notification) =>
+            {
+                if (notification.Channel == PostgreSqlWorkflowStateRepository.RunnableChannel)
+                    Interlocked.Increment(ref notifications._heard);
+            };
+            await using var listen = new Npgsql.NpgsqlCommand(
+                $"LISTEN {PostgreSqlWorkflowStateRepository.RunnableChannel}", connection);
+            await listen.ExecuteNonQueryAsync();
+            return notifications;
+        }
+
+        // Nothing was heard since the last step, then the step is heard exactly once.
+        public async Task ExpectAsync(Func<Task> step)
+        {
+            while (await _connection.WaitAsync(50))
+            {
+            }
+            Assert.Equal(_expected, Volatile.Read(ref _heard));
+            await step();
+            _expected++;
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (Volatile.Read(ref _heard) < _expected)
+            {
+                Assert.True(DateTime.UtcNow < deadline, "The step notified nobody");
+                await _connection.WaitAsync(100);
+            }
+            while (await _connection.WaitAsync(50))
+            {
+            }
+            Assert.Equal(_expected, Volatile.Read(ref _heard));
+        }
+
+        public ValueTask DisposeAsync() => _connection.DisposeAsync();
+    }
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public Task SuspendedInstance_AppliesOneDeliveryOnceAcrossRepositories() => StateRepositoryContract.VerifyDeliveryOnceAcrossRepositories(() => new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString));
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public Task SuspendedInstance_SurvivesRepositoryRecreation() => StateRepositoryContract.VerifyRepositoryRecreation(() => new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString));
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteDeletingAnInstanceDeletesItsRowsInEveryTable()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString);
+        await VerifyDeletingInstanceRows(repository, () => new Microsoft.Data.Sqlite.SqliteConnection(SqliteTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString));
+    }
+
+    private static async Task VerifyDeletingInstanceRows(IWorkflowStateRepository repository, Func<System.Data.Common.DbConnection> newConnection)
+    {
         var instanceId = Guid.NewGuid().ToString("N");
-        var repository = new PostgreSqlWorkflowStateRepository(connectionString);
         var instance = new WorkflowInstance
         {
             InstanceId = instanceId, WorkflowName = "Deleted", Status = WorkflowStatus.Suspended,
@@ -104,89 +170,18 @@ public class PostgreSqlWorkflowStateRepositoryTests
                 traceEntries: [new ExecutionTraceEntry { ActivityName = "first" }]))).Status);
         Assert.Equal(EventAppendStatus.Stored, (await repository.AppendEventAsync(
             new WorkflowEvent(instanceId, "event-1", "Approval", "{}", Key: "approval"))).Status);
-        Assert.Equal(6, await CountRowsAsync(connectionString, instanceId));
+        Assert.Equal(6, await CountRowsAsync(newConnection, instanceId));
 
         await repository.DeleteWorkflowInstanceAsync(instanceId);
 
-        Assert.Equal(0, await CountRowsAsync(connectionString, instanceId));
+        Assert.Equal(0, await CountRowsAsync(newConnection, instanceId));
         Assert.Equal(2, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1)))!
             .Epoch);
         await repository.ReleaseExecutionLeaseAsync(instanceId, "next");
     }
 
-    // One row in each of the instance, parts, traces, waits, events and commits tables while the instance exists.
-    private static async Task<long> CountRowsAsync(string connectionString, string instanceId)
+    private static async Task VerifyDeleteMeetingChildStartedMeanwhile(string connectionString)
     {
-        await using var connection = new Npgsql.NpgsqlConnection(connectionString);
-        await connection.OpenAsync();
-        await using var count = new Npgsql.NpgsqlCommand("""
-            SELECT (SELECT count(*) FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId)
-                + (SELECT count(*) FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId)
-                + (SELECT count(*) FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId)
-                + (SELECT count(*) FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId)
-                + (SELECT count(*) FROM ixiflow_workflow_events WHERE instance_id = @InstanceId)
-                + (SELECT count(*) FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId)
-            """, connection);
-        count.Parameters.AddWithValue("InstanceId", instanceId);
-        return (long)(await count.ExecuteScalarAsync())!;
-    }
-
-    // A row that does not exist cannot be locked, so a first commit, a claim and a delete of one instance take a lock
-    // on its ID instead, which SQL Server's range locks give it: a claim cannot grant a lease while a commit made
-    // without one is being applied, and a delete cannot interleave with a first commit.
-    [PostgreSqlFact]
-    [Trait("Category", "PostgreSqlIntegration")]
-    [Trait("Spec", "C-11")]
-    public async Task CommitsClaimsAndDeletesOfANewInstanceWaitForEachOther()
-    {
-        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
-        var repository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var instance = new WorkflowInstance
-        {
-            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "NewInstance", Status = WorkflowStatus.Running,
-            WorkflowDataJson = "{}"
-        };
-        // The schema is made first, so only the lock can hold the store up.
-        await repository.GetWorkflowInstanceAsync(instance.InstanceId);
-        try
-        {
-            Task<WorkflowCommitResult> commit;
-            Task<ExecutionLeaseGrant?> claim;
-            await using (var holder = await HoldIdentityAsync(connectionString, instance.InstanceId))
-            {
-                commit = repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0));
-                claim = repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1));
-                await Task.Delay(TimeSpan.FromMilliseconds(500));
-                Assert.False(commit.IsCompleted || claim.IsCompleted);
-            }
-            // Whichever went first, the other saw it: a commit after the claim is refused, one before it is not.
-            Assert.NotNull(await claim);
-            Assert.Contains((await commit).Status, new[] { WorkflowCommitStatus.Applied, WorkflowCommitStatus.StaleEpoch });
-
-            Task deleting;
-            await using (var holder = await HoldIdentityAsync(connectionString, instance.InstanceId))
-            {
-                deleting = repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
-                await Task.Delay(TimeSpan.FromMilliseconds(500));
-                Assert.False(deleting.IsCompleted);
-            }
-            await deleting;
-            Assert.Null(await repository.GetWorkflowInstanceAsync(instance.InstanceId));
-        }
-        finally
-        {
-            await repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
-        }
-    }
-
-    // A delete reads the parent to tell before it takes its locks. A child its parent starts in between is found
-    // under the locks, and the delete starts over, so the parent's wait still ends as the child's termination.
-    [PostgreSqlFact]
-    [Trait("Category", "PostgreSqlIntegration")]
-    [Trait("Spec", "D-06")]
-    public async Task ADeleteThatMeetsAChildStartedMeanwhileTellsItsParent()
-    {
-        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
         var repository = new PostgreSqlWorkflowStateRepository(connectionString);
         var parent = new WorkflowInstance
         {
@@ -228,37 +223,8 @@ public class PostgreSqlWorkflowStateRepositoryTests
         }
     }
 
-    // A transaction holding the lock the store takes on an instance's ID, until it is disposed.
-    private static async Task<IdentityHold> HoldIdentityAsync(string connectionString, string instanceId)
+    private static async Task VerifyClaimableNotifications(string connectionString)
     {
-        var connection = new Npgsql.NpgsqlConnection(connectionString);
-        await connection.OpenAsync();
-        var transaction = await connection.BeginTransactionAsync();
-        await using var hold = new Npgsql.NpgsqlCommand(
-            "SELECT pg_advisory_xact_lock(hashtextextended(@InstanceId, 0))", connection, transaction);
-        hold.Parameters.AddWithValue("InstanceId", instanceId);
-        await hold.ExecuteNonQueryAsync();
-        return new IdentityHold(connection, transaction);
-    }
-
-    private sealed class IdentityHold(Npgsql.NpgsqlConnection connection, Npgsql.NpgsqlTransaction transaction)
-        : IAsyncDisposable
-    {
-        public async ValueTask DisposeAsync()
-        {
-            await transaction.DisposeAsync();
-            await connection.DisposeAsync();
-        }
-    }
-
-    // Each transaction that leaves an instance due with nobody holding it notifies listening hosts once, and the
-    // steps that set the cases up notify nobody (C-13).
-    [PostgreSqlFact]
-    [Trait("Category", "PostgreSqlIntegration")]
-    [Trait("Spec", "C-13")]
-    public async Task EveryWayAnInstanceBecomesClaimableNotifiesListeners()
-    {
-        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
         var repository = new PostgreSqlWorkflowStateRepository(connectionString);
         await using var notifications = await Notifications.ListenAsync(connectionString);
         var ids = new List<string>();
@@ -328,111 +294,76 @@ public class PostgreSqlWorkflowStateRepositoryTests
         }
     }
 
-    /// <summary>Listens to the store's channel the way a host does, and counts what it hears.</summary>
-    private sealed class Notifications : IAsyncDisposable
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    // SQLite serializes every writer, so this proves database-wide writer exclusion, not per-ID locking.
+    public async Task SqliteCommitsClaimsAndDeletesWaitForTheDatabaseWriter()
     {
-        private readonly Npgsql.NpgsqlConnection _connection;
-        private int _heard;
-        private int _expected;
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString);
+        await VerifyNewInstanceSerialization(repository, HoldSqliteIdentityAsync);
+    }
 
-        private Notifications(Npgsql.NpgsqlConnection connection) => _connection = connection;
-
-        public static async Task<Notifications> ListenAsync(string connectionString)
+    private static async Task VerifyNewInstanceSerialization(IWorkflowStateRepository repository, Func<string, Task<IdentityHold>> holdIdentity)
+    {
+        var instance = new WorkflowInstance
         {
-            var connection = new Npgsql.NpgsqlConnection(connectionString);
+            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "NewInstance", Status = WorkflowStatus.Running,
+            WorkflowDataJson = "{}"
+        };
+        // The schema is made first, so only the lock can hold the store up.
+        await repository.GetWorkflowInstanceAsync(instance.InstanceId);
+        try
+        {
+            Task<WorkflowCommitResult> commit;
+            Task<ExecutionLeaseGrant?> claim;
+            await using (var holder = await holdIdentity(instance.InstanceId))
+            {
+                commit = repository is SqliteWorkflowStateRepository
+                    ? Task.Run(() => repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0)))
+                    : repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0));
+                claim = repository is SqliteWorkflowStateRepository
+                    ? Task.Run(() => repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1)))
+                    : repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1));
+                await Task.Delay(TimeSpan.FromMilliseconds(500));
+                Assert.False(commit.IsCompleted || claim.IsCompleted);
+            }
+            // Whichever went first, the other saw it: a commit after the claim is refused, one before it is not.
+            Assert.NotNull(await claim);
+            Assert.Contains((await commit).Status, new[] { WorkflowCommitStatus.Applied, WorkflowCommitStatus.StaleEpoch });
+
+            Task deleting;
+            await using (var holder = await holdIdentity(instance.InstanceId))
+            {
+                deleting = repository is SqliteWorkflowStateRepository
+                    ? Task.Run(() => repository.DeleteWorkflowInstanceAsync(instance.InstanceId))
+                    : repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
+                await Task.Delay(TimeSpan.FromMilliseconds(500));
+                Assert.False(deleting.IsCompleted);
+            }
+            await deleting;
+            Assert.Null(await repository.GetWorkflowInstanceAsync(instance.InstanceId));
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
+        }
+    }
+
+    private static async Task<IdentityHold> HoldSqliteIdentityAsync(string _)
+    {
+        var connection = new Microsoft.Data.Sqlite.SqliteConnection(
+            SqliteTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString);
+        try
+        {
             await connection.OpenAsync();
-            var notifications = new Notifications(connection);
-            connection.Notification += (_, notification) =>
-            {
-                if (notification.Channel == PostgreSqlWorkflowStateRepository.RunnableChannel)
-                    Interlocked.Increment(ref notifications._heard);
-            };
-            await using var listen = new Npgsql.NpgsqlCommand(
-                $"LISTEN {PostgreSqlWorkflowStateRepository.RunnableChannel}", connection);
-            await listen.ExecuteNonQueryAsync();
-            return notifications;
+            return new IdentityHold(connection, connection.BeginTransaction(deferred: false));
         }
-
-        // Nothing was heard since the last step, then the step is heard exactly once.
-        public async Task ExpectAsync(Func<Task> step)
+        catch
         {
-            while (await _connection.WaitAsync(50))
-            {
-            }
-            Assert.Equal(_expected, Volatile.Read(ref _heard));
-            await step();
-            _expected++;
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-            while (Volatile.Read(ref _heard) < _expected)
-            {
-                Assert.True(DateTime.UtcNow < deadline, "The step notified nobody");
-                await _connection.WaitAsync(100);
-            }
-            while (await _connection.WaitAsync(50))
-            {
-            }
-            Assert.Equal(_expected, Volatile.Read(ref _heard));
-        }
-
-        public ValueTask DisposeAsync() => _connection.DisposeAsync();
-    }
-
-    [PostgreSqlFact]
-    [Trait("Category", "PostgreSqlIntegration")]
-    public async Task SuspendedInstance_AppliesOneDeliveryOnceAcrossRepositories()
-    {
-        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
-        var instanceId = Guid.NewGuid().ToString("N");
-        var firstRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var secondRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        try
-        {
-            await ResumeOnceScenario.RunAsync(firstRepository, secondRepository, instanceId);
-        }
-        finally
-        {
-            await firstRepository.DeleteWorkflowInstanceAsync(instanceId);
+            await connection.DisposeAsync();
+            throw;
         }
     }
 
-    [PostgreSqlFact]
-    [Trait("Category", "PostgreSqlIntegration")]
-    public async Task SuspendedInstance_SurvivesRepositoryRecreation()
-    {
-        var connectionString = PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString;
-        var instanceId = Guid.NewGuid().ToString("N");
-        var firstRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        try
-        {
-            var instance = new WorkflowInstance
-            {
-                InstanceId = instanceId,
-                WorkflowName = "DurableTest",
-                WorkflowVersion = 2,
-                Status = WorkflowStatus.Suspended,
-                CorrelationId = "correlation-1",
-                WorkflowDataJson = "{\"Value\":42}"
-            };
-            await firstRepository.SaveWorkflowInstanceAsync(instance);
-
-            var secondRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-            var restored = await secondRepository.GetWorkflowInstanceAsync(instanceId);
-            Assert.NotNull(restored);
-            Assert.Equal(WorkflowStatus.Suspended, restored.Status);
-            Assert.Equal("{\"Value\":42}", restored.WorkflowDataJson);
-            Assert.Contains(await secondRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended),
-                candidate => candidate.InstanceId == instanceId);
-
-            restored.Status = WorkflowStatus.Completed;
-            await secondRepository.SaveWorkflowInstanceAsync(restored);
-            Assert.DoesNotContain(await firstRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended),
-                candidate => candidate.InstanceId == instanceId);
-            Assert.Contains(await firstRepository.GetWorkflowInstancesByNameAsync("DurableTest"),
-                candidate => candidate.InstanceId == instanceId);
-        }
-        finally
-        {
-            await firstRepository.DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
 }
