@@ -4,7 +4,8 @@ using Microsoft.Extensions.Time.Testing;
 namespace IxIFlow.Tests.Conformance;
 
 [Trait("Feature", "durability")]
-[Trait("Spec", "D-41")]
+[Trait("Spec", "D-05")]
+[Trait("Spec", "H-05")]
 public sealed class RetentionDecoratorTests
 {
     [Fact]

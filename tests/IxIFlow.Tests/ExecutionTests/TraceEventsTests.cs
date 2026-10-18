@@ -143,7 +143,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    [Trait("Spec", "D-33")]
+    [Trait("Spec", "G-01")]
     public async Task TraceJsonNeverContainsAnyInstanceWaitId(bool sqlite)
     {
         var time = new FakeTimeProvider(Start);

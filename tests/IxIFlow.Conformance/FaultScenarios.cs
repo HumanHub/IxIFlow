@@ -2,6 +2,7 @@ using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.Conformance;
 
@@ -13,7 +14,7 @@ namespace IxIFlow.Tests.Conformance;
 [Trait("Spec", "J-03")]
 public sealed class FaultScenarios
 {
-    private static readonly TimeSpan ShortLease = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(5);
 
     [Theory]
     [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
@@ -42,21 +43,30 @@ public sealed class FaultScenarios
     [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
     public async Task AnOwnerCannotCommitAfterAnotherTookOver(string profile)
     {
-        await using var cluster = await CreateClusterAsync(profile);
+        var time = LocalTime(profile);
+        await using var cluster = await CreateClusterAsync(profile, time: time);
         var store = cluster.NewRepository();
         var instance = new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Takeover", Status = WorkflowStatus.Running,
             WorkflowDataJson = "{}"
         };
-        var former = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "former", ShortLease))!;
+        var former = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "former", LeaseDuration))!;
         var started = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, former.Epoch, 0));
+        Assert.Equal(WorkflowCommitStatus.Applied, started.Status);
+        var saved = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
+        Assert.Equal(1, started.Revision);
+        Assert.Equal(started.Revision, saved.Revision);
+        Assert.Equal(instance.WorkflowName, saved.WorkflowName);
+        Assert.Equal(instance.Status, saved.Status);
+        Assert.Equal(instance.WorkflowDataJson, saved.WorkflowDataJson);
+        Assert.Equal(instance.ExecutionStateJson, saved.ExecutionStateJson);
         instance.Revision = started.Revision;
-        await Task.Delay(ShortLease * 3);
+        await ExpireLeaseAsync(cluster, time, instance.InstanceId);
 
         // Another owner takes over the expired lease and commits; the former owner's late commit is fenced.
         var current = (await cluster.NewRepository()
-            .TryAcquireExecutionLeaseAsync(instance.InstanceId, "current", TimeSpan.FromSeconds(30)))!;
+            .TryAcquireExecutionLeaseAsync(instance.InstanceId, "current", LeaseDuration))!;
         Assert.True(current.Epoch > former.Epoch);
         var late = await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, former.Epoch, instance.Revision));
@@ -109,7 +119,8 @@ public sealed class FaultScenarios
     public async Task AWorkflowThatKeepsLosingItsOwnersIsQuarantinedUntilReleased(string profile)
     {
         var counter = new CoreScenarios.ExecutionCounter();
-        await using var cluster = await CreateClusterAsync(profile, counter);
+        var time = LocalTime(profile);
+        await using var cluster = await CreateClusterAsync(profile, counter, time);
         // The first host dies after the activity ran, before its result is saved.
         var failing = new FaultRepository(cluster.NewRepository()) { FailCommit = _ => counter.Count > 0 };
         var first = cluster.AddHost(_ => failing);
@@ -126,8 +137,8 @@ public sealed class FaultScenarios
         var store = cluster.NewRepository();
         for (var owner = 0; owner < 3; owner++)
         {
-            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"lost-{owner}", ShortLease));
-            await Task.Delay(ShortLease * 3);
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"lost-{owner}", LeaseDuration));
+            await ExpireLeaseAsync(cluster, time, instanceId);
         }
         var second = cluster.AddHost();
 
@@ -142,14 +153,25 @@ public sealed class FaultScenarios
     }
 
     private static Task<ConformanceCluster> CreateClusterAsync(string profile,
-        CoreScenarios.ExecutionCounter? counter = null) =>
+        CoreScenarios.ExecutionCounter? counter = null, FakeTimeProvider? time = null) =>
         ConformanceCluster.CreateAsync(profile, services =>
         {
             services.AddTransient<CoreScenarios.NoopActivity>();
             services.AddTransient<CoreScenarios.CountExecutionActivity>();
             services.AddTransient<RecoverableCountActivity>();
             services.AddSingleton(counter ?? new CoreScenarios.ExecutionCounter());
-        });
+        }, time);
+
+    private static FakeTimeProvider? LocalTime(string profile) =>
+        profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite ? new FakeTimeProvider() : null;
+
+    private static Task ExpireLeaseAsync(ConformanceCluster cluster, FakeTimeProvider? time, string instanceId)
+    {
+        if (time == null)
+            return cluster.ExpireExecutionLeaseAsync(instanceId);
+        time.Advance(LeaseDuration + TimeSpan.FromSeconds(1));
+        return Task.CompletedTask;
+    }
 
     /// <summary>Counts its runs; running it again after a crash is safe.</summary>
     public sealed class RecoverableCountActivity(CoreScenarios.ExecutionCounter counter) : IRecoverableActivity<bool>
