@@ -16,18 +16,33 @@ public static class WorkflowJsonSerializer
 
     private static JsonSerializerOptions CreateOptions() => new()
     {
-        PropertyNameCaseInsensitive = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         TypeInfoResolver = new DefaultJsonTypeInfoResolver().WithAddedModifier(info =>
         {
             if (!typeof(DocumentNode).IsAssignableFrom(info.Type) || info.Kind != JsonTypeInfoKind.Object) return;
             var properties = info.Properties.ToDictionary(property => property.Name);
+            var members = DocumentModel.GetMembers(info.Type);
             info.Properties.Clear();
-            foreach (var member in DocumentModel.GetMembers(info.Type))
+            // A variant always writes its declared kind and accepts no other, including where its type is fixed.
+            var kind = DocumentModel.GetKind(info.Type)?.Kind;
+            if (kind != null)
+            {
+                var stored = members.FirstOrDefault(member => DocumentModel.GetName(member) == "kind");
+                var discriminator = info.CreateJsonPropertyInfo(typeof(string), "kind");
+                discriminator.Get = _ => kind;
+                discriminator.Set = (target, value) =>
+                {
+                    if ((string?)value != kind) throw new JsonException($"Expected workflow document kind '{kind}'");
+                    stored?.SetValue(target, value);
+                };
+                info.Properties.Add(discriminator);
+            }
+            foreach (var member in members)
             {
                 var name = DocumentModel.GetName(member);
-                if (name == "kind" && DocumentModel.GetKind(info.Type) != null) continue;
-                if (!properties.TryGetValue(member.Name, out var property)) continue;
+                if (name == "kind" && kind != null) continue;
+                var property = properties[member.Name];
                 property.Name = name;
                 info.Properties.Add(property);
             }
@@ -54,13 +69,9 @@ public static class WorkflowJsonSerializer
 
         public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
         {
-            var kind = DocumentModel.GetKind(value.GetType())?.Kind
-                ?? throw new JsonException($"Unknown workflow document type '{value.GetType().Name}'");
-            writer.WriteStartObject();
-            writer.WriteString("kind", kind);
-            foreach (var property in JsonSerializer.SerializeToElement(value, value.GetType(), options).EnumerateObject())
-                property.WriteTo(writer);
-            writer.WriteEndObject();
+            if (DocumentModel.GetKind(value.GetType()) == null)
+                throw new JsonException($"Unknown workflow document type '{value.GetType().Name}'");
+            JsonSerializer.Serialize(writer, value, value.GetType(), options);
         }
     }
 

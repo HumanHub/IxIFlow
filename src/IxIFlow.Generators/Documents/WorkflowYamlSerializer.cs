@@ -77,6 +77,19 @@ public static class WorkflowYamlSerializer
                 ?? throw new YamlException(discriminator?.Start ?? node.Start, discriminator?.End ?? node.End,
                     $"Unknown workflow document kind '{kind}'");
         }
+        var members = DocumentModel.GetMembers(type).Select(DocumentModel.GetName).ToArray();
+        var declared = DocumentModel.GetKind(type)?.Kind;
+        foreach (var pair in mapping.Children)
+        {
+            var key = ((YamlScalarNode)pair.Key).Value!;
+            if (key == "kind" && declared != null)
+            {
+                if ((pair.Value as YamlScalarNode)?.Value != declared)
+                    throw new YamlException(pair.Value.Start, pair.Value.End, $"Expected workflow document kind '{declared}'");
+            }
+            else if (!members.Contains(key, StringComparer.Ordinal))
+                throw new YamlException(pair.Key.Start, pair.Key.End, $"Unknown member '{key}'; {type.Name} accepts {string.Join(", ", members)}");
+        }
         var value = Activator.CreateInstance(type) ?? throw Invalid(type, node);
         foreach (var property in DocumentModel.GetMembers(type))
             if (entries.TryGetValue(DocumentModel.GetName(property), out var child)) property.SetValue(value, ReadValue(property.PropertyType, child));
