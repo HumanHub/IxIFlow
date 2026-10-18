@@ -363,6 +363,8 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
             openedWaits: [new OpenedWait("child-wait", WaitKind.Child, "child", "child-result", null)],
             childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child-wait")]);
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(start)).Status);
+        // The store gives a started child its own incarnation; its later commits must name it.
+        child.Incarnation = (await store.GetWorkflowInstanceAsync(child.InstanceId))!.Incarnation;
         child.Revision = 1;
         child.Status = WorkflowStatus.Completed;
         await Commit(child, new ParentNotice(parent.InstanceId, "child-wait", "child-done", "child-result", """{"Value":42}"""));
@@ -532,7 +534,6 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var current = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "current", TimeSpan.FromMinutes(1)))!;
         Assert.True(current.Epoch > previous.Epoch);
         Assert.NotEqual(instance.Incarnation, replacement.Incarnation);
-        Assert.Equal(previous.Epoch, current.Epoch);
         Assert.False(await store.ReleaseExecutionLeaseAsync(instance.InstanceId, "previous"));
         Assert.False(await store.RenewExecutionLeaseAsync(instance.InstanceId, "previous", TimeSpan.FromMinutes(1)));
         Assert.Equal(WorkflowCommitStatus.StaleEpoch, (await store.CommitWorkflowInstanceAsync(
