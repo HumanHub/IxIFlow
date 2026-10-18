@@ -209,10 +209,11 @@ public sealed class LeaseIncarnationContractTests
             original = (await store.GetWorkflowInstanceAsync(id))!;
             var originalIncarnation = original.Incarnation;
             Assert.NotEqual(Guid.Empty, originalIncarnation);
-            Assert.Equal(1, (await store.TryAcquireExecutionLeaseAsync(id, "old-first", duration))!.Epoch);
+            var oldFirst = (await store.TryAcquireExecutionLeaseAsync(id, "old-first", duration))!;
+            Assert.True(oldFirst.Epoch > 0);
             await advance(id, TimeSpan.FromMinutes(2));
             var oldGrant = (await store.TryAcquireExecutionLeaseAsync(id, "old-owner", duration))!;
-            Assert.Equal(2, oldGrant.Epoch);
+            Assert.True(oldGrant.Epoch > oldFirst.Epoch);
             Assert.Equal(1, oldGrant.CrashCount);
 
             // These all name revision one and epoch two. The completed one is also a receipt replay.
@@ -261,7 +262,7 @@ public sealed class LeaseIncarnationContractTests
                 Assert.Single(await store.GetWorkflowInstancesByNameAsync(replacement.WorkflowName)).Incarnation);
 
             var first = (await store.TryAcquireExecutionLeaseAsync(id, "new-first", duration))!;
-            Assert.Equal(1, first.Epoch);
+            Assert.True(first.Epoch > oldGrant.Epoch);
             Assert.Equal(0, first.CrashCount);
             Assert.True(await store.ReleaseExecutionLeaseAsync(id, "new-first"));
             var current = (await store.TryAcquireExecutionLeaseAsync(id, "new-owner", duration))!;
@@ -393,14 +394,15 @@ public sealed class LeaseIncarnationContractTests
     {
         try
         {
-            Assert.Equal(1, (await store.TryAcquireExecutionLeaseAsync(id, "orphan", duration))!.Epoch);
+            var orphan = (await store.TryAcquireExecutionLeaseAsync(id, "orphan", duration))!;
+            Assert.True(orphan.Epoch > 0);
             await store.DeleteWorkflowInstanceAsync(id);
             await AssertLeaseRows(open, id, 0);
             Assert.Null(await store.GetTombstoneAsync(id));
             Assert.False(await store.RenewExecutionLeaseAsync(id, "orphan", duration));
             Assert.False(await store.ReleaseExecutionLeaseAsync(id, "orphan"));
             var grant = (await store.TryAcquireExecutionLeaseAsync(id, "after-delete", duration))!;
-            Assert.Equal(1, grant.Epoch);
+            Assert.True(grant.Epoch > orphan.Epoch);
             Assert.Equal(0, grant.CrashCount);
         }
         finally { await store.DeleteWorkflowInstanceAsync(id); }

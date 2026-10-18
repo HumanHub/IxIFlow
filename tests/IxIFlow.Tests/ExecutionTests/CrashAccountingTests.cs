@@ -113,7 +113,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
                     await Task.Delay(50);
             }
             Assert.NotNull(recreated);
-            Assert.Equal(1, recreated.Epoch);
+            Assert.True(recreated.Epoch > lost.Epoch);
             Assert.Equal(0, recreated.CrashCount);
         }
         finally
