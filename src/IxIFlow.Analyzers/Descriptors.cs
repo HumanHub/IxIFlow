@@ -21,7 +21,7 @@ public static class Descriptors
         "Input mapped into a property that is not an input",
         "{0} property '{1}' is not an input: it has no {2}",
         Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
-        description: "An input mapping must target a [WorkflowInput] property when the activity marks its " +
+        description: "An input mapping must target an [ActivityInput] or [ActivityInputOutput] property when the activity marks its " +
                      "properties, and a property with a public setter otherwise (D-26).");
 
     /// <summary>An output mapping reads a property that is not an output.</summary>
@@ -30,7 +30,7 @@ public static class Descriptors
         "Output mapped from a property that is not an output",
         "{0} property '{1}' is not an output: it has no {2}",
         Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
-        description: "An output mapping must read a [WorkflowOutput] property when the activity marks its " +
+        description: "An output mapping must read an [ActivityOutput] or [ActivityInputOutput] property when the activity marks its " +
                      "properties, and a property with a public getter otherwise (D-26).");
 
     /// <summary>A required input of an activity is neither mapped nor defaulted.</summary>
@@ -39,7 +39,7 @@ public static class Descriptors
         "Required input is not mapped",
         "{0} property '{1}' is a required input and is not mapped",
         Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
-        description: "Every [WorkflowInput(Required = true)] property without a Default must be mapped where the " +
+        description: "Every input with [Required] and without [DefaultValue] must be mapped where the " +
                      "activity is used (D-26).");
 
     /// <summary>A mapping names a member that is not a public instance property.</summary>
@@ -49,6 +49,41 @@ public static class Descriptors
         "{0} '{1}' has no public property '{2}' to map",
         Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
         description: "Mappings are applied to public instance properties by name (D-26).");
+
+    /// <summary>Activity input needs a public setter (D-26).</summary>
+    public static readonly DiagnosticDescriptor InputNeedsSetter = new(
+        "IXIF0005",
+        "Activity input needs a public setter",
+        "Activity property '{0}' is marked as an input but has no public setter",
+        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+
+    /// <summary>Activity output needs a public getter (D-26).</summary>
+    public static readonly DiagnosticDescriptor OutputNeedsGetter = new(
+        "IXIF0006",
+        "Activity output needs a public getter",
+        "Activity property '{0}' is marked as an output but has no public getter",
+        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+
+    /// <summary>Required is invalid on an output (D-26).</summary>
+    public static readonly DiagnosticDescriptor RequiredOnOutput = new(
+        "IXIF0007",
+        "Required is invalid on an output",
+        "Activity property '{0}' has [Required] but is output-only",
+        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+
+    /// <summary>DefaultValue needs a public setter (D-26).</summary>
+    public static readonly DiagnosticDescriptor DefaultNeedsSetter = new(
+        "IXIF0008",
+        "DefaultValue needs a public setter",
+        "Activity property '{0}' has [DefaultValue] but has no public setter",
+        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+
+    /// <summary>DefaultValue cannot be converted (D-26).</summary>
+    public static readonly DiagnosticDescriptor InvalidDefault = new(
+        "IXIF0009",
+        "DefaultValue cannot be converted",
+        "Activity property '{0}' has a [DefaultValue] that cannot be converted to {1}",
+        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
 
     /// <summary>A workflow expression uses a member that is not pure.</summary>
     public static readonly DiagnosticDescriptor ImpureExpression = new(

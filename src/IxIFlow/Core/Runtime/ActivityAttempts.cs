@@ -173,7 +173,7 @@ internal sealed class ActivityAttempts(
         span?.SetTag(Telemetry.AttemptId, attempt.Id);
         span?.SetTag(Telemetry.AttemptNumber, pending.Attempts.Count);
         var task = Telemetry.AttemptEndedAsync(ObserveActivityAsync(prepared, isRecovery, recoveryState,
-            pending.Resolution, skipCancelledRecovery, activityCancellation.Token), span, instance, activityType,
+            pending.Resolution, skipCancelledRecovery, pending.Inputs, activityCancellation.Token), span, instance, activityType,
             System.Diagnostics.Stopwatch.GetTimestamp());
         return new RunningActivity(continuation, step, task, activityCancellation,
             prepared, continuation.Stack[^1].NextStepIndex);
@@ -185,6 +185,7 @@ internal sealed class ActivityAttempts(
         object? recoveryState,
         ActivityResolutionState? operatorResolution,
         bool skipCancelledRecovery,
+        ActivityInputSnapshot inputs,
         CancellationToken cancellationToken)
     {
         if (operatorResolution?.Kind == ActivityResolutionKind.Completed)
@@ -228,6 +229,7 @@ internal sealed class ActivityAttempts(
 
         try
         {
+            ActivityContract.ValidateRequired(prepared.Activity, inputs, prepared.Context.Services);
             await prepared.Activity.ExecuteAsync(prepared.Context, cancellationToken);
             return ActivityRunResult.Returned(prepared.Activity);
         }

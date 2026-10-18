@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 using System.Reflection;
 using IxIFlow.Core;
 using IxIFlow.Dsl.Compilation;
@@ -34,22 +36,27 @@ public sealed class ActivityPackageRegistry : IActivityRegistry
             .Select(entry =>
             {
                 var attribute = entry.Attribute!;
-                var fields = entry.Type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                    .Select(property => (Property: property, Attribute: property.GetCustomAttribute<WorkflowInputAttribute>()))
-                    .Where(field => field.Attribute != null)
-                    .Select(field => new ActivityManifestField
-                    {
-                        Key = field.Property.Name,
-                        Label = field.Attribute!.Label ?? field.Property.Name,
-                        Control = field.Attribute.Control,
-                        Required = field.Attribute.Required,
-                        Help = field.Attribute.Help
-                    })
-                    .ToList();
-                var defaults = entry.Type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                    .Select(property => (Property: property, Attribute: property.GetCustomAttribute<WorkflowInputAttribute>()))
-                    .Where(field => field.Attribute?.Default != null)
-                    .ToDictionary(field => field.Property.Name, field => field.Attribute!.Default!, StringComparer.Ordinal);
+                var properties = entry.Type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+                var marked = entry.Type.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                    .Any(property => property.IsDefined(typeof(ActivityInputAttribute)) ||
+                    property.IsDefined(typeof(ActivityOutputAttribute)) || property.IsDefined(typeof(ActivityInputOutputAttribute)));
+                var inputs = properties.Where(property => marked
+                    ? property.IsDefined(typeof(ActivityInputAttribute)) || property.IsDefined(typeof(ActivityInputOutputAttribute))
+                    : property.SetMethod is { IsPublic: true }).ToArray();
+                var outputs = properties.Where(property => marked
+                    ? property.IsDefined(typeof(ActivityOutputAttribute)) || property.IsDefined(typeof(ActivityInputOutputAttribute))
+                    : property.GetMethod is { IsPublic: true });
+                var fields = inputs.Select(property => new ActivityManifestField
+                {
+                    Key = property.Name,
+                    Label = property.GetCustomAttribute<DisplayAttribute>()?.GetName() ?? property.Name,
+                    Control = property.GetCustomAttribute<UIHintAttribute>()?.UIHint ?? "text",
+                    Required = property.IsDefined(typeof(RequiredAttribute)),
+                    Help = property.GetCustomAttribute<DisplayAttribute>()?.GetDescription()
+                }).ToList();
+                var defaults = inputs.Where(property => property.IsDefined(typeof(DefaultValueAttribute)))
+                    .ToDictionary(property => property.Name, property => property.GetCustomAttribute<DefaultValueAttribute>()!.Value,
+                        StringComparer.Ordinal);
                 return new ActivityManifestEntry
                 {
                     Key = attribute.Key,
@@ -60,10 +67,11 @@ public sealed class ActivityPackageRegistry : IActivityRegistry
                     Designer = attribute.Designer,
                     Fields = fields,
                     Defaults = defaults,
-                    Outputs = entry.Type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                        .Where(property => property.GetCustomAttribute<WorkflowOutputAttribute>() != null)
-                        .Select(property => property.Name)
-                        .ToList()
+                    Outputs = outputs.ToDictionary(property => property.Name, property => new ActivityManifestOutput
+                    {
+                        Label = property.GetCustomAttribute<DisplayAttribute>()?.GetName() ?? property.Name,
+                        Help = property.GetCustomAttribute<DisplayAttribute>()?.GetDescription()
+                    }, StringComparer.Ordinal)
                 };
             })
             .ToList();
