@@ -1,6 +1,5 @@
 using System.Collections;
 using System.Globalization;
-using System.Reflection;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
 
@@ -73,29 +72,14 @@ public static class WorkflowYamlSerializer
         }
         if (type == typeof(WorkflowStepDocument) || type == typeof(ExpressionDocument))
         {
-            var kind = entries.TryGetValue("kind", out var discriminator) ? (discriminator as YamlScalarNode)?.Value :
-                type == typeof(ExpressionDocument) && entries.ContainsKey("path") ? "path" : null;
-            type = (type == typeof(WorkflowStepDocument), kind) switch
-            {
-                (true, "activity") => typeof(ActivityStepDocument),
-                (true, "activityRef") => typeof(ActivityReferenceStepDocument),
-                (true, "stepRef") => typeof(StepReferenceStepDocument),
-                (true, "if") => typeof(ConditionalStepDocument),
-                (true, "sequence") => typeof(SequenceStepDocument),
-                (true, "forEach") => typeof(ForEachStepDocument),
-                (true, "suspend") => typeof(SuspendStepDocument),
-                (true, "invokeWorkflow") => typeof(InvokeWorkflowStepDocument),
-                (false, "constant") => typeof(ConstantExpressionDocument),
-                (false, "path") => typeof(PathExpressionDocument),
-                (false, "binary") => typeof(BinaryExpressionDocument),
-                (false, "function") => typeof(FunctionExpressionDocument),
-                _ => throw new YamlException(discriminator?.Start ?? node.Start, discriminator?.End ?? node.End,
-                    $"Unknown workflow document kind '{kind}'")
-            };
+            var kind = entries.TryGetValue("kind", out var discriminator) ? (discriminator as YamlScalarNode)?.Value : null;
+            type = DocumentModel.ResolveVariant(type, kind, entries.ContainsKey)
+                ?? throw new YamlException(discriminator?.Start ?? node.Start, discriminator?.End ?? node.End,
+                    $"Unknown workflow document kind '{kind}'");
         }
         var value = Activator.CreateInstance(type) ?? throw Invalid(type, node);
-        foreach (var property in Properties(type))
-            if (entries.TryGetValue(property.Name, out var child)) property.SetValue(value, ReadValue(property.PropertyType, child));
+        foreach (var property in DocumentModel.GetMembers(type))
+            if (entries.TryGetValue(DocumentModel.GetName(property), out var child)) property.SetValue(value, ReadValue(property.PropertyType, child));
         if (value is DocumentNode document)
         {
             document.Location = Location(node);
@@ -144,21 +128,13 @@ public static class WorkflowYamlSerializer
         if (value is DocumentNode)
         {
             var mapping = new YamlMappingNode();
-            var kind = value switch
-            {
-                ActivityStepDocument => "activity", ActivityReferenceStepDocument => "activityRef",
-                StepReferenceStepDocument => "stepRef", ConditionalStepDocument => "if",
-                SequenceStepDocument => "sequence", ForEachStepDocument => "forEach",
-                SuspendStepDocument => "suspend", InvokeWorkflowStepDocument => "invokeWorkflow",
-                ConstantExpressionDocument => "constant", PathExpressionDocument => "path",
-                BinaryExpressionDocument => "binary", FunctionExpressionDocument => "function", _ => null
-            };
+            var kind = DocumentModel.GetKind(value.GetType())?.Kind;
             if (kind != null) mapping.Add("kind", kind);
-            foreach (var property in Properties(value.GetType()))
+            foreach (var property in DocumentModel.GetMembers(value.GetType()))
             {
                 if (value is WorkflowStepDocument && property.Name == nameof(WorkflowStepDocument.Kind)) continue;
                 var child = property.GetValue(value);
-                if (child != null) mapping.Add(CamelCase(property.Name), ToYaml(child));
+                if (child != null) mapping.Add(DocumentModel.GetName(property), ToYaml(child));
             }
             return mapping;
         }
@@ -173,9 +149,6 @@ public static class WorkflowYamlSerializer
         throw new InvalidOperationException($"Unsupported document value {value.GetType().Name}");
     }
 
-    private static IEnumerable<PropertyInfo> Properties(Type type) => type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-        .Where(property => property.Name is not (nameof(DocumentNode.Location) or nameof(DocumentNode.Members)));
-    private static string CamelCase(string name) => char.ToLowerInvariant(name[0]) + name.Substring(1);
     private static DocumentLocation Location(YamlNode node) => new((int)node.Start.Line, (int)node.Start.Column);
     private static YamlException Invalid(Type type, YamlNode node) =>
         new(node.Start, node.End, $"Workflow YAML does not match {type.Name}");

@@ -41,6 +41,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="schemas/workflow.schema.json" Pack="true" PackagePath="schemas/workflow.schema.json" />
     <None Update="buildTransitive/IxIFlow.props" Pack="true" PackagePath="buildTransitive/IxIFlow.props" />
     <None Update="build/IxIFlow.props" Pack="true" PackagePath="build/IxIFlow.props" />
   </ItemGroup>

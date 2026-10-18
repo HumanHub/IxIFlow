@@ -42,5 +42,5 @@ The [roadmap](/docs/roadmap/) lists the planned work for each limit.
 - `IWorkflowTracer` is registered but not called by the runner.
 - The coordinator selects hosts but does not dispatch commands, and no HTTP host endpoint is included. See [coordinator and hosts](/docs/coordinator-and-hosts/).
 - Dead letters are retained without an inspection or requeue API.
-- Start triggers, a management API, and JSON and YAML authoring with parity to the fluent API are planned. YAML documents currently support activities, sequences, conditions, suspension, and child workflow invocation.
+- Start triggers, a management API, and JSON and YAML authoring with parity to the fluent API are planned. YAML documents support activities, templates, sequences, conditions, sequential and parallel `forEach`, suspension, and child workflow invocation, with a packaged JSON Schema for editor support.
 - SQL Server is the only durable store. SQLite, PostgreSQL, and message broker adapters are not implemented.

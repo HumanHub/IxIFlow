@@ -1,0 +1,1111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/HumanHub/IxIFlow/main/src/IxIFlow/schemas/workflow.schema.json",
+  "title": "IxIFlow workflow",
+  "type": "object",
+  "description": "A workflow document with reusable templates, code assets and executable steps.",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "description": "The document contract version.",
+      "enum": [
+        "1.0"
+      ],
+      "default": "1.0"
+    },
+    "workflow": {
+      "$ref": "#/definitions/workflowDefinition",
+      "description": "The workflow identity and data contract."
+    },
+    "imports": {
+      "$ref": "#/definitions/workflowImports",
+      "description": "Dependencies that publishing must resolve and pin."
+    },
+    "activities": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/activityTemplate"
+      },
+      "description": "Reusable activity templates keyed by reference name."
+    },
+    "steps": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/stepTemplate"
+      },
+      "description": "Reusable step templates keyed by reference name."
+    },
+    "code": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/codeAsset"
+      },
+      "description": "Code assets keyed by function name."
+    },
+    "definitions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/step"
+      },
+      "description": "The workflow steps in execution order."
+    }
+  },
+  "required": [
+    "workflow"
+  ],
+  "definitions": {
+    "workflowDefinition": {
+      "type": "object",
+      "description": "The identity, data type and descriptive metadata of a workflow.",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name used to register and invoke the workflow."
+        },
+        "version": {
+          "type": "integer",
+          "description": "The positive workflow version.",
+          "default": 1
+        },
+        "dataType": {
+          "type": "string",
+          "description": "The workflow data CLR type or resolved catalog key."
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The display name stored in workflow metadata."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The description stored on the workflow definition."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tags stored on the workflow definition."
+        }
+      },
+      "required": [
+        "name",
+        "dataType"
+      ]
+    },
+    "workflowImports": {
+      "type": "object",
+      "description": "Dependencies resolved by a publishing host before translation.",
+      "additionalProperties": false,
+      "properties": {
+        "catalogs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Activity catalog dependencies to resolve and pin."
+        },
+        "workflows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Workflow dependencies to resolve and pin."
+        }
+      }
+    },
+    "activityTemplate": {
+      "type": "object",
+      "description": "A reusable activity with defaults and input and output mappings.",
+      "additionalProperties": false,
+      "properties": {
+        "activity": {
+          "type": "string",
+          "description": "The activity CLR type or resolved catalog key."
+        },
+        "activityVersion": {
+          "type": "string",
+          "description": "The version that must match the resolved activity contract when supplied."
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "Scalar activity input defaults overridden by explicit input mappings."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Mappings from expressions to activity inputs."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from activity outputs to workflow data."
+        }
+      },
+      "required": [
+        "activity"
+      ]
+    },
+    "inputMapping": {
+      "type": "object",
+      "description": "An expression mapped to an input property.",
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "The CLR input property name."
+        },
+        "from": {
+          "$ref": "#/definitions/expression",
+          "description": "The expression supplying the input value."
+        }
+      },
+      "required": [
+        "target",
+        "from"
+      ]
+    },
+    "expression": {
+      "type": "object",
+      "description": "An expression selected by kind, or inferred from a path member.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "constant",
+            "path",
+            "binary",
+            "function"
+          ],
+          "description": "The discriminator selecting the concrete document variant."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "constant"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/constantExpression"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "path"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/pathExpression"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "path"
+            ],
+            "not": {
+              "required": [
+                "kind"
+              ]
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/pathExpression"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "binary"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/binaryExpression"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "function"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/functionExpression"
+          }
+        }
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "required": [
+            "path"
+          ]
+        }
+      ]
+    },
+    "constantExpression": {
+      "type": "object",
+      "description": "A literal value, which must be scalar for local translation.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "constant",
+          "description": "The discriminator selecting this document variant."
+        },
+        "value": {
+          "description": "A null, string, Boolean, number, list or mapping, with local translation requiring a scalar."
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "pathExpression": {
+      "type": "object",
+      "description": "A C# expression path rewritten against workflow, previous step, event or item context.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "path",
+          "description": "The discriminator selecting this document variant."
+        },
+        "path": {
+          "type": "string",
+          "description": "The C# expression path to read or assign."
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "binaryExpression": {
+      "type": "object",
+      "description": "A binary expression combining two operands with a supported operator.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "binary",
+          "description": "The discriminator selecting this document variant."
+        },
+        "operator": {
+          "type": "string",
+          "description": "The binary operator applied to the operands.",
+          "enum": [
+            "eq",
+            "ne",
+            "and",
+            "or",
+            "gt",
+            "ge",
+            "lt",
+            "le",
+            "add",
+            "subtract",
+            "multiply",
+            "divide"
+          ]
+        },
+        "left": {
+          "$ref": "#/definitions/expression",
+          "description": "The left operand expression."
+        },
+        "right": {
+          "$ref": "#/definitions/expression",
+          "description": "The right operand expression."
+        }
+      },
+      "required": [
+        "operator",
+        "left",
+        "right",
+        "kind"
+      ]
+    },
+    "functionExpression": {
+      "type": "object",
+      "description": "A named code asset or C# method invocation.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "function",
+          "description": "The discriminator selecting this document variant."
+        },
+        "function": {
+          "type": "string",
+          "description": "The code asset key or C# method name."
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/expression"
+          },
+          "description": "Arguments for a C# method, with local code assets taking none."
+        }
+      },
+      "required": [
+        "function",
+        "kind"
+      ]
+    },
+    "outputMapping": {
+      "type": "object",
+      "description": "An output property mapped to a workflow path.",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "The CLR output property name."
+        },
+        "sourceContext": {
+          "type": "string",
+          "description": "The output context declared by the document.",
+          "enum": [
+            "activity",
+            "event",
+            "workflow"
+          ],
+          "default": "activity"
+        },
+        "to": {
+          "$ref": "#/definitions/pathExpression",
+          "description": "The workflow path receiving the output value."
+        }
+      },
+      "required": [
+        "source",
+        "to"
+      ]
+    },
+    "stepTemplate": {
+      "type": "object",
+      "description": "A reusable block of steps with optional typed parameters.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "The template kind retained in the document."
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/templateParameter"
+          },
+          "description": "Parameters bound from reference arguments or scalar defaults."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The steps expanded when the template is referenced."
+        }
+      }
+    },
+    "templateParameter": {
+      "type": "object",
+      "description": "A template parameter with an optional type, required flag and scalar default.",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "The parameter type, with local support for string, bool, int, long, double and decimal."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether an argument must be supplied when no non-null default exists.",
+          "default": false
+        },
+        "default": {
+          "description": "The scalar fallback used when an argument is omitted."
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "description": "An executable workflow step selected by its kind.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "activity",
+            "activityRef",
+            "stepRef",
+            "if",
+            "sequence",
+            "forEach",
+            "suspend",
+            "invokeWorkflow"
+          ],
+          "description": "The discriminator selecting the concrete document variant."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "activity"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/activityStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "activityRef"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/activityReferenceStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "stepRef"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/stepReferenceStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "if"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/conditionalStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "sequence"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/sequenceStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "forEach"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/forEachStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "suspend"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/suspendStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "invokeWorkflow"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/invokeWorkflowStep"
+          }
+        }
+      ],
+      "required": [
+        "kind"
+      ]
+    },
+    "activityStep": {
+      "type": "object",
+      "description": "An activity invocation with defaults and input and output mappings.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The discriminator selecting the concrete step type.",
+          "const": "activity"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "activity": {
+          "type": "string",
+          "description": "The activity CLR type or resolved catalog key."
+        },
+        "activityVersion": {
+          "type": "string",
+          "description": "The version that must match the resolved activity contract when supplied."
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "Scalar activity input defaults overridden by explicit input mappings."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Mappings from expressions to activity inputs."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from activity outputs to workflow data."
+        }
+      },
+      "required": [
+        "activity",
+        "kind"
+      ]
+    },
+    "activityReferenceStep": {
+      "type": "object",
+      "description": "An invocation of a reusable activity template.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The discriminator selecting the concrete step type.",
+          "const": "activityRef"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "ref": {
+          "type": "string",
+          "description": "The key of an activity template in activities."
+        }
+      },
+      "required": [
+        "ref",
+        "kind"
+      ]
+    },
+    "stepReferenceStep": {
+      "type": "object",
+      "description": "An expansion of a reusable step template with bound arguments.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The discriminator selecting the concrete step type.",
+          "const": "stepRef"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "ref": {
+          "type": "string",
+          "description": "The key of a step template in steps."
+        },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/expression"
+          },
+          "description": "Expressions bound to declared template parameters."
+        }
+      },
+      "required": [
+        "ref",
+        "kind"
+      ]
+    },
+    "conditionalStep": {
+      "type": "object",
+      "description": "A branch selected by a Boolean expression.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The discriminator selecting the concrete step type.",
+          "const": "if"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "condition": {
+          "$ref": "#/definitions/expression",
+          "description": "The Boolean expression selecting the then branch."
+        },
+        "then": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Steps executed when the condition is true."
+        },
+        "else": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Steps executed when the condition is false."
+        }
+      },
+      "required": [
+        "condition",
+        "kind"
+      ]
+    },
+    "sequenceStep": {
+      "type": "object",
+      "description": "A nested sequence of workflow steps.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The discriminator selecting the concrete step type.",
+          "const": "sequence"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The nested steps in execution order."
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "forEachStep": {
+      "type": "object",
+      "description": "An iteration over items with an optional parallel join and collected results.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The discriminator selecting the concrete step type.",
+          "const": "forEach"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "items": {
+          "$ref": "#/definitions/expression",
+          "description": "The expression selecting the items to iterate."
+        },
+        "as": {
+          "type": "string",
+          "description": "The item alias exposed to expressions in the loop body.",
+          "default": "item"
+        },
+        "parallel": {
+          "$ref": "#/definitions/forEachParallel",
+          "description": "Parallel execution and join options when supplied."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Steps executed for each item."
+        },
+        "result": {
+          "$ref": "#/definitions/expression",
+          "description": "The expression producing each item result."
+        },
+        "into": {
+          "$ref": "#/definitions/pathExpression",
+          "description": "The workflow path receiving the list of item results."
+        }
+      },
+      "required": [
+        "items",
+        "kind"
+      ]
+    },
+    "forEachParallel": {
+      "type": "object",
+      "description": "Parallel iteration concurrency and completion options.",
+      "additionalProperties": false,
+      "properties": {
+        "maxConcurrency": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The positive maximum number of concurrent items when supplied."
+        },
+        "join": {
+          "type": "string",
+          "description": "The completion policy for parallel items.",
+          "enum": [
+            "all",
+            "any",
+            "conditionally"
+          ],
+          "default": "all"
+        },
+        "resultType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The result CLR type required for a conditional join."
+        },
+        "condition": {
+          "$ref": "#/definitions/expression",
+          "description": "The completion expression required for a conditional join, with workflow and results in scope."
+        }
+      }
+    },
+    "suspendStep": {
+      "type": "object",
+      "description": "A suspension awaiting a typed resume event.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The discriminator selecting the concrete step type.",
+          "const": "suspend"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "event": {
+          "type": "string",
+          "description": "The resume event CLR type or resolved catalog key."
+        },
+        "reason": {
+          "type": "string",
+          "description": "The suspension key, falling back to the step identifier when empty."
+        },
+        "resumeCondition": {
+          "$ref": "#/definitions/expression",
+          "description": "The optional expression deciding whether a resume event is accepted."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Input mappings configured for the suspension."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from resume event outputs to workflow data."
+        }
+      },
+      "required": [
+        "event",
+        "kind"
+      ]
+    },
+    "invokeWorkflowStep": {
+      "type": "object",
+      "description": "An invocation of a child workflow with a resolved data contract and version.",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "kind": {
+          "type": "string",
+          "description": "The discriminator selecting the concrete step type.",
+          "const": "invokeWorkflow"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The step description retained in the document."
+        },
+        "workflow": {
+          "$ref": "#/definitions/workflowReference",
+          "description": "The child workflow reference resolved before translation."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Mappings from expressions to child workflow inputs."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from child workflow outputs to workflow data."
+        }
+      },
+      "required": [
+        "workflow",
+        "kind"
+      ]
+    },
+    "workflowReference": {
+      "type": "object",
+      "description": "A child workflow name with an optional version resolved by the host.",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The child workflow name to resolve."
+        },
+        "version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The requested workflow version, or the host-resolved version when omitted."
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "codeAsset": {
+      "type": "object",
+      "description": "A code asset referenced by name from function expressions.",
+      "additionalProperties": false,
+      "properties": {
+        "language": {
+          "type": "string",
+          "description": "The code language, with local expressions requiring csharp-expression."
+        },
+        "returns": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The declared return type retained for publishing."
+        },
+        "entryPoint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The declared entry point retained for publishing."
+        },
+        "source": {
+          "type": "string",
+          "description": "The code source rewritten against the expression context."
+        }
+      },
+      "required": [
+        "language",
+        "source"
+      ]
+    }
+  }
+}
