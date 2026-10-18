@@ -578,6 +578,15 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     await connection.ExecuteAsync("PRAGMA journal_mode=WAL");
     await using var transaction = ((SqliteConnection)connection).BeginTransaction(deferred: false);
 
+    // Creation is atomic; an existing instance table means the schema is left alone, including indexes.
+    if (await connection.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'ixiflow_workflow_instances')",
+            transaction: transaction))
+    {
+        await transaction.CommitAsync();
+        return;
+    }
+
     await connection.ExecuteAsync("""
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
@@ -672,11 +681,6 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         """, transaction: transaction);
     await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
-    if (await connection.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM pragma_table_info('ixiflow_workflow_waits') WHERE name = 'default_payload_json'",
-            transaction: transaction) == 0)
-        await connection.ExecuteAsync("ALTER TABLE ixiflow_workflow_waits ADD COLUMN default_payload_json TEXT NULL",
-            transaction: transaction);
     await transaction.CommitAsync();
     }
 

@@ -665,19 +665,14 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     {
     await using var transaction = await connection.BeginTransactionAsync();
     // Separate hosts can initialize the same database at the same time.
-    // The schema is created in one transaction, so its last object stands for all of it. A schema that
+    // The schema is created in one transaction, so its instance table stands for all of it. A schema that
     // exists is left alone: creating an index that exists still locks its table against other hosts' writes.
     await connection.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtext('IxIFlow.WorkflowSchema'))",
         transaction: transaction);
     if (await connection.ExecuteScalarAsync<bool>(
-            "SELECT to_regclass('ix_ixiflow_tombstones_expiry') IS NOT NULL",
+            "SELECT to_regclass('ixiflow_workflow_instances') IS NOT NULL",
             transaction: transaction))
     {
-        if (!await connection.ExecuteScalarAsync<bool>(
-                "SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'ixiflow_workflow_waits'::regclass " +
-                "AND attname = 'default_payload_json' AND NOT attisdropped)", transaction: transaction))
-            await connection.ExecuteAsync("ALTER TABLE ixiflow_workflow_waits ADD COLUMN default_payload_json text NULL",
-                transaction: transaction);
         await transaction.CommitAsync();
         return;
     }
