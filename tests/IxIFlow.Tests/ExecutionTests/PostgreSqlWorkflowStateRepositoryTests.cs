@@ -173,11 +173,20 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
             new WorkflowEvent(instanceId, "event-1", "Approval", "{}", Key: "approval"))).Status);
         Assert.Equal(7, await CountRowsAsync(newConnection, instanceId));
 
-        await repository.DeleteWorkflowInstanceAsync(instanceId);
+        await repository.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention: TimeSpan.FromSeconds(1));
+        Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1)));
 
         Assert.Equal(0, await CountRowsAsync(newConnection, instanceId));
-        Assert.Equal(1, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1)))!
-            .Epoch);
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        ExecutionLeaseGrant? next = null;
+        while (next == null && elapsed.Elapsed < TimeSpan.FromSeconds(3))
+        {
+            next = await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1));
+            if (next == null)
+                await Task.Delay(50);
+        }
+        Assert.NotNull(next);
+        Assert.Equal(1, next.Epoch);
         await repository.ReleaseExecutionLeaseAsync(instanceId, "next");
     }
 
