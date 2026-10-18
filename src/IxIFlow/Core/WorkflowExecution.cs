@@ -359,6 +359,9 @@ public class WorkflowInstance
 /// </summary>
 public class WorkflowExecutionSnapshot
 {
+    /// <summary>True when only the instance's removal tombstone remains; all collections are empty.</summary>
+    public bool IsRemoved { get; set; }
+
     /// <summary>
     ///     Workflow instance identifier that owns this snapshot
     /// </summary>

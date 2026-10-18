@@ -119,13 +119,13 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
             Assert.Equal(3, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "third", TimeSpan.FromSeconds(10)))?.Epoch);
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "third"));
 
-            // A deleted and recreated instance never reuses an epoch, so a former owner stays fenced.
+            // Deletion retains the epoch fence and reserves the ID against a former owner.
             await repository.DeleteWorkflowInstanceAsync(instanceId);
             Assert.Equal(4, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10)))?.Epoch);
             instance.Status = WorkflowStatus.Running;
             instance.Revision = 0;
-            Assert.Equal(WorkflowCommitStatus.StaleEpoch,
-                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 3, 0))).Status);
+            Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+                repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 3, 0)))).Kind);
         }
         finally
         {

@@ -16,7 +16,8 @@ public sealed class OutboxStoreTests
     {
         var time = new FakeTimeProvider();
         return OutboxStoreContract.VerifyAsync(new InMemoryWorkflowStateRepository(time), (_, delay) =>
-        { time.Advance(delay); return Task.CompletedTask; });
+        { time.Advance(delay); return Task.CompletedTask; },
+            _ => { time.Advance(TimeSpan.FromDays(91)); return Task.CompletedTask; });
     }
 
     [Fact]
@@ -27,7 +28,8 @@ public sealed class OutboxStoreTests
         Directory.CreateDirectory(folder);
         var time = new FakeTimeProvider();
         await using (var store = new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "outbox.db"), time))
-            await OutboxStoreContract.VerifyAsync(store, (_, delay) => { time.Advance(delay); return Task.CompletedTask; });
+            await OutboxStoreContract.VerifyAsync(store, (_, delay) => { time.Advance(delay); return Task.CompletedTask; },
+            _ => { time.Advance(TimeSpan.FromDays(91)); return Task.CompletedTask; });
         Directory.Delete(folder, recursive: true);
     }
 
@@ -47,7 +49,7 @@ public sealed class OutboxStoreTests
                     LeaseUntilUtc=DATEADD(SECOND, -@Seconds, LeaseUntilUtc)
                 WHERE EventId=@Id AND PublisherName=@PublisherName
                 """, new { Seconds = (int)delay.TotalSeconds, delivery.Event.Id, delivery.PublisherName });
-        });
+        }, id => ExpireTombstone(connectionString, id));
     }
 
     [PostgreSqlFact]
@@ -64,7 +66,17 @@ public sealed class OutboxStoreTests
                     lease_until_utc=lease_until_utc - @Seconds * INTERVAL '1 second'
                 WHERE event_id=@Id AND publisher_name=@PublisherName
                 """, new { Seconds = (int)delay.TotalSeconds, delivery.Event.Id, delivery.PublisherName });
-        });
+        }, id => ExpireTombstone(connectionString, id));
+    }
+
+    private static async Task ExpireTombstone(string connectionString, string id)
+    {
+        await using System.Data.Common.DbConnection connection = connectionString.Contains("Host=", StringComparison.OrdinalIgnoreCase)
+            ? new NpgsqlConnection(connectionString) : new SqlConnection(connectionString);
+        await connection.ExecuteAsync(connection is SqlConnection
+            ? "UPDATE dbo.IxIFlowWorkflowTombstones SET ExpiresAtUtc=DATEADD(SECOND,-1,SYSUTCDATETIME()) WHERE InstanceId=@Id"
+            : "UPDATE ixiflow_workflow_tombstones SET expires_at_utc=clock_timestamp()-INTERVAL '1 second' WHERE instance_id=@Id",
+            new { Id = id });
     }
 
     [Theory]

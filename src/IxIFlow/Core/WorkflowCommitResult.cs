@@ -418,6 +418,9 @@ public sealed class CheckpointCommit
 public sealed record CommittedInstance(string InstanceId, string WorkflowName, string CorrelationId,
     WorkflowStatus Status, bool AcknowledgesCancellation)
 {
+    public string? ParentInstanceId { get; init; }
+
     public static CommittedInstance Of(WorkflowInstance instance) => new(instance.InstanceId, instance.WorkflowName,
-        instance.CorrelationId, instance.Status, instance.CancellationReason != null);
+        instance.CorrelationId, instance.Status, instance.CancellationReason != null)
+        { ParentInstanceId = instance.ParentInstanceId };
 }

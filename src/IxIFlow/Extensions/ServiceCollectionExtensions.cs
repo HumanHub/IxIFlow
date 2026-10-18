@@ -25,6 +25,7 @@ public static class ServiceCollectionExtensions
     {
         // Core workflow services
         services.TryAddSingleton(HostSettings.Default);
+        services.TryAddSingleton(RetentionSettings.Default);
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
             provider.GetService<ILogger<WorkflowHost>>()));
@@ -39,6 +40,7 @@ public static class ServiceCollectionExtensions
         // Stops after the workflow host, so its final commits can be delivered during drain.
         services.AddHostedService<WorkflowOutboxService>();
         services.AddHostedService<WorkflowRecoveryService>();
+        services.AddHostedService<WorkflowRetentionService>();
         // Registered after the scanner so it stops first: hosted services stop in reverse order,
         // and the host drains the work the scanner admitted.
         services.AddHostedService(provider => provider.GetRequiredService<WorkflowHost>());
@@ -105,6 +107,12 @@ public static class ServiceCollectionExtensions
             new HostSettings(options.Slots, options.DrainTimeout, options.PollInterval, options.HostName)));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
+
+        RetentionSettings.Validate(options.FinishedInstanceRetention, options.TombstoneRetention, options.RetentionBatchSize);
+        if (options.RetentionScanInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options.RetentionScanInterval), "The retention scan interval must be positive");
+        services.Replace(ServiceDescriptor.Singleton(new RetentionSettings(options.FinishedInstanceRetention,
+            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize)));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -356,6 +364,18 @@ internal class WorkflowRegistrationBuilder : IWorkflowRegistrationBuilder
 /// </summary>
 public class IxIFlowOptions
 {
+    /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
+    public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;
+
+    /// <summary>How long a removed ID is reserved, measured from removal. Defaults to 90 days.</summary>
+    public TimeSpan TombstoneRetention { get; set; } = RetentionSettings.Default.TombstoneRetention;
+
+    /// <summary>Time between bounded retention passes. Defaults to one hour.</summary>
+    public TimeSpan RetentionScanInterval { get; set; } = RetentionSettings.Default.ScanInterval;
+
+    /// <summary>Maximum instances and maximum expired tombstones removed per pass. Defaults to 100 each.</summary>
+    public int RetentionBatchSize { get; set; } = RetentionSettings.Default.BatchSize;
+
     /// <summary>
     /// Custom workflow state repository implementation. Registered as a singleton;
     /// implementations must support concurrent workflow calls.

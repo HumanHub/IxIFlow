@@ -1293,6 +1293,12 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     private sealed class PausedReadRepository(InMemoryWorkflowStateRepository inner) : IWorkflowStateRepository
     {
+        public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
+            CancellationToken cancellationToken = default) =>
+            inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
+        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
+            inner.GetTombstoneAsync(instanceId);
+
         public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
             inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
         public Task UnregisterPublisherAsync(string name) => inner.UnregisterPublisherAsync(name);
@@ -1444,7 +1450,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             inner.GetTraceAsync(instanceId, afterSequence, limit);
-        public Task DeleteWorkflowInstanceAsync(string id) => inner.DeleteWorkflowInstanceAsync(id);
+        public Task DeleteWorkflowInstanceAsync(string id, TimeSpan? tombstoneRetention = null) => inner.DeleteWorkflowInstanceAsync(id, tombstoneRetention);
     }
     [Fact]
     [Trait("Category", "SqliteIntegration")]

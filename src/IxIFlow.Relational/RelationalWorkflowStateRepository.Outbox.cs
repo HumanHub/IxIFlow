@@ -86,6 +86,8 @@ public abstract partial class RelationalWorkflowStateRepository
     {
         if (instance == null || !WorkflowStoreRules.IsTerminal(instance.Status))
             return;
+        await connection.ExecuteAsync(RequiredSql(Statement.StampEnd),
+            WithTimes(new { instance.InstanceId }, ("Now", now)), transaction);
         instance.Revision = revision;
         await LockPublishersAsync(connection, transaction, shared: true);
         var item = OutboxEvent.Completion(instance, now);
