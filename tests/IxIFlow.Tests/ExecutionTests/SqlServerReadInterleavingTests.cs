@@ -49,7 +49,7 @@ public sealed class SqlServerReadInterleavingTests
             "summary" => await reader.GetWorkflowInstanceSummaryAsync(id),
             "name" => Assert.Single(await reader.GetWorkflowInstancesByNameAsync(original.WorkflowName)),
             "correlation" => Assert.Single(await reader.GetWorkflowInstancesByCorrelationIdAsync(id)),
-            _ => Assert.Single((await reader.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running)).Where(i => i.InstanceId == id))
+            _ => Assert.Single(await reader.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running), i => i.InstanceId == id)
         };
         var reading = Task.Run(Read);
         var replacement = CheckpointRaceContract.Instance(id, "new");
