@@ -25,6 +25,7 @@ public static class ServiceCollectionExtensions
     {
         // Core workflow services
         services.TryAddSingleton(HostSettings.Default);
+        services.TryAddSingleton(RetentionSettings.Default);
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
             provider.GetService<ILogger<WorkflowHost>>()));
@@ -35,7 +36,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RunControl>();
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
         services.AddScoped<WorkflowHost.InstanceOperations>();
+        services.TryAddSingleton(new OutboxSettings());
+        // Stops after the workflow host, so its final commits can be delivered during drain.
+        services.AddHostedService<WorkflowOutboxService>();
         services.AddHostedService<WorkflowRecoveryService>();
+        services.AddHostedService<WorkflowRetentionService>();
         // Registered after the scanner so it stops first: hosted services stop in reverse order,
         // and the host drains the work the scanner admitted.
         services.AddHostedService(provider => provider.GetRequiredService<WorkflowHost>());
@@ -70,6 +75,12 @@ public static class ServiceCollectionExtensions
         services.AddIxIFlow();
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
+        if (!Enum.IsDefined(options.TraceDetail))
+            throw new ArgumentOutOfRangeException(nameof(options.TraceDetail));
+        if (options.MaxTraceEntriesPerInstance is <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options.MaxTraceEntriesPerInstance));
+        if (options.MaxTraceEntriesPerCommit <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The trace entry limit must be positive");
         if (options.MaxCrashes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The crash limit must be positive");
         if (options.MaxActiveBranches <= 0)
@@ -85,6 +96,9 @@ public static class ServiceCollectionExtensions
         services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits
         {
             MaxCheckpointBytes = options.MaxCheckpointBytes,
+            MaxTraceEntriesPerCommit = options.MaxTraceEntriesPerCommit,
+            TraceDetail = options.TraceDetail,
+            MaxTraceEntriesPerInstance = options.MaxTraceEntriesPerInstance,
             MaxCrashes = options.MaxCrashes,
             MaxActiveBranches = options.MaxActiveBranches,
             MaxActivitiesPerRun = options.MaxActivitiesPerRun,
@@ -102,6 +116,12 @@ public static class ServiceCollectionExtensions
             new HostSettings(options.Slots, options.DrainTimeout, options.PollInterval, options.HostName)));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
+
+        RetentionSettings.Validate(options.FinishedInstanceRetention, options.TombstoneRetention, options.RetentionBatchSize);
+        if (options.RetentionScanInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options.RetentionScanInterval), "The retention scan interval must be positive");
+        services.Replace(ServiceDescriptor.Singleton(new RetentionSettings(options.FinishedInstanceRetention,
+            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize)));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -353,6 +373,18 @@ internal class WorkflowRegistrationBuilder : IWorkflowRegistrationBuilder
 /// </summary>
 public class IxIFlowOptions
 {
+    /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
+    public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;
+
+    /// <summary>How long a removed ID is reserved, measured from removal. Defaults to 90 days.</summary>
+    public TimeSpan TombstoneRetention { get; set; } = RetentionSettings.Default.TombstoneRetention;
+
+    /// <summary>Time between bounded retention passes. Defaults to one hour.</summary>
+    public TimeSpan RetentionScanInterval { get; set; } = RetentionSettings.Default.ScanInterval;
+
+    /// <summary>Maximum instances and maximum expired tombstones removed per pass. Defaults to 100 each.</summary>
+    public int RetentionBatchSize { get; set; } = RetentionSettings.Default.BatchSize;
+
     /// <summary>
     /// Custom workflow state repository implementation. Registered as a singleton;
     /// implementations must support concurrent workflow calls.
@@ -365,6 +397,19 @@ public class IxIFlowOptions
     /// limit and release the instance to continue.
     /// </summary>
     public long MaxCheckpointBytes { get; set; } = ExecutionLimits.DefaultMaxCheckpointBytes;
+
+    /// <summary>
+    /// Maximum trace entries in one commit, default 1,000. On overflow the last slot becomes one Truncated
+    /// entry counting all omissions, so at most 999 ordinary entries remain at the default. The bound resets
+    /// only after acknowledgement. Entries of a pass never committed are dropped (G-01).
+    /// </summary>
+    public int MaxTraceEntriesPerCommit { get; set; } = ExecutionLimits.DefaultMaxTraceEntriesPerCommit;
+
+    /// <summary>Full records control flow; Activities records activity, event, operator and cancellation entries.</summary>
+    public TraceDetail TraceDetail { get; set; } = TraceDetail.Full;
+
+    /// <summary>Optional instance budget. Once reached, one marker is recorded and control flow stops; other entries continue.</summary>
+    public long? MaxTraceEntriesPerInstance { get; set; }
 
     /// <summary>
     /// A diagnostic: at each commit, serialize every part of the checkpoint and fail the commit, naming the part,

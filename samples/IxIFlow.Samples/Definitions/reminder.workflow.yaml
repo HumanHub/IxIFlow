@@ -1,0 +1,19 @@
+# Park for an hour, then stamp the reminder with the workflow clock.
+workflow:
+  name: Reminder
+  dataType: IxIFlow.Samples.ReminderData
+code:
+  now:
+    language: csharp-expression
+    source: ctx.UtcNow
+definitions:
+  - kind: delay
+    duration: '01:00:00'
+  - kind: activity
+    activity: samples.stamp-time
+    input:
+      - target: At
+        from: { kind: function, function: now }
+    output:
+      - source: At
+        to: { path: workflow.SentAt }

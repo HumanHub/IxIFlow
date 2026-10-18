@@ -30,10 +30,14 @@ Optional fixed statements are LockIdentity, AdvanceInbox (when InsertEvent advan
 
 | Statement group | Results and ordering |
 | --- | --- |
-| Unpublished, UnpublishedBatch, ClaimCompletions, QuerySql | InstanceId, StateJson, RunnableAtUtc, Revision; Incarnation when stamp checks are needed. Claims return at most 100 rows. |
+| QuerySql | InstanceId, StateJson, RunnableAtUtc, Revision; Incarnation when stamp checks are needed. |
+| ClaimDeliveries, DeliveryLock, DeliveryRead | EventId, EventJson, PublisherName, Attempts, NextAttemptAtUtc, Status, LastError, LeaseToken, LeaseUntilUtc. ClaimDeliveries locks up to Limit due records and skips locked rows on server stores; DeliveryLock locks one record. |
+| Publishers, PublisherRead | Name, TypesJson, DisabledAtUtc, LastError. |
+| OutboxClock | The store clock after delivery locks have been acquired. SQLite samples its injected clock instead. |
 | ReadInstanceSql | Trunk, then parts (InstanceId, PartKey, Json), then current stamp (InstanceId, Revision, Incarnation) when needed. Retry reads reapply the original filter. |
 | ReadParts | Parts for selected IDs, then current stamps when needed. Snapshot reads return only parts. |
-| LockInbox, DeleteParentInbox | Status and InboxSequence, followed by server time for server-clock stores. |
+| LockInbox | Status, InboxSequence and TracingEnabled (projected from StateJson), followed by server time for server-clock stores. |
+| DeleteParentInbox | Status and InboxSequence, followed by server time for server-clock stores. |
 | ParentInbox | Status and InboxSequence, with no clock result. |
 | CommitState | Revision, CancellationJson, CancellationAcknowledged, InboxSequence, followed by server time when applicable. |
 | Receipt, Lease | ExpectedRevision, Revision, PayloadHash; Epoch, CrashCount, IsActive respectively. |
@@ -46,7 +50,7 @@ Optional fixed statements are LockIdentity, AdvanceInbox (when InsertEvent advan
 | Runnable, Cancellation, Cancellations, InboxSequences, Trace | InstanceId/RunnableAtUtc; cancellation JSON; InstanceId/cancellation JSON; InstanceId/InboxSequence; Sequence/EntryJson. |
 | DeleteState | State JSON or no row. |
 
-Writes that return rows (ClaimCompletions, ClaimLease and Save with SaveReturnsDue) may use a multi-statement batch ending in SELECT where RETURNING/OUTPUT is unavailable. UnpublishedFilter and ClaimedFilter are revalidation predicates; ByName, ByStatus, ByCorrelation and ByParent use @Value.
+Writes that return rows (ClaimLease and Save with SaveReturnsDue) may use a multi-statement batch ending in SELECT where RETURNING/OUTPUT is unavailable. ByName, ByStatus, ByCorrelation and ByParent use @Value.
 
 ## Deletion and provider capabilities
 
@@ -58,4 +62,12 @@ Batch hooks bind nonempty settlements, waits, parts, trace and child starts. The
 
 RequestCancellationAsync executes atomic provider logic. A null clock uses server time; a supplied clock is the commit's captured time or SQLite's time inside its write transaction. The outcome distinguishes unchanged, recorded, made-runnable and gone. SQL Server shares one UPDATE template for both clock sources. PostgreSQL retains its CTE and conditional transactional NOTIFY; SQLite retains its read/update pair. Only PostgreSQL supplies runnable notifications and LISTEN/NOTIFY wake-ups.
 
-Read assembly retains revision/incarnation checks for SQL Server and PostgreSQL and one deferred WAL snapshot for SQLite. SQL Server preserves its autocommit save/release; PostgreSQL retains transactional save/release/cancellation. SQLite preserves immediate writes, file ownership, pool clearing, disposed checks and busy/locked error mapping. Deadlock and serialization mappings, outbox duration rounding and notification conditions remain provider-specific.
+Read assembly retains revision/incarnation checks for SQL Server and PostgreSQL and one deferred WAL snapshot for SQLite. SQL Server preserves its autocommit lease release; saves now use a transaction so a terminal save and its outbox event are atomic. PostgreSQL retains transactional save/release/cancellation. SQLite preserves immediate writes, file ownership, pool clearing, disposed checks and busy/locked error mapping. Deadlock and serialization mappings and notification conditions remain provider-specific.
+
+## Publisher delivery protocol (D-40)
+
+The outbox has immutable event rows, publisher registrations with persisted endpoint disablement, and delivery rows keyed by event ID and publisher name. Completion insertion and delivery materialization are part of the terminal commit or save transaction. Event deduplication uses the instance incarnation; SQLite now stores an incarnation too. Repeated commits never regenerate the event ID. Deleting an instance retains pending deliveries and their immutable events.
+
+Completion materialization takes the publisher lock shared; registration, unregistration and disabling take it exclusive. SQL Server uses a transaction application lock and PostgreSQL an advisory transaction lock. SQLite uses its already-held immediate writer transaction without a lock query. Registration starts with future events unless replayRetained is explicitly enabled; it never resets a delivery or re-enables a disabled publisher. Unregistration gives up pending deliveries and removes the subscription. Publishers absent from a particular host remain registered until explicitly unregistered.
+
+ClaimDeliveries takes delivery row locks, then the core samples OutboxClock and stamps the lease and the first-attempt time while incrementing attempts. DeliveryUpdate persists a row only under that transaction and lock. Renewal and settlement lock the delivery, read the store clock, and reject an expired or replaced token. A retry sends only a duration; the core stamps its next attempt from store time. Disabling is atomic with the fenced settlement and gives up all other pending deliveries for that publisher. Acknowledgments after disablement cannot revive a delivery.

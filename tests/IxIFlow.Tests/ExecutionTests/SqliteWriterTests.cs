@@ -35,9 +35,10 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
     }
 
     [Theory]
-    [InlineData("claim completion")]
-    [InlineData("mark completion")]
-    [InlineData("release completion")]
+    [InlineData("register publisher")]
+    [InlineData("claim delivery")]
+    [InlineData("settle delivery")]
+    [InlineData("renew delivery lease")]
     [InlineData("cancel")]
     [InlineData("claim lease")]
     [InlineData("renew lease")]
@@ -58,9 +59,10 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
         await using var transaction = connection.BeginTransaction(deferred: false);
         Func<Task> write = operation switch
         {
-            "claim completion" => () => store.ClaimUnpublishedCompletionsAsync(instance.InstanceId, "owner", TimeSpan.FromSeconds(10)),
-            "mark completion" => () => store.MarkCompletionPublishedAsync(instance.InstanceId, 0, "owner"),
-            "release completion" => () => store.ReleaseCompletionClaimAsync(instance.InstanceId, "owner"),
+            "register publisher" => () => store.RegisterPublisherAsync("publisher", [OutboxEvent.WorkflowCompleted]),
+            "claim delivery" => () => store.ClaimDeliveriesAsync("publisher", "owner", TimeSpan.FromSeconds(10), 1),
+            "settle delivery" => () => store.SettleDeliveryAsync("event", "publisher", "owner", OutboxPublishResult.Delivered()),
+            "renew delivery lease" => () => store.RenewDeliveryLeaseAsync("event", "publisher", "owner", TimeSpan.FromSeconds(10)),
             "cancel" => () => store.RequestCancellationAsync(instance.InstanceId, new CancellationReason { ReasonCode = "stop" }),
             "claim lease" => () => store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromSeconds(10)),
             "renew lease" => () => store.RenewExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromSeconds(10)),

@@ -7,6 +7,8 @@ internal sealed class WorkflowScopeCatalog
 {
     private readonly Dictionary<string, IReadOnlyList<WorkflowStep>> _scopes = new();
     private readonly Dictionary<string, WorkflowStep> _steps = new();
+    private readonly Dictionary<(WorkflowStep Step, string Kind, int Index), string> _scopeIds = new();
+    private readonly Dictionary<(WorkflowStep Saga, WorkflowStep Source), string> _compensationScopeIds = new();
     private readonly Dictionary<WorkflowStep, string> _ids = new();
     private readonly Dictionary<ItemScope, string> _handles = new(ReferenceEqualityComparer.Instance);
 
@@ -41,19 +43,31 @@ internal sealed class WorkflowScopeCatalog
             $"Step '{stepId}' was not found in the registered workflow definition");
 
     public string Id(WorkflowStep step) => _ids[step];
-    public string SequenceScope(WorkflowStep step) => $"{Id(step)}/sequence";
-    public string ThenScope(WorkflowStep step) => $"{Id(step)}/then";
-    public string ElseScope(WorkflowStep step) => $"{Id(step)}/else";
-    public string LoopScope(WorkflowStep step) => $"{Id(step)}/loop";
-    public string ForEachScope(WorkflowStep step) => $"{Id(step)}/foreach";
+    public string SequenceScope(WorkflowStep step) => ScopeId(step, "sequence");
+    public string ThenScope(WorkflowStep step) => ScopeId(step, "then");
+    public string ElseScope(WorkflowStep step) => ScopeId(step, "else");
+    public string LoopScope(WorkflowStep step) => ScopeId(step, "loop");
+    public string ForEachScope(WorkflowStep step) => ScopeId(step, "foreach");
     public string SagaScope(WorkflowStep step) => SequenceScope(step);
-    public string CompensationScope(WorkflowStep saga, WorkflowStep source) =>
-        $"{Id(saga)}/compensation/{Id(source)}";
-    public string FinallyScope(WorkflowStep step) => $"{Id(step)}/finally";
-    public string TimeoutScope(WorkflowStep step) => $"{Id(step)}/timeout";
+    public string CompensationScope(WorkflowStep saga, WorkflowStep source)
+    {
+        if (!_compensationScopeIds.TryGetValue((saga, source), out var id))
+            _compensationScopeIds.Add((saga, source), id = $"{Id(saga)}/compensation/{Id(source)}");
+        return id;
+    }
+    public string FinallyScope(WorkflowStep step) => ScopeId(step, "finally");
+    public string TimeoutScope(WorkflowStep step) => ScopeId(step, "timeout");
     public string CatchBodyScope(WorkflowStep catchBlock) => SequenceScope(catchBlock);
-    public string BranchScope(WorkflowStep step, int index) => $"{Id(step)}/branch/{index}";
-    public string OutcomeScope(WorkflowStep step, int index) => $"{Id(step)}/outcome/{index}";
+    public string BranchScope(WorkflowStep step, int index) => ScopeId(step, "branch", index);
+    public string OutcomeScope(WorkflowStep step, int index) => ScopeId(step, "outcome", index);
+
+    private string ScopeId(WorkflowStep step, string kind, int index = -1)
+    {
+        var key = (step, kind, index);
+        if (!_scopeIds.TryGetValue(key, out var id))
+            _scopeIds.Add(key, id = index < 0 ? $"{Id(step)}/{kind}" : $"{Id(step)}/{kind}/{index}");
+        return id;
+    }
 
     private void AddScope(string id, IReadOnlyList<WorkflowStep> steps)
     {

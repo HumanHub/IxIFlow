@@ -14,6 +14,7 @@ internal static class SagaScopeTransitions
         var state = owner.SagaState ??= new SagaScopeState();
         if (state.Phase == SagaPhase.Forward)
         {
+            checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
             continuation.Stack.Add(new ScopePosition
             {
                 ScopeId = scopes.SagaScope(step),
@@ -29,6 +30,8 @@ internal static class SagaScopeTransitions
             if (!state.IsCancellationCleanup && state.ErrorHandlerIndex >= 0 &&
                 !state.ErrorHandlerStarted)
             {
+                checkpoint.Trace.Record(TraceEntryType.CatchEntered, step, continuation, state.ErrorHandlerIndex,
+                    scopes.CatchBodyScope(step.CatchBlocks[state.ErrorHandlerIndex]));
                 state.ErrorHandlerStarted = true;
                 continuation.Stack.Add(new ScopePosition
                 {
@@ -103,6 +106,8 @@ internal static class SagaScopeTransitions
         }
 
         var completed = state.CompletedSteps[state.CompensationCursor];
+        checkpoint.Trace.Record(TraceEntryType.CompensationStarted, scopes.Step(completed.StepId), continuation,
+            scopeId: scopes.CompensationScope(step, scopes.Step(completed.StepId)));
         state.PreviousCompensation = null;
         var prior = continuation.Previous;
         var runtimePrior = continuation.RuntimePrevious;
@@ -334,7 +339,8 @@ internal static class SagaScopeTransitions
             completed.Reply != null);
     }
 
-    public static bool Exit(WorkflowScopeCatalog scopes, ScopePosition owner,
+    public static bool Exit(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ScopePosition owner,
         ScopePosition child, WorkflowStep step, ContinuationState continuation)
     {
         var state = owner.SagaState;
@@ -354,6 +360,9 @@ internal static class SagaScopeTransitions
             child.ScopeId != scopes.CompensationScope(step,
                 scopes.Step(state.CompletedSteps[state.CompensationCursor].StepId)))
             return false;
+        if (!child.CompensationFailed)
+            checkpoint.Trace.Record(TraceEntryType.CompensationCompleted, scopes.Step(state.CompletedSteps[state.CompensationCursor].StepId),
+            continuation, scopeId: child.ScopeId);
         state.CompensationCursor--;
         return true;
     }
@@ -457,7 +466,8 @@ internal static class SagaScopeTransitions
                     .Concat(checkpoint.BoundReplies.Where(reply => reply.InvocationId == request)
                         .Select(reply => reply.WaitId)));
         var forward = continuation.Stack[index + 1];
-        continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+        checkpoint.Trace.DropFrames(continuation, index + 1, continuation.CancellationUnwind
+            ? continuation.ItemUnwindCause ?? ItemEndCause.Cancelled : ItemEndCause.UnwoundByOuterHandler);
         continuation.Previous = forward.EntryPrevious;
         continuation.RuntimePrevious = forward.RuntimeEntryPrevious;
         state.Error = savedError;
@@ -466,7 +476,7 @@ internal static class SagaScopeTransitions
         state.CompensationCursor = state.CompletedSteps.Count - 1;
     }
 
-    public static bool SkipFailedCompensation(WorkflowScopeCatalog scopes,
+    public static bool SkipFailedCompensation(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, Exception error)
     {
         if (continuation.Stack.Count < 2)
@@ -481,6 +491,10 @@ internal static class SagaScopeTransitions
             return false;
         state.CompensationErrors.Add(error.Message);
         state.PreviousCompensation = null;
+        checkpoint.Trace.Record(TraceEntryType.CompensationFailed,
+            scopes.Step(state.CompletedSteps[state.CompensationCursor].StepId), continuation,
+            scopeId: continuation.Stack[^1].ScopeId);
+        continuation.Stack[^1].CompensationFailed = true;
         continuation.Stack[^1].NextStepIndex++;
         return true;
     }
@@ -504,7 +518,8 @@ internal static class SagaScopeTransitions
     /// handler's frames go, no retry follows, and the saga undoes the steps it kept before the cancellation goes
     /// on (D-36).
     /// </summary>
-    public static bool CancelRetryHandler(WorkflowScopeCatalog scopes, ContinuationState continuation, int index)
+    public static bool CancelRetryHandler(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, int index)
     {
         var owner = continuation.Stack[index];
         if (owner.SagaState is not { Phase: SagaPhase.Compensating } state || !RunsRetryHandler(state) ||
@@ -517,7 +532,8 @@ internal static class SagaScopeTransitions
             var body = continuation.Stack[index + 1];
             if (body.ScopeId != scopes.CatchBodyScope(saga.CatchBlocks[state.ErrorHandlerIndex]))
                 return false;
-            continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+            checkpoint.Trace.DropFrames(continuation, index + 1, continuation.CancellationUnwind
+            ? continuation.ItemUnwindCause ?? ItemEndCause.Cancelled : ItemEndCause.UnwoundByOuterHandler);
             continuation.Previous = body.EntryPrevious;
             continuation.RuntimePrevious = body.RuntimeEntryPrevious;
         }
@@ -570,11 +586,12 @@ internal static class SagaScopeTransitions
     /// Ends a retry handler whose own steps failed: its frames go, the kept steps are undone, and then the saga
     /// raises <see cref="SagaTerminatedException"/> with the handler's failure.
     /// </summary>
-    public static void GiveUpAfterHandlerFailure(ContinuationState continuation, int index, Exception error)
+    public static void GiveUpAfterHandlerFailure(ExecutionCheckpoint checkpoint, ContinuationState continuation, int index, Exception error)
     {
         var state = continuation.Stack[index].SagaState!;
         var body = continuation.Stack[index + 1];
-        continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+        checkpoint.Trace.DropFrames(continuation, index + 1, continuation.CancellationUnwind
+            ? continuation.ItemUnwindCause ?? ItemEndCause.Cancelled : ItemEndCause.UnwoundByOuterHandler);
         continuation.Previous = body.EntryPrevious;
         continuation.RuntimePrevious = body.RuntimeEntryPrevious;
         state.HandlerError = SerializedException.From(error);
@@ -585,14 +602,17 @@ internal static class SagaScopeTransitions
     /// Records that a saga request's answer timed out, so a retry that keeps the request takes its
     /// <c>WaitFor</c>'s timeout path again instead of waiting on a closed wait.
     /// </summary>
-    public static void NoteTimeout(ContinuationState continuation, string? invocationId)
+    public static void NoteTimeout(ContinuationState continuation, string? invocationId, string waitId)
     {
         if (invocationId == null)
             return;
         foreach (var completed in continuation.Stack.Select(frame => frame.SagaState)
                      .SelectMany(state => state?.CompletedSteps ?? []))
             if (completed.InvocationId == invocationId)
+            {
                 completed.ReplyTimedOut = true;
+                completed.TimedOutWaitId = waitId;
+            }
     }
 
     private static void GiveUp(SagaScopeState state)
@@ -610,6 +630,8 @@ internal static class SagaScopeTransitions
     {
         var state = owner.SagaState!;
         var point = state.RestartAt;
+        checkpoint.Trace.Retry(TraceEntryType.SagaRetryStarted, step, continuation, state.RetryCount,
+            point?.StepId, point == null ? scopes.SagaScope(step) : state.Frames[point.FrameId].ScopeId);
         var kept = point == null ? 0 : state.CompensationFloor;
         state.CompletedSteps.RemoveRange(kept, state.CompletedSteps.Count - kept);
         // Waits accepted after the restart point are replayed as the retried pass reaches them.
@@ -725,13 +747,14 @@ internal static class SagaScopeTransitions
     private static SerializedValue? Saved(object? runtime, SerializedValue? saved) =>
         runtime != null ? SerializedValue.From(runtime) : saved;
 
-    public static bool BeginCancellation(ContinuationState continuation, int index)
+    public static bool BeginCancellation(ExecutionCheckpoint checkpoint, ContinuationState continuation, int index)
     {
         var state = continuation.Stack[index].SagaState;
         if (state?.Phase != SagaPhase.Forward)
             return false;
         var forward = continuation.Stack[index + 1];
-        continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+        checkpoint.Trace.DropFrames(continuation, index + 1, continuation.CancellationUnwind
+            ? continuation.ItemUnwindCause ?? ItemEndCause.Cancelled : ItemEndCause.UnwoundByOuterHandler);
         continuation.Previous = forward.EntryPrevious;
         continuation.RuntimePrevious = forward.RuntimeEntryPrevious;
         state.Phase = SagaPhase.Compensating;

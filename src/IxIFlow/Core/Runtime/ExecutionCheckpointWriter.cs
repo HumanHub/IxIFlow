@@ -20,12 +20,27 @@ internal static class ExecutionCheckpointWriter
         bool preserveSavedWorkflowData = false, bool enforceLimit = true, bool clearsCrashCount = true,
         TimeSpan? parkFor = null)
     {
+        checkpoint.Trace.Configure(instance, checkpoint, host.Limits, null, scopes);
         if (!host.PersistsState)
+        {
+            checkpoint.AcknowledgeTrace();
             return false;
+        }
         var lastCommitted = SavedForm.Of(instance);
         checkpoint.CloseEndedRequests();
-        var stored = Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData,
-            host.Limits.VerifyCheckpointParts);
+        OperatorTrace.ChildCancellations(instance, checkpoint, now);
+        StoredCheckpoint stored;
+        try
+        {
+            stored = Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData,
+                host.Limits.VerifyCheckpointParts);
+        }
+        catch (CheckpointVerificationException)
+        {
+            lastCommitted.RestoreTo(instance);
+            checkpoint.Trace.DiscardPending();
+            throw;
+        }
         var size = stored.Bytes;
         if (enforceLimit && size > host.Limits.MaxCheckpointBytes)
         {
@@ -33,7 +48,7 @@ internal static class ExecutionCheckpointWriter
             // changed since stays marked.
             lastCommitted.RestoreTo(instance);
             checkpoint.RestoreMarks(stored.Marks);
-            instance.Trace.DiscardPending();
+            checkpoint.Trace.DiscardPending();
             throw new CheckpointLimitExceededException(size, host.Limits.MaxCheckpointBytes);
         }
 
@@ -49,7 +64,7 @@ internal static class ExecutionCheckpointWriter
             openedWaits: opened, closedWaits: closed, armedWaits: armed, wakeAfter: parkFor,
             stopped: checkpoint.OperatorStop != null, childStarts: checkpoint.ChildStarts.ToArray(),
             childCancellations: checkpoint.ChildCancellations.ToArray(),
-            parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: instance.Trace.Pending);
+            parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: checkpoint.Trace.Pending);
         using var span = Telemetry.Source.StartActivity("commit");
         Telemetry.Tag(span, instance);
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -65,7 +80,7 @@ internal static class ExecutionCheckpointWriter
                     Telemetry.CommitSize.Record(size, tags);
                     instance.Revision = reply.Revision;
                     instance.Saved(commit.StoredParts, reply.Revision);
-                    instance.Trace.Committed();
+                    checkpoint.AcknowledgeTrace();
                     checkpoint.ChildStarts.Clear();
                     checkpoint.ChildCancellations.Clear();
                     checkpoint.Inbox.Acknowledged(checkpoint, reply.UnreadEvents);

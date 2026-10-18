@@ -1586,6 +1586,26 @@ public class StructuredTryWaitTests
 
     public sealed class BoundedCheckpointStore : IWorkflowStateRepository
     {
+        public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
+            CancellationToken cancellationToken = default) =>
+            _inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
+        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
+            _inner.GetTombstoneAsync(instanceId);
+
+        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
+            _inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
+        public Task UnregisterPublisherAsync(string name) => _inner.UnregisterPublisherAsync(name);
+        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
+            _inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
+        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
+            _inner.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration);
+        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result) =>
+            _inner.SettleDeliveryAsync(eventId, publisherName, token, result);
+        public Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName) =>
+            _inner.GetDeliveryAsync(eventId, publisherName);
+        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
+            _inner.GetPublisherAsync(publisherName);
+
         public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
             _inner.AppendEventAsync(workflowEvent);
         public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
@@ -1636,8 +1656,8 @@ public class StructuredTryWaitTests
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);
-        public Task DeleteWorkflowInstanceAsync(string instanceId) =>
-            _inner.DeleteWorkflowInstanceAsync(instanceId);
+        public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) =>
+            _inner.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention);
     }
 
     public sealed class CountFinallyWinnerActivity(FinallyJoinProbe probe) : IAsyncActivity
