@@ -2,6 +2,7 @@ using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.Time.Testing;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -316,4 +317,135 @@ public sealed class CancellationWatchTests
             throw new NotSupportedException();
         public Task DeleteWorkflowInstanceAsync(string instanceId) => throw new NotSupportedException();
     }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Spec", "B-10")]
+    [Trait("Spec", "C-11")]
+    public async Task DisposalWaitsForInFlightStoreReads(bool readArrivals)
+    {
+        var time = new FakeTimeProvider();
+        var store = new PausedWatchStore(readArrivals);
+        var watch = new CancellationWatch(store, time);
+        using var subscription = watch.Watch("held", new(TaskCreationOptions.RunContinuationsAsynchronously),
+            _ => { }, Tolerance, Interval, arrivals: readArrivals ? _ => { } : null);
+        await store.Started.Task.WaitAsync(Patience);
+
+        var disposing = watch.DisposeAsync().AsTask();
+        try
+        {
+            await Task.Delay(20);
+            Assert.False(disposing.IsCompleted);
+        }
+        finally
+        {
+            store.Release();
+        }
+        await disposing.WaitAsync(Patience);
+        Assert.True(disposing.IsCompletedSuccessfully);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Spec", "B-10")]
+    public async Task DisposalAbandonsAReadThatNeverCompletesWithinTheReadTimeout(bool readArrivals)
+    {
+        var time = new JoinTimeProvider();
+        var store = new PausedWatchStore(readArrivals);
+        var logger = new WatchLogger();
+        var watch = new CancellationWatch(store, time, logger);
+        using var subscription = watch.Watch("hung", new(TaskCreationOptions.RunContinuationsAsynchronously),
+            _ => { }, Tolerance, Interval, arrivals: readArrivals ? _ => { } : null);
+        await store.Started.Task.WaitAsync(Patience);
+
+        await time.ReadStarted.Task.WaitAsync(Patience);
+        time.Disposing = true;
+        var disposing = watch.DisposeAsync().AsTask();
+        await time.JoinStarted.Task.WaitAsync(Patience);
+        time.Advance(TimeSpan.FromSeconds(9));
+        Assert.False(disposing.IsCompleted);
+        time.Advance(TimeSpan.FromSeconds(1));
+        await disposing.WaitAsync(Patience);
+
+        var warning = Assert.Single(logger.Warnings);
+        Assert.Contains("Abandoned 1", warning);
+        Assert.Contains(readArrivals ? "inbox sequences for hung" : "cancellation requests for hung", warning);
+    }
+
+    [Fact]
+    [Trait("Spec", "B-10")]
+    public async Task WatchAfterDisposalThrows()
+    {
+        var watch = new CancellationWatch(new ScriptedStore());
+        await watch.DisposeAsync();
+
+        Assert.Throws<ObjectDisposedException>(() => new Subscription().Watch(watch, "disposed"));
+    }
+
+    private sealed class JoinTimeProvider : FakeTimeProvider
+    {
+        public bool Disposing { get; set; }
+        public TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource JoinStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = base.CreateTimer(callback, state, dueTime, period);
+            if (dueTime == TimeSpan.FromSeconds(10))
+            {
+                if (Disposing)
+                    JoinStarted.TrySetResult();
+                else
+                    ReadStarted.TrySetResult();
+            }
+            return timer;
+        }
+    }
+
+    private sealed class WatchLogger : ILogger<CancellationWatch>
+    {
+        public List<string> Warnings { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+                Warnings.Add(formatter(state, exception));
+        }
+    }
+
+    private sealed class PausedWatchStore(bool readArrivals) : FaultInjectingRepository, IWorkflowInbox
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<IReadOnlyDictionary<string, CancellationReason>> _cancellations =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<IReadOnlyDictionary<string, long>> _arrivals =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+            IReadOnlyCollection<string> instanceIds)
+        {
+            if (readArrivals)
+                return Task.FromResult<IReadOnlyDictionary<string, CancellationReason>>(
+                    new Dictionary<string, CancellationReason>());
+            Started.TrySetResult();
+            return _cancellations.Task;
+        }
+
+        Task<IReadOnlyDictionary<string, long>> IWorkflowInbox.GetInboxSequencesAsync(
+            IReadOnlyCollection<string> instanceIds)
+        {
+            Started.TrySetResult();
+            return _arrivals.Task;
+        }
+
+        public void Release()
+        {
+            _cancellations.TrySetResult(new Dictionary<string, CancellationReason>());
+            _arrivals.TrySetResult(new Dictionary<string, long>());
+        }
+    }
+
 }
