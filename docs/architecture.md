@@ -1,46 +1,41 @@
 ---
 title: Architecture
-description: The local workflow core and optional host infrastructure.
+description: The authoring, host, executor and storage boundaries.
 ---
 
-IxIFlow's core can run inside one .NET application. Call `AddIxIFlow()` to register the engine, create a definition with the fluent API, and execute it through `IWorkflowClient`. Activities run in that application process. This local mode does not require the coordinator or SQL host infrastructure.
+IxIFlow executes workflow instances inside an application through `IWorkflowClient`. Both fluent C# and generated YAML produce a `WorkflowDefinition` and use the same validation and runtime.
 
-## Local execution
+## Runtime boundaries
 
-<div class="arch-diagram" role="img" aria-label="Application calls the locally registered workflow engine. The engine runs activities and uses singleton in-memory state and event stores within the process.">
-  <div class="arch-node"><strong>Application</strong><small>Builds and starts a workflow</small></div>
-  <div class="arch-connector"></div>
-  <div class="arch-node"><strong>Core engine</strong><small>Runs steps in process</small></div>
-  <div class="arch-connector"></div>
-  <div class="arch-node"><strong>Activities</strong><small>Application code and services</small></div>
-</div>
+The client submits work to the core `WorkflowHost`. The host admits runs into slots, creates service scopes, owns instance gates and execution leases, and commits changes through `IWorkflowStateRepository`. The executor advances saved continuations and invokes activities in the application process.
 
-The default `IWorkflowStateRepository` and `IEventStore` implementations are singleton in-memory services. They retain state across scopes within one process. They do not provide durable recovery after a process restart or across hosts.
+The instance row is the durable backlog: `RunnableAtUtc` identifies due work. Local pickup and timers provide prompt execution; recovery polling finds due unowned work. PostgreSQL notifications also wake the scanner. This path needs no separate command bus.
 
-## Optional host path
+One store supplies instance state, checkpoint parts, inboxes, wait indexes, traces, leases, commit receipts, completion outbox deliveries and tombstones. A checkpoint transaction can settle an event, close a wait, start a child and record progress together. Outgoing publishers run outside execution slots and settle their deliveries separately.
 
-`AddIxIFlowHost(options, connectionString)` adds SQL instance state, a host registry, a SQL message bus, and queue and health background services. A host consumes commands addressed to it and runs the **whole workflow** through its local engine; saga steps run in process there. The coordinator can select a host, but your application publishes the command to it.
+Definition and version registries are in memory. Hosts must load compatible definitions and activity assemblies before recovering their instances. Runtime fingerprints detect incompatible definitions; immutable published bundles and their declared artifact identity are planned.
 
-<div class="arch-diagram" role="img" aria-label="Coordinator selects a workflow host using the SQL host registry. A SQL message bus supports commands. The SQL host registers shared workflow instance state, while the selected host runs activities in process.">
-  <div class="arch-node"><strong>Coordinator</strong><small>Selects a healthy host</small></div>
-  <div class="arch-connector"></div>
-  <div class="arch-node"><strong>Workflow host</strong><small>Runs the local engine</small></div>
-  <div class="arch-connector"></div>
-  <div class="arch-node"><strong>Activities</strong><small>Run on that host</small></div>
-</div>
+## Packages
 
-The SQL overload also registers `SqlWorkflowStateRepository`, so workflow instance records are shared in SQL Server. The event store and definition registry remain in process memory. After a process restart, the definition must be registered again before a saved instance can resume.
-
-## Project boundaries
-
-| Project | Responsibility |
+| Package | Responsibility |
 | --- | --- |
-| `IxIFlow.Abstractions` | Activity contract (`IAsyncActivity`, `IActivityContext`, `IRecoverableActivity`) and metadata attributes. Activity packages depend only on this. |
-| `IxIFlow` | Fluent C# API, execution engine, saga and suspension runtime, and in-memory state/event defaults. `AddIxIFlow()` is sufficient for local execution. |
-| `IxIFlow.Authoring` | Workflow document model, validation, compiler, and the activity package catalog. |
-| `IxIFlow.Distributed` | Coordinator, workflow host, host client, transport and registry interfaces, and background services. |
-| `IxIFlow.SqlServer` | SQL Server workflow state repository, message bus, and host registry for the optional host path. |
+| `IxIFlow.Abstractions` | Activities, request/recovery contracts, property markers, metadata and combiners |
+| `IxIFlow` | Builders, validation, client, core host, executor, memory store, telemetry; packaged generator and analyzers |
+| `IxIFlow.Authoring` | Document validation/serialization, translation support and installed activity catalogs |
+| `IxIFlow.Sqlite` | A durable SQLite file owned by one host |
+| `IxIFlow.SqlServer` | Shared SQL Server storage |
+| `IxIFlow.PostgreSql` | Shared PostgreSQL storage and notification wake-ups |
+| `IxIFlow.Relational` | Internal shared provider implementation; no public provider extension API |
+| `IxIFlow.Webhooks` | Outgoing signed HTTP delivery of outbox events |
+| `IxIFlow.Templates` | Immutable template versions, rendering and message activities |
+| `IxIFlow.Templates.Liquid` | Liquid template rendering through Fluid |
 
-The projects form one-way dependencies: the core depends on the abstractions; authoring and distributed hosting depend on the core; the SQL Server host integration depends on distributed hosting. The core does not reference hosting or SQL Server libraries.
+The generator and analyzers are build-time components bundled in the engine package. The schema ships with that package. See [YAML authoring](yaml-authoring.md) for the compiler pipeline.
 
-Instance persistence and command transport are separate concerns. The SQL Server integration supplies workflow state, an atomic suspended-instance claim, host registration, and claimed message delivery. The definition registry and event store remain in memory. Custom `IWorkflowStateRepository` and `IEventStore` implementations can be registered through the core DI hooks. Checkpoints and renewable execution leases allow recovery of interrupted instances; activities with uncertain external effects require an explicit resolution decision.
+## Hosting and planned distribution
+
+The supported executor runs in process. Shared SQL Server or PostgreSQL state allows another compatible host to recover work using fenced leases. SQLite enforces one owner; memory state lives for the process.
+
+Process executors, pipe transport, coordinator discovery, capability/demand placement and affinity are planned.
+
+See [hosting](coordinator-and-hosts.md), [execution model](execution-model.md) and the [roadmap](roadmap.md).
