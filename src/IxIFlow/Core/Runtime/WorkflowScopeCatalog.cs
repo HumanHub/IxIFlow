@@ -13,12 +13,10 @@ internal sealed class WorkflowScopeCatalog
     public WorkflowScopeCatalog(WorkflowDefinition definition)
     {
         AddScope("root", definition.Steps);
-        ValidateSupportedSteps();
-        RequestPairing.Pair(definition.Steps);
-        ForEachRules.Validate(definition.Steps);
-        ParallelRules.Validate(definition.Steps);
         Fingerprint = ComputeFingerprint(definition);
     }
+
+    internal IEnumerable<KeyValuePair<string, WorkflowStep>> AllSteps => _steps;
 
     public string Fingerprint { get; }
     public bool RequiresPersistence => _steps.Values.Any(step =>
@@ -65,9 +63,10 @@ internal sealed class WorkflowScopeCatalog
             var step = steps[index];
             var stepId = $"{id}/{index}";
             _steps.Add(stepId, step);
-            _ids.Add(step, stepId);
+            if (!_ids.TryAdd(step, stepId))
+                throw WorkflowBuildError.Invalid(step, $"Step '{step.Id}' belongs to two scopes");
             if (step.ForEachItem != null && !_handles.TryAdd(step.ForEachItem, stepId))
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                throw WorkflowBuildError.Invalid(step,
                     $"{step.ForEachItem} belongs to two ForEach steps, '{_handles[step.ForEachItem]}' and '{stepId}'");
             AddScope(SequenceScope(step), step.SequenceSteps);
             AddScope(ThenScope(step), step.ThenSteps);
@@ -93,20 +92,10 @@ internal sealed class WorkflowScopeCatalog
             var activities = source.StepMetadata.TryGetValue("CompensationActivities", out var value)
                 ? value as List<CompensationActivityInfo>
                 : null;
-            if (activities != null)
-            {
-                for (var index = 0; index < activities.Count; index++)
-                {
-                    var expected = activities[index].PreviousChainActivityType;
-                    if (expected != null && (index == 0 ||
-                            !expected.IsAssignableFrom(activities[index - 1].ActivityType)))
-                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                            $"Compensation '{activities[index].ActivityType.Name}' requires a preceding " +
-                            $"'{expected.Name}' compensation at '{Id(source)}'");
-                }
-            }
             var steps = activities?.Select((activity, index) => new WorkflowStep
             {
+                Runtime = activity.Runtime,
+                SourceLocation = source.SourceLocation,
                 Id = $"{source.Id}/compensation/{index}",
                 Name = activity.ActivityType.Name,
                 StepType = WorkflowStepType.Activity,
@@ -147,7 +136,7 @@ internal sealed class WorkflowScopeCatalog
             {
                 var step = pair.Value;
                 var waitKey = step.StepMetadata.TryGetValue("WaitKey", out var key) ? key?.ToString() : "";
-                return string.Join('|', pair.Key, step.StepType,
+                return WorkflowBuildError.Check(step, () => string.Join('|', pair.Key, step.StepType,
                     step.Name, WorkflowTypeIdentity.StableName(step.WorkflowDataType),
                     WorkflowTypeIdentity.StableName(step.PreviousStepDataType),
                     WorkflowTypeIdentity.StableName(step.ActivityType),
@@ -158,15 +147,15 @@ internal sealed class WorkflowScopeCatalog
                     step.LoopType, WorkflowTypeIdentity.StableName(step.ExceptionType),
                     WorkflowTypeIdentity.StableName(step.FaultType),
                     Shape(step.ConditionExpression),
-                    Code(step.CompiledCondition),
-                    Code(step.OutcomeSelector),
-                    Code(step.ParallelCompletionCondition),
+                    step.ConditionExpression == null ? Code(step.ConditionBehavior ?? step.CompiledCondition) : "",
+                    step.OutcomeExpression == null ? Code(step.OutcomeSelector) : Shape(step.OutcomeExpression),
+                    Code(step.ParallelCompletionBehavior ?? step.ParallelCompletionCondition),
                     string.Join(';', step.OutcomeBranches.Select(OutcomeBranchSignature)),
                     ErrorPolicySignature(step),
                     string.Join(';', step.InputMappings.Select(MappingSignature)),
                     string.Join(';', step.OutputMappings.Select(MappingSignature)),
                     step.RequestName, WorkflowTypeIdentity.StableName(step.ReplyType), step.ReplyToRequest,
-                    Code(step.RequestSubject),
+                    Code(step.RequestSubjectBehavior ?? step.RequestSubject),
                     string.Join(';', step.ParallelCombiners.OrderBy(pair => pair.Key, StringComparer.Ordinal)
                         .Select(pair => pair.Key + "=" + WorkflowTypeIdentity.StableName(pair.Value))),
                     // A ForEach is sequential until a parallel mode exists; its handle is known by this step.
@@ -175,10 +164,10 @@ internal sealed class WorkflowScopeCatalog
                         : (step.ForEachParallel
                               ? $"parallel:{step.ForEachMaxConcurrency}:{step.ParallelJoinMode}"
                               : "sequential") + ":" + WorkflowTypeIdentity.StableName(step.ForEachItem.ItemType),
-                    Code(step.ForEachCompletionCondition),
-                    Code(step.ForEachItems),
-                    WorkflowTypeIdentity.StableName(step.ResultType), Code(step.ResultSelector),
-                    Shape(step.ForEachIntoExpression));
+                    step.ForEachCompletionExpression == null ? Code(step.ForEachCompletionBehavior ?? step.ForEachCompletionCondition) : Shape(step.ForEachCompletionExpression),
+                    step.ForEachItemsExpression == null ? Code(step.ForEachItemsBehavior ?? step.ForEachItems) : Shape(step.ForEachItemsExpression),
+                    WorkflowTypeIdentity.StableName(step.ResultType), step.ResultExpression == null ? Code(step.ResultBehavior ?? step.ResultSelector) : Shape(step.ResultExpression),
+                    Shape(step.ForEachIntoExpression)));
             }));
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature));
         return Convert.ToHexString(bytes);
@@ -195,8 +184,8 @@ internal sealed class WorkflowScopeCatalog
         WorkflowTypeIdentity.StableName(mapping.TargetType),
         mapping.CompensationSource,
         Shape(mapping.Expression),
-        Code(mapping.SourceFunction),
-        Code(mapping.TargetAssignmentFunction));
+        mapping.Expression == null ? Code(mapping.SourceFunction) : "",
+        mapping.Expression == null ? Code(mapping.TargetAssignmentFunction) : "");
 
     private static string OutcomeBranchSignature(WorkflowOutcomeBranch branch) => string.Join(':',
         branch.IsDefault,
@@ -227,60 +216,4 @@ internal sealed class WorkflowScopeCatalog
         : string.Join(':', policy.MaximumAttempts, policy.InitialInterval.Ticks,
             policy.MaximumInterval.Ticks,
             policy.BackoffCoefficient.ToString(System.Globalization.CultureInfo.InvariantCulture));
-
-    private void ValidateSupportedSteps()
-    {
-        foreach (var (id, step) in _steps)
-        {
-            var supported = step.StepType switch
-            {
-                WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.Sequence or
-                    WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop or
-                    WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
-                    WorkflowStepType.ForEach or WorkflowStepType.ForEachResult => true,
-                WorkflowStepType.SuspendResume => step.StepMetadata.ContainsKey("WaitKey"),
-                WorkflowStepType.Delay => step.DelayDuration > TimeSpan.Zero,
-                _ => false
-            };
-            if (!supported)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                    $"Structured execution does not support {step.StepType} at '{id}'");
-            if (step.StepType == WorkflowStepType.SuspendResume &&
-                ((step.WaitTimeout == null) != (step.TimeoutSteps.Count == 0) ||
-                 step.WaitTimeout is { } timeout && timeout <= TimeSpan.Zero))
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                    $"Wait at '{id}' requires a positive timeout and a timeout branch");
-            if (step.StepType == WorkflowStepType.WorkflowInvocation &&
-                step.WorkflowType == null &&
-                (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowVersion == null))
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                    $"Workflow invocation at '{id}' has no child workflow reference");
-            if (step.StepMetadata.ContainsKey("OutcomeType") &&
-                (step.OutcomeSelector == null || step.OutcomeBranches.Count == 0))
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                    $"Outcome step at '{id}' has no branches or selector");
-            if (step.StepType == WorkflowStepType.Parallel &&
-                step.ParallelJoinMode == ParallelJoinMode.WaitConditionally &&
-                step.ParallelCompletionCondition == null)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                    $"Conditional parallel join at '{id}' has no completion condition");
-            if (step.StepType == WorkflowStepType.Activity && step.ActivityType != null)
-            {
-                foreach (var property in step.ActivityType.GetProperties(
-                             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public))
-                {
-                    if (property.GetMethod == null || property.GetIndexParameters().Length != 0 ||
-                        property.GetCustomAttributes(typeof(System.Text.Json.Serialization.JsonIgnoreAttribute), true)
-                            .Cast<System.Text.Json.Serialization.JsonIgnoreAttribute>()
-                            .Any(attribute => attribute.Condition ==
-                                System.Text.Json.Serialization.JsonIgnoreCondition.Always))
-                        continue;
-                    if (property.GetSetMethod(nonPublic: true) == null)
-                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                            $"Activity '{step.ActivityType.Name}' has a getter-only property '{property.Name}' " +
-                            "that cannot be restored from a checkpoint");
-                }
-            }
-        }
-    }
 }

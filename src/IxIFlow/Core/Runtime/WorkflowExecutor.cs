@@ -35,6 +35,7 @@ internal sealed class WorkflowExecutor
         IExecutionHost host,
         CancellationToken cancellationToken)
     {
+        var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         // Everything logged during the run carries its instance (G-03).
         using var logScope = _logger.BeginScope(LogScope.ForInstance(instance));
         // A span for the run pass, and the host's count of active runs (D-39).
@@ -67,7 +68,6 @@ internal sealed class WorkflowExecutor
         var drainRequested = host.Drain.CanBeCanceled ? drainWake.Task : null;
         try
         {
-            var scopes = new WorkflowScopeCatalog(definition);
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     "The registered workflow definition differs from the saved version");
@@ -519,7 +519,6 @@ internal sealed class WorkflowExecutor
             instance.CompletedAt = Now;
             if (host.PersistsState)
             {
-                var scopes = new WorkflowScopeCatalog(definition);
                 try
                 {
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
@@ -583,7 +582,7 @@ internal sealed class WorkflowExecutor
         ExecutionCheckpoint checkpoint, object workflowData, IExecutionHost host,
         Dictionary<string, RunningActivity> inFlight, UncommittedBoundary uncommitted)
     {
-        var scopes = new WorkflowScopeCatalog(definition);
+        var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         if (uncommitted.IsPending(instance))
             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
         // Activities that ignored cancellation are not settled; their starts are resolved on recovery.
@@ -713,7 +712,7 @@ internal sealed class WorkflowExecutor
         // The stop saves the last committed checkpoint plus a small marker, so it is not held to the
         // limit; otherwise a checkpoint just under the limit could never stop.
         await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData,
-            new WorkflowScopeCatalog(definition), Now, preserveSavedWorkflowData: true, enforceLimit: false);
+            WorkflowDefinitionValidator.ForExecution(definition), Now, preserveSavedWorkflowData: true, enforceLimit: false);
         return new WorkflowExecutionResult
         {
             InstanceId = instance.InstanceId,

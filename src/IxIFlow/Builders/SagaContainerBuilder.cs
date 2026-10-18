@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
@@ -36,7 +37,12 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         return _workflowBuilder.OnError(configure);
     }
 
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        _workflowBuilder.WithId(id, sourcePath, sourceLine);
+
     // Delegate all IWorkflowBuilder methods to the real workflow builder
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name) => _workflowBuilder.Named(name);
+
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration) =>
         _workflowBuilder.Delay(duration);
 
@@ -100,6 +106,16 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
     {
         return _workflowBuilder.WhileDo(condition, configure);
     }
+
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?>> itemsExpression,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null) => _workflowBuilder.ForEach(itemsExpression, body, setup);
+
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult>> valueExpression) => _workflowBuilder.Result(valueExpression);
 
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,

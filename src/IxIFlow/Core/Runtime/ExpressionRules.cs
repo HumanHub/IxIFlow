@@ -19,16 +19,26 @@ internal static class ExpressionRules
     {
         foreach (var step in ParallelRules.Flatten(steps))
         {
-            Check(step, step.ConditionExpression);
-            Check(step, step.ForEachIntoExpression);
-            foreach (var behavior in Delegates.Select(property => property.GetValue(step) as Delegate))
-                Check(step, DelegateCode.FirstImpure(behavior));
-            foreach (var mapping in step.InputMappings.Concat(step.OutputMappings))
-                Check(step, mapping.Expression);
-            if (step.StepMetadata.TryGetValue("CompensationActivities", out var value) &&
-                value is List<CompensationActivityInfo> compensations)
-                foreach (var mapping in compensations.SelectMany(item => item.InputMappings.Concat(item.OutputMappings)))
+            try
+            {
+                Check(step, step.ConditionExpression);
+                Check(step, step.ForEachIntoExpression);
+                Check(step, step.ForEachItemsExpression);
+                Check(step, step.ResultExpression);
+                Check(step, step.ForEachCompletionExpression);
+                foreach (var behavior in Delegates.Select(property => property.GetValue(step) as Delegate))
+                    Check(step, DelegateCode.FirstImpure(behavior));
+                foreach (var mapping in step.InputMappings.Concat(step.OutputMappings))
                     Check(step, mapping.Expression);
+                if (step.StepMetadata.TryGetValue("CompensationActivities", out var value) &&
+                    value is List<CompensationActivityInfo> compensations)
+                    foreach (var mapping in compensations.SelectMany(item => item.InputMappings.Concat(item.OutputMappings)))
+                        Check(step, mapping.Expression);
+            }
+            catch (WorkflowEngineException error)
+            {
+                throw WorkflowBuildError.At(step, error);
+            }
         }
         return steps;
     }

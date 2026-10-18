@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
 using System.Diagnostics;
@@ -18,6 +19,14 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     private readonly List<SagaStepInfo> _sagaSteps = sagaSteps ?? throw new ArgumentNullException(nameof(sagaSteps));
     private readonly List<WorkflowStep> _steps = steps ?? throw new ArgumentNullException(nameof(steps));
 
+    public ISagaActivityBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        var previousId = _steps.LastOrDefault()?.Id;
+        Core.Runtime.WorkflowStepIdentity.Assign(_steps, id, sourcePath, sourceLine);
+        foreach (var step in _sagaSteps.Where(step => step.StepId == previousId)) step.StepId = id;
+        return this;
+    }
+
     public ISagaActivityBuilder<TWorkflowData, TActivity> Step<TActivity>(
         Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity
@@ -25,6 +34,7 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         var stepId = Guid.NewGuid().ToString();
         var workflowStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = stepId,
             Name = typeof(TActivity).Name,
             StepType = WorkflowStepType.Activity,
@@ -75,6 +85,7 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         var step = _steps[^1];
         step.RequestName = name;
         step.ReplyType = replyType;
+        step.RequestSubjectBehavior = subject;
         if (subject != null)
             step.RequestSubject = context => subject((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
         return next;
@@ -88,6 +99,7 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     {
         var suspendStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Wait<TWorkflowData, TResumeEvent, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Suspend",
             StepType = WorkflowStepType.SuspendResume,
@@ -134,6 +146,7 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
             };
 
             suspendStep.CompiledCondition = conditionWrapper;
+            suspendStep.ConditionBehavior = resumeCondition;
         }
 
         // Configure the suspend step if a setup action is provided
@@ -169,6 +182,7 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     {
         var outcomeStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "SagaOutcome",
             StepType = WorkflowStepType.Conditional,
@@ -264,6 +278,7 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
         // Create simple compensation without configuration
         var compensationInfo = new CompensationActivityInfo
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TActivity>(),
             ActivityType = typeof(TCompensationActivity),
             InputMappings = [],
             OutputMappings = []
@@ -284,6 +299,7 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
         // Create compensation with configuration
         var compensationInfo = new CompensationActivityInfo
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TActivity>(),
             ActivityType = typeof(TCompensationActivity),
             InputMappings = [],
             OutputMappings = []
@@ -315,6 +331,7 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
         // Create compensation with access to previous chain activity
         var compensationInfo = new CompensationActivityInfo
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TActivity>(),
             ActivityType = typeof(TCompensationActivity),
             InputMappings = [],
             OutputMappings = [],
@@ -343,6 +360,7 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
     {
         var compensationInfo = new CompensationActivityInfo
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TActivity>(),
             ActivityType = typeof(TCompensationActivity),
             InputMappings = [],
             OutputMappings = [],
@@ -391,6 +409,7 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            ContextFactory = Core.Runtime.WorkflowStepDelegates.Previous<TWorkflowData, TPreviousStepData>,
             SourceType = typeof(WorkflowContext<TWorkflowData, TPreviousStepData>),
             TargetType = propertyType,
             Direction = PropertyMappingDirection.Input
@@ -509,6 +528,7 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
             TargetProperty = propertyName,
             TargetAssignmentFunction = targetAssignmentFunction,
             Expression = Core.Runtime.WorkflowExpressionSignature.Checked(destination),
+            ContextFactory = Core.Runtime.WorkflowStepDelegates.Data<TWorkflowData>,
             TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = propertyType,
             TargetType = typeof(WorkflowContext<TWorkflowData>),
@@ -721,6 +741,7 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}, {typeof(TPreviousStepData).Name}>, got {context.GetType().Name}");
         };
 
+        _outcomeStep.OutcomeExpression = Core.Runtime.WorkflowExpressionSignature.Checked(_propertySelector);
         _outcomeStep.OutcomeSelector = selectorWrapper;
         _outcomeStep.OutcomeBranches =
             _defaultBranch == null ? [.. _outcomeBranches] : [.. _outcomeBranches, _defaultBranch];

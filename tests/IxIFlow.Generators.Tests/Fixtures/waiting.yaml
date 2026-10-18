@@ -1,0 +1,22 @@
+workflow:
+  name: Waiting
+  dataType: IxIFlow.Generators.Tests.FlowData
+definitions:
+  - kind: suspend
+    id: answer
+    event: IxIFlow.Generators.Tests.Answer
+    reason: answer
+    output:
+      - source: Value
+        sourceContext: event
+        to: { kind: path, path: workflow.Value }
+  - kind: invokeWorkflow
+    id: child
+    workflow: { name: Child, version: 3 }
+    input:
+      - target: Value
+        from: { kind: path, path: workflow.Value }
+    output:
+      - source: Result
+        sourceContext: workflow
+        to: { kind: path, path: workflow.Result }

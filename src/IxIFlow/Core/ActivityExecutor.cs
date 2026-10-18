@@ -88,7 +88,6 @@ public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
     public StepExecutionContext<TWorkflowData> ExecutionContext { get; set; } = null!;
     public CancellationToken CancellationToken { get; set; } = default;
     public object? CatchFault { get; set; }
-    public bool IsCompensationActivity { get; set; } = false; // For compensation activity detection
 
     /// <summary>The items of the <c>ForEach</c> bodies the activity runs in (D-34).</summary>
     internal ItemValues Items { get; set; } = ItemValues.None;
@@ -192,20 +191,7 @@ public interface IActivityExecutor
         IDictionary<string, object>? metadata = null,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Creates evaluation context for property mappings
-    /// </summary>
-    object CreateEvaluationContext<TWorkflowData, TPreviousStepData>(
-        TWorkflowData workflowData,
-        TPreviousStepData? previousStepData);
 
-    /// <summary>
-    /// Creates catch evaluation context for exception handling
-    /// </summary>
-    object CreateCatchEvaluationContext<TWorkflowData, TPreviousStepData>(
-        TWorkflowData workflowData,
-        TPreviousStepData? previousStepData,
-        object fault);
 }
 
 /// <summary>
@@ -260,7 +246,7 @@ public class ActivityExecutor : IActivityExecutor
                     .Where(mapping => codeInputs!.Contains(mapping.TargetProperty)).ToList(),
                 request.WorkflowData,
                 request.PreviousStepData, request.CatchFault, mappingResult,
-                request.IsCompensationActivity, request.CompensationPreviousStepData,
+                request.Step.Runtime?.Context, request.CompensationPreviousStepData,
                 request.CompensationPreviousChainData, request.Items, request.CompensationReply,
                 request.CompensationAnswered);
 
@@ -297,133 +283,6 @@ public class ActivityExecutor : IActivityExecutor
         );
     }
 
-    public object CreateEvaluationContext<TWorkflowData, TPreviousStepData>(
-        TWorkflowData workflowData,
-        TPreviousStepData? previousStepData)
-    {
-        _logger.LogTrace("Creating evaluation context with TWorkflowData={WorkflowDataType}, TPreviousStepData={PreviousStepDataType}", 
-            typeof(TWorkflowData).Name, typeof(TPreviousStepData).Name);
-
-        // Always use the COMPILE-TIME generic type parameters, not runtime types
-        // This ensures the context type matches what the compiled expressions expect
-        var workflowDataType = typeof(TWorkflowData);
-        var expectedPreviousStepDataType = typeof(TPreviousStepData);
-        
-        if (expectedPreviousStepDataType != typeof(object))
-        {
-            // Create WorkflowContext<TWorkflowData, TPreviousStepData> using EXPECTED types
-            _logger.LogTrace("Creating WorkflowContext with expected types: WorkflowData={WorkflowDataType}, PreviousStepData={PreviousStepDataType}", 
-                workflowDataType.Name, expectedPreviousStepDataType.Name);
-            
-            var contextType = typeof(WorkflowContext<,>).MakeGenericType(workflowDataType, expectedPreviousStepDataType);
-            var context = Activator.CreateInstance(contextType);
-
-            contextType.GetProperty("WorkflowData")?.SetValue(context, workflowData);
-            contextType.GetProperty("PreviousStep")?.SetValue(context, previousStepData);
-
-            _logger.LogTrace("Created context instance: {ContextInstanceType}", context?.GetType().FullName);
-            
-            return context!;
-        }
-
-        // Create WorkflowContext<TWorkflowData> for first step or when no previous step expected
-        var singleGenericContext = new WorkflowContext<TWorkflowData>
-        {
-            WorkflowData = workflowData
-        };
-        
-        _logger.LogTrace("Created single generic context: {ContextType}", singleGenericContext.GetType().FullName);
-        
-        return singleGenericContext;
-    }
-
-    /// <summary>
-    /// Creates compensation evaluation context for compensation activities
-    /// </summary>
-    public object CreateCompensationEvaluationContext<TWorkflowData, TCurrentStepData>(
-        TWorkflowData workflowData,
-        TCurrentStepData? currentStepData)
-    {
-        _logger.LogTrace("Creating compensation evaluation context with TWorkflowData={WorkflowDataType}, TCurrentStepData={CurrentStepDataType}", 
-            typeof(TWorkflowData).Name, typeof(TCurrentStepData).Name);
-
-        var workflowDataType = typeof(TWorkflowData);
-        var currentStepDataType = typeof(TCurrentStepData);
-        
-        if (currentStepDataType != typeof(object))
-        {
-            // Create CompensationContext<TWorkflowData, TCurrentStepData>
-            _logger.LogTrace("Creating CompensationContext with types: WorkflowData={WorkflowDataType}, CurrentStepData={CurrentStepDataType}", 
-                workflowDataType.Name, currentStepDataType.Name);
-            
-            var contextType = typeof(CompensationContext<,>).MakeGenericType(workflowDataType, currentStepDataType);
-            var context = Activator.CreateInstance(contextType);
-
-            contextType.GetProperty("WorkflowData")?.SetValue(context, workflowData);
-            contextType.GetProperty("CurrentStep")?.SetValue(context, currentStepData);
-
-            _logger.LogTrace("Created compensation context instance: {ContextInstanceType}", context?.GetType().FullName);
-            
-            return context!;
-        }
-
-        // Fallback to single generic context (shouldn't happen for compensation)
-        var singleGenericContext = new WorkflowContext<TWorkflowData>
-        {
-            WorkflowData = workflowData
-        };
-        
-        _logger.LogTrace("Created fallback single generic context: {ContextType}", singleGenericContext.GetType().FullName);
-        
-        return singleGenericContext;
-    }
-
-    // A request's compensation that reads the request's answer (D-36).
-    private static object RequestCompensationContextOf(Type contextType, object? workflowData, object? currentStep,
-        object? reply, bool answered)
-    {
-        var context = Activator.CreateInstance(contextType)!;
-        contextType.GetProperty("WorkflowData")!.SetValue(context, workflowData);
-        contextType.GetProperty("CurrentStep")!.SetValue(context, currentStep);
-        contextType.GetProperty("Reply")!.SetValue(context,
-            reply != null && contextType.GetGenericArguments()[2].IsInstanceOfType(reply) ? reply : null);
-        contextType.GetProperty("Answered")!.SetValue(context, answered);
-        return context;
-    }
-
-    public object CreateCatchEvaluationContext<TWorkflowData, TPreviousStepData>(
-        TWorkflowData workflowData,
-        TPreviousStepData? previousStepData,
-        object fault)
-    {
-        // Use compile-time generic type parameters for consistent context creation
-        var workflowDataType = typeof(TWorkflowData);
-        var faultType = fault.GetType();
-        var expectedPreviousStepDataType = typeof(TPreviousStepData);
-
-        if (expectedPreviousStepDataType != typeof(object))
-        {
-            var contextType = typeof(FaultContext<,,>).MakeGenericType(workflowDataType, faultType, expectedPreviousStepDataType);
-            var context = Activator.CreateInstance(contextType);
-
-            contextType.GetProperty("WorkflowData")?.SetValue(context, workflowData);
-            contextType.GetProperty("Fault")?.SetValue(context, fault);
-            contextType.GetProperty("PreviousStep")?.SetValue(context, previousStepData);
-
-            return context!;
-        }
-        else
-        {
-            var contextType = typeof(FaultContext<,,>).MakeGenericType(workflowDataType, faultType, typeof(object));
-            var context = Activator.CreateInstance(contextType);
-
-            contextType.GetProperty("WorkflowData")?.SetValue(context, workflowData);
-            contextType.GetProperty("Fault")?.SetValue(context, fault);
-
-            return context!;
-        }
-    }
-
     private IAsyncActivity CreateActivityInstance(Type activityType)
     {
         try
@@ -458,7 +317,7 @@ public class ActivityExecutor : IActivityExecutor
         TPreviousStepData? previousStepData,
         object? catchFault,
         TypedActivityExecutionResult<object> result,
-        bool isCompensationActivity = false,
+        Func<Runtime.MappingContextValues, object>? defaultContext = null,
         object? compensationPreviousStep = null,
         object? compensationPreviousChain = null,
         ItemValues? items = null,
@@ -480,61 +339,23 @@ public class ActivityExecutor : IActivityExecutor
 
             try
             {
-                object evaluationContext;
-                
-                if (catchFault != null)
+                var evaluationContext = mapping.CompensationSource switch
                 {
-                    evaluationContext = CreateCatchEvaluationContext(workflowData, previousStepData, catchFault);
-                }
-                else
-                {
-                    _logger.LogTrace("No catch exception, checking if this is a compensation activity: {IsCompensation}", isCompensationActivity);
-                    
-                    // Check if this is a compensation activity and use appropriate context
-                    // For compensation activities, TPreviousStepData is actually TCurrentStepData
-                    if (isCompensationActivity)
-                    {
-                        _logger.LogTrace("Compensation activity detected, creating CompensationContext");
-                        // Use reflection to call the appropriate context creation method
-                        var method = GetType().GetMethod(nameof(CreateCompensationEvaluationContext));
-                        if (method != null)
-                        {
-                            var genericMethod = method.MakeGenericMethod(typeof(TWorkflowData), typeof(TPreviousStepData));
-                            evaluationContext = (object)genericMethod.Invoke(this, new object?[] { workflowData, previousStepData })!;
-                            _logger.LogTrace("Created CompensationContext: {ContextType}", evaluationContext.GetType().FullName);
-                            if (mapping.CompensationSource == CompensationInputSource.PreviousStep)
-                                evaluationContext = compensationPreviousStep
-                                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                                        $"Compensation input '{mapping.TargetProperty}' has no saved previous step");
-                            else if (mapping.CompensationSource == CompensationInputSource.PreviousCompensation)
-                                evaluationContext = compensationPreviousChain
-                                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                                        $"Compensation input '{mapping.TargetProperty}' has no previous compensation result");
-                            else if (mapping.SourceType.IsGenericType &&
-                                     mapping.SourceType.GetGenericTypeDefinition() == typeof(RequestCompensationContext<,,>))
-                                evaluationContext = RequestCompensationContextOf(mapping.SourceType, workflowData,
-                                    previousStepData, compensationReply, compensationAnswered);
-                            if (!mapping.SourceType.IsInstanceOfType(evaluationContext))
-                            {
-                                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                                    $"Compensation input '{mapping.TargetProperty}' requires " +
-                                    $"{mapping.SourceType.Name}, but saved value is {evaluationContext.GetType().Name}");
-                            }
-                        }
-                        else
-                        {
-                            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                                "CreateCompensationEvaluationContext method not found");
-                        }
-                    }
-                    else
-                    {
-                        _logger.LogTrace("Regular activity, creating WorkflowContext");
-                        // Use regular workflow context for non-catch activities
-                        evaluationContext = CreateEvaluationContext(workflowData, previousStepData);
-                        _logger.LogTrace("Created WorkflowContext: {ContextType}", evaluationContext.GetType().FullName);
-                    }
-                }
+                    CompensationInputSource.PreviousStep => compensationPreviousStep
+                        ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                            $"Compensation input '{mapping.TargetProperty}' has no saved previous step"),
+                    CompensationInputSource.PreviousCompensation => compensationPreviousChain
+                        ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                            $"Compensation input '{mapping.TargetProperty}' has no previous compensation result"),
+                    _ => (mapping.ContextFactory ?? defaultContext ?? throw new WorkflowEngineException(
+                        WorkflowErrorKind.InvalidDefinition, "The activity has no captured input context"))(new Runtime.MappingContextValues(workflowData,
+                        previousStepData, catchFault, compensationReply, compensationAnswered))
+                };
+
+                if (mapping.CompensationSource is CompensationInputSource.PreviousStep or CompensationInputSource.PreviousCompensation &&
+                    !mapping.SourceType.IsInstanceOfType(evaluationContext))
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                        $"Compensation input '{mapping.TargetProperty}' requires {mapping.SourceType.Name}, but saved value is {evaluationContext.GetType().Name}");
 
                 (items ?? ItemValues.None).On(evaluationContext);
                 _logger.LogTrace("Executing mapping.SourceFunction with context type: {ContextType}", evaluationContext.GetType().FullName);
@@ -605,18 +426,8 @@ public class ActivityExecutor : IActivityExecutor
                     var sourceValue = sourceProperty.GetValue(activity);
                     trace.SourceValue = sourceValue;
 
-                    // Create appropriate evaluation context for target assignment
-                    object evaluationContext;
-                    
-                    if (catchFault != null)
-                    {
-                        evaluationContext = CreateCatchEvaluationContext(workflowData, previousStepData, catchFault);
-                    }
-                    else
-                    {
-                        // Use regular workflow context for non-catch activities
-                        evaluationContext = CreateEvaluationContext(workflowData, previousStepData);
-                    }
+                    var evaluationContext = mapping.ContextFactory!(
+                        new Runtime.MappingContextValues(workflowData, previousStepData, catchFault));
                     (items ?? ItemValues.None).On(evaluationContext);
 
                     // Use the compiled target assignment function
