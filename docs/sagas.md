@@ -32,7 +32,7 @@ If the selected activity never completed, the up-to policy undoes all completed 
 | `ThenContinue()` | Continue after the saga once compensation succeeds |
 | `ThenContinue(ignoreCompensationErrors: true)` | Continue even when compensation reported errors |
 | `ThenTerminate()` | Raise `SagaTerminatedException`, which an enclosing catch may handle |
-| `ThenRetry(count)` or `ThenRetry(policy)` | Restart at the first undone step, or the failed step if nothing was undone |
+| `ThenRetry(count)` or `ThenRetry(policy)` | `Compensate()` restarts the saga from its first step, re-evaluating `OutcomeOn`; `CompensateUpTo<TActivity>()` restarts at that activity if it completed, otherwise at the saga's first step; `CompensateNone()` restarts at the failed step |
 | No continuation | Rethrow the original error after the selected undo |
 
 A compensation failure ends as `SagaTerminatedException` after remaining compensation work has been attempted. Exhausted saga retries and a failing retry-handler body also terminate the saga. When retry can no longer proceed because its budget is exhausted, cleanup failed or cancellation intervened, retained steps are undone too. Build rules reject continuation/termination policies that would keep a request whose answer the saga has not read.

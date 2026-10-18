@@ -121,7 +121,7 @@ The generator emits a static `Build()` method under `<RootNamespace>.Generated`;
 
 YAML covers every fluent control-flow construct: activities and references, sequences, conditions, `WhileDo`/`DoWhile`, general parallel branches and combiners, sequential or parallel `forEach` with results, typed catch/finally blocks, sagas with outcome branches, compensation and retry, delays, requests with replies and timeouts, event waits and both named and typed child invocations. Waits can include `defaultPayload` as a discovery UI suggestion; the engine never answers it automatically. Local templates accept parameters and defaults; expression assets use `language: csharp-expression`. YAML number literals with a fraction are doubles; decimal expressions can use a C# expression asset, while activity attribute defaults retain their declared types.
 
-Hosting, store selection, telemetry, template publication and client operations use application C# APIs. Imports need a publishing host to resolve and pin dependencies; the built-in publishing pipeline is not available. See the [generator guide](src/IxIFlow.Generators/README.md) for custom filenames, MSBuild settings and project-reference setup, and [samples](samples/README.md) for tested pairs.
+Hosting, store selection, telemetry, template publication and client operations use application C# APIs. Any nonempty catalog or workflow import list fails the source-generator build with `IXIYAML001` at `imports`; the generator does not resolve imports. Named `invokeWorkflow` steps require an explicit `version`, because the generator registers only `name@version` references. See the [generator guide](src/IxIFlow.Generators/README.md) for custom filenames, MSBuild settings and project-reference setup, and [samples](samples/README.md) for tested pairs.
 
 The reader is strict: an unknown or wrongly cased key fails the build with IXIYAML001 at that key. The package ships a JSON Schema for workflow YAML at `schemas/workflow.schema.json`, so editors complete and check documents as you type; [editor support](src/IxIFlow.Generators/README.md#editor-support) shows how to bind it. The [YAML guide](docs/yaml-authoring.md) documents every step kind, mapping and expression, including scope rules and planned publishing features.
 
@@ -154,7 +154,7 @@ Terminal results remain readable for `FinishedInstanceRetention` (30 days by def
 
 ## Hosting
 
-`AddIxIFlow()` registers the in-process host and recovery scanner as hosted services. Use the generic host for background recovery and graceful shutdown:
+`AddIxIFlow()` registers the in-process host, recovery scanner, outbox dispatcher and retention cleanup as hosted services. Use the generic host for background recovery and graceful shutdown:
 
 <!-- snippet: samples/IxIFlow.Samples/DocumentationExamples.cs#hosted-run -->
 ```csharp

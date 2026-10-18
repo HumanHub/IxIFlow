@@ -44,7 +44,7 @@ definitions:
 | `activities` | Named local activity templates with `activity`, optional `activityVersion`, `defaults`, `input`, `output` |
 | `steps` | Named local step templates: `steps`, optional `kind` metadata and `parameters` |
 | `code` | Named expression assets with `language: csharp-expression` and `source` |
-| `imports` | Catalog/workflow dependencies; require a publishing host to resolve and pin them |
+| `imports` | Catalog/workflow dependencies; any nonempty catalog or workflow import list fails the source-generator build with `IXIYAML001` at `imports`, because the generator does not resolve imports |
 | `$schema` | Optional editor association, ignored by readers |
 
 Activity keys come from `[WorkflowActivity]` metadata or fully qualified CLR types. An explicit activity version must match the resolved contract. Step-template parameters declare optional `type`, `required` and scalar `default`; `stepRef.arguments` overrides defaults. Local parameter types are string, bool, int, long, double and decimal. Missing required arguments fail validation.
@@ -53,7 +53,7 @@ Activity keys come from `[WorkflowActivity]` metadata or fully qualified CLR typ
 
 ## Every step kind
 
-All steps support `id`, `name` and `description`. IDs are unique; omitted IDs derive from structural positions. A name changes the fluent step name and runtime fingerprint; IDs and source coordinates do not.
+All steps accept `id` and `description`; `name` is accepted only in workflow-scope bodies. A name in a catch, saga or saga-handler body fails validation with `SCOPE002`. IDs are unique; omitted IDs derive from structural positions. A name changes the fluent step name and runtime fingerprint; IDs and source coordinates do not.
 
 | `kind` | Members and behavior |
 | --- | --- |
@@ -64,7 +64,7 @@ All steps support `id`, `name` and `description`. IDs are unique; omitted IDs de
 | `if` | Boolean `condition`, `then`, optional `else` |
 | `whileDo` | `condition` tested before each pass through `steps` |
 | `doWhile` | `steps` run before testing `condition` |
-| `parallel` | `branches`, each containing `steps`; `join: all\|any\|conditionally`, optional `condition` and `combine` |
+| `parallel` | `branches`, each containing `steps`; `join: all\|any\|conditionally`, optional `combine`; `condition` is required for `conditionally` and rejected for other joins (`PAR001`) |
 | `forEach` | `items`, optional `as` alias (default `item`), body `steps`, optional trailing `result` expression, `into` and `parallel` configuration |
 | `result` | `value` ends a result-producing ForEach body path, including timeout paths leaving it |
 | `try` | Body `steps`, ordered `catches`, optional `finally`; catches may specify `exception`, `faultType`, `id`, `steps` |
@@ -74,7 +74,7 @@ All steps support `id`, `name` and `description`. IDs are unique; omitted IDs de
 | `request` | Activity members plus required `key` and optional `subject`; opens a request reply slot |
 | `waitFor` | Required `key` and `event`; plain event wait or the paired request's reply wait |
 | `suspend` | Required `event`, optional `reason` key (step ID fallback) |
-| `invokeWorkflow` | `workflow: { name, version }`, `input`, `output`, optional `cancelWithParent` (true by default) |
+| `invokeWorkflow` | `workflow: { name, version }`, `input`, `output`, optional `cancelWithParent` (true by default); the source generator requires an explicit `version` because it registers only `name@version` references |
 | `invokeWorkflowType` | `workflowType`, optional `dataType` fallback, mappings and `cancelWithParent`; resolves an `IWorkflow<T>` class |
 
 The schema describes possible nodes; shared builder rules also enforce where constructs are legal. Saga bodies accept activities/references, requests, waits and outcomes. Saga handlers accept ordinary activities/references and `waitFor`; catch bodies exclude requests, delays, results and outcomes. Timeout paths and result-producing lists retain the fluent API's scope restrictions. Step `description` is retained in the document, not emitted as runtime step metadata.

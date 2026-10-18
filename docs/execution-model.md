@@ -11,7 +11,7 @@ Checkpoints save workflow data, branch state, loop/exception frames, saga and co
 
 The runner commits at effect boundaries: instance start, activity start and outcome, child start/outcome, opening or closing waits, retry scheduling, completed joins, cancellation/unwinding boundaries and stopping. Ordinary control flow between boundaries can be re-derived after a crash. A condition or mapping may therefore execute more than once.
 
-Each immutable commit includes an execution epoch, commit ID, expected revision and payload hash. Retrying identical content under the same commit ID returns the original receipt. A stale epoch, revision conflict, changed inbox state, retryable infrastructure failure and unknown commit outcome are distinguished by the store protocol. Instance progress and its event settlements, wait changes, child starts, trace entries and terminal outbox event can commit atomically.
+Each immutable commit includes an execution epoch, commit ID, expected revision and payload hash. Retrying identical content under the same commit ID returns the original receipt. The store protocol distinguishes a stale epoch, revision conflict, changed inbox state and a retryable failure that did not apply the commit. The host classifies an infrastructure exception as an unknown commit outcome; the executor resends the same immutable commit, with up to three attempts in total. Instance progress and its event settlements, wait changes, child starts, trace entries and terminal outbox event can commit atomically.
 
 Conditions, mappings, wait predicates, result/outcome selectors and combiners must be pure. Read workflow time through `ctx.UtcNow`. Memory and SQLite use the registered `TimeProvider`; SQL Server and PostgreSQL use database time for deadlines and event ordering. Purity validation and analyzers cover supported patterns, not arbitrary external code.
 
@@ -38,7 +38,7 @@ A completed activity does not rerun merely because another branch waited. An int
 
 [ReserveQuote](../samples/IxIFlow.Samples/Recovery.cs) uses the invocation ID to look up an external reservation. [RecoveryTests.cs](../tests/IxIFlow.Samples.Tests/RecoveryTests.cs) interrupts the outcome commit to prove recovery and operator resolution.
 
-Without a recovery contract, an uncertain start stops for resolution. `GetPendingActivitiesAsync` lists attempts; `ResolveAsync` saves explicit outputs or a failure, note and actor before continuing. [Recovery.ConfirmAsync](../samples/IxIFlow.Samples/Recovery.cs) compiles that operator call. Resolve the uncertain forward effect before compensating earlier work.
+Without a recovery contract, an uncertain start stops for resolution. `GetPendingActivitiesAsync` lists invocations awaiting resolution, with their reason and required output properties; it does not return attempt history. `ResolveAsync` saves explicit outputs or a failure, note and actor before continuing. [Recovery.ConfirmAsync](../samples/IxIFlow.Samples/Recovery.cs) compiles that operator call. Resolve the uncertain forward effect before compensating earlier work.
 
 ## Inbox, waits and replies
 
@@ -85,7 +85,7 @@ A caller's cancellation token stops the current call/run and leaves durable stat
 
 Both typed and name/version `Invoke` forms create an independent persisted child with a stable child instance ID and mapped inputs. The parent commits its wait and child start together. Child completion reaches the parent's durable inbox; the runner applies output mappings on the parent's thread.
 
-The default `CancelWithParent` behavior cancels the child and waits for it to settle when the invoking branch is cancelled. A child awaiting resolution can hold a cancelling parent. `CancelWithParent(false)` lets an already started child continue when the invoking branch unwinds; the parent normally still waits for its result. An uncommitted child start is discarded on cancellation. Child business failures follow the parent's error handling; infrastructure failures leave work recoverable. Cancellation, timeout or termination raises `ChildWorkflowEndedException` at the invocation. Deleting a child, or cancelling a missing child, atomically sends a terminated-child notice to a waiting parent. Missing child data cannot silently skip declared outputs.
+The default `CancelWithParent` behavior cancels the child and waits for it to settle when the invoking branch is cancelled. A child awaiting resolution can hold a cancelling parent. With `CancelWithParent(false)`, cancellation closes the parent's child wait and the invoking branch gives up the result and unwinds immediately; an already started child continues. A detached child whose start was never committed is not started; a default child is started and cancelled in the same commit. Child business failures follow the parent's error handling; infrastructure failures leave work recoverable. Cancellation, timeout or termination raises `ChildWorkflowEndedException` at the invocation. Deleting a child, or cancelling a missing child, atomically sends a terminated-child notice to a waiting parent. Missing child data cannot silently skip declared outputs.
 
 Named invocations resolve a pinned definition from the host's registry. Typed invocations can build an installed `IWorkflow<T>` class and register its definition; an existing name/version must have the same fingerprint. Deactivated definitions refuse new child starts. See [Review.cs](../samples/IxIFlow.Samples/Review.cs) for a pinned child. Child placement demands are planned.
 
@@ -97,7 +97,7 @@ At a successful join, independent property changes merge. Multiple branches chan
 
 Use `Combine<TProperty,TCombiner>` on a join or `[Combine<TCombiner>]` on data properties. A pure `ICombiner<T>` receives the baseline and changed branch values in declaration order. Join overrides take precedence on the same property. The outermost combiner on a path merges that whole value; an override inside an attribute-combined property is refused. Combiners need a public parameterless constructor and exactly one `ICombiner<T>` matching a settable serialized property.
 
-Build validation rejects statically overlapping output mappings under all/conditional joins without a combiner, including writes made by a parallel ForEach body. `WaitAny` is exempt from overlap checks because it merges one winner; nested joins are still checked. Unnamed output targets and writes the serializer cannot preserve are also restricted. Direct activity mutations and dictionary-key collisions are checked at runtime. An enclosing catch can handle a join conflict.
+Build validation rejects statically overlapping output mappings under all/conditional joins without a combiner. A parallel ForEach body under either join requires a combiner even for a single output mapping to a workflow-data property: every item can make the same write. `WaitAny` is exempt from overlap checks because it merges one winner; nested joins are still checked. Unnamed output targets and writes the serializer cannot preserve are also restricted. Direct activity mutations and dictionary-key collisions are checked at runtime. An enclosing catch can handle a join conflict.
 
 | Built-in combiner | Behavior |
 | --- | --- |
@@ -108,7 +108,7 @@ Build validation rejects statically overlapping output mappings under all/condit
 | `Union<TKey,TValue>` | Merge dictionary keys; conflicting changes to a key fail |
 | `Union<T>` | Combine set additions/removals |
 
-All parallel blocks wait for all branches by default. `WaitAny` uses the first completion and excludes losing branch outputs. A conditional join tests the merge of completed branches after each completion and also ends when all branches finish, even if its predicate stayed false. A provisional merge conflict or unhandled branch failure cancels the remaining branches and fails the construct. Losing branches unwind cleanup before continuation. Failed/unwound outer joins do not publish losing branch changes.
+All parallel blocks wait for all branches by default. `WaitAny` uses the first completion and excludes losing branch outputs. A conditional join tests the merge of completed branches after each completion and also ends when all branches finish, even if its predicate stayed false. A provisional merge conflict or unhandled branch failure cancels the remaining branches and fails the construct. Losing branches unwind cleanup before continuation. A join that ends through a branch failure, or whose parent is being cancelled, publishes no branch changes at all. Joins inside Finally or compensation still merge during unwinding unless the join itself fails.
 
 [ParallelQuotes.cs](../samples/IxIFlow.Samples/ParallelQuotes.cs) and its YAML twins demonstrate all modes and sum merging.
 

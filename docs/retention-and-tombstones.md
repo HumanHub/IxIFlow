@@ -51,6 +51,6 @@ At the lower store boundary, events addressed to a tombstoned ID are refused as 
 
 ## Explicit deletion
 
-`DeleteWorkflowInstanceAsync(id, tombstoneRetention)` also leaves a tombstone. Its default is 90 days; pass the same period configured for automatic retention if yours differs. Deleting an unknown/already removed ID does not create or extend a tombstone. If the removed child still has a waiting parent, deletion also sends the terminating child notice atomically.
+`IWorkflowStateRepository.DeleteWorkflowInstanceAsync(id, tombstoneRetention)` also leaves a tombstone. Its default is 90 days; pass the same period configured for automatic retention if yours differs. Deleting an unknown/already removed ID does not create or extend a tombstone. If the removed child still has a waiting parent, deletion also sends the terminating child notice atomically.
 
 Retention of unused published bundles, large payload offloading, residency policies and redaction remain [planned](roadmap.md). Instance retention and tombstones are implemented now.

@@ -99,13 +99,15 @@ or Booleans, such as `activityVersion: "1.2"`: the reader takes them as text, bu
 type them first. The schema is generated from the document model by
 `WorkflowDocumentSchema.Write()` in Authoring.
 
-**Behaviour change.** Earlier builds matched member names case-insensitively and ignored
-unknown members, so `Output:` or `ouptut:` was silently dropped. Such files now fail the
-build with IXIYAML001 at the member. The JSON reader applies the same rules, and the JSON
-writer now writes `kind` on every typed node, including the fixed path in `to` and `into`.
+The YAML and JSON readers reject unknown or miscased members; generator errors use
+IXIYAML001 at the member. The JSON writer writes `kind` on every typed node, including
+the fixed path in `to` and `into`. The YAML reader also rejects duplicate keys,
+including case-insensitive duplicates; the JSON reader accepts duplicate keys with the last value winning.
 
-The supported catalog includes activities, activity and step references, sequences, conditions,
-suspend/resume, pinned child workflows and sequential or parallel `forEach`. Explicit inputs
+The supported catalog includes activities and references, sequences, conditions, `WhileDo`/`DoWhile`,
+general parallel branches and combiners, sequential or parallel `forEach` with results, typed
+catch/finally blocks, sagas with outcome branches, compensation and retry, delays, requests with
+replies and timeouts, event waits, suspend/resume and both named and typed child invocations. Explicit inputs
 override YAML and attribute defaults. Step parameters use supplied arguments, then scalar defaults,
 and reject missing required arguments. Declared parameter types support string, bool, int, long, double
 and decimal; other parameter types are unsupported by local translation. Code assets use
@@ -172,10 +174,6 @@ compiled expression adapters and the adapters for conditions, request subjects, 
 selectors are excluded. Into contributes its expression and Combine its property/combiner type.
 Runtime fingerprints describe the current definition. Declared artifact fingerprints and a
 compatibility/migration policy are planned; do not infer compatibility with older builds.
-
-The direct document compiler and its interface have been deleted. The ten former compiler tests
-now translate YAML, compile it with Roslyn and build through the fluent API. Serialization
-tests cover JSON and YAML round trips through the shared model.
 
 Publishing orchestration, dependency resolution, package pinning, inline `use`, code activities,
 bundles and artifact storage remain planned. Declared canonical fingerprints and

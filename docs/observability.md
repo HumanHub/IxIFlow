@@ -20,7 +20,7 @@ Transition and operator payloads avoid copying workflow/event values, resolution
 | Setting | Behavior |
 | --- | --- |
 | `WorkflowOptions.EnableTracing` | Controls saved tracing for that instance |
-| `IxIFlowOptions.TraceDetail` | `Full` by default; `Activities` omits control-flow detail while retaining activity, event, operator and cancellation entries |
+| `IxIFlowOptions.TraceDetail` | `Full` by default; `Activities` omits control-flow entries, including wait timeouts, delays, retries, compensation and catch/finally entry, while retaining activity, event, operator and cancellation entries |
 | `MaxTraceEntriesPerCommit` | 1,000 by default; overflow uses the final slot for a truncation marker counting omissions |
 | `MaxTraceEntriesPerInstance` | Optional budget; records a budget marker and stops further control-flow detail while other entry families continue |
 
@@ -28,7 +28,7 @@ The per-commit limit resets after acknowledgement. It bounds pending diagnostics
 
 ## Snapshots
 
-`GetSnapshotAsync(id)` derives saved continuation positions, scopes, waits and pending activities from the checkpoint and registered definition. It shows saved state, not a live debugger pause.
+`GetSnapshotAsync(id)` derives each live continuation's saved position and scope frames from the checkpoint and registered definition. It lists neither waits nor pending activities; use `GetOpenWaitsAsync` and `GetPendingActivitiesAsync` for those. It shows saved state, not a live debugger pause.
 
 [Observability.cs](../samples/IxIFlow.Samples/Observability.cs) compiles this inspection method with `IxIFlow.Core` imported:
 
