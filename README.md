@@ -1,299 +1,188 @@
-# IxIFlow Workflow Engine
+# IxIFlow
 
-A type-safe, durable workflow engine for .NET. Define activities and control flow with a fluent C# API, then execute the definition through `IWorkflowClient`. Workflows can suspend, survive restarts with persisted state, and resume where they stopped.
+IxIFlow is a durable workflow engine for .NET 10 and C#. Define activities and control flow with a typed fluent API or supported YAML documents, then run instances through `IWorkflowClient`. A durable store lets instances survive process restarts, wait for external answers and resume from their saved position.
+
+This repository is being built toward 1.0. Features described below are implemented on this branch. The [status and roadmap](#status-and-roadmap) separates the remaining 1.0 work from what you can use today.
 
 ## Features
 
-- **Fluent API**: Build workflows with a chainable, strongly typed builder
-- **Type Safety**: Activity inputs, outputs, and `PreviousStep` values are checked at compile time
-- **Control Flow**: Sequences, conditions, `WhileDo`/`DoWhile` loops, and child workflow invocation
-- **Parallel Execution**: Run branches together and join on all, any, or a condition
-- **Exception Handling**: `Try`/`Catch`/`Finally` with typed fault data saved for handlers
-- **Saga Pattern**: Compensation activities run in reverse order when later work fails
-- **Suspend/Resume**: Wait for correlated events or delays, then continue at the saved position
-- **Durable Execution**: Versioned checkpoints, recovery of interrupted instances, and explicit resolution of uncertain activity outcomes
-- **Cancellation**: Cancel a running or suspended workflow and unwind through compensation and `Finally`
-- **Dependency Injection**: Register engines, workflows, and activities with Microsoft DI
-- **SQL Server Hosting**: Optional shared instance state, execution leases, host registry, and acknowledged message bus
+- Typed activity inputs and outputs, previous-step values, enforced activity contracts and .NET designer metadata.
+- Sequences, conditions, `WhileDo`/`DoWhile`, sequential and parallel `ForEach`, concurrency caps and ordered item results.
+- Parallel branches with all, any or conditional joins. Branches work on isolated data copies; joins merge independent changes or use explicit combiners for shared properties.
+- `Try`/`Catch`/`Finally`, typed saved fault data, sagas with reverse compensation, selective compensation and retry policies.
+- Durable delays, correlated events, request/reply tokens, subjects, deadlines, timeout paths and discoverable open waits.
+- Child workflows with separate persisted instances and mapped inputs and outputs; durable cancellation with compensation and `Finally` unwinding.
+- Saved activity attempts with invocation and attempt IDs, retry history, errors and notes. Recovery contracts and operator resolution handle uncertain external outcomes.
+- Revision-checked checkpoints, fenced execution leases, resource limits and crash quarantine. External effects still need application idempotency or recovery contracts.
+- An injected workflow clock, expression purity validation, compile-time contract and purity analyzers, stable step IDs and source locations.
+- YAML source generation into the fluent API, with local references, defaults, expression assets and fingerprint/result equivalence for supported constructs.
+- In-memory, SQLite, SQL Server and PostgreSQL stores; DI, a generic host, recovery scanning and graceful drain.
+- Committed trace history outside checkpoints, snapshots, structured logging scopes, and an `ActivitySource` and `Meter` both named `IxIFlow` for OpenTelemetry integration.
+- Immutable, versioned Liquid templates with culture fallback, typed model validation, rendering and message sending through an application-supplied sender.
 
-See the [Roadmap](#roadmap) for work that is planned but not yet available.
+See the [sample feature map](samples/README.md) for runnable examples and the limits of YAML support.
 
-## Installation
+## Packages
 
-```bash
-dotnet add package IxIFlow
-```
-
-Local execution uses the `IxIFlow` package. The solution also contains:
+These are the package projects in `src/`. All runtime packages target .NET 10.
 
 | Package | Purpose |
 | --- | --- |
-| `IxIFlow.Abstractions` | Activity contract and metadata attributes, for activity packages |
-| `IxIFlow.Distributed` | Host, coordinator, and queue service contracts |
-| `IxIFlow.SqlServer` | SQL Server state repository, host registry, and message bus |
-| `IxIFlow.PostgreSql` | PostgreSQL state repository, chosen with `.UsePostgreSql(connectionString)`, with `LISTEN`/`NOTIFY` wake-ups |
-| `IxIFlow.Authoring` | YAML workflow documents compiled to definitions (preview), and the activity package catalog |
+| `IxIFlow` | Engine, fluent builders, client, host, memory store; bundles the YAML generator, analyzers and code fixes |
+| `IxIFlow.Abstractions` | Activity interfaces, recovery contracts, contract/metadata attributes and combiners |
+| `IxIFlow.Authoring` | Document serialization and validation, translation support and installed activity package catalog |
+| `IxIFlow.Sqlite` | SQLite file store for one host with in-process execution |
+| `IxIFlow.SqlServer` | SQL Server instance state, inbox, waits, traces, leases and completion outbox |
+| `IxIFlow.PostgreSql` | PostgreSQL instance state and `LISTEN`/`NOTIFY` wake-ups |
+| `IxIFlow.Relational` | Shared internal storage implementation; installed as a provider dependency, with no public extension API |
+| `IxIFlow.Templates` | Versioned template store, publisher, renderer and message activities |
+| `IxIFlow.Templates.Liquid` | Liquid engine using Fluid |
 
-## Quick Start
+`IxIFlow.Generators`, `IxIFlow.Analyzers` and `IxIFlow.Analyzers.CodeFixes` are build-time projects targeting `netstandard2.0`, bundled in `IxIFlow`; they are not separate packable projects. There is no `IxIFlow.Distributed` package on this branch.
 
-### 1. Define data and activities
+## Installation
 
-An activity implements `IAsyncActivity`. Public properties receive mapped inputs and expose outputs.
+Use a .NET 10 project. Add the engine package, then the provider and template packages you need:
 
-```csharp
-using IxIFlow.Core;
-
-public sealed class OrderData
-{
-    public string OrderId { get; set; } = "";
-    public decimal Amount { get; set; }
-    public bool IsValid { get; set; }
-    public string TransactionId { get; set; } = "";
-}
-
-public sealed class ValidateOrderActivity : IAsyncActivity
-{
-    public string OrderId { get; set; } = "";
-    public decimal Amount { get; set; }
-    public bool IsValid { get; private set; }
-
-    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-    {
-        IsValid = !string.IsNullOrWhiteSpace(OrderId) && Amount > 0;
-        return Task.CompletedTask;
-    }
-}
-
-public sealed class ProcessPaymentActivity : IAsyncActivity
-{
-    public decimal Amount { get; set; }
-    public string TransactionId { get; private set; } = "";
-
-    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-    {
-        TransactionId = $"TXN-{Guid.NewGuid():N}";
-        return Task.CompletedTask;
-    }
-}
-
-public sealed class RejectOrderActivity : IAsyncActivity
-{
-    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        => Task.CompletedTask;
-}
+```sh
+dotnet add package IxIFlow
+dotnet add package IxIFlow.Sqlite
+dotnet add package IxIFlow.Templates.Liquid
 ```
 
-### 2. Build and execute
+Activity libraries can reference only `IxIFlow.Abstractions`. Add `IxIFlow.Authoring` when the application needs document serialization or the installed activity catalog.
+
+## Quick start
+
+The complete activity and data types are in [Quote.cs](samples/IxIFlow.Samples/Quote.cs); copy them into your application or run the sample project. `AddFee` declares a required customer input, an in-out amount and a typed decimal default of 2.50 for its fee. The same amount is mapped into and out of the activity:
 
 ```csharp
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Extensions;
+using IxIFlow.Samples;
 using Microsoft.Extensions.DependencyInjection;
 
 var services = new ServiceCollection();
 services.AddLogging();
 services.AddIxIFlow();
-services.AddTransient<ValidateOrderActivity>();
-services.AddTransient<ProcessPaymentActivity>();
-services.AddTransient<RejectOrderActivity>();
+await using var provider = services.BuildServiceProvider();
+var client = provider.GetRequiredService<IWorkflowClient>();
 
-using var provider = services.BuildServiceProvider();
-using var scope = provider.CreateScope();
-var client = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
-
-var definition = Workflow.Create<OrderData>("OrderProcessing", version: 1)
-    .Step<ValidateOrderActivity>(step => step
-        .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+var definition = Workflow.Create<QuoteData>("QuickStart")
+    .Step<AddFee>(step => step
+        .Input(activity => activity.Customer).From(ctx => ctx.WorkflowData.Customer)
         .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
-        .Output(activity => activity.IsValid).To(ctx => ctx.WorkflowData.IsValid))
-    .If(ctx => ctx.PreviousStep.IsValid,
-        then => then.Step<ProcessPaymentActivity>(step => step
-            .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
-            .Output(activity => activity.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)),
-        @else => @else.Step<RejectOrderActivity>())
+        .Output(activity => activity.Amount).To(ctx => ctx.WorkflowData.Amount))
     .Build();
+WorkflowDefinitionValidator.Validate(definition);
 
-var result = await client.RunAsync(
-    definition, new OrderData { OrderId = "ORD-001", Amount = 100.50m });
-
-if (result.IsSuccess)
-    Console.WriteLine($"Transaction: {((OrderData)result.WorkflowData!).TransactionId}");
-else
-    Console.WriteLine($"{result.Status}: {result.ErrorMessage}");
+var result = await client.RunAsync(definition, new QuoteData());
+if (!result.IsSuccess)
+    throw new InvalidOperationException(result.ErrorMessage);
+Console.WriteLine(((QuoteData)result.WorkflowData!).Amount); // 12.50
 ```
 
-`WorkflowExecutionResult` includes `Status`, `InstanceId`, `WorkflowData`, `ErrorMessage`, and `TraceEntries`.
+This snippet is compiled and exercised in [ReadmeExamples.cs](tests/IxIFlow.Samples.Tests/ReadmeExamples.cs). Parameterless activities can be constructed by the executor; register activities with constructor dependencies in DI.
 
-### 3. Register a workflow class
+`RunAsync` returns when the instance is idle, including at a wait or when operator resolution is needed. Check `Status`/`IsSuccess` and read the returned `WorkflowData`. `StartAsync` returns an instance ID after saving the start; `AwaitAsync` waits for idle or terminal state. A caller's cancellation token can interrupt the current run while leaving saved state recoverable; `CancelAsync` requests durable workflow cancellation. For a queued `StartAsync`, the host owns the run and the token only stops waiting for acceptance.
 
-`IWorkflow<TData>` packages a named, versioned definition for dependency injection.
+## YAML authoring
+
+The engine package includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files automatically. This example is [review-child.workflow.yaml](samples/IxIFlow.Samples/Definitions/review-child.workflow.yaml):
+
+```yaml
+# A child adds its handling fee and returns the updated amount.
+workflow:
+  name: ReviewChild
+  dataType: IxIFlow.Samples.QuoteData
+definitions:
+  - kind: activity
+    activity: samples.add-fee
+    input:
+      - target: Customer
+        from: { kind: path, path: workflow.Customer }
+      - target: Amount
+        from: { kind: path, path: workflow.Amount }
+    output:
+      - source: Amount
+        to: { kind: path, path: workflow.Amount }
+```
+
+The generator emits a static `Build()` method under `<RootNamespace>.Generated`; this file becomes `Workflow_review_child_workflow.Build()`. Activity keys resolve from `[WorkflowActivity]` metadata. YAML and fluent definitions go through the same builder rules. Paths name CLR members, such as `workflow.Amount` and `previousStep.Receipt`.
+
+Supported documents contain activities, activity/step references, sequences, conditions, suspension, pinned child invocations, and sequential or parallel `forEach`. Local templates accept parameters and defaults; expression assets use `language: csharp-expression`. YAML number literals with a fraction are doubles; decimal expressions can use a C# expression asset, while activity attribute defaults retain their declared types.
+
+General parallel blocks, `WhileDo`/`DoWhile`, exception handling, sagas, delays, request pairing and wait timeout setup are currently C# only. Imports need a publishing host to resolve and pin dependencies; the built-in publishing pipeline is not available. See the [generator guide](src/IxIFlow.Generators/README.md) for custom filenames, MSBuild settings and project-reference setup, and [samples](samples/README.md) for tested pairs.
+
+The reader is strict: an unknown or wrongly cased key fails the build with IXIYAML001 at that key. The package ships a JSON Schema for workflow YAML at `schemas/workflow.schema.json`, so editors complete and check documents as you type; [editor support](src/IxIFlow.Generators/README.md#editor-support) shows how to bind it.
+
+## Stores
+
+Choose one store through the builder returned by `AddIxIFlow()`. All provider extensions use `IxIFlow.Extensions`; install the corresponding package.
+
+| Store | Registration | Use |
+| --- | --- | --- |
+| Memory | `services.AddIxIFlow()` | Default; retains instances across scopes in one process, loses them on restart |
+| SQLite | `services.AddIxIFlow().UseSqlite(connectionString)` | Durable file, WAL, one owning host; no multiple-host or coordinator support |
+| SQL Server | `services.AddIxIFlow().UseSqlServer(connectionString)` | Shared durable database, fenced leases and recovery |
+| PostgreSQL | `services.AddIxIFlow().UsePostgreSql(connectionString)` | Shared durable database, fenced leases and notification wake-ups alongside polling |
+
+[Hosting.cs](samples/IxIFlow.Samples/Hosting.cs) compiles all four registrations. Provider schemas are created on first use. SQLite requires a file connection string and exclusive ownership; asynchronously dispose its service provider before reopening the file. SQL Server and PostgreSQL use database time for deadlines; memory and SQLite use the registered `TimeProvider`.
+
+Definition and version registries are currently in memory. Every host that may resume an instance must load the matching definitions and activity code. Runtime fingerprints verify definition compatibility, resolving IL member tokens rather than relying on token numbers; they are not yet the planned published artifact identity.
+
+## Hosting
+
+`AddIxIFlow()` registers the in-process host and recovery scanner as hosted services. Use the generic host for background recovery and graceful shutdown:
 
 ```csharp
-using IxIFlow.Builders.Interfaces;
+using IxIFlow.Core;
+using IxIFlow.Extensions;
+using IxIFlow.Samples;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
-public sealed class OrderWorkflow : IWorkflow<OrderData>
+var builder = Host.CreateApplicationBuilder();
+builder.Services.AddIxIFlow(options => options.Slots = 8);
+using var host = builder.Build();
+await host.StartAsync();
+try
 {
-    public int Version => 1;
-
-    public void Build(IWorkflowBuilder<OrderData> builder)
-    {
-        builder.Step<ValidateOrderActivity>(step => step
-            .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-            .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
-            .Output(activity => activity.IsValid).To(ctx => ctx.WorkflowData.IsValid));
-    }
+    var client = host.Services.GetRequiredService<IWorkflowClient>();
+    var result = await client.RunAsync(Quote.Definition(), new QuoteData());
+    Console.WriteLine(result.Status);
+}
+finally
+{
+    await host.StopAsync();
 }
 ```
 
-```csharp
-services.RegisterWorkflow<OrderWorkflow>();
+The equivalent is compiled and exercised through [Hosting.cs](samples/IxIFlow.Samples/Hosting.cs) and [ReadmeExamples.cs](tests/IxIFlow.Samples.Tests/ReadmeExamples.cs). `Slots` limits host work slots; nested calls can run inline in their parent's slot. Due work is recovered through local timers and store polling. Long retry backoffs park the instance and release the slot. Shutdown drains work before its configured timeout. This is the current in-process host; process executors and the coordinator are future work.
 
-// Or several at once
-services.RegisterWorkflows(registry => registry
-    .RegisterWorkflow<OrderWorkflow>()
-    .RegisterWorkflow<RefundWorkflow>());
+For time-dependent mappings and conditions, use `ctx.UtcNow`. Tests can register a `FakeTimeProvider`, as in [the sample tests](tests/IxIFlow.Samples.Tests/SampleTests.cs). Attach OpenTelemetry to source/meter `IxIFlow`, or use the standard .NET listeners shown in [Observability.cs](samples/IxIFlow.Samples/Observability.cs).
 
-var registered = provider.GetWorkflowDefinition<OrderWorkflow>();
-```
+## Status and roadmap
 
-`RegisterWorkflow<TWorkflow>(name)` can supply a name; otherwise the class name is used.
+The following work is planned for 1.0 and is **not yet available**, or has an implemented subset with the remaining work stated here:
 
-## Advanced Features
+| Area | Remaining 1.0 work |
+| --- | --- |
+| Execution and isolation | Public executor message contract; local-first process slots, pipe transport, process liveness and resource limits, fenced process crash reports; commit resend backoff and host validation of message size/metadata; complete build-time purity checking of saga outcome selectors |
+| Coordinator and placement | Stateless coordinators, host capabilities and workflow demands, matching and affinity, visible unschedulable work, registry/discovery, multiple coordinators, loss handling and secured links; batched host lease renewal and process-slot activity accounting |
+| Events and integrations | Retained terminal results; default payloads for discoverable waits; child placement demands; webhook package and HTTP trigger conformance; public outbox publisher contract and built-in completion publishers. Durable inboxes, reply tokens, child instances and the stored completion outbox already exist |
+| Publishing and versioning | Immutable workflow bundles, artifact storage and verification, dependency resolution and pinning, isolated assemblies per version, host bundle fetching, declared canonical artifact fingerprints and compatibility/migration policy; draft/publish and version lifecycle APIs |
+| Authoring and catalog | Full YAML control-flow coverage; broader catalog API, code-defined workflows in the catalog, published code activities, inline calls, explicit workflow input/output contracts, YAML code activities and planned local registration support beyond the current installed-assembly registry; Native AOT publish/run validation |
+| Editor support | The JSON Schema for workflow YAML ships in the package. A visual editor and debugger integration are still being developed |
+| Debugger and audit | Breakpoints, all-stop pause, stepping including loops, audited data edits, paused timer behavior, Debug Adapter Protocol and replay; fuller trace coverage for uncommitted transitions, received events and data edits, and dedicated resolution audit events. Committed traces, snapshots, scoped logs, OpenTelemetry signals, cancellation/release actor entries and resolution actor metadata already work |
+| Management and operations | Management API, operator listings, retention, large-payload storage, residency policies and redaction; outbox-lag telemetry with the publishers |
+| Verification | Complete cross-configuration conformance and fault injection for the coordinator, process executors and nested joins as those paths land |
 
-### Parallel Execution
-
-Branches share workflow data, so write to distinct properties.
-
-```csharp
-.Parallel(parallel => parallel
-    .Do(email => email.Step<SendEmailActivity>(step => step
-        .Input(activity => activity.Address).From(ctx => ctx.WorkflowData.Email)
-        .Output(activity => activity.Sent).To(ctx => ctx.WorkflowData.EmailSent)))
-    .Do(sms => sms.Step<SendSmsActivity>(step => step
-        .Input(activity => activity.Number).From(ctx => ctx.WorkflowData.Phone)
-        .Output(activity => activity.Sent).To(ctx => ctx.WorkflowData.SmsSent))))
-```
-
-By default the join waits for all branches. `WaitAny()` continues after the first branch and cancels the rest; `WaitConditionally(predicate)` continues when the predicate becomes true.
-
-### Exception Handling
-
-`Catch<TException, TFault>` saves selected exception properties in a fault record that handlers read through `ctx.Fault`.
-
-```csharp
-public sealed record PaymentFault(string Message);
-```
-
-```csharp
-.Try(tryBlock => tryBlock.Step<ChargeCardActivity>())
-.Catch<PaymentException, PaymentFault>(catchBlock => catchBlock
-    .Step<LogPaymentFailureActivity>(step => step
-        .Input(activity => activity.Message).From(ctx => ctx.Fault.Message)))
-.Finally(finallyBlock => finallyBlock.Step<AuditOrderActivity>())
-```
-
-### Saga Transactions
-
-Each saga step can name a compensation activity. When a later step fails, completed steps are compensated in reverse order.
-
-```csharp
-.Saga(saga => saga
-    .Step<ReserveProductActivity>(step => step
-        .Input(activity => activity.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-        .CompensateWith<ReleaseProductActivity>())
-    .Step<ChargeCustomerActivity>(step => step
-        .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.TotalAmount)
-        .CompensateWith<RefundCustomerActivity>()))
-.OnError<Exception>(error => error.Compensate().ThenTerminate())
-```
-
-Compensation is an application action, not an automatic rollback of another system. See [sagas](docs/sagas.md).
-
-### Suspend and Resume
-
-A wait is identified by a correlation key. On resume, the event becomes `PreviousStep`.
-
-```csharp
-var definition = Workflow.Create<OrderData>("Approval")
-    .Step<PrepareOrderActivity>()
-    .WaitFor<ApprovalEvent>("manager-approval",
-        (approval, ctx) => approval.OrderId == ctx.WorkflowData.OrderId)
-    .Step<FinalizeOrderActivity>(step => step
-        .Input(activity => activity.Approved).From(ctx => ctx.PreviousStep.Approved))
-    .Build();
-
-var started = await client.RunAsync(definition, orderData);
-// started.Status is Suspended
-var resumed = await client.ResumeAsync(started.InstanceId, "manager-approval", approvalEvent);
-```
-
-`Delay(TimeSpan)` suspends until a deadline, and `Invoke<TWorkflow, TChildData>` runs a child workflow with its own saved state.
-
-## Configuration
-
-### In-process
-
-`AddIxIFlow()` registers in-memory state and event storage shared across scopes in one process. Custom implementations can replace them:
-
-```csharp
-services.AddIxIFlow(options =>
-{
-    options.UseCustomStateRepository = typeof(MyStateRepository);
-    options.UseCustomTracer = typeof(MyTracer);
-});
-```
-
-### SQL Server hosting
-
-`IxIFlow.SqlServer` stores instance state in SQL Server with revisioned checkpoints and renewable execution leases, and adds a SQL host registry and message bus.
-
-```csharp
-services.AddIxIFlow();
-services.AddHttpClient();
-services.AddIxIFlowHost(options =>
-{
-    options.HostId = "workflow-node-01";
-    options.MaxConcurrentWorkflows = 50;
-    options.Tags = ["payments"];
-}, connectionString: "Server=localhost;Database=IxIFlow;Trusted_Connection=True;");
-```
-
-Every host that may execute or resume a workflow must register the same workflow definitions and activity code. See [coordinator and hosts](docs/coordinator-and-hosts.md).
-
-## Roadmap
-
-These items are planned and not yet available. The [roadmap](docs/roadmap.md) describes the target design and remaining work for each area.
-
-- **Debugging and observability**: step-level trace store, breakpoints and step-through, structured logging with instance correlation, and OpenTelemetry traces and metrics
-- **Coordinator dispatch**: routing queued execute, resume, and cancel commands to a selected host, an HTTP host endpoint, host affinity on resume, and live load accounting
-- **Management API**: instance inspection, dead-letter inspection and requeue, and start triggers
-- **Workflow documents**: full YAML parity with the fluent API (parallel, loops, `Try`, sagas, delays), reusable step templates, and publish and version flow
-- **Storage adapters**: PostgreSQL, SQLite, and message broker adapters; persisted definition and event registries
-- **Visual editor**: graph editor and debugger UI on top of the document model
-
-## Tips
-
-- **Start simple**: Begin with sequential steps and add control flow as needed
-- **One job per activity**: Keep each activity focused and unit-testable
-- **Make side effects idempotent**: Activities and compensations can be retried after recovery
-- **Name and version workflows**: Explicit names and versions keep saved instances resumable
-- **Register everywhere**: Any host that resumes a workflow needs its definition and activities
+After 1.0: broker publisher/consumer samples for RabbitMQ or Azure Service Bus, and a distributed map that pages external input, runs bounded child work and stores results outside the parent checkpoint. These are outside the 1.0 scope. SQLite single-host durability has moved into 1.0 and is implemented.
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md)
-- [Fluent API](docs/fluent-api.md)
-- [Execution model](docs/execution-model.md)
-- [Sagas and compensation](docs/sagas.md)
-- [Engine capabilities](docs/engine-capabilities.md)
-- [Coordinator and hosts](docs/coordinator-and-hosts.md)
-- [Roadmap](docs/roadmap.md)
+Start with [samples and their feature map](samples/README.md). The [docs index](docs/index.md), [fluent API](docs/fluent-api.md), [execution model](docs/execution-model.md), [activity SDK](docs/activity-sdk.md) and [sagas](docs/sagas.md) provide more detail. Some older docs still describe removed distributed hosting and earlier storage/authoring behavior; use this README and the compiled samples for current APIs and the roadmap above for 1.0 scope.
 
-## Contributing
-
-See the [Contributing Guide](CONTRIBUTING.md).
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [MIT license](LICENSE).
