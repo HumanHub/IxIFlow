@@ -5,6 +5,37 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>The same delivery protocol is exercised against memory and every relational provider.</summary>
 internal static class OutboxStoreContract
 {
+    internal static async Task ExpiredUnreclaimedOwnerCannotChangeDelivery(IWorkflowStateRepository store,
+        Func<OutboxDelivery, Task> expire)
+    {
+        var publisher = "expired-" + Guid.NewGuid().ToString("N");
+        await store.RegisterPublisherAsync(publisher, [OutboxEvent.WorkflowCompleted]);
+        var instance = await CompleteAsync(store);
+        try
+        {
+            var claimed = await Claim(store, publisher, "actual-owner");
+            await expire(claimed);
+            var before = (await store.GetDeliveryAsync(claimed.Event.Id, publisher))!;
+            Assert.True(before.LeaseUntilUtc <= before.StoreNowUtc);
+            Assert.Equal("actual-owner", before.LeaseToken);
+            Assert.False(await store.RenewDeliveryLeaseAsync(claimed.Event.Id, publisher,
+                claimed.LeaseToken!, TimeSpan.FromMinutes(1)));
+            Assert.Equal(before, (await store.GetDeliveryAsync(claimed.Event.Id, publisher))! with { StoreNowUtc = before.StoreNowUtc });
+            foreach (var result in new[] { OutboxPublishResult.Delivered(), OutboxPublishResult.RetryLater("offline"),
+                         OutboxPublishResult.GiveUp("gone", disablePublisher: true) })
+            {
+                Assert.False(await store.SettleDeliveryAsync(claimed.Event.Id, publisher, claimed.LeaseToken!, result));
+                Assert.Equal(before, (await store.GetDeliveryAsync(claimed.Event.Id, publisher))! with { StoreNowUtc = before.StoreNowUtc });
+                Assert.Null((await store.GetPublisherAsync(publisher))!.DisabledAtUtc);
+            }
+        }
+        finally
+        {
+            await store.UnregisterPublisherAsync(publisher);
+            await store.DeleteWorkflowInstanceAsync(instance.InstanceId);
+        }
+    }
+
     internal static async Task VerifyUnclaimedHorizonAsync(IWorkflowStateRepository store, TimeSpan horizon,
         Func<IReadOnlyCollection<string>, TimeSpan, Task> advance, TimeSpan boundaryStep)
     {
