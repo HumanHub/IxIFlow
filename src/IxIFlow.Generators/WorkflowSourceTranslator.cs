@@ -466,6 +466,14 @@ public static class WorkflowSourceTranslator
             return new ContextNames(_arguments, _items, eventName, _workflowRoot, _previousRoot, document.Workflow.DataType, options.Members).Visit(expression)!.NormalizeWhitespace().ToFullString();
         }
 
+        private string PayloadLiteral(object? value, DocumentNode node) => value switch
+        {
+            IDictionary<string, object?> properties => "new() { " + string.Join(", ", properties.Select(
+                pair => Member(pair.Key, node) + " = " + PayloadLiteral(pair.Value, node))) + " }",
+            IEnumerable<object?> items => "[" + string.Join(", ", items.Select(item => PayloadLiteral(item, node))) + "]",
+            _ => Literal(value, node)
+        };
+
         private string Literal(object? value, DocumentNode node) => value switch
         {
             null => "null",
@@ -678,6 +686,11 @@ public static class WorkflowSourceTranslator
             Line($"var {next} = {builder}.{(named == null ? "Suspend" : "WaitFor")}<{eventType}>({Quote(key)}, " +
                 (step.ResumeCondition == null ? "null" : (named == null && scope != WorkflowDocumentScope.Catch ? "resumeExpression: " : "matchesExpression: ") +
                     "(evt, ctx) => " + Expression(step.ResumeCondition, "evt")) + ", configure: setup => {");
+            if (step.DefaultPayload != null)
+            {
+                Locate(step, "defaultPayload");
+                Line($"setup.DefaultPayload({PayloadLiteral(step.DefaultPayload, step)});");
+            }
             Mappings(step.Input, step.Output);
             if (step.Timeout != null)
             {

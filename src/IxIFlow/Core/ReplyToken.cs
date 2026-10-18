@@ -61,4 +61,5 @@ public sealed record OpenWait(
     string? EventSchema,
     DateTime? DeadlineUtc,
     DateTime OpenedAtUtc,
-    string Token);
+    string Token,
+    string? DefaultPayloadJson = null);

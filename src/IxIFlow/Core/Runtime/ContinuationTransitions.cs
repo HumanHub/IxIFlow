@@ -298,6 +298,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     ContinuationId = continuation.Id,
                     StepId = scopes.Id(step),
                     Key = key,
+                    DefaultPayloadJson = step.DefaultPayload == null ? null
+                        : System.Text.Json.JsonSerializer.Serialize(step.DefaultPayload, step.ResumeEventType!),
                     Timeout = step.WaitTimeout,
                     DeadlineUtc = StoreNow(checkpoint) + step.WaitTimeout,
                     EventType = step.ResumeEventType?.AssemblyQualifiedName
