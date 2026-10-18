@@ -25,7 +25,7 @@ public sealed class EnumDefaultBoundaryTests
     public Task AnalyzerAndRuntimeAgreeOnEnumDefaults(string underlying, string? value, bool nullable, bool accepted, string expected) =>
         Verify(underlying, value, nullable, accepted, expected);
 
-    [Theory(Skip = "Known defect: enum analyzer ignores underlying ranges and rejects UInt64 defaults above Int64.MaxValue")]
+    [Theory]
     [InlineData("byte", "256", false, false, "")]
     [InlineData("sbyte", "128", false, false, "")]
     [InlineData("ushort", "65536", false, false, "")]

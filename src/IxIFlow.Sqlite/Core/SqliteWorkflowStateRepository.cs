@@ -710,7 +710,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         catch (SqliteException error) when (error.SqliteErrorCode is 5 or 6)
         {
             throw new InvalidOperationException(
-                "SQLite is busy despite single-host ownership. External writers are unsupported (C-18).", error);
+                "SQLite is busy despite single-host ownership. External writers are unsupported.", error);
         }
         finally
         {
