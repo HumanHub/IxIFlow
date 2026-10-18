@@ -25,12 +25,18 @@ public sealed class RetentionStoreTests
         }
     }
 
+    // These scenarios retain 31-day-old instances because delivery is still within its horizon.
+    private static OutboxSettings OutboxSettingsFor(RetentionScenario scenario) =>
+        scenario is RetentionScenario.PendingDeliveriesKeepInstance or RetentionScenario.DeliveredOutboxRowsGone
+            ? new OutboxSettings(retryHorizon: TimeSpan.FromDays(60))
+            : new OutboxSettings();
+
     [Theory]
     [MemberData(nameof(Scenarios))]
     public Task MemoryRetentionContract(RetentionScenario scenario)
     {
         var time = new FakeTimeProvider();
-        return new RetentionStoreContract(new InMemoryWorkflowStateRepository(time), (_, by) =>
+        return new RetentionStoreContract(new InMemoryWorkflowStateRepository(time, OutboxSettingsFor(scenario)), (_, by) =>
             { time.Advance(by); return Task.CompletedTask; }).VerifyAsync(scenario);
     }
 
@@ -45,7 +51,7 @@ public sealed class RetentionStoreTests
         try
         {
             var time = new FakeTimeProvider();
-            await using var store = new SqliteWorkflowStateRepository(connectionString, time);
+            await using var store = new SqliteWorkflowStateRepository(connectionString, time, OutboxSettingsFor(scenario));
             await new RetentionStoreContract(store, (_, by) => { time.Advance(by); return Task.CompletedTask; },
                 () => new SqliteConnection(new SqliteConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString)).VerifyAsync(scenario);
         }
@@ -58,7 +64,7 @@ public sealed class RetentionStoreTests
     {
         var connectionString = SqlTestDatabase<RetentionStoreTests>.ConnectionString;
         foreach (var scenario in Enum.GetValues<RetentionScenario>())
-            await new RetentionStoreContract(new SqlWorkflowStateRepository(connectionString),
+            await new RetentionStoreContract(new SqlWorkflowStateRepository(connectionString, outboxSettings: OutboxSettingsFor(scenario)),
                 (ids, by) => AgeRows(() => new SqlConnection(connectionString), ids, by),
                 () => new SqlConnection(connectionString)).VerifyAsync(scenario);
     }
@@ -69,7 +75,7 @@ public sealed class RetentionStoreTests
     {
         var connectionString = PostgreSqlTestDatabase<RetentionStoreTests>.ConnectionString;
         foreach (var scenario in Enum.GetValues<RetentionScenario>())
-            await new RetentionStoreContract(new PostgreSqlWorkflowStateRepository(connectionString),
+            await new RetentionStoreContract(new PostgreSqlWorkflowStateRepository(connectionString, outboxSettings: OutboxSettingsFor(scenario)),
                 (ids, by) => AgeRows(() => new NpgsqlConnection(connectionString), ids, by),
                 () => new NpgsqlConnection(connectionString)).VerifyAsync(scenario);
     }
@@ -81,10 +87,12 @@ public sealed class RetentionStoreTests
         await using var connection = open();
         var sql = connection is SqlConnection ? """
             UPDATE dbo.IxIFlowWorkflowInstances SET EndedAtUtc=DATEADD(SECOND, -@Seconds, EndedAtUtc) WHERE InstanceId IN @Ids;
+            UPDATE dbo.IxIFlowOutboxEvents SET OccurredAtUtc=DATEADD(SECOND, -@Seconds, OccurredAtUtc) WHERE InstanceId IN @Ids;
             UPDATE dbo.IxIFlowWorkflowTombstones SET RemovedAtUtc=DATEADD(SECOND, -@Seconds, RemovedAtUtc),
                 ExpiresAtUtc=DATEADD(SECOND, -@Seconds, ExpiresAtUtc) WHERE InstanceId IN @Ids;
             """ : """
             UPDATE ixiflow_workflow_instances SET ended_at_utc=ended_at_utc - @Seconds * INTERVAL '1 second' WHERE instance_id=ANY(@Ids);
+            UPDATE ixiflow_outbox_events SET occurred_at_utc=occurred_at_utc - @Seconds * INTERVAL '1 second' WHERE instance_id=ANY(@Ids);
             UPDATE ixiflow_workflow_tombstones SET removed_at_utc=removed_at_utc - @Seconds * INTERVAL '1 second',
                 expires_at_utc=expires_at_utc - @Seconds * INTERVAL '1 second' WHERE instance_id=ANY(@Ids);
             """;

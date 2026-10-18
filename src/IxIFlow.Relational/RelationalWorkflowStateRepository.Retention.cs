@@ -44,6 +44,18 @@ public abstract partial class RelationalWorkflowStateRepository
         return await ExecuteOperationAsync(Operation.Purge, async () =>
         {
             await using var connection = await OpenConnectionAsync();
+            // Maintenance covers subscriptions with no active host. Commit the bounded sweep before
+            // selecting retention candidates, so newly given-up deliveries no longer pin instances.
+            await using (var maintenance = (await BeginTransactionAsync(connection, Operation.Purge))!)
+            {
+                await ExecuteOptionalAsync(connection, maintenance, Statement.RetentionLock,
+                    cancellationToken: cancellationToken);
+                var now = await OutboxNowAsync(connection, maintenance);
+                await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.ExpireUnattemptedDeliveries),
+                    WithTimes(new { Limit = batchSize, Error = OutboxRetry.NeverClaimedError }, ("Cutoff", now - _retryHorizon)),
+                    maintenance, cancellationToken: cancellationToken));
+                await maintenance.CommitAsync(cancellationToken);
+            }
             // Selection is bounded and advisory. Every candidate is rechecked under its normal write
             // lock below. Each deletion has its own transaction to preserve row -> publisher lock order.
             var selectedAt = await OutboxNowAsync(connection, null);

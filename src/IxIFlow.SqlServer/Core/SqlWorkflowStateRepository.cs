@@ -22,7 +22,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     /// whose runs and the application's own work exhaust the main pool still renews its leases and
     /// delivers cancellation (B-09). With pooling turned off the reservation has no effect.
     /// </summary>
-    public SqlWorkflowStateRepository(string connectionString, int ownershipPoolSize = DefaultOwnershipPoolSize)
+    public SqlWorkflowStateRepository(string connectionString, int ownershipPoolSize = DefaultOwnershipPoolSize,
+        OutboxSettings? outboxSettings = null) : base(outboxSettings)
     {
         _connectionString = string.IsNullOrWhiteSpace(connectionString)
             ? throw new ArgumentException("A SQL Server connection string is required", nameof(connectionString))
