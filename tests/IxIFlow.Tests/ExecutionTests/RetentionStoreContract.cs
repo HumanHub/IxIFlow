@@ -275,13 +275,36 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
                      WorkflowStatus.Terminated, WorkflowStatus.TimedOut })
         {
             var instance = Instance(status);
-            instance.LastError = status == WorkflowStatus.Failed ? "failure retained" : null;
+            instance.LastError = status switch
+            {
+                WorkflowStatus.Failed => "failure retained",
+                WorkflowStatus.Cancelled => "operator cancellation retained",
+                WorkflowStatus.Terminated => "termination retained",
+                WorkflowStatus.TimedOut => "timeout retained",
+                _ => null
+            };
+            instance.LastErrorStackTrace = status == WorkflowStatus.Failed ? "failure stack retained" : null;
+            if (status == WorkflowStatus.Cancelled)
+                instance.CancellationReason = new CancellationReason
+                    { ReasonCode = "operator", Description = instance.LastError! };
             await Commit(instance);
-            var result = await client.AwaitAsync(instance.InstanceId, WorkflowAwaitCondition.Finished);
+            using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var result = await client.AwaitAsync(instance.InstanceId, WorkflowAwaitCondition.Finished, patience.Token)
+                .WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Equal(instance.InstanceId, result.InstanceId);
             Assert.Equal(42, Assert.IsType<ResultData>(result.WorkflowData).Value);
             Assert.Equal(instance.LastError, result.ErrorMessage);
             Assert.NotEqual(WorkflowExecutionStatus.Running, result.Status);
+            Assert.Equal(status switch
+            {
+                WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
+                WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
+                WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
+                WorkflowStatus.Terminated => WorkflowExecutionStatus.Failed,
+                WorkflowStatus.TimedOut => WorkflowExecutionStatus.TimedOut,
+                _ => throw new ArgumentOutOfRangeException(nameof(status))
+            }, result.Status);
+            Assert.Equal(instance.LastErrorStackTrace, result.ErrorStackTrace);
         }
     }
 

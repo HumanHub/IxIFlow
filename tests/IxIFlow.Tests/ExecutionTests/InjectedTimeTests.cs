@@ -12,6 +12,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// </summary>
 [Trait("Feature", "timers")]
 [Trait("Spec", "A-06")]
+[Trait("Spec", "J-05")]
 public sealed class InjectedTimeTests
 {
     [Fact]

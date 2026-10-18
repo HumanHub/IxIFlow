@@ -16,13 +16,15 @@ internal sealed class ConformanceCluster : IAsyncDisposable
 {
     private readonly ProfileStore _store;
     private readonly Action<IServiceCollection> _configure;
+    private readonly TimeProvider? _time;
     private readonly List<ServiceProvider> _hosts = [];
     private IWorkflowStateRepository? _repository;
 
-    private ConformanceCluster(ProfileStore store, Action<IServiceCollection> configure)
+    private ConformanceCluster(ProfileStore store, Action<IServiceCollection> configure, TimeProvider? time)
     {
         _store = store;
         _configure = configure;
+        _time = time;
     }
 
     public IWorkflowVersionRegistry Registry { get; } = new WorkflowVersionRegistry();
@@ -30,8 +32,8 @@ internal sealed class ConformanceCluster : IAsyncDisposable
     public string Profile => _store.Profile;
 
     public static async Task<ConformanceCluster> CreateAsync(string profile,
-        Action<IServiceCollection>? configure = null) =>
-        new(await StoreProfiles.CreateAsync(profile), configure ?? (_ => { }));
+        Action<IServiceCollection>? configure = null, TimeProvider? time = null) =>
+        new(await StoreProfiles.CreateAsync(profile, time), configure ?? (_ => { }), time);
 
     /// <summary>
     /// Starts another host on the shared store and returns its engine. <paramref name="wrap"/> puts
@@ -51,6 +53,8 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         services.Replace(ServiceDescriptor.Singleton(Registry));
         services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
         _configure(services);
+        if (_time != null)
+            services.AddSingleton(_time);
         var host = services.BuildServiceProvider();
         try
         {
@@ -77,7 +81,9 @@ internal sealed class ConformanceCluster : IAsyncDisposable
 
     /// <summary>SQLite uses its sole owner's repository; other profiles can open another.</summary>
     public IWorkflowStateRepository NewRepository() => Profile == StoreProfiles.LocalSqlite
-        ? _repository ??= _store.NewRepository() : _store.NewRepository();
+        ? _repository ??= _store.NewRepository(_time) : _store.NewRepository(_time);
+
+    internal Task ExpireExecutionLeaseAsync(string instanceId) => _store.ExpireExecutionLeaseAsync(instanceId);
 
     /// <summary>Reads an instance directly from the shared store.</summary>
     /// <summary>
