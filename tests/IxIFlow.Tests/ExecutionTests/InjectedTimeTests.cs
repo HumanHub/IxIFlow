@@ -36,7 +36,8 @@ public sealed class InjectedTimeTests
 
         time.Advance(TimeSpan.FromMinutes(2));
         await RecoverOnceAsync(services, time);
-        var saved = await InstanceAsync(services, started.InstanceId);
+        // The host's own timer can claim the instance first; the scan then skips it, so wait for its run.
+        var saved = await StatusAsync(services, started.InstanceId, WorkflowStatus.Completed);
         Assert.Equal(WorkflowStatus.Completed, saved.Status);
         Assert.Contains("after-delay", saved.WorkflowDataJson);
     }
@@ -108,6 +109,19 @@ public sealed class InjectedTimeTests
 
     private static async Task<WorkflowInstance> InstanceAsync(IServiceProvider services, string instanceId) =>
         (await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(instanceId))!;
+
+    private static async Task<WorkflowInstance> StatusAsync(IServiceProvider services, string instanceId,
+        WorkflowStatus expected)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        var instance = await InstanceAsync(services, instanceId);
+        while (instance.Status != expected && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+            instance = await InstanceAsync(services, instanceId);
+        }
+        return instance;
+    }
 
     private static async Task RecoverOnceAsync(IServiceProvider services, TimeProvider time)
     {
