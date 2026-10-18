@@ -39,7 +39,7 @@ public sealed class GeneratorRegressionTests
     public void UnrelatedCSharpEditsReuseYamlGeneration()
     {
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()],
-            [new YamlFile("cached.yaml", Header + Activity)], optionsProvider: new WorkflowFileOptionsProvider("cached.yaml"), driverOptions: new GeneratorDriverOptions(
+            [new WorkflowText("cached.yaml", Header + Activity)], optionsProvider: new WorkflowFileOptionsProvider("cached.yaml"), driverOptions: new GeneratorDriverOptions(
                 IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
         var compilation = Compilation();
         driver = driver.RunGenerators(compilation);
@@ -58,7 +58,7 @@ public sealed class GeneratorRegressionTests
     public void YmlAdditionalFilesAreGenerated()
     {
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()],
-            [new YamlFile("short.yml", Header + Activity)], optionsProvider: new WorkflowFileOptionsProvider("short.yml"));
+            [new WorkflowText("short.yml", Header + Activity)], optionsProvider: new WorkflowFileOptionsProvider("short.yml"));
         driver = driver.RunGeneratorsAndUpdateCompilation(Compilation(), out var output, out var diagnostics);
         Assert.Empty(diagnostics);
         Assert.Empty(output.GetDiagnostics().Where(item => item.Severity == DiagnosticSeverity.Error));
@@ -71,7 +71,7 @@ public sealed class GeneratorRegressionTests
     public void WorkflowMetadataControlsSelectionRegardlessOfExtension(string path, bool enabled)
     {
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()],
-            [new YamlFile(path, Header + Activity)],
+            [new WorkflowText(path, Header + Activity)],
             optionsProvider: enabled ? new WorkflowFileOptionsProvider(path) : new WorkflowFileOptionsProvider());
         var result = driver.RunGenerators(Compilation()).GetRunResult();
         Assert.Empty(result.Diagnostics);
@@ -86,7 +86,7 @@ public sealed class GeneratorRegressionTests
         Assert.Equal(7, error.Line);
         Assert.True(error.Column > 1);
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()],
-            [new YamlFile("type.yaml", yaml)], optionsProvider: new WorkflowFileOptionsProvider("type.yaml"));
+            [new WorkflowText("type.yaml", yaml)], optionsProvider: new WorkflowFileOptionsProvider("type.yaml"));
         var diagnostic = Assert.Single(driver.RunGenerators(Compilation()).GetRunResult().Diagnostics);
         Assert.Equal(6, diagnostic.Location.GetLineSpan().StartLinePosition.Line);
         Assert.DoesNotContain("type.yaml", diagnostic.GetMessage());
@@ -251,7 +251,7 @@ public sealed class GeneratorRegressionTests
     public void ReferencedActivityKeysResolveWithoutEnumeratingTypeSymbols()
     {
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()],
-            [new YamlFile("package.yaml", Header + Activity.Replace("IxIFlow.Generators.Tests.Multiply", "test.multiply"))],
+            [new WorkflowText("package.yaml", Header + Activity.Replace("IxIFlow.Generators.Tests.Multiply", "test.multiply"))],
             optionsProvider: new WorkflowFileOptionsProvider("package.yaml"));
         driver = driver.RunGeneratorsAndUpdateCompilation(Compilation(), out var output, out var diagnostics);
         Assert.Empty(diagnostics);
@@ -311,11 +311,6 @@ public sealed class GeneratorRegressionTests
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
     }
 
-    private sealed class YamlFile(string path, string text) : AdditionalText
-    {
-        public override string Path => path;
-        public override SourceText GetText(CancellationToken cancellationToken = default) => SourceText.From(text);
-    }
 }
 
 public sealed class DoubleActivity : IAsyncActivity
