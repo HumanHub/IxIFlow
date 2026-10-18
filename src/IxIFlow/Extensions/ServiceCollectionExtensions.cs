@@ -75,6 +75,12 @@ public static class ServiceCollectionExtensions
         services.AddIxIFlow();
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
+        if (!Enum.IsDefined(options.TraceDetail))
+            throw new ArgumentOutOfRangeException(nameof(options.TraceDetail));
+        if (options.MaxTraceEntriesPerInstance is <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options.MaxTraceEntriesPerInstance));
+        if (options.MaxTraceEntriesPerCommit <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "The trace entry limit must be positive");
         if (options.MaxCrashes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The crash limit must be positive");
         if (options.MaxActiveBranches <= 0)
@@ -90,6 +96,9 @@ public static class ServiceCollectionExtensions
         services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits
         {
             MaxCheckpointBytes = options.MaxCheckpointBytes,
+            MaxTraceEntriesPerCommit = options.MaxTraceEntriesPerCommit,
+            TraceDetail = options.TraceDetail,
+            MaxTraceEntriesPerInstance = options.MaxTraceEntriesPerInstance,
             MaxCrashes = options.MaxCrashes,
             MaxActiveBranches = options.MaxActiveBranches,
             MaxActivitiesPerRun = options.MaxActivitiesPerRun,
@@ -388,6 +397,19 @@ public class IxIFlowOptions
     /// limit and release the instance to continue.
     /// </summary>
     public long MaxCheckpointBytes { get; set; } = ExecutionLimits.DefaultMaxCheckpointBytes;
+
+    /// <summary>
+    /// Maximum trace entries in one commit, default 1,000. On overflow the last slot becomes one Truncated
+    /// entry counting all omissions, so at most 999 ordinary entries remain at the default. The bound resets
+    /// only after acknowledgement. Entries of a pass never committed are dropped (G-01).
+    /// </summary>
+    public int MaxTraceEntriesPerCommit { get; set; } = ExecutionLimits.DefaultMaxTraceEntriesPerCommit;
+
+    /// <summary>Full records control flow; Activities records activity, event, operator and cancellation entries.</summary>
+    public TraceDetail TraceDetail { get; set; } = TraceDetail.Full;
+
+    /// <summary>Optional instance budget. Once reached, one marker is recorded and control flow stops; other entries continue.</summary>
+    public long? MaxTraceEntriesPerInstance { get; set; }
 
     /// <summary>
     /// A diagnostic: at each commit, serialize every part of the checkpoint and fail the commit, naming the part,

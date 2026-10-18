@@ -466,7 +466,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // Locks an instance row as appends and commits lock it, then reads the store's time: a statement that
         // waits for a lock would otherwise carry a time from before it was granted (D-35).
         Statement.LockInbox or Statement.DeleteParentInbox => """
-            SELECT status AS Status, inbox_sequence AS InboxSequence FROM ixiflow_workflow_instances
+            SELECT status AS Status, inbox_sequence AS InboxSequence,
+                COALESCE((state_json::jsonb ->> 'TracingEnabled')::boolean, true) AS TracingEnabled
+            FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             FOR UPDATE;
             SELECT clock_timestamp();

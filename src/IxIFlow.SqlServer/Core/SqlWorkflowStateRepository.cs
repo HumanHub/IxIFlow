@@ -464,7 +464,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         // that lock is held, which orders it against every read of the inbox (D-35); a statement reads
         // its time when it starts, so the time is read by the statement after the lock.
         Statement.LockInbox => """
-            SELECT Status, InboxSequence FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
+            SELECT Status, InboxSequence,
+                CAST(COALESCE(JSON_VALUE(StateJson, '$.TracingEnabled'), 'true') AS bit) AS TracingEnabled
+            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId;
             SELECT SYSUTCDATETIME();
             """,

@@ -4,6 +4,7 @@ namespace IxIFlow.Core.Runtime;
 internal sealed record ExecutionLimits
 {
     public const long DefaultMaxCheckpointBytes = 4 * 1024 * 1024;
+    public const int DefaultMaxTraceEntriesPerCommit = 1_000;
     public const int DefaultMaxCrashes = 3;
     public const int DefaultMaxActiveBranches = 1_000;
     public const int DefaultMaxActivitiesPerRun = 100;
@@ -14,6 +15,11 @@ internal sealed record ExecutionLimits
 
     /// <summary>The largest checkpoint, in bytes of workflow data and execution state.</summary>
     public long MaxCheckpointBytes { get; init; } = DefaultMaxCheckpointBytes;
+
+    /// <summary>The maximum trace entries per commit, including a truncation marker when needed (G-01).</summary>
+    public int MaxTraceEntriesPerCommit { get; init; } = DefaultMaxTraceEntriesPerCommit;
+    public TraceDetail TraceDetail { get; init; } = TraceDetail.Full;
+    public long? MaxTraceEntriesPerInstance { get; init; }
 
     /// <summary>How many owners in a row may lose a running instance before it is quarantined.</summary>
     public int MaxCrashes { get; init; } = DefaultMaxCrashes;
