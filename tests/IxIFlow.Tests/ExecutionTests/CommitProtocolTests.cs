@@ -119,9 +119,9 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
             Assert.Equal(3, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "third", TimeSpan.FromSeconds(10)))?.Epoch);
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "third"));
 
-            // Deletion retains the epoch fence and reserves the ID against a former owner.
+            // Deletion removes the lease and reserves the ID against a former owner.
             await repository.DeleteWorkflowInstanceAsync(instanceId);
-            Assert.Equal(4, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10)))?.Epoch);
+            Assert.Equal(1, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10)))?.Epoch);
             instance.Status = WorkflowStatus.Running;
             instance.Revision = 0;
             Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
