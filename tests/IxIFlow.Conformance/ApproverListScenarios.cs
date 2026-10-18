@@ -107,7 +107,7 @@ public sealed class ApproverListScenarios
     }
 
     [Theory]
-    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
     public async Task QueuedRequestsAreSentOnlyAsAnswersComeInEvenOnAnotherHost(string profile)
     {
         var mailer = new Mailer();

@@ -17,6 +17,7 @@ internal sealed class ConformanceCluster : IAsyncDisposable
     private readonly ProfileStore _store;
     private readonly Action<IServiceCollection> _configure;
     private readonly List<ServiceProvider> _hosts = [];
+    private IWorkflowStateRepository? _repository;
 
     private ConformanceCluster(ProfileStore store, Action<IServiceCollection> configure)
     {
@@ -41,14 +42,28 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
-        var repository = _store.NewRepository();
-        services.Replace(ServiceDescriptor.Singleton(wrap?.Invoke(repository) ?? repository));
+        services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(provider =>
+        {
+            var repository = _store.NewRepository(provider.GetRequiredService<TimeProvider>());
+            _repository ??= repository;
+            return wrap?.Invoke(repository) ?? repository;
+        }));
         services.Replace(ServiceDescriptor.Singleton(Registry));
         services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
         _configure(services);
         var host = services.BuildServiceProvider();
-        _hosts.Add(host);
-        return host.GetRequiredService<IWorkflowClient>();
+        try
+        {
+            host.GetRequiredService<IWorkflowStateRepository>();
+            var engine = host.GetRequiredService<IWorkflowClient>();
+            _hosts.Add(host);
+            return engine;
+        }
+        catch
+        {
+            host.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            throw;
+        }
     }
 
     /// <summary>Runs one recovery scan on the first host, as its background service would.</summary>
@@ -60,8 +75,9 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         await scanner.RecoverOnceAsync(CancellationToken.None);
     }
 
-    /// <summary>A repository on the shared store, as another process would have.</summary>
-    public IWorkflowStateRepository NewRepository() => _store.NewRepository();
+    /// <summary>SQLite uses its sole owner's repository; other profiles can open another.</summary>
+    public IWorkflowStateRepository NewRepository() => Profile == StoreProfiles.LocalSqlite
+        ? _repository ??= _store.NewRepository() : _store.NewRepository();
 
     /// <summary>Reads an instance directly from the shared store.</summary>
     /// <summary>
@@ -76,12 +92,16 @@ internal sealed class ConformanceCluster : IAsyncDisposable
     }
 
     public Task<WorkflowInstance?> GetInstanceAsync(string instanceId) =>
-        _store.NewRepository().GetWorkflowInstanceAsync(instanceId);
+        NewRepository().GetWorkflowInstanceAsync(instanceId);
 
     public async ValueTask DisposeAsync()
     {
         foreach (var host in _hosts)
+        {
+            // Drain admitted runs before deleting a file-backed profile.
+            await host.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
             await host.DisposeAsync();
+        }
         await _store.DisposeAsync();
     }
 }

@@ -68,58 +68,12 @@ public sealed class RunnableWakeUpTests
     // append can make the host claim the instance.
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task AnEventStoredElsewhereWakesAPostgreSqlHost()
-    {
-        var connectionString = PostgreSqlTestDatabase<RunnableWakeUpTests>.ConnectionString;
-        var time = new FakeTimeProvider();
-        var instanceId = await SuspendAsync(PostgreSqlServices(time, connectionString));
-        var store = new PostgreSqlWorkflowStateRepository(connectionString);
-        var scans = ScanCounter.Wrap(store);
-        var wakeUps = new ProbedWakeSource(store, scans);
-        var gone = await ListenersAsync(connectionString);
-        await using var host = await StartAsync(Services(time, scans.Store, wakeUps));
-        await ListenerAsync(connectionString, except: gone);
-        await wakeUps.WokenAsync(times: 1);
-        await scans.FinishedAsync(scans: 2);
-
-        await AppendApprovalAsync(store, instanceId);
-
-        await CompletedAsync(store, instanceId);
-        await store.DeleteWorkflowInstanceAsync(instanceId);
-    }
+    public Task AnEventStoredElsewhereWakesAPostgreSqlHost() => VerifyEventStoredElsewhereWakesHost(PostgreSqlTestDatabase<RunnableWakeUpTests>.ConnectionString);
 
     // The connection drops; the host polls, listens again a poll interval later, and is woken again.
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task APostgreSqlHostListensAgainAfterItsConnectionDrops()
-    {
-        var connectionString = PostgreSqlTestDatabase<RunnableWakeUpTests>.ConnectionString;
-        var time = new FakeTimeProvider();
-        var store = new PostgreSqlWorkflowStateRepository(connectionString);
-        var scans = ScanCounter.Wrap(store);
-        var wakeUps = new ProbedWakeSource(store, scans);
-        var gone = await ListenersAsync(connectionString);
-        await using var host = await StartAsync(Services(time, scans.Store, wakeUps));
-        var dropped = await ListenerAsync(connectionString, except: gone);
-        await using (var admin = new NpgsqlConnection(connectionString))
-        {
-            await admin.OpenAsync();
-            await using var terminate = new NpgsqlCommand("SELECT pg_terminate_backend(@Pid)", admin);
-            terminate.Parameters.AddWithValue("Pid", dropped);
-            await terminate.ExecuteScalarAsync();
-        }
-        await ListenerAsync(connectionString, except: [.. gone, dropped], time);
-        var instanceId = await SuspendAsync(PostgreSqlServices(time, connectionString));
-        // The polls the moving clock caused are not counted, so the scans are taken as over once the one the new
-        // connection's wake-up asked for has started and none has started for a while.
-        await wakeUps.WokenAsync(times: 2);
-        await scans.SettledAsync(after: wakeUps.ScansAtLastWake);
-
-        await AppendApprovalAsync(store, instanceId);
-
-        await CompletedAsync(store, instanceId);
-        await store.DeleteWorkflowInstanceAsync(instanceId);
-    }
+    public Task APostgreSqlHostListensAgainAfterItsConnectionDrops() => VerifyHostListensAfterConnectionDrops(PostgreSqlTestDatabase<RunnableWakeUpTests>.ConnectionString);
 
     // The process ID of the host's listening connection, once it is listening: one not in except, which holds the
     // connections of hosts that are gone or about to go. Moving the clock lets a host that lost its connection try again.
@@ -376,4 +330,54 @@ public sealed class RunnableWakeUpTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
+    private static async Task VerifyEventStoredElsewhereWakesHost(string connectionString)
+    {
+        var time = new FakeTimeProvider();
+        var instanceId = await SuspendAsync(PostgreSqlServices(time, connectionString));
+        var store = new PostgreSqlWorkflowStateRepository(connectionString);
+        var scans = ScanCounter.Wrap(store);
+        var wakeUps = new ProbedWakeSource(store, scans);
+        var gone = await ListenersAsync(connectionString);
+        await using var host = await StartAsync(Services(time, scans.Store, wakeUps));
+        await ListenerAsync(connectionString, except: gone);
+        await wakeUps.WokenAsync(times: 1);
+        await scans.FinishedAsync(scans: 2);
+
+        await AppendApprovalAsync(store, instanceId);
+
+        await CompletedAsync(store, instanceId);
+        await store.DeleteWorkflowInstanceAsync(instanceId);
+    }
+
+
+    private static async Task VerifyHostListensAfterConnectionDrops(string connectionString)
+    {
+        var time = new FakeTimeProvider();
+        var store = new PostgreSqlWorkflowStateRepository(connectionString);
+        var scans = ScanCounter.Wrap(store);
+        var wakeUps = new ProbedWakeSource(store, scans);
+        var gone = await ListenersAsync(connectionString);
+        await using var host = await StartAsync(Services(time, scans.Store, wakeUps));
+        var dropped = await ListenerAsync(connectionString, except: gone);
+        await using (var admin = new NpgsqlConnection(connectionString))
+        {
+            await admin.OpenAsync();
+            await using var terminate = new NpgsqlCommand("SELECT pg_terminate_backend(@Pid)", admin);
+            terminate.Parameters.AddWithValue("Pid", dropped);
+            await terminate.ExecuteScalarAsync();
+        }
+        await ListenerAsync(connectionString, except: [.. gone, dropped], time);
+        var instanceId = await SuspendAsync(PostgreSqlServices(time, connectionString));
+        // The polls the moving clock caused are not counted, so the scans are taken as over once the one the new
+        // connection's wake-up asked for has started and none has started for a while.
+        await wakeUps.WokenAsync(times: 2);
+        await scans.SettledAsync(after: wakeUps.ScansAtLastWake);
+
+        await AppendApprovalAsync(store, instanceId);
+
+        await CompletedAsync(store, instanceId);
+        await store.DeleteWorkflowInstanceAsync(instanceId);
+    }
+
+
 }

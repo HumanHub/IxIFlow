@@ -4,7 +4,7 @@ using IxIFlow.Tests.Infrastructure;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "durability")]
-public class WorkflowCommitTests
+public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowCommitTests>>
 {
     [Fact]
     public async Task CommitSnapshotsStateWithoutMutatingCaller()
@@ -78,24 +78,19 @@ public class WorkflowCommitTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlCommitHandlesConflictsAndLostAcknowledgments()
-    {
-        var repository = new SqlWorkflowStateRepository(
-            SqlTestDatabase<WorkflowCommitTests>.ConnectionString);
-        await VerifyFailureBeforeCommit(repository);
-        await VerifyLostAcknowledgment(repository);
-        await VerifyConflict(repository);
-    }
+    public Task SqlCommitHandlesConflictsAndLostAcknowledgments() => VerifyCommitConflictsAndLostAcknowledgments(new SqlWorkflowStateRepository(SqlTestDatabase<WorkflowCommitTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlCommitHandlesConflictsAndLostAcknowledgments()
+    public Task PostgreSqlCommitHandlesConflictsAndLostAcknowledgments() => VerifyCommitConflictsAndLostAcknowledgments(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<WorkflowCommitTests>.ConnectionString));
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteCommitHandlesConflictsAndLostAcknowledgments()
     {
-        var repository = new PostgreSqlWorkflowStateRepository(
-            PostgreSqlTestDatabase<WorkflowCommitTests>.ConnectionString);
-        await VerifyFailureBeforeCommit(repository);
-        await VerifyLostAcknowledgment(repository);
-        await VerifyConflict(repository);
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<WorkflowCommitTests>.ConnectionString);
+        await VerifyCommitConflictsAndLostAcknowledgments(repository);
     }
 
     private static async Task VerifyFailureBeforeCommit(IWorkflowStateRepository repository)
@@ -160,4 +155,12 @@ public class WorkflowCommitTests
         WorkflowDataJson = "{}",
         Status = WorkflowStatus.Running
     };
+    private static async Task VerifyCommitConflictsAndLostAcknowledgments(IWorkflowStateRepository repository)
+    {
+        await VerifyFailureBeforeCommit(repository);
+        await VerifyLostAcknowledgment(repository);
+        await VerifyConflict(repository);
+    }
+
+
 }

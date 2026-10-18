@@ -12,7 +12,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// the others, and an applied commit reports the instance's pending request.
 /// </summary>
 [Trait("Feature", "host")]
-public sealed class CancellationWatchTests
+public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<CancellationWatchTests>>
 {
     private static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan Tolerance = TimeSpan.FromSeconds(3);
@@ -168,6 +168,16 @@ public sealed class CancellationWatchTests
     [Trait("Spec", "B-10")]
     public Task PostgreSqlStoreReportsAPendingRequestWithACommit() =>
         VerifyCommitReportsPendingCancellation(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CancellationWatchTests>.ConnectionString));
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "B-10")]
+    public async Task SqliteStoreReportsAPendingRequestWithACommit()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<CancellationWatchTests>.ConnectionString);
+        await VerifyCommitReportsPendingCancellation(repository);
+    }
 
     private static async Task VerifyCommitReportsPendingCancellation(IWorkflowStateRepository repository)
     {

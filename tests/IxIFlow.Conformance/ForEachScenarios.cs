@@ -15,7 +15,7 @@ namespace IxIFlow.Tests.Conformance;
 public sealed class ForEachScenarios
 {
     [Theory]
-    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
     public async Task EachItemAsksAndWaitsForItsOwnAnswerOnAnyHost(string profile)
     {
         var asked = new Asked();

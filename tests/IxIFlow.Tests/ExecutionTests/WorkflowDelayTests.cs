@@ -10,7 +10,7 @@ using Microsoft.Extensions.Time.Testing;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "timers")]
-public sealed class WorkflowDelayTests
+public sealed class WorkflowDelayTests : IClassFixture<SqliteTestDatabase<WorkflowDelayTests>>
 {
     [Fact]
     public async Task WaitAllJoinsAnImmediateBranchAndADelayedBranch()
@@ -46,91 +46,11 @@ public sealed class WorkflowDelayTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task DueDelayRecoversFromSqlOnAnotherHost()
-    {
-        var connectionString = SqlTestDatabase<WorkflowDelayTests>.ConnectionString;
-        var repository = new SqlWorkflowStateRepository(connectionString);
-        var definition = Workflow.Create<DelayData>("SqlDurableDelay")
-            .Step<NoopActivity>()
-            .Delay(TimeSpan.FromSeconds(1))
-            .Step<MarkActivity>()
-            .Build();
-        string? instanceId = null;
-        try
-        {
-            using (var firstHost = Services(repository))
-            {
-                var started = await firstHost.GetRequiredService<IWorkflowClient>()
-                    .RunAsync(definition, new DelayData());
-                Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-                instanceId = started.InstanceId;
-            }
-
-            using var secondHost = Services(new SqlWorkflowStateRepository(connectionString));
-            await secondHost.GetRequiredService<IWorkflowVersionRegistry>()
-                .RegisterWorkflowAsync(definition);
-            await Task.Delay(1200);
-            using var scanner = new WorkflowRecoveryService(
-                secondHost.GetRequiredService<IServiceScopeFactory>(),
-                secondHost.GetRequiredService<IWorkflowStateRepository>(),
-                NullLogger<WorkflowRecoveryService>.Instance);
-            await scanner.RecoverOnceAsync(CancellationToken.None);
-
-            var saved = await repository.GetWorkflowInstanceAsync(instanceId);
-            Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-            Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<DelayData>(
-                saved.WorkflowDataJson)!.Runs);
-        }
-        finally
-        {
-            if (instanceId != null)
-                await repository.DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
+    public Task DueDelayRecoversFromSqlOnAnotherHost() => VerifyDueDelayRecoversOnAnotherHost(() => new SqlWorkflowStateRepository(SqlTestDatabase<WorkflowDelayTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task DueDelayRecoversFromPostgreSqlOnAnotherHost()
-    {
-        var connectionString = PostgreSqlTestDatabase<WorkflowDelayTests>.ConnectionString;
-        var repository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var definition = Workflow.Create<DelayData>("SqlDurableDelay")
-            .Step<NoopActivity>()
-            .Delay(TimeSpan.FromSeconds(1))
-            .Step<MarkActivity>()
-            .Build();
-        string? instanceId = null;
-        try
-        {
-            using (var firstHost = Services(repository))
-            {
-                var started = await firstHost.GetRequiredService<IWorkflowClient>()
-                    .RunAsync(definition, new DelayData());
-                Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-                instanceId = started.InstanceId;
-            }
-
-            using var secondHost = Services(new PostgreSqlWorkflowStateRepository(connectionString));
-            await secondHost.GetRequiredService<IWorkflowVersionRegistry>()
-                .RegisterWorkflowAsync(definition);
-            await Task.Delay(1200);
-            using var scanner = new WorkflowRecoveryService(
-                secondHost.GetRequiredService<IServiceScopeFactory>(),
-                secondHost.GetRequiredService<IWorkflowStateRepository>(),
-                NullLogger<WorkflowRecoveryService>.Instance);
-            await scanner.RecoverOnceAsync(CancellationToken.None);
-
-            var saved = await repository.GetWorkflowInstanceAsync(instanceId);
-            Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-            Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<DelayData>(
-                saved.WorkflowDataJson)!.Runs);
-        }
-        finally
-        {
-            if (instanceId != null)
-                await repository.DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
+    public Task DueDelayRecoversFromPostgreSqlOnAnotherHost() => VerifyDueDelayRecoversOnAnotherHost(() => new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<WorkflowDelayTests>.ConnectionString));
 
     [Fact]
     public async Task DelayParksWithoutAResumeEventAndCompletesAfterRestart()
@@ -235,4 +155,62 @@ public sealed class WorkflowDelayTests
             return Task.CompletedTask;
         }
     }
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public Task DueDelayRecoversFromSqliteOnAnotherHost() => VerifyDueDelayRecoversOnAnotherHost(() => new SqliteWorkflowStateRepository(SqliteTestDatabase<WorkflowDelayTests>.ConnectionString));
+
+    private static async Task VerifyDueDelayRecoversOnAnotherHost(Func<IWorkflowStateRepository> newRepository)
+    {
+        var repository = newRepository();
+        var definition = Workflow.Create<DelayData>("SqlDurableDelay")
+            .Step<NoopActivity>()
+            .Delay(TimeSpan.FromSeconds(1))
+            .Step<MarkActivity>()
+            .Build();
+        string? instanceId = null;
+        try
+        {
+            await using (var firstHost = Services(repository))
+            {
+                var started = await firstHost.GetRequiredService<IWorkflowClient>()
+                    .RunAsync(definition, new DelayData());
+                Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+                instanceId = started.InstanceId;
+            }
+
+            if (repository is IAsyncDisposable firstOwner)
+                await firstOwner.DisposeAsync();
+            repository = newRepository();
+            await using var secondHost = Services(repository);
+            await secondHost.GetRequiredService<IWorkflowVersionRegistry>()
+                .RegisterWorkflowAsync(definition);
+            await Task.Delay(1200);
+            using var scanner = new WorkflowRecoveryService(
+                secondHost.GetRequiredService<IServiceScopeFactory>(),
+                secondHost.GetRequiredService<IWorkflowStateRepository>(),
+                NullLogger<WorkflowRecoveryService>.Instance);
+            await scanner.RecoverOnceAsync(CancellationToken.None);
+
+            var saved = await repository.GetWorkflowInstanceAsync(instanceId);
+            Assert.Equal(WorkflowStatus.Completed, saved!.Status);
+            Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<DelayData>(
+                saved.WorkflowDataJson)!.Runs);
+        }
+        finally
+        {
+            try
+            {
+                if (instanceId != null)
+                    await repository.DeleteWorkflowInstanceAsync(instanceId);
+            }
+            finally
+            {
+                if (repository is IAsyncDisposable owner)
+                    await owner.DisposeAsync();
+            }
+        }
+    }
+
+
 }

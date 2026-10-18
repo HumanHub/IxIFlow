@@ -20,7 +20,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// </summary>
 [Trait("Feature", "timers")]
 [Trait("Spec", "C-03")]
-public sealed class StoreClockTests
+public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreClockTests>>
 {
     private static readonly DateTimeOffset Start = new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
 
@@ -454,6 +454,16 @@ public sealed class StoreClockTests
     public Task PostgreSqlStoreRefusesEventsThatArriveAfterTheirDeadline() =>
         VerifyLateArrivals(PostgreSqlStore.Value);
 
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-03")]
+    public async Task SqliteStoreRefusesEventsThatArriveAfterTheirDeadline()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<StoreClockTests>.ConnectionString);
+        await VerifyLateArrivals(repository);
+    }
+
     private static async Task VerifyLateArrivals(IWorkflowStateRepository store)
     {
         var instanceId = Guid.NewGuid().ToString("N");
@@ -535,6 +545,21 @@ public sealed class StoreClockTests
             }
         });
 
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-03")]
+    public async Task SqliteStoreFindsDeadlinesDueWithTheEventsReceivedBeforeThem()
+    {
+        var time = new FakeTimeProvider(Start);
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<StoreClockTests>.ConnectionString, time);
+        await VerifyDuePage(repository, TimeSpan.FromMilliseconds(500), _ =>
+        {
+            time.Advance(TimeSpan.FromMilliseconds(700));
+            return Task.CompletedTask;
+        });
+    }
+
     private static async Task VerifyDuePage(IWorkflowStateRepository store, TimeSpan shortDeadline,
         Func<string, Task> passShortDeadline)
     {
@@ -573,88 +598,12 @@ public sealed class StoreClockTests
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-03")]
-    public async Task SqlStoreReadsItsTimeOnceTheInstanceLockIsHeld()
-    {
-        var store = SqlStore.Value;
-        var instanceId = Guid.NewGuid().ToString("N");
-        try
-        {
-            await CommitAsync(store, instanceId, null,
-                new OpenedWait("approval", WaitKind.Event, "approval", "Approval", TimeSpan.FromHours(1)));
-
-            // Another transaction holds the instance row while a read and an append wait for it.
-            await using var holder = new SqlConnection(SqlTestDatabase<StoreClockTests>.ConnectionString);
-            await holder.OpenAsync();
-            await using var transaction = holder.BeginTransaction();
-            await using (var lockRow = new SqlCommand(
-                             "SELECT InstanceId FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK) " +
-                             "WHERE InstanceId = @InstanceId", holder, transaction))
-            {
-                lockRow.Parameters.AddWithValue("@InstanceId", instanceId);
-                await lockRow.ExecuteScalarAsync();
-            }
-            var read = store.GetPendingEventsAsync(instanceId, 0, 10);
-            var append = store.AppendEventAsync(Event(instanceId, "held", key: "approval"));
-            await Task.Delay(TimeSpan.FromMilliseconds(500));
-            Assert.False(read.IsCompleted || append.IsCompleted);
-            DateTime releasedAt;
-            await using (var clock = new SqlCommand("SELECT SYSUTCDATETIME()", holder, transaction))
-                releasedAt = (DateTime)(await clock.ExecuteScalarAsync())!;
-            await transaction.CommitAsync();
-
-            // Both took the store's time after the lock was theirs, not when they started waiting.
-            Assert.True((await read).StoreTimeUtc >= releasedAt);
-            Assert.Equal(EventAppendStatus.Stored, (await append).Status);
-            Assert.True((await store.GetEventAsync(instanceId, "held"))!.ReceivedAtUtc >= releasedAt);
-        }
-        finally
-        {
-            await store.DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
+    public Task SqlStoreReadsItsTimeOnceTheInstanceLockIsHeld() => VerifyStoreTimeAfterInstanceLock(_ => SqlStore.Value, () => new SqlConnection(SqlTestDatabase<StoreClockTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "D-03")]
-    public async Task PostgreSqlStoreReadsItsTimeOnceTheInstanceLockIsHeld()
-    {
-        var store = PostgreSqlStore.Value;
-        var instanceId = Guid.NewGuid().ToString("N");
-        try
-        {
-            await CommitAsync(store, instanceId, null,
-                new OpenedWait("approval", WaitKind.Event, "approval", "Approval", TimeSpan.FromHours(1)));
-
-            // Another transaction holds the instance row while a read and an append wait for it.
-            await using var holder = new NpgsqlConnection(PostgreSqlTestDatabase<StoreClockTests>.ConnectionString);
-            await holder.OpenAsync();
-            await using var transaction = await holder.BeginTransactionAsync();
-            await using (var lockRow = new NpgsqlCommand(
-                             "SELECT instance_id FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId " +
-                             "FOR UPDATE", holder, transaction))
-            {
-                lockRow.Parameters.AddWithValue("InstanceId", instanceId);
-                await lockRow.ExecuteScalarAsync();
-            }
-            var read = store.GetPendingEventsAsync(instanceId, 0, 10);
-            var append = store.AppendEventAsync(Event(instanceId, "held", key: "approval"));
-            await Task.Delay(TimeSpan.FromMilliseconds(500));
-            Assert.False(read.IsCompleted || append.IsCompleted);
-            DateTime releasedAt;
-            await using (var clock = new NpgsqlCommand("SELECT clock_timestamp()", holder, transaction))
-                releasedAt = (DateTime)(await clock.ExecuteScalarAsync())!;
-            await transaction.CommitAsync();
-
-            // Both took the store's time after the lock was theirs, not when they started waiting.
-            Assert.True((await read).StoreTimeUtc >= releasedAt);
-            Assert.Equal(EventAppendStatus.Stored, (await append).Status);
-            Assert.True((await store.GetEventAsync(instanceId, "held"))!.ReceivedAtUtc >= releasedAt);
-        }
-        finally
-        {
-            await store.DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
+    public Task PostgreSqlStoreReadsItsTimeOnceTheInstanceLockIsHeld() => VerifyStoreTimeAfterInstanceLock(_ => PostgreSqlStore.Value, () => new NpgsqlConnection(PostgreSqlTestDatabase<StoreClockTests>.ConnectionString));
 
     [Fact]
     [Trait("Spec", "D-03")]
@@ -679,6 +628,21 @@ public sealed class StoreClockTests
     [Trait("Spec", "D-03")]
     public Task PostgreSqlStoreArmsAReplyWaitOnce() =>
         VerifyArming(PostgreSqlStore.Value, () => Task.Delay(TimeSpan.FromMilliseconds(50)));
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "D-03")]
+    public async Task SqliteStoreArmsAReplyWaitOnce()
+    {
+        var time = new FakeTimeProvider(Start);
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<StoreClockTests>.ConnectionString, time);
+        await VerifyArming(repository, () =>
+        {
+            time.Advance(TimeSpan.FromMilliseconds(50));
+            return Task.CompletedTask;
+        });
+    }
 
     private static async Task VerifyArming(IWorkflowStateRepository store, Func<Task> letTimePass)
     {
@@ -1032,4 +996,75 @@ public sealed class StoreClockTests
             await gate.Release.Task;
         }
     }
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteStoreReadsItsTimeOnceTheInstanceLockIsHeld()
+    {
+        var time = new FakeTimeProvider(Start);
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<StoreClockTests>.ConnectionString, time);
+        await VerifyStoreTimeAfterInstanceLock(_ => repository, () => new Microsoft.Data.Sqlite.SqliteConnection(SqliteTestDatabase<StoreClockTests>.ConnectionString), time);
+    }
+
+    private static async Task VerifyStoreTimeAfterInstanceLock(Func<TimeProvider, IWorkflowStateRepository> newStore, Func<System.Data.Common.DbConnection> newConnection, FakeTimeProvider? time = null)
+    {
+        var store = newStore(time ?? TimeProvider.System);
+        var instanceId = Guid.NewGuid().ToString("N");
+        try
+        {
+            await CommitAsync(store, instanceId, null,
+                new OpenedWait("approval", WaitKind.Event, "approval", "Approval", TimeSpan.FromHours(1)));
+
+            // Another transaction holds the instance row while a read and an append wait for it.
+            await using var holder = newConnection();
+            await holder.OpenAsync();
+            await using var transaction = holder is Microsoft.Data.Sqlite.SqliteConnection sqlite
+                ? sqlite.BeginTransaction(deferred: false) : await holder.BeginTransactionAsync();
+            await using (var lockRow = holder.CreateCommand())
+            {
+                lockRow.Transaction = transaction;
+                lockRow.CommandText = holder is SqlConnection
+                    ? "SELECT InstanceId FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK) WHERE InstanceId = @InstanceId"
+                    : holder is NpgsqlConnection
+                        ? "SELECT instance_id FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE"
+                        : "SELECT instance_id FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId";
+                var parameter = lockRow.CreateParameter();
+                parameter.ParameterName = holder is NpgsqlConnection ? "InstanceId" : "@InstanceId";
+                parameter.Value = instanceId;
+                lockRow.Parameters.Add(parameter);
+                await lockRow.ExecuteScalarAsync();
+            }
+            var read = time == null ? store.GetPendingEventsAsync(instanceId, 0, 10)
+                : Task.Run(() => store.GetPendingEventsAsync(instanceId, 0, 10));
+            var append = time == null ? store.AppendEventAsync(Event(instanceId, "held", key: "approval"))
+                : Task.Run(() => store.AppendEventAsync(Event(instanceId, "held", key: "approval")));
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+            Assert.False(read.IsCompleted || append.IsCompleted);
+            DateTime releasedAt;
+            if (time != null)
+            {
+                time.Advance(TimeSpan.FromMilliseconds(500));
+                releasedAt = time.GetUtcNow().UtcDateTime;
+            }
+            else
+            {
+                await using var clock = holder.CreateCommand();
+                clock.Transaction = transaction;
+                clock.CommandText = holder is SqlConnection ? "SELECT SYSUTCDATETIME()" : "SELECT clock_timestamp()";
+                releasedAt = (DateTime)(await clock.ExecuteScalarAsync())!;
+            }
+            await transaction.CommitAsync();
+
+            // Both took the store's time after the lock was theirs, not when they started waiting.
+            Assert.True((await read).StoreTimeUtc >= releasedAt);
+            Assert.Equal(EventAppendStatus.Stored, (await append).Status);
+            Assert.True((await store.GetEventAsync(instanceId, "held"))!.ReceivedAtUtc >= releasedAt);
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+
 }
