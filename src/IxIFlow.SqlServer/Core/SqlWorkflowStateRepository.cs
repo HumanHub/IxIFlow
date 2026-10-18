@@ -45,10 +45,10 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     private const string ServerRowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation";
 
     // Lock and revalidate the instance before its lease and tombstone, including absent-key admission.
-    internal override DeletePlan Deletion => new("""
+    internal override string DeleteRevalidationSql => """
         SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
         WHERE InstanceId = @InstanceId
-        """);
+        """;
     internal override object LeaseParameters(string instanceId, DateTime now) => new { InstanceId = instanceId };
     internal override object? At(DateTime? value) => value;
     internal override DbType? TimeDbType => DbType.DateTime2;
@@ -252,11 +252,12 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             var child = start.Instance!;
             await connection.ExecuteAsync("""
                 INSERT INTO dbo.IxIFlowWorkflowInstances
-                    (InstanceId, WorkflowName, Status, CorrelationId, RunnableAtUtc, StateJson, Revision, ParentInstanceId)
-                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @Now, @StateJson, 1, @ParentInstanceId)
+                    (InstanceId, Incarnation, WorkflowName, Status, CorrelationId, RunnableAtUtc, StateJson, Revision, ParentInstanceId)
+                VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @Now, @StateJson, 1, @ParentInstanceId)
                 """, WithTimes(new
             {
                 child.InstanceId,
+                Incarnation = Guid.NewGuid(),
                 child.WorkflowName,
                 Status = child.Status.ToString(),
                 child.CorrelationId,
@@ -431,9 +432,11 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             """,
         // The instance row is locked before the lease row, in the same order as a commit. No range
         // lock: a missing row is not a running instance, and a range lock would block other claims.
+        // Lock terminal rows too, so a claim reads any tombstone after concurrent deletion finishes.
         Statement.Running => """
-            SELECT COUNT(*) FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
-            WHERE InstanceId = @InstanceId AND Status = 'Running'
+            SELECT COUNT(CASE WHEN Status = 'Running' THEN 1 END)
+            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
+            WHERE InstanceId = @InstanceId
             """,
         Statement.ClaimLease => """
             MERGE dbo.IxIFlowWorkflowLeases WITH (UPDLOCK, HOLDLOCK) AS target

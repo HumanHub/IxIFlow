@@ -21,6 +21,19 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     private readonly SqliteHostOwnership _ownership;
     private volatile bool _disposed;
 
+    static SqliteWorkflowStateRepository() => SqlMapper.AddTypeHandler(new GuidTypeHandler());
+
+    private sealed class GuidTypeHandler : SqlMapper.TypeHandler<Guid>
+    {
+        public override Guid Parse(object value) => value is Guid guid ? guid : Guid.Parse((string)value);
+
+        public override void SetValue(IDbDataParameter parameter, Guid value)
+        {
+            parameter.DbType = DbType.Guid;
+            parameter.Value = value;
+        }
+    }
+
     public SqliteWorkflowStateRepository(string connectionString, TimeProvider? timeProvider = null,
         OutboxSettings? outboxSettings = null) : base(outboxSettings)
     {
@@ -51,7 +64,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     }
 
     // BEGIN IMMEDIATE already excludes other writers throughout deletion.
-    internal override DeletePlan Deletion => new();
+    internal override string? DeleteRevalidationSql => null;
     internal override void ThrowIfUnavailable() => ObjectDisposedException.ThrowIf(_disposed, typeof(SqliteWorkflowStateRepository));
     internal override bool UsesLocalClock => true;
     internal override DateTime LocalNow() => _time.GetUtcNow().UtcDateTime;
@@ -212,12 +225,13 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
+                    (instance_id, incarnation, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
                      parent_instance_id)
-                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @Now, @Payload, 1, @ParentInstanceId)
+                VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @Now, @Payload, 1, @ParentInstanceId)
                 """, children.Select(child => new
         {
             child.Instance!.InstanceId,
+            Incarnation = Guid.NewGuid(),
             child.Instance!.WorkflowName,
             Status = child.Instance!.Status.ToString(),
             child.Instance!.CorrelationId,
@@ -590,7 +604,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     await connection.ExecuteAsync("""
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
-            incarnation TEXT NOT NULL DEFAULT (lower(hex(randomblob(16)))),
+            incarnation TEXT NOT NULL,
             workflow_name TEXT COLLATE BINARY NOT NULL,
             status TEXT COLLATE BINARY NOT NULL,
             correlation_id TEXT COLLATE BINARY NULL,

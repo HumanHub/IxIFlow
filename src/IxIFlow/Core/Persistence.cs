@@ -160,6 +160,10 @@ public static class WorkflowStoreRules
     }
 }
 
+/// <summary>
+/// Stores workflow instances. Every insert allocates a fresh incarnation in the store, and every
+/// instance read round-trips that incarnation separately from serialized state.
+/// </summary>
 public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 {
     /// <summary>
@@ -220,9 +224,10 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 
     /// <summary>
     /// Atomically saves the commit's payload at its expected revision + 1. Revision zero also
-    /// represents an absent instance. Repeating a commit ID with the same payload returns its
-    /// original receipt, even after subsequent commits. A leased commit from another incarnation,
-    /// from an epoch older than the
+    /// represents an absent instance. Every insert, including a child start, allocates a fresh
+    /// incarnation in the store, ignoring caller values. The result returns the written row's incarnation.
+    /// Repeating a commit ID with the same payload returns its original receipt, even after subsequent
+    /// commits. A leased commit from another incarnation, from an epoch older than the
     /// instance's latest lease, or from a lease that is no longer active while the instance runs,
     /// returns <see cref="WorkflowCommitStatus.StaleEpoch"/>. A store that knows nothing was
     /// written may return <see cref="WorkflowCommitStatus.Retry"/>; any exception means the
@@ -232,11 +237,11 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 
     /// <summary>
     /// Acquires an absent or expired execution lease for one instance. The grant's epoch is greater
-    /// than every epoch granted for the same incarnation before. Deletion removes the lease, so a
-    /// recreated instance starts at epoch one. When the previous lease expired without
+    /// than every epoch granted since the ID's lease row was last deleted. When the previous lease expired without
     /// being released while the instance was <see cref="WorkflowStatus.Running"/>, its owner lost the
     /// instance with work in flight, and the grant's crash count is one higher, in the same atomic
-    /// step. Returns null while another owner holds the lease.
+    /// step. Returns null while another owner holds the lease or the ID has a live tombstone,
+    /// checked atomically with the claim. An absent ID without a live tombstone may be claimed.
     /// </summary>
     Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration);
@@ -249,12 +254,15 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token);
 
     /// <summary>
-    ///     Save workflow instance state
+    /// Saves revision-zero state. An insert allocates a fresh incarnation in the store; an update
+    /// preserves the existing one. Sets the supplied instance's Incarnation to the row's value.
     /// </summary>
     Task SaveWorkflowInstanceAsync(WorkflowInstance instance);
 
     /// <summary>
     /// The whole instance: its trunk and every part of its state, read at one revision (A-08).
+    /// Every instance read, including summaries, queries and child lists, must round-trip the row's
+    /// store-allocated Incarnation separately from serialized state.
     /// </summary>
     Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId);
 
@@ -300,7 +308,7 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     /// Deletes an instance and its inbox, waits and receipts. A child whose parent still waits for it ends
     /// that wait as terminated, in the same step (D-17). Leaves a tombstone for the supplied retention
     /// period, or 90 days by default. Pass the same TombstoneRetention used for automatic retention.
-    /// Deleting an unknown or already removed ID does not create or extend a tombstone.
+    /// Deleting an unknown or already removed ID still removes its lease but does not create or extend a tombstone.
     /// </summary>
     Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null);
 }
@@ -425,6 +433,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
         {
             var now = Now;
+            if (ActiveTombstone(instanceId, now) != null)
+                return Task.FromResult<ExecutionLeaseGrant?>(null);
             var exists = _leases.TryGetValue(instanceId, out var lease);
             if (exists && lease.ExpiresAtUtc > now)
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
@@ -475,9 +485,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             RefuseRemoved(commit.InstanceId, Now);
             var key = (commit.InstanceId, commit.CommitId);
             var revision = _instances.TryGetValue(commit.InstanceId, out var stored) ? stored.Revision : 0;
+            var incarnation = stored?.Incarnation ?? Guid.Empty;
             // Check before receipts too: an old terminal or parking replay cannot borrow a new receipt.
             if (commit.Epoch != 0 && stored != null && stored.Incarnation != commit.Incarnation)
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision) { Incarnation = incarnation });
             var owns = OwnsInstance(commit);
             if (_commits.TryGetValue(key, out var receipt))
             {
@@ -486,25 +497,25 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
                 // A terminal or parking commit released the lease; only a running owner must still hold it.
                 if (snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks)
-                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision) { Incarnation = incarnation });
                 // The same commit gets the same answer, including arrivals it has not read.
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
-                    PendingCancellation(commit.InstanceId), commit.Parks && !owns, Unread(commit)));
+                    PendingCancellation(commit.InstanceId), commit.Parks && !owns, Unread(commit)) { Incarnation = incarnation });
             }
 
             if (!owns)
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision) { Incarnation = incarnation });
             // An event this commit settles must still be pending.
             if (commit.Settlements.Any(settlement =>
                     !_events.TryGetValue((commit.InstanceId, settlement.EventId), out var pending) ||
                     pending.Event.Outcome != EventOutcome.Pending))
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, revision));
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, revision) { Incarnation = incarnation });
             if (revision != commit.ExpectedRevision ||
                 ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or
                     WorkflowStatus.TimedOut) &&
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision) { Incarnation = incarnation });
             foreach (var child in commit.ChildStarts)
                 RefuseRemoved(child.ChildInstanceId, Now);
             // A child's ID is new; a commit that names an existing instance changes nothing.
@@ -565,7 +576,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 parts.Remove(deleted);
             foreach (var part in commit.Parts)
                 parts[part.Key] = part.Json;
-            snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
+            snapshot.Incarnation = stored?.Incarnation ?? Guid.NewGuid();
             _instances[commit.InstanceId] = snapshot;
             RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
@@ -612,7 +623,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 Append(ToEvent(notice), now) is { Status: EventAppendStatus.Stored, MadeRunnable: true })
                 madeRunnable.Add(notice.ParentInstanceId);
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
-                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable));
+                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable) { Incarnation = snapshot.Incarnation });
         }
     }
 
@@ -834,8 +845,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 return Task.FromResult<WorkflowInstance?>(null);
             if (instance.Revision == 0 && !ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson))
                 return Task.FromResult<WorkflowInstance?>(instance);
-            return Task.FromResult<WorkflowInstance?>(CheckpointParts.Summarize(JsonSerializer.Serialize(instance),
-                _parts.GetValueOrDefault(instanceId)?.GetValueOrDefault(CheckpointParts.DataKey), instance.Revision));
+            var summary = CheckpointParts.Summarize(JsonSerializer.Serialize(instance),
+                _parts.GetValueOrDefault(instanceId)?.GetValueOrDefault(CheckpointParts.DataKey), instance.Revision);
+            summary.Incarnation = instance.Incarnation;
+            return Task.FromResult<WorkflowInstance?>(summary);
         }
     }
 
@@ -892,6 +905,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 DeleteInstance(instanceId);
                 _tombstones[instanceId] = new WorkflowTombstone(instanceId, now, now + period);
             }
+            else
+                _leases.Remove(instanceId);
         }
         return Task.CompletedTask;
     }
@@ -925,9 +940,11 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     {
         if (instance.Revision == 0 && !ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson))
             return instance;
-        return CheckpointParts.Assemble(JsonSerializer.Serialize(instance),
+        var snapshot = CheckpointParts.Assemble(JsonSerializer.Serialize(instance),
             (_parts.GetValueOrDefault(instance.InstanceId) ?? new Dictionary<string, string>())
             .Select(part => new CheckpointPart(part.Key, part.Value)), instance.Revision);
+        snapshot.Incarnation = instance.Incarnation;
+        return snapshot;
     }
 
     private static void ValidateLeaseArguments(string instanceId, string token, TimeSpan duration)
