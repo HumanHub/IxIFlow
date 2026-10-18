@@ -24,7 +24,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>SQL steps in the shared protocol. Optional steps return null.</summary>
     internal enum Statement
     {
-        RetentionLock, RetentionCandidates, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
+        RetentionLock, RetentionCandidates, RetentionBlockedPublishers, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher,
         Cancellation, Cancellations, Runnable, Running, ClaimLease, RenewLease, ReleaseLease,
@@ -227,8 +227,9 @@ public abstract partial class RelationalWorkflowStateRepository :
     private static Task CompleteAsync(DbTransaction? transaction) => transaction?.CommitAsync() ?? Task.CompletedTask;
 
     private Task ExecuteOptionalAsync(DbConnection connection, DbTransaction? transaction,
-        Statement statement, object values) => Sql(statement) is { } sql
-            ? connection.ExecuteAsync(RequireSql(statement, sql), values, transaction) : Task.CompletedTask;
+        Statement statement, object? values = null, CancellationToken cancellationToken = default) => Sql(statement) is { } sql
+            ? connection.ExecuteAsync(new CommandDefinition(RequireSql(statement, sql), values, transaction,
+                cancellationToken: cancellationToken)) : Task.CompletedTask;
 
     private async Task<(T? Row, DateTime Now)> LockAsync<T>(DbConnection connection, DbTransaction transaction,
         Statement statement, string instanceId, bool clock = true, CancellationToken cancellationToken = default)
@@ -889,8 +890,10 @@ public abstract partial class RelationalWorkflowStateRepository :
         return await AssembleAsync(connection, rows.ToArray(), transaction, $"AND {predicate}", new { Value = value });
     }
 
-    public async Task DeleteWorkflowInstanceAsync(string instanceId)
+    public async Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
     {
+        var period = tombstoneRetention ?? RetentionSettings.Default.TombstoneRetention;
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(period, TimeSpan.Zero);
         await EnsureSchemaAsync();
         await ExecuteOperationAsync(Operation.Delete, async () =>
         {
@@ -929,7 +932,15 @@ public abstract partial class RelationalWorkflowStateRepository :
                 }
                 // A provider that rechecks the row leaves an instance inserted after that read whole.
                 if (json != null || deletion.RevalidateStateSql == null)
+                {
+                    if (json != null)
+                    {
+                        var removedAt = await OutboxNowAsync(connection, transaction);
+                        await connection.ExecuteAsync(RequiredSql(Statement.WriteTombstone),
+                            WithTimes(parameters, ("Now", removedAt), ("Expires", removedAt + period)), transaction);
+                    }
                     await connection.ExecuteAsync(RequiredSql(Statement.DeleteRows), parameters, transaction);
+                }
                 await transaction.CommitAsync();
                 return true;
             }

@@ -34,6 +34,13 @@ public partial class InMemoryWorkflowStateRepository
                 .Take(batchSize).ToArray();
             foreach (var row in expired)
                 _tombstones.Remove(row.InstanceId);
+            var blocked = _deliveries.Values.Where(d => d.Status == OutboxDeliveryStatus.Pending &&
+                    d.FirstAttemptAtUtc == null && _instances.TryGetValue(d.Event.InstanceId, out var instance) &&
+                    WorkflowStoreRules.IsTerminal(instance.Status) &&
+                    _endedAt.TryGetValue(instance.InstanceId, out var ended) && now - ended >= finishedRetention &&
+                    !_instances.Values.Any(child => child.ParentInstanceId == instance.InstanceId && !WorkflowStoreRules.IsTerminal(child.Status)))
+                .GroupBy(d => d.PublisherName, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.Select(d => d.Event.InstanceId).Distinct(StringComparer.Ordinal).Count(), StringComparer.Ordinal);
             var candidates = _instances.Values.Where(i => WorkflowStoreRules.IsTerminal(i.Status) &&
                     _endedAt.TryGetValue(i.InstanceId, out var ended) && now - ended >= finishedRetention &&
                     !_deliveries.Values.Any(d => d.Event.InstanceId == i.InstanceId && d.Status == OutboxDeliveryStatus.Pending) &&
@@ -48,7 +55,7 @@ public partial class InMemoryWorkflowStateRepository
                 DeleteInstance(id);
                 _tombstones[id] = new WorkflowTombstone(id, now, now + tombstoneRetention);
             }
-            return Task.FromResult(new RetentionResult(candidates.Length, expired.Length));
+            return Task.FromResult(new RetentionResult(candidates.Length, expired.Length) { SkippedUnattemptedByPublisher = blocked });
         }
     }
 }

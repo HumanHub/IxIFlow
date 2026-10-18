@@ -125,10 +125,10 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 {
     /// <summary>Runs one bounded retention pass; pending deliveries and unfinished children keep their instance.</summary>
     Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
-        CancellationToken cancellationToken = default) => Task.FromResult(new RetentionResult(0, 0));
+        CancellationToken cancellationToken = default);
 
     /// <summary>The active retention tombstone, or null when the ID is not reserved.</summary>
-    Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) => Task.FromResult<WorkflowTombstone?>(null);
+    Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId);
 
     /// <summary>
     /// Records a cancellation request outside the revisioned checkpoint so a remote
@@ -254,9 +254,11 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 
     /// <summary>
     /// Deletes an instance and its inbox, waits and receipts. A child whose parent still waits for it ends
-    /// that wait as terminated, in the same step (D-17).
+    /// that wait as terminated, in the same step (D-17). Leaves a tombstone for the supplied retention
+    /// period, or 90 days by default. Pass the same TombstoneRetention used for automatic retention.
+    /// Deleting an unknown or already removed ID does not create or extend a tombstone.
     /// </summary>
-    Task DeleteWorkflowInstanceAsync(string instanceId);
+    Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null);
 }
 
 /// <summary>
@@ -808,10 +810,19 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 .Where(instance => instance.ParentInstanceId == parentInstanceId).Select(SnapshotStructured).ToArray());
     }
 
-    public Task DeleteWorkflowInstanceAsync(string instanceId)
+    public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
     {
+        var period = tombstoneRetention ?? RetentionSettings.Default.TombstoneRetention;
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(period, TimeSpan.Zero);
         lock (_claimLock)
-            DeleteInstance(instanceId);
+        {
+            if (_instances.ContainsKey(instanceId))
+            {
+                var now = Now;
+                DeleteInstance(instanceId);
+                _tombstones[instanceId] = new WorkflowTombstone(instanceId, now, now + period);
+            }
+        }
         return Task.CompletedTask;
     }
 

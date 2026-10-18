@@ -14,7 +14,9 @@ public enum RetentionScenario
 {
     RemovalAfterRetention, PendingDeliveriesKeepInstance, DependentRowsGone, TombstoneRefusals,
     TombstoneExpiry, ConcurrentPurge, AwaitAfterFinish, AwaitAfterRemoval, RunningChildKeepsParent,
-    ChildCompletionSurvivesRemoval, BoundedAndCancelled, StoreClockAndReplay, ChildStartRefusesTombstone, DeliveredOutboxRowsGone
+    ChildCompletionSurvivesRemoval, BoundedAndCancelled, StoreClockAndReplay, ChildStartRefusesTombstone, DeliveredOutboxRowsGone,
+    ExplicitDeleteLeavesTombstone, DecoratedStoreKeepsRetention, UpdateKeepsParent, EpochSurvivesReuse,
+    PurgeMeetsStart, PurgeMeetsChildStart, PurgeMeetsEvent
 }
 
 internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
@@ -23,6 +25,12 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
     private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
     private static readonly TimeSpan Tombstones = TimeSpan.FromDays(90);
     private readonly List<string> _ids = [];
+    private readonly List<string> _publishers = [];
+    private Task RegisterPublisher(string name)
+    {
+        _publishers.Add(name);
+        return Outbox.RegisterPublisherAsync(name, [OutboxEvent.WorkflowCompleted]);
+    }
     private IWorkflowOutbox Outbox => Assert.IsAssignableFrom<IWorkflowOutbox>(store);
     private Task<RetentionResult> Purge(int size = 100, CancellationToken token = default) =>
         store.PurgeAsync(Retention, Tombstones, size, token);
@@ -79,11 +87,19 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
             case RetentionScenario.StoreClockAndReplay: await StoreClockAndReplay(); break;
             case RetentionScenario.ChildStartRefusesTombstone: await ChildStartRefusesTombstone(); break;
             case RetentionScenario.DeliveredOutboxRowsGone: await DeliveredOutboxRowsGone(); break;
+            case RetentionScenario.ExplicitDeleteLeavesTombstone: await ExplicitDeleteLeavesTombstone(); break;
+            case RetentionScenario.DecoratedStoreKeepsRetention: await DecoratedStoreKeepsRetention(); break;
+            case RetentionScenario.UpdateKeepsParent: await UpdateKeepsParent(); break;
+            case RetentionScenario.EpochSurvivesReuse: await EpochSurvivesReuse(); break;
+            case RetentionScenario.PurgeMeetsStart:
+            case RetentionScenario.PurgeMeetsChildStart:
+            case RetentionScenario.PurgeMeetsEvent: await PurgeMeetsWriter(scenario); break;
             default: throw new ArgumentOutOfRangeException(nameof(scenario));
         }
         }
         finally
         {
+            foreach (var publisher in _publishers) await Outbox.UnregisterPublisherAsync(publisher);
             foreach (var id in _ids) await store.DeleteWorkflowInstanceAsync(id);
         }
     }
@@ -107,12 +123,16 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
     private async Task PendingDeliveriesKeepInstance()
     {
         var publisher = Guid.NewGuid().ToString("N");
-        await Outbox.RegisterPublisherAsync(publisher, [OutboxEvent.WorkflowCompleted]);
+        await RegisterPublisher(publisher);
         var instance = await Complete();
         await Advance(TimeSpan.FromDays(31));
-        Assert.Equal(0, (await Purge()).InstancesRemoved); // Unleased pending delivery.
+        var skipped = await Purge();
+        Assert.Equal(0, skipped.InstancesRemoved);
+        Assert.Equal(1, skipped.SkippedUnattemptedByPublisher[publisher]);
         var delivery = Assert.Single(await Outbox.ClaimDeliveriesAsync(publisher, "leased", TimeSpan.FromHours(1), 100));
-        Assert.Equal(0, (await Purge()).InstancesRemoved);
+        var attempted = await Purge();
+        Assert.Equal(0, attempted.InstancesRemoved);
+        Assert.DoesNotContain(publisher, attempted.SkippedUnattemptedByPublisher.Keys);
         Assert.NotNull(await store.GetWorkflowInstanceAsync(instance.InstanceId));
         Assert.Null(await store.GetTombstoneAsync(instance.InstanceId));
         Assert.NotNull(await Outbox.GetDeliveryAsync(delivery.Event.Id, publisher));
@@ -188,10 +208,19 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var start = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(definition,
             new ResultData(), new WorkflowOptions { InstanceId = instance.InstanceId }));
         Assert.Equal(WorkflowErrorKind.InstanceRemoved, start.Kind);
-        var refused = await client.ResumeAsync(instance.InstanceId, null, new ResultData(), "late");
-        Assert.Equal(EventOutcome.Closed, refused.Event!.Outcome);
-        Assert.Equal(EventRejection.InstanceFinished, refused.Event.Rejection);
-        Assert.Equal(WorkflowExecutionStatus.Removed, refused.Status);
+        await Refused(() => client.StartAsync(definition, new ResultData(), new WorkflowOptions { InstanceId = instance.InstanceId }));
+        await Refused(() => client.ResumeAsync(instance.InstanceId, new ResultData()));
+        await Refused(() => client.ResumeAsync(instance.InstanceId, "key", new ResultData()));
+        await Refused(() => client.ResumeAsync(instance.InstanceId, null, new ResultData(), "late"));
+        await Refused(() => client.ReplyAsync(ReplyToken.Create(instance.InstanceId, "old-wait"), new ResultData()));
+        await Refused(() => client.ReplyAsync(ReplyToken.Create(instance.InstanceId, "old-wait"), new ResultData(), "reply"));
+        await Refused(() => client.CancelAsync(instance.InstanceId, new CancellationReason { ReasonCode = "operator" }));
+        await Refused(() => client.RecoverAsync(instance.InstanceId));
+        await Refused(() => client.ReleaseAsync(instance.InstanceId));
+        await Refused(() => client.ResolveAsync(instance.InstanceId, "activity", ActivityResolution.Completed(new Dictionary<string, object?>())));
+
+        static async Task Refused(Func<Task> action) => Assert.Equal(WorkflowErrorKind.InstanceRemoved,
+            (await Assert.ThrowsAsync<WorkflowEngineException>(action)).Kind);
     }
 
     private static WorkflowInstance InstanceWithId(string id) => new()
@@ -263,6 +292,20 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         await Purge();
         await using var services = Services();
         var client = services.GetRequiredService<IWorkflowClient>();
+        Assert.Equal(WorkflowExecutionStatus.Removed, await client.GetStatusAsync(instance.InstanceId));
+        var trace = await client.GetTraceAsync(instance.InstanceId);
+        Assert.Empty(trace);
+        Assert.True(trace.IsRemoved);
+        foreach (var kind in new WaitKind?[] { null, WaitKind.Event, WaitKind.Child })
+        {
+            var waits = await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: instance.InstanceId, Kind: kind));
+            Assert.Empty(waits);
+            Assert.True(waits.IsRemoved);
+        }
+        var activities = await client.GetPendingActivitiesAsync(instance.InstanceId);
+        Assert.Empty(activities);
+        Assert.True(activities.IsRemoved);
+        Assert.True((await client.GetSnapshotAsync(instance.InstanceId))!.IsRemoved);
         foreach (var condition in new[] { WorkflowAwaitCondition.Idle, WorkflowAwaitCondition.Finished })
         {
             var result = await client.AwaitAsync(instance.InstanceId, condition);
@@ -358,8 +401,8 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
     {
         var publisher = Guid.NewGuid().ToString("N");
         var pendingPublisher = Guid.NewGuid().ToString("N");
-        await Outbox.RegisterPublisherAsync(publisher, [OutboxEvent.WorkflowCompleted]);
-        await Outbox.RegisterPublisherAsync(pendingPublisher, [OutboxEvent.WorkflowCompleted]);
+        await RegisterPublisher(publisher);
+        await RegisterPublisher(pendingPublisher);
         var instance = await Complete();
         var delivery = Assert.Single(await Outbox.ClaimDeliveriesAsync(publisher, "owner", TimeSpan.FromHours(1), 100));
         Assert.True(await Outbox.SettleDeliveryAsync(delivery.Event.Id, publisher, "owner", OutboxPublishResult.Delivered()));
@@ -379,6 +422,177 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
             Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
                 $"SELECT count(*) FROM {table} WHERE {column}=@Id", new { Id = instance.InstanceId }));
         }
+    }
+
+    private async Task ExplicitDeleteLeavesTombstone()
+    {
+        foreach (var status in new[] { WorkflowStatus.Running, WorkflowStatus.Completed })
+        {
+            var instance = Instance(status);
+            await Commit(instance);
+            var period = TimeSpan.FromDays(7);
+            await store.DeleteWorkflowInstanceAsync(instance.InstanceId, period);
+            Assert.Null(await store.GetWorkflowInstanceAsync(instance.InstanceId));
+            var tombstone = Assert.IsType<WorkflowTombstone>(await store.GetTombstoneAsync(instance.InstanceId));
+            Assert.Equal(period, tombstone.ExpiresAtUtc - tombstone.RemovedAtUtc);
+            await Advance(TimeSpan.FromDays(1));
+            var beforeRepeat = await store.GetTombstoneAsync(instance.InstanceId);
+            await store.DeleteWorkflowInstanceAsync(instance.InstanceId, period);
+            Assert.Equal(beforeRepeat, await store.GetTombstoneAsync(instance.InstanceId));
+            Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+                store.SaveWorkflowInstanceAsync(InstanceWithId(instance.InstanceId)))).Kind);
+            Assert.Equal(EventAppendStatus.Closed, (await store.AppendEventAsync(
+                new WorkflowEvent(instance.InstanceId, "late", "type", "{}"))).Status);
+            await Advance(period);
+            Assert.Null(await store.GetTombstoneAsync(instance.InstanceId));
+            await store.SaveWorkflowInstanceAsync(InstanceWithId(instance.InstanceId));
+        }
+        var defaulted = await Complete();
+        await store.DeleteWorkflowInstanceAsync(defaulted.InstanceId);
+        var defaultTombstone = (await store.GetTombstoneAsync(defaulted.InstanceId))!;
+        Assert.Equal(Tombstones, defaultTombstone.ExpiresAtUtc - defaultTombstone.RemovedAtUtc);
+        var unknown = Guid.NewGuid().ToString("N");
+        await store.DeleteWorkflowInstanceAsync(unknown);
+        Assert.Null(await store.GetTombstoneAsync(unknown));
+    }
+
+    private async Task DecoratedStoreKeepsRetention()
+    {
+        var instance = await Complete();
+        await Advance(TimeSpan.FromDays(31));
+        var decorated = GuardedStateRepository.Wrap(store);
+        Assert.Equal(1, (await decorated.PurgeAsync(Retention, Tombstones, 100)).InstancesRemoved);
+        Assert.NotNull(await decorated.GetTombstoneAsync(instance.InstanceId));
+        Assert.Null(await decorated.GetWorkflowInstanceAsync(instance.InstanceId));
+    }
+
+    private async Task UpdateKeepsParent()
+    {
+        var parent = await Complete();
+        var child = Instance(WorkflowStatus.Running, parent.InstanceId);
+        await Commit(child);
+        child = (await store.GetWorkflowInstanceAsync(child.InstanceId))!;
+        child.WorkflowDataJson = "{\"Value\":43}";
+        await Commit(child); // UpdateCommit rather than the initial insert.
+        Assert.Equal(parent.InstanceId, (await store.GetWorkflowInstanceAsync(child.InstanceId))!.ParentInstanceId);
+        Assert.Equal(child.InstanceId, Assert.Single(await store.GetChildInstancesAsync(parent.InstanceId)).InstanceId);
+        if (newConnection != null)
+        {
+            await using var connection = newConnection();
+            Assert.Equal(parent.InstanceId, await connection.ExecuteScalarAsync<string>(
+                connection is Microsoft.Data.SqlClient.SqlConnection
+                    ? "SELECT ParentInstanceId FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId=@Id"
+                    : "SELECT parent_instance_id FROM ixiflow_workflow_instances WHERE instance_id=@Id",
+                new { Id = child.InstanceId }));
+        }
+        await Advance(TimeSpan.FromDays(31));
+        Assert.Equal(0, (await Purge()).InstancesRemoved);
+        Assert.NotNull(await store.GetWorkflowInstanceAsync(parent.InstanceId));
+    }
+
+    private async Task EpochSurvivesReuse()
+    {
+        var instance = Instance(WorkflowStatus.Running);
+        await Commit(instance);
+        var previous = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "previous", TimeSpan.FromMinutes(1)))!;
+        instance.Status = WorkflowStatus.Completed;
+        Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
+            CheckpointCommit.Create(instance, previous.Epoch, instance.Revision))).Status);
+        await Advance(TimeSpan.FromDays(31));
+        Assert.Equal(1, (await Purge()).InstancesRemoved);
+        await Advance(Tombstones);
+        await Purge();
+        var replacement = InstanceWithId(instance.InstanceId);
+        await Commit(replacement);
+        var current = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "current", TimeSpan.FromMinutes(1)))!;
+        Assert.True(current.Epoch > previous.Epoch);
+        Assert.False(await store.ReleaseExecutionLeaseAsync(instance.InstanceId, "previous"));
+        Assert.False(await store.RenewExecutionLeaseAsync(instance.InstanceId, "previous", TimeSpan.FromMinutes(1)));
+        Assert.Equal(WorkflowCommitStatus.StaleEpoch, (await store.CommitWorkflowInstanceAsync(
+            CheckpointCommit.Create(replacement, previous.Epoch, replacement.Revision))).Status);
+    }
+
+    private async Task PurgeMeetsWriter(RetentionScenario scenario)
+    {
+        var removed = await Complete();
+        var parent = Instance(WorkflowStatus.Suspended);
+        await Commit(parent);
+        await Advance(TimeSpan.FromDays(31));
+        async Task Write()
+        {
+            if (scenario == RetentionScenario.PurgeMeetsEvent)
+            {
+                Assert.Equal(EventAppendStatus.Closed, (await store.AppendEventAsync(
+                    new WorkflowEvent(removed.InstanceId, "arriving", "type", "{}"))).Status);
+                return;
+            }
+            var replacement = InstanceWithId(removed.InstanceId);
+            var commit = CheckpointCommit.Create(replacement, 0, 0);
+            if (scenario == RetentionScenario.PurgeMeetsChildStart)
+            {
+                replacement.ParentInstanceId = parent.InstanceId;
+                replacement.ParentWaitId = "child";
+                commit = CheckpointCommit.Create(parent, 0, parent.Revision,
+                    openedWaits: [new OpenedWait("child", WaitKind.Child, "child", "type", null)],
+                    childStarts: [new ChildStart(replacement.InstanceId, JsonSerializer.Serialize(replacement), "child")]);
+            }
+            Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+                store.CommitWorkflowInstanceAsync(commit))).Kind);
+        }
+        await using var holder = newConnection?.Invoke();
+        if (holder is Microsoft.Data.SqlClient.SqlConnection or Npgsql.NpgsqlConnection)
+        {
+            await holder.OpenAsync();
+            var sqlServer = holder is Microsoft.Data.SqlClient.SqlConnection;
+            var session = await holder.ExecuteScalarAsync<int>(sqlServer ? "SELECT @@SPID" : "SELECT pg_backend_pid()");
+            await using var transaction = await holder.BeginTransactionAsync();
+            // Purge takes its instance lock before the exclusive publisher lock. Holding that latter
+            // lock keeps a real purge transaction open with the instance locked, without production hooks.
+            await holder.ExecuteAsync(sqlServer ? """
+                DECLARE @r INT;
+                EXEC @r=sys.sp_getapplock @Resource=N'IxIFlow.OutboxPublishers', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=10000;
+                IF @r<0 THROW 51000, 'Could not hold publisher lock', 1;
+                """ : "SELECT pg_advisory_xact_lock(hashtext('IxIFlow.OutboxPublishers'))", transaction: transaction);
+            var purging = Task.Run(() => Purge());
+            Task? writing = null;
+            try
+            {
+                await using var observer = newConnection!();
+                await observer.OpenAsync();
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                while (!await observer.ExecuteScalarAsync<bool>(new CommandDefinition(sqlServer ? """
+                    SELECT CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id=@Session)
+                        THEN 1 ELSE 0 END AS bit)
+                    """ : "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE @Session=ANY(pg_blocking_pids(pid)))",
+                    new { Session = session }, cancellationToken: timeout.Token)))
+                    await Task.Delay(20, timeout.Token);
+                Assert.False(purging.IsCompleted);
+                writing = Task.Run(Write);
+                await Task.Delay(200, timeout.Token);
+                Assert.False(writing.IsCompleted);
+            }
+            finally
+            {
+                await transaction.CommitAsync();
+                Assert.Equal(1, (await purging.WaitAsync(TimeSpan.FromSeconds(15))).InstancesRemoved);
+                if (writing != null) await writing.WaitAsync(TimeSpan.FromSeconds(15));
+            }
+        }
+        else
+        {
+            // Memory and SQLite serialize the whole write. Exercise the same post-purge admission
+            // through their shared contract; database lock waiting applies to the distributed stores.
+            Assert.Equal(1, (await Purge()).InstancesRemoved);
+            await Write();
+        }
+        Assert.NotNull(await store.GetTombstoneAsync(removed.InstanceId));
+        Assert.Null(await store.GetWorkflowInstanceAsync(removed.InstanceId));
+        Assert.Null(await store.GetEventAsync(removed.InstanceId, "arriving"));
+        Assert.Null(await store.GetWaitAsync(parent.InstanceId, "child"));
+        Assert.Equal(parent.Revision, (await store.GetWorkflowInstanceAsync(parent.InstanceId))!.Revision);
+        // Unrelated IDs continue to be admitted.
+        var unrelated = Instance(WorkflowStatus.Running);
+        await Commit(unrelated);
     }
 
     public sealed class Noop : IAsyncActivity

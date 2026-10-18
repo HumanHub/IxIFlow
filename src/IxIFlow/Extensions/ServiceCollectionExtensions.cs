@@ -110,7 +110,7 @@ public static class ServiceCollectionExtensions
 
         RetentionSettings.Validate(options.FinishedInstanceRetention, options.TombstoneRetention, options.RetentionBatchSize);
         if (options.RetentionScanInterval <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(configure), "The retention scan interval must be positive");
+            throw new ArgumentOutOfRangeException(nameof(options.RetentionScanInterval), "The retention scan interval must be positive");
         services.Replace(ServiceDescriptor.Singleton(new RetentionSettings(options.FinishedInstanceRetention,
             options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize)));
 
@@ -364,7 +364,7 @@ internal class WorkflowRegistrationBuilder : IWorkflowRegistrationBuilder
 /// </summary>
 public class IxIFlowOptions
 {
-    /// <summary>How long terminal rows and their results remain, measured from the first terminal store write.</summary>
+    /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
     public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;
 
     /// <summary>How long a removed ID is reserved, measured from removal. Defaults to 90 days.</summary>

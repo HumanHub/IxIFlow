@@ -28,17 +28,26 @@ public sealed partial class SqlWorkflowStateRepository
             UPDATE dbo.IxIFlowWorkflowTombstones SET RemovedAtUtc=@Now, ExpiresAtUtc=@Expires WHERE InstanceId=@InstanceId;
             IF @@ROWCOUNT=0 INSERT INTO dbo.IxIFlowWorkflowTombstones (InstanceId, RemovedAtUtc, ExpiresAtUtc) VALUES (@InstanceId, @Now, @Expires);
             """,
-        // Existing instance tables may have inherited the database collation; ID joins stay binary.
         Statement.RetentionCandidates => """
             SELECT TOP (@Limit) i.InstanceId FROM dbo.IxIFlowWorkflowInstances i WHERE i.EndedAtUtc<=@Cutoff AND i.Status IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
-              AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowOutboxEvents e JOIN dbo.IxIFlowOutboxDeliveries d ON d.EventId=e.EventId WHERE e.InstanceId=i.InstanceId COLLATE Latin1_General_100_BIN2 AND d.Status=0)
-              AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances c WHERE c.ParentInstanceId COLLATE Latin1_General_100_BIN2=i.InstanceId COLLATE Latin1_General_100_BIN2 AND c.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
+              AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowOutboxEvents e JOIN dbo.IxIFlowOutboxDeliveries d ON d.EventId=e.EventId WHERE e.InstanceId=i.InstanceId AND d.Status=0)
+              AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances c WHERE c.ParentInstanceId=i.InstanceId AND c.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
             ORDER BY i.EndedAtUtc, i.InstanceId
+            """,
+        Statement.RetentionBlockedPublishers => """
+            SELECT d.PublisherName, COUNT(DISTINCT i.InstanceId) AS Instances
+            FROM dbo.IxIFlowWorkflowInstances i
+            JOIN dbo.IxIFlowOutboxEvents e ON e.InstanceId=i.InstanceId
+            JOIN dbo.IxIFlowOutboxDeliveries d ON d.EventId=e.EventId
+            WHERE i.EndedAtUtc<=@Cutoff AND i.Status IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
+              AND d.Status=0 AND d.FirstAttemptAtUtc IS NULL
+              AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances c WHERE c.ParentInstanceId=i.InstanceId AND c.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
+            GROUP BY d.PublisherName
             """,
         Statement.RetentionEligible => """
             SELECT count(*) FROM dbo.IxIFlowWorkflowInstances i WHERE i.InstanceId=@InstanceId AND i.EndedAtUtc<=@Cutoff AND i.Status IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
-              AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowOutboxEvents e JOIN dbo.IxIFlowOutboxDeliveries d ON d.EventId=e.EventId WHERE e.InstanceId=i.InstanceId COLLATE Latin1_General_100_BIN2 AND d.Status=0)
-              AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances c WHERE c.ParentInstanceId COLLATE Latin1_General_100_BIN2=i.InstanceId COLLATE Latin1_General_100_BIN2 AND c.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
+              AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowOutboxEvents e JOIN dbo.IxIFlowOutboxDeliveries d ON d.EventId=e.EventId WHERE e.InstanceId=i.InstanceId AND d.Status=0)
+              AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances c WHERE c.ParentInstanceId=i.InstanceId AND c.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
             """,
         Statement.ExpireTombstones => """
             DELETE FROM dbo.IxIFlowWorkflowTombstones WHERE InstanceId IN

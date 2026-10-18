@@ -38,9 +38,7 @@ public abstract partial class RelationalWorkflowStateRepository
     public async Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention,
         int batchSize, CancellationToken cancellationToken = default)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(finishedRetention, TimeSpan.Zero);
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(tombstoneRetention, TimeSpan.Zero);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(batchSize);
+        RetentionSettings.Validate(finishedRetention, tombstoneRetention, batchSize);
         cancellationToken.ThrowIfCancellationRequested();
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.Purge, async () =>
@@ -53,6 +51,10 @@ public abstract partial class RelationalWorkflowStateRepository
                 RequiredSql(Statement.RetentionCandidates),
                 WithTimes(new { Limit = batchSize }, ("Cutoff", selectedAt - finishedRetention)),
                 cancellationToken: cancellationToken))).ToArray();
+            var blocked = (await connection.QueryAsync<(string PublisherName, int Instances)>(new CommandDefinition(
+                RequiredSql(Statement.RetentionBlockedPublishers), WithTimes(new { }, ("Cutoff", selectedAt - finishedRetention)),
+                cancellationToken: cancellationToken))).ToDictionary(row => row.PublisherName, row => row.Instances,
+                    StringComparer.Ordinal);
             var removed = 0;
             foreach (var id in ids)
             {
@@ -63,9 +65,10 @@ public abstract partial class RelationalWorkflowStateRepository
                         transaction, cancellationToken: cancellationToken));
                 // The provider's transaction lock serializes retention writers across hosts. It is
                 // acquired before row locks and released after each bounded deletion, also on shutdown.
-                await Execute(Statement.RetentionLock);
-                if (Sql(Statement.LockIdentity) != null)
-                    await Execute(Statement.LockIdentity, new { InstanceId = id });
+                await ExecuteOptionalAsync(connection, transaction, Statement.RetentionLock,
+                    cancellationToken: cancellationToken);
+                await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity,
+                    new { InstanceId = id }, cancellationToken);
                 var (row, now) = await LockAsync<CommitState>(connection, transaction, Statement.CommitState, id, cancellationToken: cancellationToken);
                 if (row == null)
                     continue;
@@ -92,14 +95,14 @@ public abstract partial class RelationalWorkflowStateRepository
             }
             cancellationToken.ThrowIfCancellationRequested();
             await using var expiry = (await BeginTransactionAsync(connection, Operation.Purge))!;
-            await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.RetentionLock),
-                transaction: expiry, cancellationToken: cancellationToken));
+            await ExecuteOptionalAsync(connection, expiry, Statement.RetentionLock,
+                cancellationToken: cancellationToken);
             var expiryNow = await OutboxNowAsync(connection, expiry);
             var expired = await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.ExpireTombstones),
                 WithTimes(new { Limit = batchSize }, ("Now", expiryNow)), expiry,
                 cancellationToken: cancellationToken));
             await expiry.CommitAsync(cancellationToken);
-            return new RetentionResult(removed, expired);
+            return new RetentionResult(removed, expired) { SkippedUnattemptedByPublisher = blocked };
         });
     }
 }
