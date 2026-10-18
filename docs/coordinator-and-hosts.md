@@ -1,62 +1,56 @@
 ---
-title: Coordinator and hosts
-description: IxIFlow workflow hosts, host selection, SQL state, and the message bus.
+title: Hosting
+description: Configure the core host, slots, storage, recovery and graceful drain.
 ---
 
-`IxIFlow.Distributed` and `IxIFlow.SqlServer` let several processes share workflow instance state and receive queued workflow commands. A whole workflow execution runs in one host process; saga activities and compensations run in that same process. Local `AddIxIFlow()` execution needs neither package.
+`AddIxIFlow()` registers the core host, client and hosted recovery, outbox and retention services. The executor runs activities in that process. Use the .NET generic host to start background services and stop them in order.
 
-## Components
+## Start the host
 
-- `IWorkflowStateRepository` has a SQL implementation with revisioned checkpoints and renewable execution leases.
-- `IMessageBus` has a SQL implementation for queued commands, with explicit acknowledgement after handling.
-- `IHostRegistry` has a SQL implementation for host registration, health, and metrics.
-- `WorkflowQueueService` consumes execute, resume, and cancel commands addressed to its host and runs them through the local `IWorkflowClient`.
-- `HostHealthService` registers the host and reports its health on an interval.
-- `WorkflowCoordinator` selects a host using required or preferred host IDs, tags, health, and capacity.
+With imports `IxIFlow.Extensions`, `Microsoft.Extensions.Hosting` and the standard .NET usings:
 
-## Register a SQL host
-
-`AddIxIFlowHost(options, connectionString)` registers the SQL state repository, host registry, and message bus, and adds the queue and health background services. Register an `HttpClient` as well; the host client used for capacity checks depends on it.
-
+<!-- snippet: samples/IxIFlow.Samples/Hosting.cs -->
 ```csharp
-services.AddIxIFlow();
-services.AddHttpClient();
-services.AddIxIFlowHost(options =>
+public static IHost CreateHost()
 {
-    options.HostId = "workflow-node-01";
-    options.MaxConcurrentWorkflows = 50;
-    options.Tags = ["payments"];
-}, connectionString);
+    var builder = Host.CreateApplicationBuilder();
+    builder.Services.AddIxIFlow(options => options.Slots = 8);
+    return builder.Build();
+}
 ```
 
-The `IxIFlow.Distributed` overload `AddIxIFlowHost(options)` expects you to register the host registry and message bus yourself.
+[Hosting.cs](../samples/IxIFlow.Samples/Hosting.cs) compiles this method and shows `StartAsync`, client execution and `StopAsync`. [ReadmeExamples.cs](../tests/IxIFlow.Samples.Tests/ReadmeExamples.cs) exercises that lifecycle.
 
-The event store and `IWorkflowVersionRegistry` remain in memory. Every host that may execute or resume an instance must register the same workflow definition version and activity code.
+Resolving a client from a plain service provider permits foreground calls, as in [getting started](getting-started.md). Background recovery, outbox polling and retention require the hosted services to be started.
 
-## SQL state and recovery
+## Slots and scopes
 
-The SQL repository fences writers with a renewable execution lease and a revision-checked commit. When an owner's lease expires, the SQL host's recovery scan claims the instance and continues it from its last checkpoint. Cancellation requests are applied to idle suspended instances by the same scan.
+`IxIFlowOptions.Slots` defaults to 64. Each admitted work item has a DI scope. Nested calls through the slot client can execute inline in their parent's slot, so slots do not impose a separate activity concurrency limit. `MaxActivitiesPerRun` limits in-flight activities within one run.
 
-## Message delivery
+A run keeps its slot until it is idle or parked. When nothing is in flight and the next retry is further away than `ParkRetriesLongerThan` (one second by default), it saves its retry time and releases the slot and lease. The host picks it up when due. Shorter retry waits stay in the slot.
 
-The SQL bus claims a message, renews the claim while the handler runs, and marks it processed only after acknowledgement. An unacknowledged delivery is released when its consumer stops; an abandoned claim expires after five minutes by default. Failed deliveries retry and enter dead-letter state after the configured attempt limit. A command for a busy instance is deferred without using up that limit. Acknowledged rows are pruned after the retention period; dead letters are retained.
+## Choose a store
 
-Queued execute commands carry a stable instance ID and a workflow name and version, resolved on the receiving host. Resume commands carry a delivery ID that is saved with the checkpoint, so a redelivered resume cannot satisfy a later wait with the same key.
+Choose a single provider on the builder returned by `AddIxIFlow()`. Memory is the default; `UseSqlite`, `UseSqlServer` and `UsePostgreSql` select durable providers. Their extensions are in `IxIFlow.Extensions`.
 
-## Completion events
+The [store guide](stores.md) covers their operational differences. [Hosting.Services](../samples/IxIFlow.Samples/Hosting.cs) compiles all four registrations. Provider schemas initialize on first use.
 
-A terminal result is written to a completion outbox in the same checkpoint commit. A publisher claims pending results and sends a `WorkflowExecutionCompletedEvent` through the message bus, so hosts do not routinely publish the same completion twice. The SQL bus uses a stable message ID for each instance's started and completed events.
+Load definitions into the in-memory `IWorkflowVersionRegistry` before recovery can need them. Every host sharing a database must have the matching definition versions and activity code. [Review's sample setup](../tests/IxIFlow.Samples.Tests/SampleTests.cs) registers its pinned child before starting the parent.
 
-An adapter without durable deduplication can still deliver a completion twice if publication succeeds and the host stops before recording its receipt. Consumers should deduplicate by instance ID. IxIFlow does not include a completion consumer; subscribe to the bus in your application.
+## Recovery and ownership
 
-## Target design
+A host schedules its own saved runnable times locally. The recovery service polls the store every `PollInterval` (one second by default), up to available slots, for due work with no active owner. PostgreSQL `LISTEN`/`NOTIFY` supplies additional wake-ups; polling remains the fallback.
 
-The coordinator is meant to route a whole workflow execution to a host chosen by health, capacity, current load, tags, and host preferences, over HTTP for immediate execution or through the message bus for queued execution. A resumed instance would prefer the host that ran it, and completion events would reach the caller. See the [roadmap](/docs/roadmap/#coordinator-and-hosts) for the remaining work.
+An execution lease has an increasing epoch, with a 30-second duration and renewal every 10 seconds in the current implementation. Commits require that epoch and the expected revision. Losing ownership stops the run; an expired owner's writes cannot overwrite a new owner's progress.
 
-## Current limits
+A lease lost during running work contributes to crash accounting. After three consecutive losses without saved progress by default, the instance is quarantined at `NeedsResolution`. Investigate and use `ReleaseAsync` to reset the count and continue, or `CancelAsync`. `RecoverAsync` leaves operator stops in place.
 
-- The coordinator selects a host but does not dispatch work. Publish `ExecuteWorkflowCommand`, `ResumeWorkflowCommand`, or `CancelWorkflowCommand` to the bus with the selected host as the target.
-- `HttpWorkflowHostClient` calls host endpoints that IxIFlow does not provide. Without your own endpoints, capacity checks fail and host selection reports no available capacity.
-- Host load is not tracked for queued executions, so selection does not balance by current load.
-- Resume selection does not prefer the host that ran the instance before.
-- Dead letters have no inspection or requeue API.
+## Shutdown
+
+The host stops admitting new steps, lets running activities reach commits, and drains for `DrainTimeout` (20 seconds by default). Keep that timeout below the application's shutdown budget. Remaining work is cancelled; activities that ignore cancellation can outlive the drain and depend on lease expiry for recovery. Gracefully released leases do not count as crashes.
+
+Outbox workers stop claiming new deliveries and drain those already in flight. Interrupted deliveries can be claimed again after their lease expires.
+
+## Planned hosting work
+
+There is no coordinator yet. Process slots and isolation, the executor message protocol and pipe transport, capabilities and demands, placement and affinity, coordinator discovery and secured links remain planned for 1.0. See the [roadmap](roadmap.md).

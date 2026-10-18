@@ -18,6 +18,7 @@
 | Memory, SQLite, SQL Server and PostgreSQL store selection; hosting | Store setup | C# only: application DI configuration | [Hosting.cs](IxIFlow.Samples/Hosting.cs) |
 | Definition validation and activity catalog metadata | Quote validation | C# only: application validation/catalog API | [Contracts.cs](IxIFlow.Samples/Contracts.cs) |
 | Telemetry, committed trace and snapshot inspection | Quote observations | C# only: application diagnostics API | [Observability.cs](IxIFlow.Samples/Observability.cs) |
+| Discoverable wait defaults, retention/tombstones and custom completion publishers | Documentation examples | C# only: application/client configuration | [DocumentationExamples.cs](IxIFlow.Samples/DocumentationExamples.cs), [DocumentationTests.cs](../tests/IxIFlow.Samples.Tests/DocumentationTests.cs) |
 | Versioned Liquid templates and message sending | Quote message | C# sample: template publication and sender registration use application APIs | [QuoteMessage.cs](IxIFlow.Samples/QuoteMessage.cs) |
 | Recoverable activity and operator resolution | Reservation | [reservation.workflow.yaml](IxIFlow.Samples/Definitions/reservation.workflow.yaml); operator client calls are C# only | [Recovery.cs](IxIFlow.Samples/Recovery.cs) |
 
@@ -56,7 +57,7 @@ Pure fluent activities can use the public-setter/input and public-getter/output 
 
 [SampleTests.cs](../tests/IxIFlow.Samples.Tests/SampleTests.cs) and [YamlSampleTests.cs](../tests/IxIFlow.Samples.Tests/YamlSampleTests.cs) compare saved definition fingerprints and serialized results for YAML/fluent pairs, including empty lists, loop boundaries, each parallel join, typed faults, retries, delays, replies and timeouts. Retry checks verify runtime IDs before comparing their roles across instances. [RecipeTests.cs](../tests/IxIFlow.Samples.Tests/RecipeTests.cs) runs every existing recipe on memory with fake time. [ReadmeExamples.cs](../tests/IxIFlow.Samples.Tests/ReadmeExamples.cs) compiles and executes the root README quick start. The existing conformance suite supplies additional store and failure scenarios.
 
-The [root roadmap](../README.md#status-and-roadmap) marks the remaining 1.0 work. Publishing, the coordinator, process executors, debugger controls, management endpoints and webhooks are not available as finished engine features.
+The [root roadmap](../README.md#status-and-roadmap) marks the remaining 1.0 work. Workflow bundle publishing, the coordinator, process executors, debugger controls, management endpoints and incoming HTTP triggers remain planned. Outgoing signed webhooks, public outbox publishers, instance retention and tombstones are implemented; see the [documentation index](../docs/index.md).
 
 ## Demo activities
 

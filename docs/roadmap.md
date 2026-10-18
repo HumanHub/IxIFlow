@@ -1,105 +1,37 @@
 ---
 title: Roadmap
-description: The target shape of the IxIFlow engine, what works today, and the remaining work.
+description: Available foundations, remaining 1.0 work and later features.
 ---
 
-This page records where the engine is going. Each area states the target, what works today, and what remains. Pages such as [engine capabilities](/docs/engine-capabilities/) describe only current behavior.
+This roadmap matches the [README status section](../README.md#status-and-roadmap). “Planned” means not yet available. A working subset is identified separately from what remains.
 
-## Durable execution core
+## Available foundations
 
-**Target:** every workflow construct runs through one checkpointed runner that survives restarts, resumes at the saved position, and never hides an uncertain external effect.
+The in-process host, client, slots, checkpointed runner, fenced leases, inbox, reply tokens, independent children, parallel isolation/joins, ForEach, sagas, resource stops and recovery are implemented. Memory, SQLite, SQL Server and PostgreSQL stores are available.
 
-**Today:** activities, sequences, conditions, loops, parallel joins, `Try`/`Catch`/`Finally`, sagas, waits, delays, deadlines, retries, child workflows, cancellation, recovery, and activity resolution all run through the structured runner with revisioned checkpoints and leases.
+YAML covers every fluent construct with strict reading and a packaged schema. Activity direction markers, .NET metadata, mapping validation and analyzers are available. Runtime fingerprints and generated/fluent parity tests exist; these are not yet immutable published artifact identities.
 
-**Remaining:**
+Completion outbox publishers and outgoing signed webhooks are implemented, as are retained results, instance cleanup and tombstones. Committed control-flow, event and operator traces live outside checkpoints; snapshots, scoped logging and OpenTelemetry signals are available. Versioned Liquid templates and application-supplied message senders also work.
 
-- Treat transient store and child-infrastructure errors inside the run loop as recoverable instead of failing the instance.
-- Report child-workflow infrastructure failures separately from child business failures, so a parent does not compensate while the child is still running.
-- Remove finished parallel continuations and accepted delivery IDs from the checkpoint, so loops containing `Parallel` do not grow it without bound.
-- Stop rewriting a parent checkpoint every few seconds while it waits for a child, and prune commit receipts.
-- Apply child output mappings on the runner thread, as activity outputs are.
-- Park instances during retry backoff instead of waiting in process.
+## Remaining 1.0 work
 
-## Coordinator and hosts
+| Area | Planned work |
+| --- | --- |
+| Execution and process isolation | Public executor message contract, process slots and entry point, pipe transport, process liveness/resource accounting and fenced process crash reports; commit resend backoff and host message size/metadata validation |
+| Coordinator and placement | Stateless coordinators; capabilities and demands; matching and affinity; visible unschedulable work; discovery/registry, multiple-coordinator and loss handling, secured links; batched host lease renewal and process-slot accounting |
+| Incoming events and children | Incoming webhook/HTTP trigger package and conformance; child placement demands |
+| Workflow publishing/versioning | Immutable bundles, artifact storage/verification, dependency resolution/pinning, version-isolated assemblies, host bundle fetching, declared canonical artifact fingerprints and compatibility/migration policy; draft/publish and lifecycle APIs |
+| Catalog and authoring services | Broader catalog API, code-defined workflows in the catalog, published code activities, inline workflow calls, explicit workflow input/output contracts, YAML-defined code activities and local registration beyond installed-assembly metadata |
+| Runtime validation | Native AOT publish/run verification; broader conformance and fault injection as coordinator/process paths land |
+| Editor and debugger | Visual editor, breakpoints, all-stop pause, stepping through loops, paused timer rules, audited data edits, Debug Adapter Protocol and inspection/replay tooling |
+| Management and operations | Management API/operator listings, unused bundle retention, large-payload storage, residency policies and redaction |
 
-**Target:** the coordinator routes a whole workflow execution to a host chosen by health, capacity, current load, tags, and host preferences. Hosts register themselves, report health and load, and accept immediate or queued executions over HTTP or the message bus. A resumed instance prefers the host that ran it. Completion events reach the caller.
+The outgoing `IxIFlow.Webhooks` publisher does not provide incoming trigger endpoints. Instance retention is complete; bundle retention depends on the publishing work. The current in-memory version registry is useful for installed definitions but does not provide the planned durable publishing lifecycle.
 
-**Today:** SQL state with leases and recovery, the SQL message bus with acknowledgement, dead letters and a completion outbox, the SQL host registry, health reporting, and host selection by health, tags, and capacity. A host runs queued execute, resume, and cancel commands addressed to it.
+## After 1.0
 
-**Remaining:**
+Broker publisher/consumer samples for RabbitMQ or Azure Service Bus and a distributed map over paged external input are later work. The distributed map is intended to run bounded children and store results outside the parent's checkpoint.
 
-- A coordinator API that selects a host and publishes the command to it.
-- HTTP host endpoints matching `HttpWorkflowHostClient`, or removal of that client.
-- `AddIxIFlowHost` registering its own `HttpClient`.
-- Load accounting for queued executions, so selection balances by current load.
-- Host affinity when selecting a host for resume.
-- A completion consumer or notification API.
-- Count crashed claims toward the dead-letter limit, so a message that kills its host is eventually dead-lettered.
-- Process queued commands concurrently, so one long workflow does not block a host's queue.
-- End-to-end tests that run the coordinator, bus, and hosted queue services together.
+SQLite single-host durability has already been implemented in the 1.0 scope. Ordinary parallel branches and ForEach are available now; neither requires that future distributed map.
 
-## Debugging and observability
-
-**Target:** a developer can follow any instance step by step, set breakpoints, inspect saved state, and correlate engine logs, traces, and metrics.
-
-**Today:** the runner records activity and child-workflow start and end entries, with duration, error, and attempt details, in the instance checkpoint and returns them as `TraceEntries`.
-
-**Remaining:**
-
-- A separate trace store with retention, so history does not grow the checkpoint.
-- Workflow start, completion, and failure entries, and activity inputs and outputs in trace entries.
-- Calling `IWorkflowTracer` from the runner, or removing it.
-- Structured logging in the runner and engine with instance and step scopes.
-- OpenTelemetry traces and metrics.
-- Instance and snapshot inspection APIs on the engine.
-- Breakpoints and step-through execution (`EnableDebugging`).
-
-## Workflow documents
-
-**Target:** JSON as the canonical document form and YAML as an alternate syntax, both compiling to the same definitions as the fluent API, with reusable activities, step templates, and a publish and version flow.
-
-**Today:** YAML documents support activities, templates, sequences, conditions, sequential and parallel `forEach`, suspension, and child workflow invocation, with a packaged JSON Schema for editor support.
-
-**Remaining:**
-
-- Parallel, loop, `Try`/`Catch`/`Finally`, saga, and delay steps.
-- JSON documents.
-- Compile-equivalence tests between documents and fluent definitions.
-- Reusable activity and step template publishing and versioning.
-- Controlled expression-backed and code-backed activities behind a policy.
-
-## Management and operations
-
-**Target:** operators can inspect instances, manage dead letters, and start workflows from triggers without writing code against the engine.
-
-**Remaining:**
-
-- A management API for instances, pending activities, and cancellations.
-- Dead-letter inspection and requeue.
-- Start triggers.
-
-## Storage
-
-**Target:** pluggable durable stores for state, definitions, and events, with more than one database and broker.
-
-**Today:** SQL Server stores instance state, host registrations, and bus messages. Definitions, the version registry, and the event store are in memory on each host.
-
-**Remaining:**
-
-- Persisted definition, version, and event stores.
-- PostgreSQL and SQLite adapters.
-- Message broker adapters.
-
-## Code health
-
-**Remaining:**
-
-- Split `StructuredWorkflowRunner` into focused components, as `TryScopeTransitions` and `SagaScopeTransitions` already are.
-- Remove legacy types replaced by the structured runner, including the unused `IErrorHandler` execution methods and commented-out builders.
-- Add instance and step IDs to runner exception messages.
-- Replace reflection-based child workflow invocation with typed factories.
-- Register core services once, with one lifetime.
-
-## Editor
-
-**Target:** a visual workflow editor and debugger built on the document model. The UI framework will be chosen after the document, validation, publish, and trace APIs are stable.
+See [engine capabilities](engine-capabilities.md) for today's feature summary and [hosting](coordinator-and-hosts.md) for the current runtime boundary.
