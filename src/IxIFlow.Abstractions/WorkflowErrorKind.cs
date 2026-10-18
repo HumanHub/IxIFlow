@@ -24,5 +24,8 @@ public enum WorkflowErrorKind
     Infrastructure,
 
     /// <summary>A configured limit was reached.</summary>
-    ResourceExhausted
+    ResourceExhausted,
+
+    /// <summary>Retention removed the instance; its ID is still reserved by a tombstone.</summary>
+    InstanceRemoved
 }

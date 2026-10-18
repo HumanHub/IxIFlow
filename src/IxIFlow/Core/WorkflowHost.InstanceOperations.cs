@@ -90,7 +90,7 @@ public sealed partial class WorkflowHost
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
-            return instance == null ? null : ReadResult(instance);
+            return instance == null ? await RemovedResultAsync(instanceId) : ReadResult(instance);
         }
 
         /// <summary>The status of an instance as a result would report it, without reading its data.</summary>
@@ -98,8 +98,14 @@ public sealed partial class WorkflowHost
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
-            return instance == null ? null : StatusOf(instance.Status);
+            return instance == null ? (await RemovedResultAsync(instanceId))?.Status : StatusOf(instance.Status);
         }
+
+        private async Task<WorkflowExecutionResult?> RemovedResultAsync(string instanceId) =>
+            await _store.GetTombstoneAsync(instanceId) != null
+                ? new WorkflowExecutionResult { InstanceId = instanceId, Status = WorkflowExecutionStatus.Removed,
+                    ErrorMessage = "The workflow instance and its retained result were removed by retention" }
+                : null;
 
         public async Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
             string invocationId, ActivityResolution resolution, CancellationToken cancellationToken)
@@ -347,6 +353,9 @@ public sealed partial class WorkflowHost
             try
             {
                 using var lease = await gate.EnterAsync(instance.InstanceId, cancellationToken);
+                if (await _store.GetTombstoneAsync(instance.InstanceId) != null)
+                    throw new WorkflowEngineException(WorkflowErrorKind.InstanceRemoved,
+                        $"Workflow instance '{instance.InstanceId}' was removed by retention; its ID is reserved");
                 // A repeated start of an existing instance is answered without claiming it, so retries
                 // never count as crashes of an instance another host lost (B-08).
                 if (options.InstanceId != null &&

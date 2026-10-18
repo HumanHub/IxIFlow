@@ -28,7 +28,9 @@ public interface IWorkflowClient
 
     /// <summary>
     /// Waits until the instance is idle or finished and returns its saved state. Work finished by
-    /// this process is noticed at once; work finished elsewhere within about a second.
+    /// this process is noticed at once; work finished elsewhere within about a second. A terminal
+    /// result remains available for FinishedInstanceRetention; while its removal tombstone remains,
+    /// this returns a result with status Removed and no workflow data. After expiry the ID is unknown.
     /// </summary>
     Task<WorkflowExecutionResult> AwaitAsync(
         string instanceId,
