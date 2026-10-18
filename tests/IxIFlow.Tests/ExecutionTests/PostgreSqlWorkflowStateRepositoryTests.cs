@@ -164,9 +164,10 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
             InstanceId = instanceId, WorkflowName = "Deleted", Status = WorkflowStatus.Suspended,
             WorkflowDataJson = "{\"Value\":1}"
         };
-        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromMinutes(1)));
+        var owner = await repository.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromMinutes(1));
+        Assert.NotNull(owner);
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(instance, 1, 0,
+            CheckpointCommit.Create(instance, owner.Epoch, 0,
                 openedWaits: [new OpenedWait("approval", WaitKind.Event, "approval", "Approval", null)],
                 traceEntries: [new ExecutionTraceEntry { ActivityName = "first" }]))).Status);
         Assert.Equal(EventAppendStatus.Stored, (await repository.AppendEventAsync(
@@ -186,7 +187,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
                 await Task.Delay(50);
         }
         Assert.NotNull(next);
-        Assert.Equal(1, next.Epoch);
+        Assert.True(next.Epoch > owner.Epoch);
         await repository.ReleaseExecutionLeaseAsync(instanceId, "next");
     }
 
