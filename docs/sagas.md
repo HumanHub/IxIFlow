@@ -41,7 +41,7 @@ A compensation failure normally faults after remaining compensation work has bee
 
 An activity-level saga `OnError` can retry, ignore or terminate that step. A saga-level handler controls compensation and restarts part or all of the saga. They have separate budgets.
 
-`RetryPolicy` supplies `MaximumAttempts`, `InitialInterval`, `MaximumInterval` and `BackoffCoefficient`. The current retry limit counts retries after the first execution: a budget of one permits a second execution. The count-only policy constructor uses immediate retry; property defaults use one-second initial delay, ten-second maximum and coefficient two. Long backoffs park durable instances and free host slots.
+`RetryPolicy` supplies `MaximumAttempts`, `InitialInterval`, `MaximumInterval` and `BackoffCoefficient`. The current retry limit counts retries after the first execution: a budget of one permits a second execution. `ThenRetry(count)`, on a step and on a saga handler alike, waits one second, then doubles up to ten seconds. A `RetryPolicy` built with only a count retries immediately; property defaults use one-second initial delay, ten-second maximum and coefficient two. Long backoffs park durable instances and free host slots.
 
 [RetryQuote.cs](../samples/IxIFlow.Samples/RetryQuote.cs) demonstrates a single-step retry, including `context.Attempt.Number`, earlier errors/notes and distinct attempt IDs. [Payments.cs](../samples/IxIFlow.Recipes/Payments.cs) demonstrates a saga retry with compensation.
 
