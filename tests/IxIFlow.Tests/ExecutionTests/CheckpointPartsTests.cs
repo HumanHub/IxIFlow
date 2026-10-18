@@ -192,6 +192,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         var read = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
 
         read.InstanceId = second.InstanceId;
+        read.Incarnation = second.Incarnation;
         var commit = CheckpointCommit.Create(read, 0, 1);
         await repository.CommitWorkflowInstanceAsync(commit);
 
