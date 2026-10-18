@@ -223,11 +223,14 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit);
 
     /// <summary>
-    /// Atomically saves the commit's payload at its expected revision + 1. Revision zero also
-    /// represents an absent instance. An insert adopts the commit's incarnation; an update preserves
-    /// the row's existing incarnation. Child starts allocate fresh incarnations in the store.
+    /// Atomically saves the commit's payload at its expected revision + 1. Expected revision zero
+    /// is a first commit and bypasses the incarnation check: an absent row is inserted, a saved
+    /// revision-zero row is updated, and either takes the commit's incarnation under the existing
+    /// lease and revision rules. An existing row above revision zero returns a revision conflict.
+    /// Later commits preserve the row's incarnation. Child starts allocate fresh incarnations in the store.
     /// Repeating a commit ID with the same payload returns its original receipt, even after subsequent
-    /// commits. A leased commit from another incarnation, from an epoch older than the
+    /// commits. Receipt lookup precedes incarnation and revision checks. A leased commit above
+    /// expected revision zero from another incarnation, or a leased commit from an epoch older than the
     /// instance's latest lease, or from a lease that is no longer active while the instance runs,
     /// returns <see cref="WorkflowCommitStatus.StaleEpoch"/>. A store that knows nothing was
     /// written may return <see cref="WorkflowCommitStatus.Retry"/>; any exception means the
@@ -500,7 +503,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             }
 
             // Receipts are deleted with the instance, so any replay above belongs to its current creation.
-            if (commit.Epoch != 0 && stored != null && stored.Incarnation != commit.Incarnation)
+            if (commit.ExpectedRevision > 0 && commit.Epoch != 0 && stored != null &&
+                stored.Incarnation != commit.Incarnation)
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
             if (!owns)
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
@@ -575,7 +579,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 parts.Remove(deleted);
             foreach (var part in commit.Parts)
                 parts[part.Key] = part.Json;
-            snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
+            snapshot.Incarnation = commit.ExpectedRevision == 0
+                ? commit.Incarnation : stored!.Incarnation;
             _instances[commit.InstanceId] = snapshot;
             RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));

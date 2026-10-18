@@ -574,6 +574,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             USING (SELECT @InstanceId AS InstanceId) AS source
             ON target.InstanceId = source.InstanceId
             WHEN MATCHED THEN UPDATE SET
+                Incarnation = CASE WHEN @ExpectedRevision = 0 THEN @Incarnation ELSE target.Incarnation END,
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, ParentInstanceId = @ParentInstanceId,
                 RunnableAtUtc = @RunnableAtUtc,

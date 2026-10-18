@@ -15,6 +15,123 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Spec", "D-41")]
 public sealed class LeaseIncarnationContractTests
 {
+    [Fact]
+    public Task MemoryFirstCommitsAdoptIncarnationAndLaterCommitsRemainFenced()
+    {
+        var time = new FakeTimeProvider();
+        return VerifyFirstCommits(new InMemoryWorkflowStateRepository(time),
+            (_, by) => { time.Advance(by); return Task.CompletedTask; });
+    }
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    public async Task SqliteFirstCommitsAdoptIncarnationAndLaterCommitsRemainFenced()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.LeaseIncarnation", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var time = new FakeTimeProvider();
+            await using var store = new SqliteWorkflowStateRepository(
+                "Data Source=" + Path.Combine(folder, "first-commits.db"), time);
+            await VerifyFirstCommits(store, (_, by) => { time.Advance(by); return Task.CompletedTask; });
+        }
+        finally { await SqliteTestFiles.DeleteAsync(folder); }
+    }
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public Task SqlServerFirstCommitsAdoptIncarnationAndLaterCommitsRemainFenced()
+    {
+        var connectionString = SqlTestDatabase<LeaseIncarnationContractTests>.ConnectionString;
+        return VerifyFirstCommits(new SqlWorkflowStateRepository(connectionString),
+            (id, by) => AgeRows(() => new SqlConnection(connectionString), id, by));
+    }
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public Task PostgreSqlFirstCommitsAdoptIncarnationAndLaterCommitsRemainFenced()
+    {
+        var connectionString = PostgreSqlTestDatabase<LeaseIncarnationContractTests>.ConnectionString;
+        return VerifyFirstCommits(new PostgreSqlWorkflowStateRepository(connectionString),
+            (id, by) => AgeRows(() => new NpgsqlConnection(connectionString), id, by));
+    }
+
+    private static async Task VerifyFirstCommits(IWorkflowStateRepository store,
+        Func<string, TimeSpan, Task> advance)
+    {
+        var duration = TimeSpan.FromMinutes(1);
+        var tombstones = TimeSpan.FromDays(1);
+        foreach (var leased in new[] { true, false })
+        {
+            var id = Guid.NewGuid().ToString("N");
+            try
+            {
+                var saved = NewInstance(id);
+                await store.SaveWorkflowInstanceAsync(saved);
+                // Detach even from memory's unstructured revision-zero row before Create stamps it.
+                var caller = (await store.GetWorkflowInstanceAsync(id))!.CopyForResume();
+                Assert.Equal(0, caller.Revision);
+                var savedIncarnation = caller.Incarnation;
+                var epoch = leased
+                    ? (await store.TryAcquireExecutionLeaseAsync(id, "owner", duration))!.Epoch : 0;
+                var first = CheckpointCommit.Create(caller, epoch, 0);
+                Assert.NotEqual(savedIncarnation, first.Incarnation);
+                Assert.Equal(savedIncarnation, (await store.GetWorkflowInstanceAsync(id))!.Incarnation);
+                await Apply(store, first);
+                Assert.Equal(first.Incarnation, caller.Incarnation);
+                Assert.Equal(WorkflowCommitStatus.AlreadyApplied,
+                    (await store.CommitWorkflowInstanceAsync(first)).Status);
+
+                // A different first commit conflicts without changing the committed incarnation.
+                var contender = caller.CopyForResume();
+                contender.WorkflowDataJson = "{\"contender\":true}";
+                var different = CheckpointCommit.Create(contender, epoch, 0);
+                Assert.NotEqual(first.Incarnation, different.Incarnation);
+                Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1),
+                    await store.CommitWorkflowInstanceAsync(different));
+                Assert.Equal(first.Incarnation, (await store.GetWorkflowInstanceAsync(id))!.Incarnation);
+
+                // The original caller carries the adopted incarnation into its next commit.
+                caller.Revision = 1;
+                var next = CheckpointCommit.Create(caller, epoch, caller.Revision);
+                Assert.Equal(first.Incarnation, next.Incarnation);
+                await Apply(store, next);
+                Assert.Equal(2, (await store.GetWorkflowInstanceAsync(id))!.Revision);
+
+                // Re-creation repeats epoch one and revision one; only the incarnation differs.
+                var oldEpoch = leased ? epoch
+                    : (await store.TryAcquireExecutionLeaseAsync(id, "owner", duration))!.Epoch;
+                var stale = new[]
+                {
+                    CheckpointCommit.Create(caller, oldEpoch, 1),
+                    CheckpointCommit.Create(caller, oldEpoch, 2)
+                };
+                await store.DeleteWorkflowInstanceAsync(id, tombstones);
+                await advance(id, tombstones + TimeSpan.FromDays(1));
+                var replacement = NewInstance(id);
+                await store.SaveWorkflowInstanceAsync(replacement);
+                replacement = (await store.GetWorkflowInstanceAsync(id))!.CopyForResume();
+                var grant = (await store.TryAcquireExecutionLeaseAsync(id, "replacement", duration))!;
+                Assert.Equal(oldEpoch, grant.Epoch);
+                var replacementFirst = CheckpointCommit.Create(replacement, grant.Epoch, 0);
+                await Apply(store, replacementFirst);
+                Assert.NotEqual(first.Incarnation, replacementFirst.Incarnation);
+                foreach (var late in stale)
+                {
+                    Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 1),
+                        await store.CommitWorkflowInstanceAsync(late));
+                    var unchanged = (await store.GetWorkflowInstanceAsync(id))!;
+                    Assert.Equal(1, unchanged.Revision);
+                    Assert.Equal(replacementFirst.Incarnation, unchanged.Incarnation);
+                    Assert.True(await store.RenewExecutionLeaseAsync(id, "replacement", duration));
+                }
+                await Apply(store, CheckpointCommit.Create(replacement, grant.Epoch, 1));
+            }
+            finally { await store.DeleteWorkflowInstanceAsync(id); }
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
