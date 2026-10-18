@@ -17,8 +17,7 @@ public class SagaStepErrorHandler : ISagaStepErrorHandler
 
     public void ThenRetry(int maxRetries = 3)
     {
-        _handlerInfo.HandlerAction = StepErrorAction.Retry;
-        _handlerInfo.RetryPolicy = new RetryPolicy { MaximumAttempts = maxRetries };
+        ThenRetry(RetryPolicy.CreateDefault(maxRetries));
     }
 
     public void ThenRetry(RetryPolicy retryPolicy)
@@ -53,8 +52,7 @@ public class SagaStepErrorHandler<TException> : ISagaStepErrorHandler<TException
 
     public void ThenRetry(int maxRetries = 3)
     {
-        _handlerInfo.HandlerAction = StepErrorAction.Retry;
-        _handlerInfo.RetryPolicy = new RetryPolicy { MaximumAttempts = maxRetries };
+        ThenRetry(RetryPolicy.CreateDefault(maxRetries));
     }
 
     public void ThenRetry(RetryPolicy retryPolicy)

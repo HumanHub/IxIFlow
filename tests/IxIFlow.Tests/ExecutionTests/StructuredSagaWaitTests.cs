@@ -1106,6 +1106,38 @@ public class StructuredSagaWaitTests
         Assert.Equal(TimeSpan.FromMilliseconds(180), starts[1] - starts[0]);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DefaultSagaHandlerRetryWaitsForItsFirstInterval(bool compensate)
+    {
+        var time = new TimerRecordingClock();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<TimeProvider>(time);
+        services.AddSingleton<SagaRetryProbe>();
+        services.AddTransient<FailOnceSagaActivity>();
+        services.AddIxIFlow();
+        using var provider = services.BuildServiceProvider();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var definition = Workflow.Create<SagaData>("DefaultSagaRetry")
+            .Step<BeginActivity>()
+            .Saga(saga => saga.Step<FailOnceSagaActivity>())
+            .OnError<InvalidOperationException>(handler =>
+                (compensate ? handler.Compensate() : handler.CompensateNone()).ThenRetry(1))
+            .Build();
+
+        var running = provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new SagaData(), new WorkflowOptions { InstanceId = instanceId });
+        var starts = provider.GetRequiredService<SagaRetryProbe>().Starts;
+        var result = await RetryAtItsDelayAsync(time, provider.GetRequiredService<IWorkflowStateRepository>(),
+            instanceId, running, starts, TimeSpan.FromSeconds(1));
+
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(2, starts.Count);
+        Assert.Equal(TimeSpan.FromSeconds(1), starts[1] - starts[0]);
+    }
+
     [Fact]
     public async Task InterruptedRetryKeepsItsDeadlineAcrossRecovery()
     {
