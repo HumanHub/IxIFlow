@@ -28,6 +28,7 @@ public static class DocumentModel
     private static readonly ConcurrentDictionary<Type, IReadOnlyList<PropertyInfo>> Members = new();
     private static readonly ConcurrentDictionary<Type, IReadOnlyList<Type>> Variants = new();
     private static readonly ConcurrentDictionary<Type, DocumentKindAttribute?> Kinds = new();
+    private static readonly ConcurrentDictionary<(Type, string), IReadOnlyList<string>> Values = new();
 
     /// <summary>The serialized members of a document type, base members first, then in declaration order.</summary>
     public static IReadOnlyList<PropertyInfo> GetMembers(Type type) => Members.GetOrAdd(type, static type =>
@@ -38,6 +39,10 @@ public static class DocumentModel
     public static string GetName(MemberInfo member) => CamelCase(member.Name);
     public static string CamelCase(string name) => char.ToLowerInvariant(name[0]) + name.Substring(1);
     public static DocumentKindAttribute? GetKind(Type type) => Kinds.GetOrAdd(type, static type => type.GetCustomAttribute<DocumentKindAttribute>());
+
+    /// <summary>The closed set of values a member accepts, or an empty list when the member is open.</summary>
+    public static IReadOnlyList<string> GetValues(Type type, string property) => Values.GetOrAdd((type, property), static key =>
+        GetMembers(key.Item1).First(member => member.Name == key.Item2).GetCustomAttribute<DocumentValuesAttribute>()?.Values ?? []);
 
     /// <summary>The concrete kinds of an abstract document type, in declaration order.</summary>
     public static IReadOnlyList<Type> GetVariants(Type type) => Variants.GetOrAdd(type, static type => type.Assembly.GetTypes()

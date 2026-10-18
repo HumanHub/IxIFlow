@@ -58,12 +58,12 @@ This page records where the engine is going. Each area states the target, what w
 
 **Target:** JSON as the canonical document form and YAML as an alternate syntax, both compiling to the same definitions as the fluent API, with reusable activities, step templates, and a publish and version flow.
 
-**Today:** `IxIFlow.Authoring` parses YAML documents and compiles activities, activity references, step references, sequences, conditions, suspension, and child workflow invocation.
+**Today:** YAML documents support activities, templates, sequences, conditions, sequential and parallel `forEach`, suspension, and child workflow invocation, with a packaged JSON Schema for editor support.
 
 **Remaining:**
 
 - Parallel, loop, `Try`/`Catch`/`Finally`, saga, and delay steps.
-- A JSON schema and JSON documents.
+- JSON documents.
 - Compile-equivalence tests between documents and fluent definitions.
 - Reusable activity and step template publishing and versioning.
 - Controlled expression-backed and code-backed activities behind a policy.

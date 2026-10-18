@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/HumanHub/IxIFlow/main/src/IxIFlow/schemas/workflow.schema.json",
+  "$id": "https://raw.githubusercontent.com/HumanHub/IxIFlow/v1.0.0/src/IxIFlow/schemas/workflow.schema.json",
   "title": "IxIFlow workflow",
   "type": "object",
   "description": "A workflow document with reusable templates, code assets and executable steps.",
