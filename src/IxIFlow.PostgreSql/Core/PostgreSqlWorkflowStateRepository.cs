@@ -97,7 +97,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
 
     private static DateTimeOffset? Timestamp(DateTime? value) => value is { } time ? Timestamp(time) : null;
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.OutboxClaim or Operation.OutboxMark or Operation.Save or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
+        operation is Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.Save or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
             or Operation.CancellationRequest or Operation.LeaseRelease
             ? await connection.BeginTransactionAsync() : null;
 
@@ -565,15 +565,15 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision)
-              VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @RunnableAtUtc, @StateJson, @Revision);
+                  (instance_id, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
+              VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
                   workflow_name = @WorkflowName, status = @Status,
-                  correlation_id = @CorrelationId,
+                  correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
                   runnable_at_utc = @RunnableAtUtc,
                   inbox_read_through = COALESCE(@InboxReadThrough, inbox_read_through),
                   state_json = @StateJson, revision = @Revision,
@@ -601,12 +601,12 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             """,
         Statement.Save => """
             INSERT INTO ixiflow_workflow_instances AS target
-                (instance_id, workflow_name, status, correlation_id, runnable_at_utc, state_json)
-            VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
+                (instance_id, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json)
+            VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
                 CASE WHEN @RunnableNow THEN clock_timestamp() ELSE @RunnableAtUtc END, @StateJson)
             ON CONFLICT (instance_id) DO UPDATE
             SET workflow_name = excluded.workflow_name, status = excluded.status,
-                correlation_id = excluded.correlation_id, runnable_at_utc = excluded.runnable_at_utc,
+                correlation_id = excluded.correlation_id, parent_instance_id = excluded.parent_instance_id, runnable_at_utc = excluded.runnable_at_utc,
                 state_json = excluded.state_json
             WHERE target.revision = 0
             RETURNING COALESCE(runnable_at_utc <= clock_timestamp(), false)
@@ -654,7 +654,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key = ANY(@Keys)
                 """,
-        _ => null
+        _ => RetentionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -666,7 +666,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     await connection.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtext('IxIFlow.WorkflowSchema'))",
         transaction: transaction);
     if (await connection.ExecuteScalarAsync<bool>(
-            "SELECT to_regclass('ix_ixiflow_outbox_deliveries_pending') IS NOT NULL",
+            "SELECT to_regclass('ix_ixiflow_tombstones_expiry') IS NOT NULL",
             transaction: transaction))
     {
         await transaction.CommitAsync();
@@ -680,6 +680,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             status varchar(50) COLLATE "C" NOT NULL,
             correlation_id varchar(100) COLLATE "C" NULL,
             runnable_at_utc timestamptz NULL,
+            ended_at_utc timestamptz NULL,
             state_json text NOT NULL,
             cancellation_json text NULL,
             cancellation_acknowledged boolean NOT NULL DEFAULT false,
@@ -764,6 +765,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             ON ixiflow_workflow_leases (expires_at_utc);
         """, transaction: transaction);
     await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
+    await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }

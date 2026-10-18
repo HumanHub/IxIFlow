@@ -291,5 +291,5 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
             ? status != WorkflowExecutionStatus.Running
             : status is WorkflowExecutionStatus.Success or WorkflowExecutionStatus.Faulted or
                 WorkflowExecutionStatus.Failed or WorkflowExecutionStatus.Cancelled or
-                WorkflowExecutionStatus.TimedOut;
+                WorkflowExecutionStatus.TimedOut or WorkflowExecutionStatus.Removed;
 }

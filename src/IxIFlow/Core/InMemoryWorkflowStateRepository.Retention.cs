@@ -1,0 +1,54 @@
+namespace IxIFlow.Core;
+
+public partial class InMemoryWorkflowStateRepository
+{
+    private readonly Dictionary<string, DateTime> _endedAt = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, WorkflowTombstone> _tombstones = new(StringComparer.Ordinal);
+
+    private WorkflowTombstone? ActiveTombstone(string id, DateTime now) =>
+        _tombstones.TryGetValue(id, out var row) && row.ExpiresAtUtc > now ? row : null;
+
+    private void RefuseRemoved(string id, DateTime now)
+    {
+        if (ActiveTombstone(id, now) != null)
+            throw new WorkflowEngineException(WorkflowErrorKind.InstanceRemoved,
+                $"Workflow instance '{id}' was removed by retention; its ID is reserved");
+    }
+
+    public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId)
+    {
+        lock (_claimLock)
+            return Task.FromResult(ActiveTombstone(instanceId, Now));
+    }
+
+    public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention,
+        int batchSize, CancellationToken cancellationToken = default)
+    {
+        RetentionSettings.Validate(finishedRetention, tombstoneRetention, batchSize);
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_claimLock)
+        {
+            var now = Now;
+            var expired = _tombstones.Values.Where(t => t.ExpiresAtUtc <= now)
+                .OrderBy(t => t.ExpiresAtUtc).ThenBy(t => t.InstanceId, StringComparer.Ordinal)
+                .Take(batchSize).ToArray();
+            foreach (var row in expired)
+                _tombstones.Remove(row.InstanceId);
+            var candidates = _instances.Values.Where(i => WorkflowStoreRules.IsTerminal(i.Status) &&
+                    _endedAt.TryGetValue(i.InstanceId, out var ended) && now - ended >= finishedRetention &&
+                    !_deliveries.Values.Any(d => d.Event.InstanceId == i.InstanceId && d.Status == OutboxDeliveryStatus.Pending) &&
+                    !_instances.Values.Any(child => child.ParentInstanceId == i.InstanceId && !WorkflowStoreRules.IsTerminal(child.Status)))
+                .OrderBy(i => _endedAt[i.InstanceId]).ThenBy(i => i.InstanceId, StringComparer.Ordinal)
+                .Take(batchSize).Select(i => i.InstanceId).ToArray();
+            foreach (var id in candidates)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                // Terminal children have already
+                // copied their complete result into the parent's durable inbox, so no notice is needed.
+                DeleteInstance(id);
+                _tombstones[id] = new WorkflowTombstone(id, now, now + tombstoneRetention);
+            }
+            return Task.FromResult(new RetentionResult(candidates.Length, expired.Length));
+        }
+    }
+}

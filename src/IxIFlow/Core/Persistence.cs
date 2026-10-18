@@ -123,6 +123,13 @@ public static class WorkflowStoreRules
 
 public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 {
+    /// <summary>Runs one bounded retention pass; pending deliveries and unfinished children keep their instance.</summary>
+    Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
+        CancellationToken cancellationToken = default) => Task.FromResult(new RetentionResult(0, 0));
+
+    /// <summary>The active retention tombstone, or null when the ID is not reserved.</summary>
+    Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) => Task.FromResult<WorkflowTombstone?>(null);
+
     /// <summary>
     /// Records a cancellation request outside the revisioned checkpoint so a remote
     /// caller never overwrites the running owner's state. The first request wins.
@@ -415,6 +422,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         var snapshot = commit.ReadTrunk();
         lock (_claimLock)
         {
+            RefuseRemoved(commit.InstanceId, Now);
             var key = (commit.InstanceId, commit.CommitId);
             var revision = _instances.TryGetValue(commit.InstanceId, out var stored) ? stored.Revision : 0;
             var owns = OwnsInstance(commit);
@@ -444,6 +452,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+            foreach (var child in commit.ChildStarts)
+                RefuseRemoved(child.ChildInstanceId, Now);
             // A child's ID is new; a commit that names an existing instance changes nothing.
             if (commit.ChildStarts.FirstOrDefault(child => _instances.ContainsKey(child.ChildInstanceId)) is { } taken)
                 throw new InvalidOperationException(
@@ -577,7 +587,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Event.Sequence)
                 : new EventAppendResult(EventAppendStatus.Conflict);
         if (!_instances.TryGetValue(workflowEvent.InstanceId, out var instance))
-            return new EventAppendResult(EventAppendStatus.NotFound);
+            return new EventAppendResult(ActiveTombstone(workflowEvent.InstanceId, now) != null
+                ? EventAppendStatus.Closed : EventAppendStatus.NotFound);
         var finished = WorkflowStoreRules.IsTerminal(instance.Status);
         // A finished instance takes no events; one sent to a wait is told why that wait closed.
         if (finished && workflowEvent.TargetWaitId == null)
@@ -721,6 +732,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     {
         lock (_claimLock)
         {
+            RefuseRemoved(instance.InstanceId, Now);
             if (instance.Revision != 0 ||
                 (_instances.TryGetValue(instance.InstanceId, out var stored) && stored.Revision != 0))
                 throw new InvalidOperationException("Revisioned instances require an atomic commit");
@@ -799,29 +811,34 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     public Task DeleteWorkflowInstanceAsync(string instanceId)
     {
         lock (_claimLock)
-        {
-            // A child its parent still waits for ends that wait as terminated.
-            if (_instances.TryGetValue(instanceId, out var deleted) && !WorkflowStoreRules.IsTerminal(deleted.Status) &&
-                deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
-                Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
-            _instances.TryRemove(instanceId, out _);
-            // The lease record stays so a recreated instance never reuses an epoch; its crashes go.
-            if (_leases.TryGetValue(instanceId, out var lease))
-                _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue, CrashCount = 0 };
-            _cancellations.Remove(instanceId);
-            _acknowledgedCancellations.Remove(instanceId);
-            DeleteOutbox(instanceId);
-            foreach (var key in _events.Keys.Where(key => key.InstanceId == instanceId).ToArray())
-                _events.Remove(key);
-            _inboxSequence.Remove(instanceId);
-            _inboxReadThrough.Remove(instanceId);
-            _waits.Remove(instanceId);
-            _traces.Remove(instanceId);
-            _parts.Remove(instanceId);
-            foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
-                _commits.Remove(key);
-        }
+            DeleteInstance(instanceId);
         return Task.CompletedTask;
+    }
+
+    // Caller holds _claimLock. Keep the compact lease fence so ID reuse never reuses an epoch.
+    private void DeleteInstance(string instanceId)
+    {
+        // A child its parent still waits for ends that wait as terminated.
+        if (_instances.TryGetValue(instanceId, out var deleted) && !WorkflowStoreRules.IsTerminal(deleted.Status) &&
+            deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
+            Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
+        _instances.TryRemove(instanceId, out _);
+        // The lease record stays so a recreated instance never reuses an epoch; its crashes go.
+        if (_leases.TryGetValue(instanceId, out var lease))
+            _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue, CrashCount = 0 };
+        _endedAt.Remove(instanceId);
+        _cancellations.Remove(instanceId);
+        _acknowledgedCancellations.Remove(instanceId);
+        DeleteOutbox(instanceId);
+        foreach (var key in _events.Keys.Where(key => key.InstanceId == instanceId).ToArray())
+            _events.Remove(key);
+        _inboxSequence.Remove(instanceId);
+        _inboxReadThrough.Remove(instanceId);
+        _waits.Remove(instanceId);
+        _traces.Remove(instanceId);
+        _parts.Remove(instanceId);
+        foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
+            _commits.Remove(key);
     }
 
     // The whole instance, its trunk with its parts, as a copy. Caller holds _claimLock.

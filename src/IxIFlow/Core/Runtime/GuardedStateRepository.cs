@@ -29,6 +29,14 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public static IWorkflowStateRepository Wrap(IWorkflowStateRepository store) =>
         store as GuardedStateRepository ?? new GuardedStateRepository(store);
 
+    public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => _store.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken),
+            "Purging retained workflows");
+
+    public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
+        Guard(() => _store.GetTombstoneAsync(instanceId), $"Reading retention tombstone for '{instanceId}'");
+
     public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
         Guard(() => _store.RequestCancellationAsync(instanceId, reason),
             $"Requesting cancellation of workflow instance '{instanceId}'");
@@ -127,7 +135,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         {
             return await call();
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException &&
+            error is not WorkflowEngineException { Kind: WorkflowErrorKind.InstanceRemoved })
         {
             throw Failure(operation, error);
         }
@@ -139,7 +148,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         {
             await call();
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException &&
+            error is not WorkflowEngineException { Kind: WorkflowErrorKind.InstanceRemoved })
         {
             throw Failure(operation, error);
         }
