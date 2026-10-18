@@ -625,7 +625,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         var currentRevision = current?.Revision ?? 0;
         var receipt = await connection.QuerySingleOrDefaultAsync<CommitReceipt>(RequiredSql(Statement.Receipt), new { commit.InstanceId, commit.CommitId }, transaction);
         // Receipts are deleted with the instance, so a present receipt belongs to its current creation.
-        if (receipt == null && commit.ExpectedRevision > 0 && commit.Epoch != 0 &&
+        if (receipt == null && commit.ExpectedRevision > 0 &&
             current != null && current.Incarnation != commit.Incarnation)
         {
             await transaction.CommitAsync();
