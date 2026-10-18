@@ -240,9 +240,10 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit);
 
     /// <summary>
-    /// Acquires an absent or expired execution lease for one instance. The grant's epoch is greater
-    /// than every epoch previously granted by this store, across all instances, deletions and
-    /// re-creations. Gaps are allowed. When the previous lease expired without
+    /// Acquires an absent or expired execution lease for one instance. An epoch is never granted
+    /// twice in a store, and epochs strictly increase for each instance ID, including across deletions
+    /// and re-creations. Across instances, epochs follow allocation order, with gaps allowed;
+    /// grants may complete in a different order. When the previous lease expired without
     /// being released while the instance was <see cref="WorkflowStatus.Running"/>, its owner lost the
     /// instance with work in flight, and the grant's crash count is one higher, in the same atomic
     /// step. Returns null while another owner holds the lease or the ID has a live tombstone,
@@ -446,9 +447,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
             var crashed = exists && lease.ExpiresAtUtc != DateTime.MinValue &&
                 _instances.TryGetValue(instanceId, out var instance) && instance.Status == WorkflowStatus.Running;
-            if (_executionEpoch == long.MaxValue)
-                throw new InvalidOperationException("The execution lease epoch sequence is exhausted");
-            var grant = new ExecutionLeaseGrant(Interlocked.Increment(ref _executionEpoch),
+            var grant = new ExecutionLeaseGrant(++_executionEpoch,
                 (exists ? lease.CrashCount : 0) + (crashed ? 1 : 0));
             _leases[instanceId] = (token, now.Add(duration), grant.Epoch, grant.CrashCount);
             return Task.FromResult<ExecutionLeaseGrant?>(grant);
