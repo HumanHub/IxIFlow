@@ -117,7 +117,7 @@ public interface IWorkflowClient
     /// <summary>
     /// Continues an interrupted or due instance without an external event. An instance stopped for
     /// an operator, at a resource limit or in quarantine, stays stopped and is returned as
-    /// NeedsResolution.
+    /// NeedsResolution. A finished instance returns its saved result.
     /// </summary>
     Task<WorkflowExecutionResult> RecoverAsync(
         string instanceId,
