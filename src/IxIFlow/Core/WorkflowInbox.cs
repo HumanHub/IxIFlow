@@ -5,8 +5,8 @@ using System.Text.Json;
 namespace IxIFlow.Core;
 
 /// <summary>
-/// An event sent to one workflow instance (D-02). <see cref="EventId"/> identifies it for
-/// deduplication. <see cref="TargetWaitId"/>, when set, names the one wait it may satisfy (D-33);
+/// An event sent to one workflow instance. <see cref="EventId"/> identifies it for
+/// deduplication. <see cref="TargetWaitId"/>, when set, names the one wait it may satisfy;
 /// otherwise it may satisfy a wait that is open when it arrives, with <see cref="Key"/> when one is
 /// given and with any key otherwise.
 /// </summary>
@@ -45,10 +45,10 @@ public sealed record WorkflowEvent(
 /// One page of pending events. <see cref="ReadThrough"/> is the inbox sequence the page covers,
 /// including events already settled, so a run that has seen the page can mark the inbox read up to
 /// it. <see cref="OpenWaits"/> are the instance's open waits with the inbox sequence each opened at:
-/// an event addressed by key alone may satisfy only a wait that opened before it arrived (D-33).
+/// an event addressed by key alone may satisfy only a wait that opened before it arrived.
 /// <see cref="Deadlines"/> are the open waits' deadlines and <see cref="StoreTimeUtc"/> the store's
 /// time, read together with the events, so every event received before a deadline that is due at
-/// that time is on this page or an earlier one (D-35).
+/// that time is on this page or an earlier one.
 /// </summary>
 public sealed record InboxPage(
     IReadOnlyList<StoredWorkflowEvent> Events,
@@ -205,7 +205,7 @@ public enum WaitCloseReason
 /// <summary>
 /// A wait a commit opens. The store stamps it with the instance's inbox sequence at that commit and,
 /// when it has a <paramref name="Timeout"/>, with a deadline: the store's time at that commit plus the
-/// timeout (D-35).
+/// timeout.
 /// </summary>
 public sealed record OpenedWait(string WaitId, WaitKind Kind, string Key, string EventType, TimeSpan? Timeout,
     string? DefaultPayloadJson = null);
@@ -213,7 +213,7 @@ public sealed record OpenedWait(string WaitId, WaitKind Kind, string Key, string
 /// <summary>
 /// An open wait a commit gives its deadline: a request's reply wait, when its <c>WaitFor</c> is reached.
 /// The deadline is the store's time at that commit plus <paramref name="Timeout"/>; a wait that has a
-/// deadline keeps it (D-35).
+/// deadline keeps it.
 /// </summary>
 public sealed record ArmedWait(string WaitId, TimeSpan Timeout);
 
@@ -221,7 +221,7 @@ public sealed record ArmedWait(string WaitId, TimeSpan Timeout);
 public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
 
 /// <summary>
-/// A child workflow a parent's commit starts (D-17): the child's whole initial instance as JSON, which
+/// A child workflow a parent's commit starts: the child's whole initial instance as JSON, which
 /// the store saves as the child's revision 1, runnable at once, in the same transaction as the parent's
 /// wait for it.
 /// </summary>
@@ -231,7 +231,7 @@ public sealed record ChildStart(string ChildInstanceId, string Payload, string P
 
     /// <summary>
     /// What a store saves the child by, read from the payload once when the start is made, so a store writes the
-    /// payload as it comes and takes its columns from here (D-03).
+    /// payload as it comes and takes its columns from here.
     /// </summary>
     public CommittedInstance? Instance => _child is { } child ? CommittedInstance.Of(child) : null;
 
@@ -259,12 +259,12 @@ public sealed record ChildCancellation(string ChildInstanceId, CancellationReaso
 
 /// <summary>
 /// The completion a child's terminal commit appends to its parent's inbox, addressed to the parent's
-/// wait for it (D-17). The child's commit applies whatever becomes of it.
+/// wait for it. The child's commit applies whatever becomes of it.
 /// </summary>
 public sealed record ParentNotice(string ParentInstanceId, string ParentWaitId, string EventId, string EventType,
     string PayloadJson);
 
-/// <summary>A row of the waits table (D-33): open, or closed with its reason.</summary>
+/// <summary>A row of the waits table: open, or closed with its reason.</summary>
 public sealed record StoredWait(
     string InstanceId,
     string WaitId,
@@ -312,7 +312,7 @@ public sealed record WaitQuery(
     int Limit = 100);
 
 /// <summary>
-/// The per-instance inbox and waits table (D-02, D-32, D-33). Events are stored before they are
+/// The per-instance inbox and waits table. Events are stored before they are
 /// acknowledged and settled by the commit that takes them, so each is consumed at most once. Waits are
 /// opened and closed by commits. Settled events and closed waits are kept until the instance is
 /// deleted, so a redelivery and a late answer are still recognized.
@@ -322,7 +322,7 @@ public interface IWorkflowInbox
     /// <summary>
     /// Stores an event before it is acknowledged, received at the store's time. An event for a closed or
     /// unknown wait, one addressed by key when no wait with that key is open, and one that arrives when
-    /// every wait it could reach is past its deadline, is recorded as rejected (D-33, D-35). A pending
+    /// every wait it could reach is past its deadline, is recorded as rejected. A pending
     /// event makes a running or suspended instance runnable in the same step; a stopped one waits for
     /// its release.
     /// </summary>
@@ -350,7 +350,7 @@ public interface IWorkflowInbox
 
     /// <summary>
     /// The inbox sequence of each instance that exists, read in one call, so a host can tell its busy
-    /// owners that events arrived (D-32).
+    /// owners that events arrived.
     /// </summary>
     Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds);
 }

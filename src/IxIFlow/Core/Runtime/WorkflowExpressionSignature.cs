@@ -9,7 +9,7 @@ internal static class WorkflowExpressionSignature
 {
     /// <summary>
     /// The signature of <paramref name="expression"/>. A <c>ForEach</c> handle it captures is named by its
-    /// step's place in <paramref name="handles"/> (D-34).
+    /// step's place in <paramref name="handles"/>.
     /// </summary>
     public static string Of(LambdaExpression expression, IReadOnlyDictionary<ItemScope, string>? handles = null)
     {

@@ -3,7 +3,7 @@ using IxIFlow.Core;
 namespace IxIFlow.Builders.Interfaces;
 
 /// <summary>
-/// What follows a saga handler's undo (D-36). With none of these, the original error is raised again once the
+/// What follows a saga handler's undo. With none of these, the original error is raised again once the
 /// undo has run.
 /// </summary>
 public interface ISagaContinuationBuilder<TWorkflowData, TPreviousStepData> where TPreviousStepData : class
@@ -26,7 +26,7 @@ public interface ISagaContinuationBuilder<TWorkflowData, TPreviousStepData> wher
     /// Runs the saga again from the first step the undo reached, or from the step that failed when nothing was
     /// undone; kept steps do not run again, and a kept request keeps its wait and answer. When the saga cannot
     /// retry after all (no attempts left, an undo failed, the handler's steps failed, or the instance is
-    /// cancelled) it undoes the kept steps too, then ends (D-36).
+    /// cancelled) it undoes the kept steps too, then ends.
     /// </summary>
     /// <param name="maxAttempts">Maximum number of retry attempts</param>
     void ThenRetry(int maxAttempts);

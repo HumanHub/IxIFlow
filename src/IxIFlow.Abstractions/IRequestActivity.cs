@@ -1,7 +1,7 @@
 namespace IxIFlow.Core;
 
 /// <summary>
-/// An activity that sends a request the workflow then waits for (D-33): an approval email, a payment
+/// An activity that sends a request the workflow then waits for: an approval email, a payment
 /// whose provider calls back, a task for a person. The workflow runs it with
 /// <c>.Request&lt;TActivity&gt;(name)</c> and waits with <c>.WaitFor&lt;TReply&gt;(name)</c>. The
 /// activity puts <see cref="IActivityContext.Reply"/> into what it sends; only an answer carrying that

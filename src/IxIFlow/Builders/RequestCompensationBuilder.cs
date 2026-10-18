@@ -4,7 +4,7 @@ using IxIFlow.Core;
 
 namespace IxIFlow.Builders;
 
-/// <summary>Builds the compensation of a saga request that reads the request's answer (D-36).</summary>
+/// <summary>Builds the compensation of a saga request that reads the request's answer.</summary>
 public sealed class RequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData, TReply>(
     CompensationActivityInfo compensationInfo)
     : IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData, TReply>

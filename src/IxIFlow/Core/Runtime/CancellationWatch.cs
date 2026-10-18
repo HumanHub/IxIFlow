@@ -4,11 +4,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// One cancellation watch for every instance this host runs (B-10): it reads the cancellation
+/// One cancellation watch for every instance this host runs: it reads the cancellation
 /// requests of all watched instances in one store call per interval and tells each lease whose
 /// instance has a request. Instances do not poll for cancellation individually; a run also learns
 /// of a request from its own commit replies. With the requests it reads the inbox sequences of the
-/// instances whose leases asked, so a busy owner learns that events arrived (D-32). The watch needs a
+/// instances whose leases asked, so a busy owner learns that events arrived. The watch needs a
 /// singleton store.
 /// </summary>
 internal sealed class CancellationWatch : IDisposable, IAsyncDisposable

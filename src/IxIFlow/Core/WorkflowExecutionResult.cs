@@ -34,7 +34,7 @@ public class WorkflowExecutionResult
     public object? WorkflowData { get; set; }
 }
 
-/// <summary>What became of an event sent to an instance (D-33).</summary>
+/// <summary>What became of an event sent to an instance.</summary>
 public sealed record EventReceipt(string EventId, EventOutcome Outcome, EventRejection? Rejection = null)
 {
     /// <summary>True when a wait took the event.</summary>

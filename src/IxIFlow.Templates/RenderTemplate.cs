@@ -7,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Templates;
 
 /// <summary>
-/// Renders a pinned template version against a typed model (H-02). Rendering has no effects: it reads a published
+/// Renders a pinned template version against a typed model. Rendering has no effects: it reads a published
 /// version, which never changes, and produces text. A render that a crash interrupted is therefore simply run again
 /// on recovery, from the inputs its first attempt saved, and produces the same text. Sending what it rendered is a
 /// separate step, such as <see cref="SendTemplateMessage"/>.

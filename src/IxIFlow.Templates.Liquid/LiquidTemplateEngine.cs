@@ -11,7 +11,7 @@ using Microsoft.Extensions.FileProviders;
 namespace IxIFlow.Templates.Liquid;
 
 /// <summary>
-/// Liquid templates, rendered by Fluid (H-03). A template reads only its model's members: the public properties and
+/// Liquid templates, rendered by Fluid. A template reads only its model's members: the public properties and
 /// fields of the model type and of the types reachable through them; any other object is nil to it. Publishing checks
 /// every variable, member and filter against the model type. A render has no clock, no file system, no host time zone
 /// and no other template to include, so its text depends only on the template, the model and the culture.

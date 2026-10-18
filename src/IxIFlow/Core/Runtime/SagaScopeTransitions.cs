@@ -127,7 +127,7 @@ internal static class SagaScopeTransitions
 
     /// <summary>
     /// Records a forward activity that returned, where it ran, and for a request its invocation and any answer
-    /// already kept for it (D-36).
+    /// already kept for it.
     /// </summary>
     public static void CompleteForwardActivity(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, WorkflowStep activity, object? output, IServiceProvider services,
@@ -502,7 +502,7 @@ internal static class SagaScopeTransitions
     /// <summary>
     /// Whether the continuation runs a saga's cleanup: its compensations, or the steps of a handler that does not
     /// retry. A retry handler's own steps are not cleanup: no retry follows a cancellation, so they are cancelled
-    /// like the forward pass, and the saga then undoes what it kept (D-36).
+    /// like the forward pass, and the saga then undoes what it kept.
     /// </summary>
     public static bool IsInsideCompensation(ContinuationState continuation) =>
         continuation.Stack.Any(frame => frame.SagaState is { Phase: SagaPhase.Compensating } state &&
@@ -516,7 +516,7 @@ internal static class SagaScopeTransitions
     /// <summary>
     /// Cancellation unwinding reaches a saga whose retry handler ran, or still runs, its own steps: the
     /// handler's frames go, no retry follows, and the saga undoes the steps it kept before the cancellation goes
-    /// on (D-36).
+    /// on.
     /// </summary>
     public static bool CancelRetryHandler(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, int index)
@@ -545,7 +545,7 @@ internal static class SagaScopeTransitions
 
     /// <summary>
     /// A cancellation reaching a saga that compensates finishes the compensation and then cancels; a saga
-    /// compensating for a retry undoes the steps it kept for it too (D-36).
+    /// compensating for a retry undoes the steps it kept for it too.
     /// </summary>
     public static void PreserveCompensation(ContinuationState continuation)
     {
@@ -562,7 +562,7 @@ internal static class SagaScopeTransitions
 
     /// <summary>
     /// The frame index of a saga whose retry handler's own steps are running; a failure there ends the saga as
-    /// terminated, once the steps kept for the retry are undone (D-36).
+    /// terminated, once the steps kept for the retry are undone.
     /// </summary>
     public static int RetryHandlerIndex(WorkflowScopeCatalog scopes, ContinuationState continuation)
     {
