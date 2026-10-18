@@ -35,6 +35,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RunControl>();
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
         services.AddScoped<WorkflowHost.InstanceOperations>();
+        services.TryAddSingleton(new OutboxSettings());
+        // Stops after the workflow host, so its final commits can be delivered during drain.
+        services.AddHostedService<WorkflowOutboxService>();
         services.AddHostedService<WorkflowRecoveryService>();
         // Registered after the scanner so it stops first: hosted services stop in reverse order,
         // and the host drains the work the scanner admitted.

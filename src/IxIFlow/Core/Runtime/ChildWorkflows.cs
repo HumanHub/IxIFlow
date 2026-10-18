@@ -19,8 +19,7 @@ internal sealed class ChildCompleted
     /// <summary>The notice a child's terminal commit carries, or null for an instance with no parent waiting.</summary>
     public static ParentNotice? NoticeOf(WorkflowInstance instance, ExecutionCheckpoint checkpoint) =>
         instance is { ParentInstanceId: { } parent, ParentWaitId: { } wait } &&
-        instance.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
-            WorkflowStatus.Terminated or WorkflowStatus.TimedOut
+        WorkflowStoreRules.IsTerminal(instance.Status)
             ? new ParentNotice(parent, wait, $"child-completed-{instance.InstanceId}", EventType,
                 JsonSerializer.Serialize(new ChildCompleted
                 {

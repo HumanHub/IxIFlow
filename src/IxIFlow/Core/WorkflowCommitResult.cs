@@ -340,8 +340,7 @@ public sealed class CheckpointCommit
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.ParentWaitId, nameof(parentNotice));
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.EventId, nameof(parentNotice));
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.EventType, nameof(parentNotice));
-            if (instance.Status is not (WorkflowStatus.Completed or WorkflowStatus.Failed or WorkflowStatus.Cancelled or
-                    WorkflowStatus.Terminated or WorkflowStatus.TimedOut) ||
+            if (!WorkflowStoreRules.IsTerminal(instance.Status) ||
                 instance.ParentInstanceId != parentNotice.ParentInstanceId ||
                 instance.ParentWaitId != parentNotice.ParentWaitId)
                 throw new ArgumentException("Only a child's terminal commit notifies its own parent", nameof(parentNotice));

@@ -21,7 +21,7 @@ public sealed class ExecutorBoundaryGuardTests
 
     private static readonly Type[] HostOnly =
     [
-        typeof(IWorkflowStateRepository), typeof(IWorkflowCompletionOutbox), typeof(GuardedStateRepository),
+        typeof(IWorkflowStateRepository), typeof(IWorkflowOutbox), typeof(GuardedStateRepository),
         typeof(WorkflowExecutionLease), typeof(InProcessInstanceGate), typeof(IWorkflowClient),
         typeof(IWorkflowVersionRegistry), typeof(ChildWorkflows), typeof(WorkflowHost.InstanceOperations), typeof(WorkflowHost.SlotClient),
         typeof(WorkflowHost), typeof(HostedWorkflowClient)
