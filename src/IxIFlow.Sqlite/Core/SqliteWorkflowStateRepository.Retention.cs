@@ -14,6 +14,17 @@ public sealed partial class SqliteWorkflowStateRepository
 
     private static string? RetentionSql(Statement statement) => statement switch
     {
+        Statement.ExpireUnattemptedDeliveries => """
+            UPDATE ixiflow_outbox_deliveries
+            SET status=2, last_error=@Error, lease_token=NULL, lease_until_utc=NULL
+            WHERE (event_id, publisher_name) IN (
+                SELECT d.event_id, d.publisher_name
+                FROM ixiflow_outbox_deliveries d
+                JOIN ixiflow_outbox_events e ON e.event_id=d.event_id
+                WHERE d.status=0 AND d.attempts=0 AND d.first_attempt_at_utc IS NULL AND e.occurred_at_utc<=@Cutoff
+                ORDER BY e.occurred_at_utc, d.event_id, d.publisher_name LIMIT @Limit
+            )
+            """,
         Statement.StampEnd => "UPDATE ixiflow_workflow_instances SET ended_at_utc=COALESCE(ended_at_utc, @Now) WHERE instance_id=@InstanceId",
         Statement.Tombstone => """
             SELECT instance_id AS InstanceId, removed_at_utc AS RemovedAtUtc, expires_at_utc AS ExpiresAtUtc

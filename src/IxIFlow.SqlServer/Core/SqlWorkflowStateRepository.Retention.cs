@@ -17,6 +17,16 @@ public sealed partial class SqlWorkflowStateRepository
 
     private static string? RetentionSql(Statement statement) => statement switch
     {
+        Statement.ExpireUnattemptedDeliveries => """
+            ;WITH candidates AS (
+                SELECT TOP (@Limit) d.*
+                FROM dbo.IxIFlowOutboxDeliveries d WITH (UPDLOCK, READPAST, ROWLOCK)
+                JOIN dbo.IxIFlowOutboxEvents e ON e.EventId=d.EventId
+                WHERE d.Status=0 AND d.Attempts=0 AND d.FirstAttemptAtUtc IS NULL AND e.OccurredAtUtc<=@Cutoff
+                ORDER BY e.OccurredAtUtc, d.EventId, d.PublisherName
+            )
+            UPDATE candidates SET Status=2, LastError=@Error, LeaseToken=NULL, LeaseUntilUtc=NULL
+            """,
         Statement.RetentionLock => """
             DECLARE @r INT;
             EXEC @r=sys.sp_getapplock @Resource=N'IxIFlow.Retention', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=30000;

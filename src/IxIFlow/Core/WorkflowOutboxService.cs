@@ -206,7 +206,10 @@ internal sealed class WorkflowOutboxService(IWorkflowStateRepository repository,
     }
 }
 
-/// <summary>Concurrency is independent of workflow slots; retry age starts at the first claim on the store clock.</summary>
+/// <summary>
+/// Concurrency is independent of workflow slots. Retry age starts at the first claim; maintenance
+/// gives up never-claimed deliveries after the same horizon from their event time, on the store clock.
+/// </summary>
 public sealed record OutboxSettings
 {
     public int Concurrency { get; init; }

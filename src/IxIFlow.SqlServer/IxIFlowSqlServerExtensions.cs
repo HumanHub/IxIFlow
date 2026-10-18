@@ -18,7 +18,8 @@ public static class IxIFlowSqlServerExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         builder.ChooseStore("SQL Server");
         builder.Services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(
-            new SqlWorkflowStateRepository(connectionString)));
+            provider => new SqlWorkflowStateRepository(connectionString,
+                outboxSettings: provider.GetRequiredService<OutboxSettings>())));
         return builder;
     }
 }

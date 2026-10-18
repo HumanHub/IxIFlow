@@ -149,7 +149,9 @@ public sealed class RetentionHostTests
     public async Task NeverAttemptedDeliveriesProduceAPublisherWarningAndMetric()
     {
         var time = new FakeTimeProvider();
-        var store = new InMemoryWorkflowStateRepository(time);
+        // The instance passes 30-day retention while the delivery remains inside its horizon.
+        var store = new InMemoryWorkflowStateRepository(time,
+            new OutboxSettings(retryHorizon: TimeSpan.FromDays(60)));
         var publisher = Guid.NewGuid().ToString("N");
         await store.RegisterPublisherAsync(publisher, [OutboxEvent.WorkflowCompleted]);
         await store.SaveWorkflowInstanceAsync(new WorkflowInstance
