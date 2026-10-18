@@ -11,7 +11,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// until it is marked published (D-11). Publishing it is D-11's.
 /// </summary>
 [Trait("Feature", "durability")]
-public sealed class WorkflowCompletionOutboxTests
+public sealed class WorkflowCompletionOutboxTests : IClassFixture<SqliteTestDatabase<WorkflowCompletionOutboxTests>>
 {
     [Fact]
     public async Task ExpiredMemoryOutboxClaimCanBeRecovered()
@@ -27,49 +27,23 @@ public sealed class WorkflowCompletionOutboxTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task ExpiredSqlOutboxClaimCanBeRecovered()
-    {
-        var repository = new SqlWorkflowStateRepository(
-            SqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString);
-        // Long enough that the refusal right after the claim cannot land after it on SQL Server's clock; the
-        // new host then claims again until the dead host's claim has expired.
-        await VerifyExpiredClaimCanBeRecovered(repository, TimeSpan.FromSeconds(2), async reclaim =>
-        {
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-            while (true)
-            {
-                var claimed = (await reclaim()).ToList();
-                if (claimed.Count > 0)
-                    return claimed;
-                Assert.True(DateTime.UtcNow < deadline, "The expired claim was never recovered");
-                await Task.Delay(100);
-            }
-        });
-    }
+    public Task ExpiredSqlOutboxClaimCanBeRecovered() => VerifyExpiredStoreClaimCanBeRecovered(_ => new SqlWorkflowStateRepository(SqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString), TimeSpan.FromSeconds(2));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task ExpiredPostgreSqlOutboxClaimCanBeRecovered()
-    {
-        var repository = new PostgreSqlWorkflowStateRepository(
-            PostgreSqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString);
-        // Long enough that the refusal right after the claim cannot land after it on PostgreSQL's clock; the
-        // new host then claims again until the dead host's claim has expired.
-        await VerifyExpiredClaimCanBeRecovered(repository, TimeSpan.FromSeconds(2), async reclaim =>
-        {
-            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-            while (true)
-            {
-                var claimed = (await reclaim()).ToList();
-                if (claimed.Count > 0)
-                    return claimed;
-                Assert.True(DateTime.UtcNow < deadline, "The expired claim was never recovered");
-                await Task.Delay(100);
-            }
-        });
-    }
+    public Task ExpiredPostgreSqlOutboxClaimCanBeRecovered() => VerifyExpiredStoreClaimCanBeRecovered(_ => new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString), TimeSpan.FromSeconds(2));
 
     // The dead host's claim lasts deadHostClaim; reclaimOnceExpired lets it expire and claims for the new host.
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task ExpiredSqliteOutboxClaimCanBeRecovered()
+    {
+        var time = new FakeTimeProvider();
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString, time);
+        await VerifyExpiredStoreClaimCanBeRecovered(_ => repository, TimeSpan.FromMilliseconds(50), time);
+    }
     private static async Task VerifyExpiredClaimCanBeRecovered(IWorkflowStateRepository repository,
         TimeSpan deadHostClaim,
         Func<Func<Task<IEnumerable<WorkflowInstance>>>, Task<IEnumerable<WorkflowInstance>>> reclaimOnceExpired)
@@ -156,4 +130,29 @@ public sealed class WorkflowCompletionOutboxTests
             await master.ExecuteAsync($"DROP DATABASE [{databaseName}]");
         }
     }
+    private static async Task VerifyExpiredStoreClaimCanBeRecovered(Func<TimeProvider, IWorkflowStateRepository> newRepository, TimeSpan duration, FakeTimeProvider? time = null)
+    {
+        var repository = newRepository(time ?? TimeProvider.System);
+        // Long enough that the refusal right after the claim cannot land after it on the store's clock; the
+        // new host then claims again until the dead host's claim has expired.
+        await VerifyExpiredClaimCanBeRecovered(repository, duration, async reclaim =>
+        {
+            if (time != null)
+            {
+                time.Advance(TimeSpan.FromMilliseconds(200));
+                return await reclaim();
+            }
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (true)
+            {
+                var claimed = (await reclaim()).ToList();
+                if (claimed.Count > 0)
+                    return claimed;
+                Assert.True(DateTime.UtcNow < deadline, "The expired claim was never recovered");
+                await Task.Delay(100);
+            }
+        });
+    }
+
+
 }

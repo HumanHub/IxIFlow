@@ -17,7 +17,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// </summary>
 [Trait("Feature", "durability")]
 [Trait("Spec", "A-08")]
-public sealed class CheckpointPartsTests
+public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<CheckpointPartsTests>>
 {
     [Fact]
     public Task TheMemoryStoreKeepsAnInstanceAsATrunkAndParts() =>
@@ -34,6 +34,15 @@ public sealed class CheckpointPartsTests
         StoresAnInstanceAsATrunkAndPartsAsync(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CheckpointPartsTests>.ConnectionString));
 
     [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteKeepsAnInstanceAsATrunkAndParts()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<CheckpointPartsTests>.ConnectionString);
+        await StoresAnInstanceAsATrunkAndPartsAsync(repository);
+    }
+
+    [Fact]
     public Task AMemoryReadNeverMixesTwoCommits() =>
         ReadsNeverMixTwoCommitsAsync(new InMemoryWorkflowStateRepository());
 
@@ -46,6 +55,18 @@ public sealed class CheckpointPartsTests
     [Trait("Category", "PostgreSqlIntegration")]
     public Task APostgreSqlReadNeverMixesTwoCommits() =>
         ReadsNeverMixTwoCommitsAsync(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CheckpointPartsTests>.ConnectionString));
+
+    // The finished items of a parallel ForEach are stored in chunks of a fixed number of items, so an item finishing
+    // rewrites one small part however long the list is, and they read back whole.
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task ASqliteReadNeverMixesTwoCommits()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<CheckpointPartsTests>.ConnectionString);
+        await ReadsNeverMixTwoCommitsAsync(repository);
+    }
 
     // The finished items of a parallel ForEach are stored in chunks of a fixed number of items, so an item finishing
     // rewrites one small part however long the list is, and they read back whole.

@@ -14,7 +14,7 @@ using Npgsql;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "durability")]
-public sealed class ExecutionLeaseContractTests
+public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDatabase<ExecutionLeaseContractTests>>
 {
     [Fact]
     public Task MemoryLeaseIsExclusive() => VerifyExclusiveLease(new InMemoryWorkflowStateRepository());
@@ -74,57 +74,24 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Spec", "C-02")]
     public Task PostgreSqlLeaseIsExclusive() => VerifyExclusiveLease(PostgreSqlRepository());
 
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteLeaseIsExclusive()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString);
+        await VerifyExclusiveLease(repository);
+    }
+
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "C-02")]
-    public async Task SqlConcurrentFirstLeaseHasOneOwner()
-    {
-        var instanceId = Guid.NewGuid().ToString("N");
-        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var repositories = Enumerable.Range(0, 8).Select(_ => SqlRepository()).ToArray();
-        try
-        {
-            var attempts = repositories.Select(async (repository, index) =>
-            {
-                await start.Task;
-                return await repository.TryAcquireExecutionLeaseAsync(instanceId,
-                    $"host-{index}", TimeSpan.FromSeconds(10));
-            }).ToArray();
-            start.SetResult();
-
-            Assert.Single((await Task.WhenAll(attempts)).Where(epoch => epoch != null));
-        }
-        finally
-        {
-            await repositories[0].DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
+    public Task SqlConcurrentFirstLeaseHasOneOwner() => VerifyConcurrentFirstLeaseHasOneOwner(SqlRepository);
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "C-02")]
-    public async Task PostgreSqlConcurrentFirstLeaseHasOneOwner()
-    {
-        var instanceId = Guid.NewGuid().ToString("N");
-        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var repositories = Enumerable.Range(0, 8).Select(_ => PostgreSqlRepository()).ToArray();
-        try
-        {
-            var attempts = repositories.Select(async (repository, index) =>
-            {
-                await start.Task;
-                return await repository.TryAcquireExecutionLeaseAsync(instanceId,
-                    $"host-{index}", TimeSpan.FromSeconds(10));
-            }).ToArray();
-            start.SetResult();
-
-            Assert.Single((await Task.WhenAll(attempts)).Where(epoch => epoch != null));
-        }
-        finally
-        {
-            await repositories[0].DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
+    public Task PostgreSqlConcurrentFirstLeaseHasOneOwner() => VerifyConcurrentFirstLeaseHasOneOwner(PostgreSqlRepository);
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
@@ -133,6 +100,16 @@ public sealed class ExecutionLeaseContractTests
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSqlExpiredLeaseCanBeReclaimed() => VerifyExpiredLease(PostgreSqlRepository());
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteExpiredLeaseCanBeReclaimed()
+    {
+        var time = new FakeTimeProvider();
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+        await VerifyExpiredLease(repository, time);
+    }
 
     // A second on each side of the renewal and of the check, so a slow SQL Server cannot cross either.
     [SqlServerFact]
@@ -145,6 +122,17 @@ public sealed class ExecutionLeaseContractTests
     public Task PostgreSqlRenewalKeepsTheOwner() => VerifyRenewal(PostgreSqlRepository(), TimeSpan.FromSeconds(3),
         TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
 
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteRenewalKeepsTheOwner()
+    {
+        var time = new FakeTimeProvider();
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+        await VerifyRenewal(repository, TimeSpan.FromSeconds(1),
+            TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(750), time);
+    }
+
     // A lease long enough for the first commit on a cold store connection; the takeover waits it out.
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
@@ -156,6 +144,17 @@ public sealed class ExecutionLeaseContractTests
     public Task PostgreSqlFormerOwnerCannotCommitAfterTakeover() => VerifyFencing(PostgreSqlRepository(), TimeSpan.FromSeconds(1),
         TimeSpan.FromMilliseconds(1_200));
 
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteFormerOwnerCannotCommitAfterTakeover()
+    {
+        var time = new FakeTimeProvider();
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+        await VerifyFencing(repository, TimeSpan.FromMilliseconds(100),
+            TimeSpan.FromMilliseconds(300), time);
+    }
+
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlFormerOwnerCannotReplayReceiptAfterTakeover() =>
@@ -166,6 +165,16 @@ public sealed class ExecutionLeaseContractTests
     public Task PostgreSqlFormerOwnerCannotReplayReceiptAfterTakeover() =>
         VerifyReceiptFencing(PostgreSqlRepository());
 
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteFormerOwnerCannotReplayReceiptAfterTakeover()
+    {
+        var time = new FakeTimeProvider();
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+        await VerifyReceiptFencing(repository, time);
+    }
+
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlOnlyTheOwnerCanReleaseItsLease() => VerifyRelease(SqlRepository());
@@ -174,6 +183,15 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSqlOnlyTheOwnerCanReleaseItsLease() => VerifyRelease(PostgreSqlRepository());
 
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteOnlyTheOwnerCanReleaseItsLease()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString);
+        await VerifyRelease(repository);
+    }
+
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlRepeatedStartUsesOneInstance() => VerifyRepeatedStart(SqlRepository());
@@ -181,6 +199,15 @@ public sealed class ExecutionLeaseContractTests
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSqlRepeatedStartUsesOneInstance() => VerifyRepeatedStart(PostgreSqlRepository());
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteRepeatedStartUsesOneInstance()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString);
+        await VerifyRepeatedStart(repository);
+    }
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
@@ -191,6 +218,16 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSqlRecoveryQueryExcludesLiveOwnersAndFindsExpiredLeases() =>
         VerifyRecoveryQuery(PostgreSqlRepository());
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteRecoveryQueryExcludesLiveOwnersAndFindsExpiredLeases()
+    {
+        var time = new FakeTimeProvider();
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+        await VerifyRecoveryQuery(repository, time);
+    }
 
     [Fact]
     public async Task SuspendedInstanceCanResumeOnAnotherHost()
@@ -384,16 +421,19 @@ public sealed class ExecutionLeaseContractTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlCompletionWinsCancellationArrivingAfterWorkFinished()
-    {
-        await VerifyTerminalCommitWinsLateCancellation(SqlRepository(), WorkflowStatus.Completed);
-    }
+    public Task SqlCompletionWinsCancellationArrivingAfterWorkFinished() => VerifyTerminalCommitWinsLateCancellation(SqlRepository(), WorkflowStatus.Completed);
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlCompletionWinsCancellationArrivingAfterWorkFinished()
+    public Task PostgreSqlCompletionWinsCancellationArrivingAfterWorkFinished() => VerifyTerminalCommitWinsLateCancellation(PostgreSqlRepository(), WorkflowStatus.Completed);
+
+    [Fact]
+    [Trait("Spec", "C-11")]
+    [Trait("Category", "SqliteIntegration")]
+    public async Task SqliteCompletionWinsCancellationArrivingAfterWorkFinished()
     {
-        await VerifyTerminalCommitWinsLateCancellation(PostgreSqlRepository(), WorkflowStatus.Completed);
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString);
+        await VerifyTerminalCommitWinsLateCancellation(repository, WorkflowStatus.Completed);
     }
 
     [Fact]
@@ -410,6 +450,15 @@ public sealed class ExecutionLeaseContractTests
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task PostgreSqlFailureWinsCancellationArrivingAfterWorkFinished() =>
         await VerifyTerminalCommitWinsLateCancellation(PostgreSqlRepository(), WorkflowStatus.Failed);
+
+    [Fact]
+    [Trait("Spec", "C-11")]
+    [Trait("Category", "SqliteIntegration")]
+    public async Task SqliteFailureWinsCancellationArrivingAfterWorkFinished()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString);
+        await VerifyTerminalCommitWinsLateCancellation(repository, WorkflowStatus.Failed);
+    }
 
     private static async Task VerifyTerminalCommitWinsLateCancellation(
         IWorkflowStateRepository repository, WorkflowStatus terminalStatus)
@@ -568,311 +617,35 @@ public sealed class ExecutionLeaseContractTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlCancellationRequestReachesRunningOwnerOnAnotherHost()
-    {
-        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new SqlWorkflowStateRepository(connectionString);
-        var secondRepository = new SqlWorkflowStateRepository(connectionString);
-        var registry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        using var firstHost = CreateHost(firstRepository, registry, probe);
-        using var secondHost = CreateHost(secondRepository, registry, probe);
-        var definition = Workflow.Create<LeaseData>("SqlCancelRunning")
-            .Step<CancellableBlockingActivity>()
-            .Step<RecordActivity>()
-            .Build();
-        var instanceId = Guid.NewGuid().ToString("N");
-        var executing = firstHost.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData(),
-                new WorkflowOptions { InstanceId = instanceId });
-        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        Assert.Equal(WorkflowStatus.Running,
-            (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
-        try
-        {
-            var requested = await secondHost.GetRequiredService<IWorkflowClient>()
-                .CancelAsync(instanceId, new CancellationReason
-                {
-                    ReasonCode = "operator", Description = "Stopped by operator"
-                });
-            Assert.Equal(WorkflowExecutionStatus.Running, requested.Status);
-            Assert.Equal(WorkflowExecutionStatus.Cancelled,
-                (await executing.WaitAsync(TimeSpan.FromSeconds(30))).Status);
-            var cancelled = (await secondRepository.GetWorkflowInstanceAsync(instanceId))!;
-            Assert.Equal(WorkflowStatus.Cancelled, cancelled.Status);
-            Assert.Equal("operator", cancelled.CancellationReason?.ReasonCode);
-            Assert.Equal(0, probe.Recorded);
-        }
-        finally
-        {
-            await firstRepository.DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
+    public Task SqlCancellationRequestReachesRunningOwnerOnAnotherHost() => VerifyCancellationRequestReachesRunningOwnerOnAnotherHost(SqlRepository);
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlCancellationRequestReachesRunningOwnerOnAnotherHost()
-    {
-        var connectionString = PostgreSqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var secondRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var registry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        using var firstHost = CreateHost(firstRepository, registry, probe);
-        using var secondHost = CreateHost(secondRepository, registry, probe);
-        var definition = Workflow.Create<LeaseData>("SqlCancelRunning")
-            .Step<CancellableBlockingActivity>()
-            .Step<RecordActivity>()
-            .Build();
-        var instanceId = Guid.NewGuid().ToString("N");
-        var executing = firstHost.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData(),
-                new WorkflowOptions { InstanceId = instanceId });
-        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        Assert.Equal(WorkflowStatus.Running,
-            (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
-        try
-        {
-            var requested = await secondHost.GetRequiredService<IWorkflowClient>()
-                .CancelAsync(instanceId, new CancellationReason
-                {
-                    ReasonCode = "operator", Description = "Stopped by operator"
-                });
-            Assert.Equal(WorkflowExecutionStatus.Running, requested.Status);
-            Assert.Equal(WorkflowExecutionStatus.Cancelled,
-                (await executing.WaitAsync(TimeSpan.FromSeconds(30))).Status);
-            var cancelled = (await secondRepository.GetWorkflowInstanceAsync(instanceId))!;
-            Assert.Equal(WorkflowStatus.Cancelled, cancelled.Status);
-            Assert.Equal("operator", cancelled.CancellationReason?.ReasonCode);
-            Assert.Equal(0, probe.Recorded);
-        }
-        finally
-        {
-            await firstRepository.DeleteWorkflowInstanceAsync(instanceId);
-        }
-    }
+    public Task PostgreSqlCancellationRequestReachesRunningOwnerOnAnotherHost() => VerifyCancellationRequestReachesRunningOwnerOnAnotherHost(PostgreSqlRepository);
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlSuspendedWaitCanBeCancelledByAnotherHost()
-    {
-        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new SqlWorkflowStateRepository(connectionString);
-        var secondRepository = new SqlWorkflowStateRepository(connectionString);
-        var registry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        using var firstHost = CreateHost(firstRepository, registry, probe);
-        using var secondHost = CreateHost(secondRepository, registry, probe);
-        var definition = Workflow.Create<LeaseData>("SqlCancelWait")
-            .Step<RecordActivity>()
-            .WaitFor<LeaseEvent>("approval")
-            .Step<RecordActivity>()
-            .Build();
-        var started = await firstHost.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData());
-        try
-        {
-            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-            var result = await secondHost.GetRequiredService<IWorkflowClient>()
-                .CancelAsync(started.InstanceId, new CancellationReason
-                {
-                    ReasonCode = "withdrawn", Description = "Request withdrawn"
-                });
-            Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
-            Assert.Equal(WorkflowStatus.Cancelled,
-                (await firstRepository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
-            Assert.Equal(1, probe.Recorded);
-        }
-        finally
-        {
-            await firstRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
-        }
-    }
+    public Task SqlSuspendedWaitCanBeCancelledByAnotherHost() => VerifySuspendedWaitCanBeCancelledByAnotherHost(SqlRepository);
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlSuspendedWaitCanBeCancelledByAnotherHost()
-    {
-        var connectionString = PostgreSqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var secondRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var registry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        using var firstHost = CreateHost(firstRepository, registry, probe);
-        using var secondHost = CreateHost(secondRepository, registry, probe);
-        var definition = Workflow.Create<LeaseData>("SqlCancelWait")
-            .Step<RecordActivity>()
-            .WaitFor<LeaseEvent>("approval")
-            .Step<RecordActivity>()
-            .Build();
-        var started = await firstHost.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData());
-        try
-        {
-            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-            var result = await secondHost.GetRequiredService<IWorkflowClient>()
-                .CancelAsync(started.InstanceId, new CancellationReason
-                {
-                    ReasonCode = "withdrawn", Description = "Request withdrawn"
-                });
-            Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
-            Assert.Equal(WorkflowStatus.Cancelled,
-                (await firstRepository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
-            Assert.Equal(1, probe.Recorded);
-        }
-        finally
-        {
-            await firstRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
-        }
-    }
+    public Task PostgreSqlSuspendedWaitCanBeCancelledByAnotherHost() => VerifySuspendedWaitCanBeCancelledByAnotherHost(PostgreSqlRepository);
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlScannerCompletesCancellationAfterRequestingHostStops()
-    {
-        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new SqlWorkflowStateRepository(connectionString);
-        var secondRepository = new SqlWorkflowStateRepository(connectionString);
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        var definition = Workflow.Create<LeaseData>("SqlCancelAfterHostStop")
-            .Step<RecordActivity>()
-            .WaitFor<LeaseEvent>("approval")
-            .Build();
-        await secondRegistry.RegisterWorkflowAsync(definition);
-        WorkflowExecutionResult started;
-        using (var firstHost = CreateHost(firstRepository, firstRegistry, probe))
-        {
-            started = await firstHost.GetRequiredService<IWorkflowClient>()
-                .RunAsync(definition, new LeaseData());
-        }
-        try
-        {
-            Assert.True(await firstRepository.RequestCancellationAsync(started.InstanceId,
-                new CancellationReason { ReasonCode = "withdrawn" }));
-            using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
-            using var scanner = new WorkflowRecoveryService(
-                secondHost.GetRequiredService<IServiceScopeFactory>(), secondRepository,
-                NullLogger<WorkflowRecoveryService>.Instance);
-
-            await scanner.RecoverOnceAsync(CancellationToken.None);
-
-            Assert.Equal(WorkflowStatus.Cancelled,
-                (await firstRepository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
-        }
-        finally
-        {
-            await firstRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
-        }
-    }
+    public Task SqlScannerCompletesCancellationAfterRequestingHostStops() => VerifyScannerCompletesCancellationAfterRequestingHostStops(SqlRepository);
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlScannerCompletesCancellationAfterRequestingHostStops()
-    {
-        var connectionString = PostgreSqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var secondRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        var definition = Workflow.Create<LeaseData>("SqlCancelAfterHostStop")
-            .Step<RecordActivity>()
-            .WaitFor<LeaseEvent>("approval")
-            .Build();
-        await secondRegistry.RegisterWorkflowAsync(definition);
-        WorkflowExecutionResult started;
-        using (var firstHost = CreateHost(firstRepository, firstRegistry, probe))
-        {
-            started = await firstHost.GetRequiredService<IWorkflowClient>()
-                .RunAsync(definition, new LeaseData());
-        }
-        try
-        {
-            Assert.True(await firstRepository.RequestCancellationAsync(started.InstanceId,
-                new CancellationReason { ReasonCode = "withdrawn" }));
-            using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
-            using var scanner = new WorkflowRecoveryService(
-                secondHost.GetRequiredService<IServiceScopeFactory>(), secondRepository,
-                NullLogger<WorkflowRecoveryService>.Instance);
-
-            await scanner.RecoverOnceAsync(CancellationToken.None);
-
-            Assert.Equal(WorkflowStatus.Cancelled,
-                (await firstRepository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
-        }
-        finally
-        {
-            await firstRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
-        }
-    }
+    public Task PostgreSqlScannerCompletesCancellationAfterRequestingHostStops() => VerifyScannerCompletesCancellationAfterRequestingHostStops(PostgreSqlRepository);
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlScannerDoesNotRepeatCancellationWhileFinallyWaits()
-    {
-        var repository = SqlRepository();
-        var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
-        var definition = Workflow.Create<LeaseData>("SqlCancelFinallyWait")
-            .Step<RecordActivity>()
-            .Try(body => body.WaitFor<LeaseEvent>("approval"))
-            .Finally(body => body.WaitFor<LeaseEvent>("cleanup"))
-            .Build();
-        var started = await host.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData());
-        try
-        {
-            Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
-                new CancellationReason { ReasonCode = "withdrawn" }));
-            using var scanner = new WorkflowRecoveryService(
-                host.GetRequiredService<IServiceScopeFactory>(), repository,
-                NullLogger<WorkflowRecoveryService>.Instance);
-            await scanner.RecoverOnceAsync(CancellationToken.None);
-            var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
-            Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
-            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
-                item => item.InstanceId == started.InstanceId);
-        }
-        finally
-        {
-            await repository.DeleteWorkflowInstanceAsync(started.InstanceId);
-        }
-    }
+    public Task SqlScannerDoesNotRepeatCancellationWhileFinallyWaits() => VerifyScannerDoesNotRepeatCancellationWhileFinallyWaits(SqlRepository());
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlScannerDoesNotRepeatCancellationWhileFinallyWaits()
-    {
-        var repository = PostgreSqlRepository();
-        var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
-        var definition = Workflow.Create<LeaseData>("SqlCancelFinallyWait")
-            .Step<RecordActivity>()
-            .Try(body => body.WaitFor<LeaseEvent>("approval"))
-            .Finally(body => body.WaitFor<LeaseEvent>("cleanup"))
-            .Build();
-        var started = await host.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData());
-        try
-        {
-            Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
-                new CancellationReason { ReasonCode = "withdrawn" }));
-            using var scanner = new WorkflowRecoveryService(
-                host.GetRequiredService<IServiceScopeFactory>(), repository,
-                NullLogger<WorkflowRecoveryService>.Instance);
-            await scanner.RecoverOnceAsync(CancellationToken.None);
-            var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
-            Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
-            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
-                item => item.InstanceId == started.InstanceId);
-        }
-        finally
-        {
-            await repository.DeleteWorkflowInstanceAsync(started.InstanceId);
-        }
-    }
+    public Task PostgreSqlScannerDoesNotRepeatCancellationWhileFinallyWaits() => VerifyScannerDoesNotRepeatCancellationWhileFinallyWaits(PostgreSqlRepository());
 
     [Fact]
     public async Task LiveOwnerCannotBeRecoveredByAnotherHost()
@@ -1150,291 +923,27 @@ public sealed class ExecutionLeaseContractTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlSuspendedInstanceCanResumeOnAnotherHost()
-    {
-        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new SqlWorkflowStateRepository(connectionString);
-        var secondRepository = new SqlWorkflowStateRepository(connectionString);
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
-        using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
-        var definition = Workflow.Create<LeaseData>("SqlCrossHostWait")
-            .Step<RecordActivity>()
-            .WaitFor<LeaseEvent>("reply")
-            .Step<RecordActivity>()
-            .Build();
-        await secondRegistry.RegisterWorkflowAsync(definition);
-        var started = await firstHost.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData());
-        try
-        {
-            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-            var resumed = await secondHost.GetRequiredService<IWorkflowClient>()
-                .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
-            Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
-            Assert.Equal(2, probe.Recorded);
-        }
-        finally
-        {
-            await firstRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
-        }
-    }
+    public Task SqlSuspendedInstanceCanResumeOnAnotherHost() => VerifySuspendedInstanceCanResumeOnAnotherHost(SqlRepository);
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlSuspendedInstanceCanResumeOnAnotherHost()
-    {
-        var connectionString = PostgreSqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var secondRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
-        using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
-        var definition = Workflow.Create<LeaseData>("SqlCrossHostWait")
-            .Step<RecordActivity>()
-            .WaitFor<LeaseEvent>("reply")
-            .Step<RecordActivity>()
-            .Build();
-        await secondRegistry.RegisterWorkflowAsync(definition);
-        var started = await firstHost.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData());
-        try
-        {
-            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-            var resumed = await secondHost.GetRequiredService<IWorkflowClient>()
-                .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
-            Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
-            Assert.Equal(2, probe.Recorded);
-        }
-        finally
-        {
-            await firstRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
-        }
-    }
+    public Task PostgreSqlSuspendedInstanceCanResumeOnAnotherHost() => VerifySuspendedInstanceCanResumeOnAnotherHost(PostgreSqlRepository);
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlLiveOwnerCannotBeRecoveredByAnotherHost()
-    {
-        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new SqlWorkflowStateRepository(connectionString);
-        var secondRepository = new SqlWorkflowStateRepository(connectionString);
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
-        using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
-        var definition = Workflow.Create<LeaseData>("SqlLiveOwner")
-            .Step<BlockingActivity>()
-            .Step<RecordActivity>()
-            .Build();
-        await secondRegistry.RegisterWorkflowAsync(definition);
-        var correlationId = Guid.NewGuid().ToString("N");
-        var executing = firstHost.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData(),
-                new WorkflowOptions { CorrelationId = correlationId });
-        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
-        WorkflowExecutionResult attempted;
-        try
-        {
-            attempted = await secondHost.GetRequiredService<IWorkflowClient>()
-                .RecoverAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        finally
-        {
-            probe.Release.TrySetResult();
-        }
-        WorkflowExecutionResult? completed = null;
-        Exception? ownerError = null;
-        try
-        {
-            completed = await executing.WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        catch (Exception error)
-        {
-            ownerError = error;
-        }
-        var finalStatus = (await firstRepository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status;
-        await firstRepository.DeleteWorkflowInstanceAsync(saved.InstanceId);
-        Assert.Equal(WorkflowExecutionStatus.Running, attempted.Status);
-        Assert.Null(ownerError);
-        Assert.Equal(WorkflowStatus.Completed, finalStatus);
-        Assert.NotNull(completed);
-        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
-        Assert.Equal(1, probe.Recorded);
-    }
+    public Task SqlLiveOwnerCannotBeRecoveredByAnotherHost() => VerifyLiveOwnerCannotBeRecoveredByAnotherHost(SqlRepository);
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlLiveOwnerCannotBeRecoveredByAnotherHost()
-    {
-        var connectionString = PostgreSqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var secondRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
-        using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
-        var definition = Workflow.Create<LeaseData>("SqlLiveOwner")
-            .Step<BlockingActivity>()
-            .Step<RecordActivity>()
-            .Build();
-        await secondRegistry.RegisterWorkflowAsync(definition);
-        var correlationId = Guid.NewGuid().ToString("N");
-        var executing = firstHost.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData(),
-                new WorkflowOptions { CorrelationId = correlationId });
-        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
-        WorkflowExecutionResult attempted;
-        try
-        {
-            attempted = await secondHost.GetRequiredService<IWorkflowClient>()
-                .RecoverAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        finally
-        {
-            probe.Release.TrySetResult();
-        }
-        WorkflowExecutionResult? completed = null;
-        Exception? ownerError = null;
-        try
-        {
-            completed = await executing.WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        catch (Exception error)
-        {
-            ownerError = error;
-        }
-        var finalStatus = (await firstRepository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status;
-        await firstRepository.DeleteWorkflowInstanceAsync(saved.InstanceId);
-        Assert.Equal(WorkflowExecutionStatus.Running, attempted.Status);
-        Assert.Null(ownerError);
-        Assert.Equal(WorkflowStatus.Completed, finalStatus);
-        Assert.NotNull(completed);
-        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
-        Assert.Equal(1, probe.Recorded);
-    }
+    public Task PostgreSqlLiveOwnerCannotBeRecoveredByAnotherHost() => VerifyLiveOwnerCannotBeRecoveredByAnotherHost(PostgreSqlRepository);
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlRecoveryScannerReclaimsAnExpiredWorker()
-    {
-        var connectionString = SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new SqlWorkflowStateRepository(connectionString);
-        var secondRepository = new SqlWorkflowStateRepository(connectionString);
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
-        using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
-        var definition = Workflow.Create<LeaseData>("ExpiredWorker")
-            .Step<BlockingActivity>()
-            .Step<RecordActivity>()
-            .Build();
-        await secondRegistry.RegisterWorkflowAsync(definition);
-        var correlationId = Guid.NewGuid().ToString("N");
-        var executing = firstHost.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData(),
-                new WorkflowOptions { CorrelationId = correlationId });
-        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
-        try
-        {
-            await using (var connection = new SqlConnection(connectionString))
-            {
-                await connection.OpenAsync();
-                await connection.ExecuteAsync("""
-                    UPDATE dbo.IxIFlowWorkflowLeases
-                    SET ExpiresAtUtc = DATEADD(SECOND, -1, SYSUTCDATETIME())
-                    WHERE InstanceId = @InstanceId
-                    """, new { saved.InstanceId });
-            }
-            using var scanner = new WorkflowRecoveryService(
-                secondHost.GetRequiredService<IServiceScopeFactory>(), secondRepository,
-                NullLogger<WorkflowRecoveryService>.Instance);
-            await scanner.RecoverOnceAsync(CancellationToken.None);
-
-            Assert.Equal(WorkflowStatus.NeedsResolution,
-                (await secondRepository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
-        }
-        finally
-        {
-            probe.Release.TrySetResult();
-            try
-            {
-                await executing.WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch (InvalidOperationException)
-            {
-                // The former owner is fenced after the scanner takes over.
-            }
-            await firstRepository.DeleteWorkflowInstanceAsync(saved.InstanceId);
-        }
-    }
+    public Task SqlRecoveryScannerReclaimsAnExpiredWorker() => VerifyRecoveryScannerReclaimsAnExpiredWorker(SqlRepository, () => new SqlConnection(SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlRecoveryScannerReclaimsAnExpiredWorker()
-    {
-        var connectionString = PostgreSqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString;
-        var firstRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var secondRepository = new PostgreSqlWorkflowStateRepository(connectionString);
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
-        var probe = new ActivityProbe();
-        using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
-        using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
-        var definition = Workflow.Create<LeaseData>("ExpiredWorker")
-            .Step<BlockingActivity>()
-            .Step<RecordActivity>()
-            .Build();
-        await secondRegistry.RegisterWorkflowAsync(definition);
-        var correlationId = Guid.NewGuid().ToString("N");
-        var executing = firstHost.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LeaseData(),
-                new WorkflowOptions { CorrelationId = correlationId });
-        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
-        try
-        {
-            await using (var connection = new NpgsqlConnection(connectionString))
-            {
-                await connection.OpenAsync();
-                await connection.ExecuteAsync("""
-                    UPDATE ixiflow_workflow_leases
-                    SET expires_at_utc = clock_timestamp() - INTERVAL '1 second'
-                    WHERE instance_id = @InstanceId
-                    """, new { saved.InstanceId });
-            }
-            using var scanner = new WorkflowRecoveryService(
-                secondHost.GetRequiredService<IServiceScopeFactory>(), secondRepository,
-                NullLogger<WorkflowRecoveryService>.Instance);
-            await scanner.RecoverOnceAsync(CancellationToken.None);
-
-            Assert.Equal(WorkflowStatus.NeedsResolution,
-                (await secondRepository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
-        }
-        finally
-        {
-            probe.Release.TrySetResult();
-            try
-            {
-                await executing.WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch (InvalidOperationException)
-            {
-                // The former owner is fenced after the scanner takes over.
-            }
-            await firstRepository.DeleteWorkflowInstanceAsync(saved.InstanceId);
-        }
-    }
+    public Task PostgreSqlRecoveryScannerReclaimsAnExpiredWorker() => VerifyRecoveryScannerReclaimsAnExpiredWorker(PostgreSqlRepository, () => new NpgsqlConnection(PostgreSqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString));
 
     private static ServiceProvider CreateHost(IWorkflowStateRepository repository,
         IWorkflowVersionRegistry registry, ActivityProbe probe, bool shortLease = false, TimeProvider? time = null)
@@ -1923,4 +1432,351 @@ public sealed class ExecutionLeaseContractTests
             inner.GetTraceAsync(instanceId, afterSequence, limit);
         public Task DeleteWorkflowInstanceAsync(string id) => inner.DeleteWorkflowInstanceAsync(id);
     }
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteConcurrentFirstLeaseHasOneOwner()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString);
+        await VerifyConcurrentFirstLeaseHasOneOwner(() => repository);
+    }
+
+    private static async Task VerifyConcurrentFirstLeaseHasOneOwner(Func<IWorkflowStateRepository> newRepository)
+    {
+        var instanceId = Guid.NewGuid().ToString("N");
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var repositories = Enumerable.Range(0, 8).Select(_ => newRepository()).ToArray();
+        try
+        {
+            var attempts = repositories.Select(async (repository, index) =>
+            {
+                await start.Task;
+                return await repository.TryAcquireExecutionLeaseAsync(instanceId,
+                    $"host-{index}", TimeSpan.FromSeconds(10));
+            }).ToArray();
+            start.SetResult();
+
+            Assert.Single((await Task.WhenAll(attempts)).Where(epoch => epoch != null));
+        }
+        finally
+        {
+            await repositories[0].DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+
+    private static async Task VerifyCancellationRequestReachesRunningOwnerOnAnotherHost(Func<IWorkflowStateRepository> newRepository)
+    {
+        var firstRepository = newRepository();
+        var secondRepository = newRepository();
+        var registry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(firstRepository, registry, probe);
+        using var secondHost = CreateHost(secondRepository, registry, probe);
+        var definition = Workflow.Create<LeaseData>("SqlCancelRunning")
+            .Step<CancellableBlockingActivity>()
+            .Step<RecordActivity>()
+            .Build();
+        var instanceId = Guid.NewGuid().ToString("N");
+        var executing = firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData(),
+                new WorkflowOptions { InstanceId = instanceId });
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(WorkflowStatus.Running,
+            (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
+        try
+        {
+            var requested = await secondHost.GetRequiredService<IWorkflowClient>()
+                .CancelAsync(instanceId, new CancellationReason
+                {
+                    ReasonCode = "operator", Description = "Stopped by operator"
+                });
+            Assert.Equal(WorkflowExecutionStatus.Running, requested.Status);
+            Assert.Equal(WorkflowExecutionStatus.Cancelled,
+                (await executing.WaitAsync(TimeSpan.FromSeconds(30))).Status);
+            var cancelled = (await secondRepository.GetWorkflowInstanceAsync(instanceId))!;
+            Assert.Equal(WorkflowStatus.Cancelled, cancelled.Status);
+            Assert.Equal("operator", cancelled.CancellationReason?.ReasonCode);
+            Assert.Equal(0, probe.Recorded);
+        }
+        finally
+        {
+            await firstRepository.DeleteWorkflowInstanceAsync(instanceId);
+        }
+    }
+
+
+    private static async Task VerifySuspendedWaitCanBeCancelledByAnotherHost(Func<IWorkflowStateRepository> newRepository)
+    {
+        var firstRepository = newRepository();
+        var secondRepository = newRepository();
+        var registry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(firstRepository, registry, probe);
+        using var secondHost = CreateHost(secondRepository, registry, probe);
+        var definition = Workflow.Create<LeaseData>("SqlCancelWait")
+            .Step<RecordActivity>()
+            .WaitFor<LeaseEvent>("approval")
+            .Step<RecordActivity>()
+            .Build();
+        var started = await firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
+        try
+        {
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            var result = await secondHost.GetRequiredService<IWorkflowClient>()
+                .CancelAsync(started.InstanceId, new CancellationReason
+                {
+                    ReasonCode = "withdrawn", Description = "Request withdrawn"
+                });
+            Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+            Assert.Equal(WorkflowStatus.Cancelled,
+                (await firstRepository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+            Assert.Equal(1, probe.Recorded);
+        }
+        finally
+        {
+            await firstRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
+        }
+    }
+
+
+    private static async Task VerifyScannerCompletesCancellationAfterRequestingHostStops(Func<IWorkflowStateRepository> newRepository)
+    {
+        var firstRepository = newRepository();
+        var firstRegistry = new WorkflowVersionRegistry();
+        var secondRegistry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        var definition = Workflow.Create<LeaseData>("SqlCancelAfterHostStop")
+            .Step<RecordActivity>()
+            .WaitFor<LeaseEvent>("approval")
+            .Build();
+        await secondRegistry.RegisterWorkflowAsync(definition);
+        WorkflowExecutionResult started;
+        try
+        {
+            await using (var firstHost = CreateHost(firstRepository, firstRegistry, probe))
+            {
+                started = await firstHost.GetRequiredService<IWorkflowClient>()
+                    .RunAsync(definition, new LeaseData());
+            }
+        }
+        finally
+        {
+            if (firstRepository is IAsyncDisposable firstOwner)
+                await firstOwner.DisposeAsync();
+        }
+        var secondRepository = newRepository();
+        try
+        {
+            Assert.True(await secondRepository.RequestCancellationAsync(started.InstanceId,
+                new CancellationReason { ReasonCode = "withdrawn" }));
+            await using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
+            using var scanner = new WorkflowRecoveryService(
+                secondHost.GetRequiredService<IServiceScopeFactory>(), secondRepository,
+                NullLogger<WorkflowRecoveryService>.Instance);
+
+            await scanner.RecoverOnceAsync(CancellationToken.None);
+
+            Assert.Equal(WorkflowStatus.Cancelled,
+                (await secondRepository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+        }
+        finally
+        {
+            try
+            {
+                await secondRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
+            }
+            finally
+            {
+                if (secondRepository is IAsyncDisposable secondOwner)
+                    await secondOwner.DisposeAsync();
+            }
+        }
+    }
+
+
+    private static async Task VerifySuspendedInstanceCanResumeOnAnotherHost(Func<IWorkflowStateRepository> newRepository)
+    {
+        var firstRepository = newRepository();
+        var secondRepository = newRepository();
+        var firstRegistry = new WorkflowVersionRegistry();
+        var secondRegistry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
+        using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
+        var definition = Workflow.Create<LeaseData>("SqlCrossHostWait")
+            .Step<RecordActivity>()
+            .WaitFor<LeaseEvent>("reply")
+            .Step<RecordActivity>()
+            .Build();
+        await secondRegistry.RegisterWorkflowAsync(definition);
+        var started = await firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
+        try
+        {
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            var resumed = await secondHost.GetRequiredService<IWorkflowClient>()
+                .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
+            Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
+            Assert.Equal(2, probe.Recorded);
+        }
+        finally
+        {
+            await firstRepository.DeleteWorkflowInstanceAsync(started.InstanceId);
+        }
+    }
+
+
+    private static async Task VerifyLiveOwnerCannotBeRecoveredByAnotherHost(Func<IWorkflowStateRepository> newRepository)
+    {
+        var firstRepository = newRepository();
+        var secondRepository = newRepository();
+        var firstRegistry = new WorkflowVersionRegistry();
+        var secondRegistry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
+        using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
+        var definition = Workflow.Create<LeaseData>("SqlLiveOwner")
+            .Step<BlockingActivity>()
+            .Step<RecordActivity>()
+            .Build();
+        await secondRegistry.RegisterWorkflowAsync(definition);
+        var correlationId = Guid.NewGuid().ToString("N");
+        var executing = firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData(),
+                new WorkflowOptions { CorrelationId = correlationId });
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
+        WorkflowExecutionResult attempted;
+        try
+        {
+            attempted = await secondHost.GetRequiredService<IWorkflowClient>()
+                .RecoverAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            probe.Release.TrySetResult();
+        }
+        WorkflowExecutionResult? completed = null;
+        Exception? ownerError = null;
+        try
+        {
+            completed = await executing.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception error)
+        {
+            ownerError = error;
+        }
+        var finalStatus = (await firstRepository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status;
+        await firstRepository.DeleteWorkflowInstanceAsync(saved.InstanceId);
+        Assert.Equal(WorkflowExecutionStatus.Running, attempted.Status);
+        Assert.Null(ownerError);
+        Assert.Equal(WorkflowStatus.Completed, finalStatus);
+        Assert.NotNull(completed);
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Equal(1, probe.Recorded);
+    }
+
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteScannerDoesNotRepeatCancellationWhileFinallyWaits()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString);
+        await VerifyScannerDoesNotRepeatCancellationWhileFinallyWaits(repository);
+    }
+
+    private static async Task VerifyScannerDoesNotRepeatCancellationWhileFinallyWaits(IWorkflowStateRepository repository)
+    {
+        var probe = new ActivityProbe();
+        await using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
+        var definition = Workflow.Create<LeaseData>("SqlCancelFinallyWait")
+            .Step<RecordActivity>()
+            .Try(body => body.WaitFor<LeaseEvent>("approval"))
+            .Finally(body => body.WaitFor<LeaseEvent>("cleanup"))
+            .Build();
+        var started = await host.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData());
+        try
+        {
+            Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
+                new CancellationReason { ReasonCode = "withdrawn" }));
+            using var scanner = new WorkflowRecoveryService(
+                host.GetRequiredService<IServiceScopeFactory>(), repository,
+                NullLogger<WorkflowRecoveryService>.Instance);
+            await scanner.RecoverOnceAsync(CancellationToken.None);
+            var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
+            Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
+            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
+                item => item.InstanceId == started.InstanceId);
+        }
+        finally
+        {
+            await repository.DeleteWorkflowInstanceAsync(started.InstanceId);
+        }
+    }
+
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public Task SqliteScannerCompletesCancellationAfterRequestingHostStops() => VerifyScannerCompletesCancellationAfterRequestingHostStops(() => new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString));
+
+
+    private static async Task VerifyRecoveryScannerReclaimsAnExpiredWorker(Func<IWorkflowStateRepository> newRepository, Func<System.Data.Common.DbConnection> newConnection)
+    {
+        var firstRepository = newRepository();
+        var secondRepository = newRepository();
+        var firstRegistry = new WorkflowVersionRegistry();
+        var secondRegistry = new WorkflowVersionRegistry();
+        var probe = new ActivityProbe();
+        using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
+        using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
+        var definition = Workflow.Create<LeaseData>("ExpiredWorker")
+            .Step<BlockingActivity>()
+            .Step<RecordActivity>()
+            .Build();
+        await secondRegistry.RegisterWorkflowAsync(definition);
+        var correlationId = Guid.NewGuid().ToString("N");
+        var executing = firstHost.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition, new LeaseData(),
+                new WorkflowOptions { CorrelationId = correlationId });
+        await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
+        try
+        {
+            await using (var connection = newConnection())
+            {
+                await connection.OpenAsync();
+                await connection.ExecuteAsync(connection is SqlConnection
+                    ? "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = DATEADD(SECOND, -1, SYSUTCDATETIME()) WHERE InstanceId = @InstanceId"
+                    : "UPDATE ixiflow_workflow_leases SET expires_at_utc = clock_timestamp() - INTERVAL '1 second' WHERE instance_id = @InstanceId",
+                    new { saved.InstanceId });
+            }
+            using var scanner = new WorkflowRecoveryService(
+                secondHost.GetRequiredService<IServiceScopeFactory>(), secondRepository,
+                NullLogger<WorkflowRecoveryService>.Instance);
+            await scanner.RecoverOnceAsync(CancellationToken.None);
+
+            Assert.Equal(WorkflowStatus.NeedsResolution,
+                (await secondRepository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
+        }
+        finally
+        {
+            probe.Release.TrySetResult();
+            try
+            {
+                await executing.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (InvalidOperationException)
+            {
+                // The former owner is fenced after the scanner takes over.
+            }
+            await firstRepository.DeleteWorkflowInstanceAsync(saved.InstanceId);
+        }
+    }
+
+
 }

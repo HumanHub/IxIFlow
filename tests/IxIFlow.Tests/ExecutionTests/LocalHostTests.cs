@@ -15,7 +15,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// cancellation needs no slot, and a stopping host drains (spec B-02, B-03, B-11, B-12).
 /// </summary>
 [Trait("Feature", "host")]
-public sealed class LocalHostTests
+public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostTests>>
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
 
@@ -364,6 +364,16 @@ public sealed class LocalHostTests
     [Trait("Spec", "B-10")]
     public Task PostgreSqlStoreReadsCancellationRequestsInOneCall() =>
         VerifyBatchCancellationReads(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<LocalHostTests>.ConnectionString));
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    [Trait("Spec", "B-10")]
+    public async Task SqliteStoreReadsCancellationRequestsInOneCall()
+    {
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<LocalHostTests>.ConnectionString);
+        await VerifyBatchCancellationReads(repository);
+    }
 
     private static async Task VerifyBatchCancellationReads(IWorkflowStateRepository repository)
     {

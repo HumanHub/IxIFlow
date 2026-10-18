@@ -22,6 +22,7 @@
     <ProjectReference Include="..\IxIFlow.TestSupport\IxIFlow.TestSupport.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.SqlServer\IxIFlow.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.PostgreSql\IxIFlow.PostgreSql.csproj" />
+    <ProjectReference Include="..\..\src\IxIFlow.Sqlite\IxIFlow.Sqlite.csproj" />
     <ProjectReference Include="..\..\samples\IxIFlow.DemoActivities\IxIFlow.DemoActivities.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.Templates\IxIFlow.Templates.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.Templates.Liquid\IxIFlow.Templates.Liquid.csproj" />
