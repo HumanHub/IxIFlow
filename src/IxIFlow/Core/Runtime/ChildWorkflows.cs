@@ -1,9 +1,5 @@
 using System.Reflection;
 using System.Text.Json;
-using IxIFlow.Builders;
-using IxIFlow.Builders.Interfaces;
-using IxIFlow.Extensions;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Core.Runtime;
 
@@ -64,9 +60,7 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
         WorkflowDefinition definition;
         if (step.WorkflowType != null)
         {
-            var registration = typeof(RegisteredWorkflowDefinition<>).MakeGenericType(step.WorkflowType);
-            definition = (services.GetService(registration) as IRegisteredWorkflowDefinition)?.Definition
-                         ?? await BuildAsync(step);
+            definition = await BuildAsync(step);
         }
         else
         {
@@ -81,12 +75,17 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Workflow {definition.Name} has no data type");
         if (!starting)
+        {
+            // Recovery can resolve a child without registering it. Require an existing Apply result.
+            _ = WorkflowDefinitionValidator.ForExecution(definition);
             return definition;
+        }
         var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
         if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true && isActive is false)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Workflow {definition.Name} v{definition.Version} is deactivated");
         await registry.RegisterWorkflowAsync(definition);
+        _ = WorkflowDefinitionValidator.ForExecution(definition);
         return definition;
     }
 
@@ -94,24 +93,7 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
     // under its name and version, if anything is.
     private async Task<WorkflowDefinition> BuildAsync(WorkflowStep step)
     {
-        var workflowType = step.WorkflowType!;
-        var contract = workflowType.GetInterfaces().FirstOrDefault(item =>
-                           item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IWorkflow<>))
-                       ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                           $"Workflow type {workflowType} does not implement IWorkflow<>");
-        var dataType = contract.GetGenericArguments()[0];
-        var workflow = ActivatorUtilities.GetServiceOrCreateInstance(services, workflowType);
-        var version = (int)(contract.GetProperty("Version")!.GetValue(workflow)
-                            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                                $"Workflow {workflowType} has no version"));
-        var builderType = typeof(WorkflowBuilder<>).MakeGenericType(dataType);
-        var builder = Activator.CreateInstance(builderType, step.WorkflowName ?? workflowType.Name,
-            step.WorkflowVersion ?? version);
-        (workflowType.GetMethod("Build") ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                $"Workflow {workflowType} does not have a Build method"))
-            .Invoke(workflow, [builder]);
-        var definition = (WorkflowDefinition)builderType.GetMethod("Build",
-            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(builder, null)!;
+        var definition = step.Runtime.ChildDefinition!(services);
         var published = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
         if (published == null)
             return definition;

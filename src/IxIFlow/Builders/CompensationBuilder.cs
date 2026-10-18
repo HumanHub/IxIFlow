@@ -107,6 +107,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            ContextFactory = Core.Runtime.WorkflowStepDelegates.Compensation<TWorkflowData, TCurrentStepData>,
             SourceType = typeof(CompensationContext<TWorkflowData, TCurrentStepData>),
             CompensationSource = CompensationInputSource.CurrentStepContext,
             TargetType = propertyType,
@@ -144,26 +145,8 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         {
             if (context is TContext typedContext) return compiled(typedContext);
 
-            // Add detailed logging for debugging type mismatches
-            var expectedType = typeof(TContext);
-            var actualType = context.GetType();
-
-            Console.WriteLine("\ud83d\udd0d COMPENSATION TYPE MISMATCH DEBUG:");
-            Console.WriteLine($"  Expected Type: {expectedType.FullName}");
-            Console.WriteLine($"  Actual Type: {actualType.FullName}");
-
-            if (expectedType.IsGenericType && actualType.IsGenericType)
-            {
-                Console.WriteLine($"  Expected Generic Definition: {expectedType.GetGenericTypeDefinition()}");
-                Console.WriteLine($"  Actual Generic Definition: {actualType.GetGenericTypeDefinition()}");
-                Console.WriteLine(
-                    $"  Expected Generic Args: [{string.Join(", ", expectedType.GetGenericArguments().Select(t => t.Name))}]");
-                Console.WriteLine(
-                    $"  Actual Generic Args: [{string.Join(", ", actualType.GetGenericArguments().Select(t => t.Name))}]");
-            }
-
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                $"Expected {expectedType.FullName}, got {actualType.FullName}");
+                $"Expected {typeof(TContext).FullName}, got {context.GetType().FullName}");
         };
     }
 }
@@ -209,6 +192,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            ContextFactory = Core.Runtime.WorkflowStepDelegates.Data<TWorkflowData>,
             SourceType = typeof(WorkflowContext<TWorkflowData>),
             CompensationSource = CompensationInputSource.CurrentStepContext,
             TargetType = propertyType,
@@ -231,6 +215,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            ContextFactory = Core.Runtime.WorkflowStepDelegates.Data<TWorkflowData>,
             SourceType = typeof(TPreviousStepData),
             CompensationSource = CompensationInputSource.PreviousStep,
             TargetType = propertyType,
@@ -253,6 +238,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            ContextFactory = Core.Runtime.WorkflowStepDelegates.Data<TWorkflowData>,
             SourceType = typeof(TPreviousChainActivity),
             CompensationSource = CompensationInputSource.PreviousCompensation,
             TargetType = propertyType,
@@ -293,26 +279,8 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         {
             if (context is TContext typedContext) return compiled(typedContext);
 
-            // Add detailed logging for debugging type mismatches
-            var expectedType = typeof(TContext);
-            var actualType = context.GetType();
-
-            Console.WriteLine("\ud83d\udd0d COMPENSATION TYPE MISMATCH DEBUG (WithAccess):");
-            Console.WriteLine($"  Expected Type: {expectedType.FullName}");
-            Console.WriteLine($"  Actual Type: {actualType.FullName}");
-
-            if (expectedType.IsGenericType && actualType.IsGenericType)
-            {
-                Console.WriteLine($"  Expected Generic Definition: {expectedType.GetGenericTypeDefinition()}");
-                Console.WriteLine($"  Actual Generic Definition: {actualType.GetGenericTypeDefinition()}");
-                Console.WriteLine(
-                    $"  Expected Generic Args: [{string.Join(", ", expectedType.GetGenericArguments().Select(t => t.Name))}]");
-                Console.WriteLine(
-                    $"  Actual Generic Args: [{string.Join(", ", actualType.GetGenericArguments().Select(t => t.Name))}]");
-            }
-
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                $"Expected {expectedType.FullName}, got {actualType.FullName}");
+                $"Expected {typeof(TContext).FullName}, got {context.GetType().FullName}");
         };
     }
 }
@@ -352,6 +320,7 @@ public class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActiv
             TargetProperty = propertyName,
             TargetAssignmentFunction = targetAssignmentFunction,
             Expression = Core.Runtime.WorkflowExpressionSignature.Checked(destination),
+            ContextFactory = Core.Runtime.WorkflowStepDelegates.Data<TWorkflowData>,
             TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = propertyType,
             TargetType = typeof(WorkflowContext<TWorkflowData>),
@@ -501,6 +470,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
             Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            ContextFactory = Core.Runtime.WorkflowStepDelegates.Data<TWorkflowData>,
             SourceType = typeof(WorkflowContext<TWorkflowData>),
             CompensationSource = CompensationInputSource.CurrentStepContext,
             TargetType = propertyType,

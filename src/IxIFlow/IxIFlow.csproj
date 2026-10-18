@@ -40,8 +40,14 @@
     <ProjectReference Include="..\IxIFlow.Abstractions\IxIFlow.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="buildTransitive/IxIFlow.props" Pack="true" PackagePath="buildTransitive/IxIFlow.props" />
+    <None Update="build/IxIFlow.props" Pack="true" PackagePath="build/IxIFlow.props" />
+  </ItemGroup>
+
   <!-- The contract and purity analyzers ship in the package and run in every project that references it (F-24, D-42). -->
   <ItemGroup>
+    <ProjectReference Include="..\IxIFlow.Generators\IxIFlow.Generators.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
     <ProjectReference Include="..\IxIFlow.Analyzers\IxIFlow.Analyzers.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
     <ProjectReference Include="..\IxIFlow.Analyzers.CodeFixes\IxIFlow.Analyzers.CodeFixes.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
   </ItemGroup>
@@ -52,7 +58,7 @@
 
   <!-- The analyzer assemblies from wherever their projects build them, such as an artifacts path. -->
   <Target Name="PackAnalyzers">
-    <MSBuild Projects="..\IxIFlow.Analyzers\IxIFlow.Analyzers.csproj;..\IxIFlow.Analyzers.CodeFixes\IxIFlow.Analyzers.CodeFixes.csproj"
+    <MSBuild Projects="..\IxIFlow.Analyzers\IxIFlow.Analyzers.csproj;..\IxIFlow.Analyzers.CodeFixes\IxIFlow.Analyzers.CodeFixes.csproj;..\IxIFlow.Generators\IxIFlow.Generators.csproj"
              Targets="GetTargetPath" RemoveProperties="TargetFramework;RuntimeIdentifier">
       <Output TaskParameter="TargetOutputs" ItemName="AnalyzerAssembly" />
     </MSBuild>

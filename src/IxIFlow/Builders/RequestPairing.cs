@@ -1,3 +1,4 @@
+using IxIFlow.Core.Runtime;
 using IxIFlow.Core;
 
 namespace IxIFlow.Builders;
@@ -43,14 +44,14 @@ internal static class RequestPairing
                 if (request.RequestName is not { } name)
                     continue;
                 if (body.Take(index).Any(earlier => earlier.RequestName == name))
-                    throw Invalid($"Two requests named '{name}' are in the same body");
+                    throw WorkflowBuildError.Invalid(request, $"Two requests named '{name}' are in the same body");
                 requestNames.Add(name);
                 var waits = body.Skip(index + 1).Where(step => WaitKey(step) == name).ToArray();
                 if (waits.Length != 1)
-                    throw Invalid($"Request '{name}' needs exactly one WaitFor<{request.ReplyType?.Name}>(\"{name}\") " +
+                    throw WorkflowBuildError.Invalid(request, $"Request '{name}' needs exactly one WaitFor<{request.ReplyType?.Name}>(\"{name}\") " +
                         "after it in the same body");
                 if (waits[0].ResumeEventType != request.ReplyType)
-                    throw Invalid($"WaitFor(\"{name}\") waits for {waits[0].ResumeEventType?.Name}, but request " +
+                    throw WorkflowBuildError.Invalid(waits[0], $"WaitFor(\"{name}\") waits for {waits[0].ResumeEventType?.Name}, but request " +
                         $"'{name}' is answered with {request.ReplyType?.Name}");
                 waits[0].ReplyToRequest = name;
             }
@@ -58,7 +59,7 @@ internal static class RequestPairing
         // A wait with a request's name anywhere else would take the answer to another occurrence.
         foreach (var step in bodies.SelectMany(body => body))
             if (WaitKey(step) is { } key && requestNames.Contains(key) && step.ReplyToRequest == null)
-                throw Invalid($"WaitFor(\"{key}\") is not in the same body as request '{key}', after it");
+                throw WorkflowBuildError.Invalid(step, $"WaitFor(\"{key}\") is not in the same body as request '{key}', after it");
     }
 
     private static string? WaitKey(WorkflowStep step) =>
@@ -84,6 +85,4 @@ internal static class RequestPairing
         }
     }
 
-    private static WorkflowEngineException Invalid(string message) =>
-        new(WorkflowErrorKind.InvalidDefinition, message);
 }

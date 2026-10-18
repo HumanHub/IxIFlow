@@ -1,0 +1,46 @@
+schemaVersion: "1.0"
+workflow:
+  name: Arithmetic
+  version: 1
+  dataType: FlowData
+definitions:
+  - kind: activity
+    id: multiply
+    activity: test.multiply
+    input:
+      - target: Value
+        from: { kind: path, path: workflow.Value }
+    output:
+      - source: Result
+        to: { kind: path, path: workflow.Result }
+  - kind: sequence
+    id: nested
+    steps:
+      - kind: activity
+        id: triple
+        activity: test.multiply
+        input:
+          - target: Value
+            from: { kind: path, path: previousStep.Result }
+          - target: Factor
+            from: { kind: constant, value: 3 }
+        output:
+          - source: Result
+            to: { kind: path, path: workflow.Result }
+  - kind: if
+    id: conditional
+    condition:
+      kind: binary
+      operator: gt
+      left: { kind: path, path: workflow.Result }
+      right: { kind: constant, value: 10 }
+    then:
+      - kind: activity
+        id: final
+        activity: test.multiply
+        input:
+          - target: Value
+            from: { kind: path, path: workflow.Result }
+        output:
+          - source: Result
+            to: { kind: path, path: workflow.Result }

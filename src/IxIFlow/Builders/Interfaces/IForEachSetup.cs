@@ -38,6 +38,11 @@ public interface IForEachSetup<TWorkflowData>
     /// item order, or when every item has completed. The body must end with a result of
     /// <typeparamref name="TResult"/>.
     /// </summary>
+    /// <summary>Captures the join predicate as an expression.</summary>
+    [System.Runtime.CompilerServices.OverloadResolutionPriority(-1)]
+    IForEachSetup<TWorkflowData> WaitConditionally<TResult>(
+        Expression<Func<TWorkflowData, IReadOnlyList<ItemResult<TResult>>, bool>> completeWhenExpression);
+
     IForEachSetup<TWorkflowData> WaitConditionally<TResult>(
         Func<TWorkflowData, IReadOnlyList<ItemResult<TResult>>, bool> completeWhen);
 

@@ -27,7 +27,9 @@ internal static class ParallelRules
         var parallel = all.Where(step => step.StepType == WorkflowStepType.Parallel ||
                                          step is { StepType: WorkflowStepType.ForEach, ForEachParallel: true }).ToList();
         foreach (var dataType in all.Select(step => step.WorkflowDataType).OfType<Type>().Distinct())
-            BranchData.Validate(dataType, branches: parallel.Any(step => step.WorkflowDataType == dataType));
+            WorkflowBuildError.Check(parallel.FirstOrDefault(step => step.WorkflowDataType == dataType) ??
+                all.First(step => step.WorkflowDataType == dataType), () =>
+                { BranchData.Validate(dataType, branches: parallel.Any(step => step.WorkflowDataType == dataType)); return true; });
         foreach (var step in parallel)
             if (step.ParallelJoinMode == ParallelJoinMode.WaitAny)
             {
@@ -48,7 +50,7 @@ internal static class ParallelRules
     {
         foreach (var path in Distinct(Writes(forEach, forEach.ForEachBodySteps)))
             if (!Combined(forEach.WorkflowDataType, path, forEach.ParallelCombiners))
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                throw WorkflowBuildError.Invalid(forEach,
                     $"Items of parallel ForEach step '{forEach.Name}' all write '{string.Join('.', path)}' and it " +
                     "has no combiner; give the property a combiner, keep per-item values in the results, or join " +
                     "with WaitAny");
@@ -64,7 +66,7 @@ internal static class ParallelRules
                     {
                         var shorter = one.Count <= other.Count ? one : other;
                         if (!Combined(parallel.WorkflowDataType, shorter, parallel.ParallelCombiners))
-                            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                            throw WorkflowBuildError.Invalid(parallel,
                                 $"Branches {first + 1} and {second + 1} of parallel step '{parallel.Name}' both " +
                                 $"write '{string.Join('.', shorter)}' and it has no combiner; give the property a " +
                                 "combiner, write separate properties, or join with WaitAny");
@@ -84,17 +86,17 @@ internal static class ParallelRules
                 if (mapping.TargetPath == null && parallel.ParallelJoinMode == ParallelJoinMode.WaitAny)
                     continue;
                 if (mapping.TargetPath == null)
-                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    throw WorkflowBuildError.Invalid(step,
                         $"Step '{step.Name}' in a branch of parallel step '{parallel.Name}' writes a target that is " +
                         "not a chain of members, indexes and casts, so it cannot be shown not to conflict with " +
                         "another branch; write a named property, or join with WaitAny");
                 if (dataType != null)
-                    yield return BranchData.MergePath(dataType, mapping.TargetPath,
-                        () => $"Step '{step.Name}' in a branch of parallel step '{parallel.Name}'");
+                    yield return WorkflowBuildError.Check(step, () => BranchData.MergePath(dataType, mapping.TargetPath,
+                        () => $"Step '{step.Name}' in a branch of parallel step '{parallel.Name}'"));
             }
             if (step.ForEachIntoPath != null && dataType != null)
-                yield return BranchData.MergePath(dataType, step.ForEachIntoPath,
-                    () => $"ForEach step '{step.Name}' in a branch of parallel step '{parallel.Name}'");
+                yield return WorkflowBuildError.Check(step, () => BranchData.MergePath(dataType, step.ForEachIntoPath,
+                    () => $"ForEach step '{step.Name}' in a branch of parallel step '{parallel.Name}'"));
         }
     }
 

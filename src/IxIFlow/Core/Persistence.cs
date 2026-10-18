@@ -990,6 +990,7 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
 
     private void RegisterWorkflow(WorkflowDefinition definition)
     {
+        WorkflowDefinitionValidator.Validate(definition);
         Runtime.WorkflowDefinitionIdentity.AssignImplicitName(definition);
         var key = $"{definition.Name}:{definition.Version}";
         var published = _workflows.GetOrAdd(key, definition);
@@ -1062,6 +1063,7 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
                     ["IsActive"] = false
                 }
             };
+            WorkflowDefinitionValidator.Validate(updatedDefinition);
             _workflows.TryUpdate(key, updatedDefinition, definition);
         }
 

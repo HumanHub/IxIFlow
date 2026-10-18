@@ -1,0 +1,30 @@
+<Project>
+  <PropertyGroup>
+    <IxIFlowWorkflowPropsImported>true</IxIFlowWorkflowPropsImported>
+    <IxIFlowIncludeWorkflowFiles Condition="'$(IxIFlowIncludeWorkflowFiles)' == ''">true</IxIFlowIncludeWorkflowFiles>
+  </PropertyGroup>
+  <ItemGroup>
+    <CompilerVisibleProperty Include="RootNamespace" />
+    <CompilerVisibleItemMetadata Include="AdditionalFiles" MetadataName="IxIFlowWorkflow" />
+  </ItemGroup>
+
+  <!-- Run after project evaluation, before Roslyn captures item metadata, including design-time builds. -->
+  <Target Name="IncludeIxIFlowWorkflowFiles" BeforeTargets="GenerateMSBuildEditorConfigFileShouldRun;CoreCompile">
+    <ItemGroup>
+      <IxIFlowWorkflow Include="**/*.workflow.yaml;**/*.workflow.yml"
+                       Exclude="$(DefaultItemExcludes);$(DefaultExcludesInProjectFolder);**/bin/**;**/obj/**;@(IxIFlowWorkflow)"
+                       Condition="'$(IxIFlowIncludeWorkflowFiles)' == 'true' and '$(EnableDefaultItems)' != 'false'" />
+      <!-- Retain metadata on workflows that the project already added as AdditionalFiles.
+           Target-time item updates cannot use the evaluation-time Update selector. -->
+      <_IxIFlowOtherAdditionalFiles Include="@(AdditionalFiles)" />
+      <_IxIFlowOtherAdditionalFiles Remove="@(IxIFlowWorkflow)" MatchOnMetadata="FullPath" MatchOnMetadataOptions="PathLike" />
+      <_IxIFlowExistingWorkflows Include="@(AdditionalFiles)" />
+      <_IxIFlowExistingWorkflows Remove="@(_IxIFlowOtherAdditionalFiles)" />
+      <AdditionalFiles Remove="@(_IxIFlowExistingWorkflows)" />
+      <AdditionalFiles Include="@(_IxIFlowExistingWorkflows)" IxIFlowWorkflow="true" />
+      <_IxIFlowNewWorkflows Include="@(IxIFlowWorkflow)" />
+      <_IxIFlowNewWorkflows Remove="@(AdditionalFiles)" MatchOnMetadata="FullPath" MatchOnMetadataOptions="PathLike" />
+      <AdditionalFiles Include="@(_IxIFlowNewWorkflows)" IxIFlowWorkflow="true" />
+    </ItemGroup>
+  </Target>
+</Project>

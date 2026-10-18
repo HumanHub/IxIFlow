@@ -31,6 +31,7 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
     {
         ArgumentNullException.ThrowIfNull(completeWhen);
         SetJoinMode(ParallelJoinMode.WaitConditionally);
+        _step.ParallelCompletionBehavior = completeWhen;
         _step.ParallelCompletionCondition = data => completeWhen((TWorkflowData)data);
         return this;
     }

@@ -30,6 +30,9 @@ internal static class WorkflowCodeSignature
         IReadOnlyDictionary<ItemScope, string>? handles)
     {
         var method = behavior.Method;
+        if (method.Module.Assembly == typeof(WorkflowCodeSignature).Assembly)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                "An engine runtime adapter cannot be fingerprinted; retain the author-supplied behavior or expression");
         var code = LambdaCode.Of(method);
         var body = code != LambdaCode.Dynamic;
         var owner = WorkflowTypeIdentity.StableName(method.DeclaringType);

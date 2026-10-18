@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
@@ -13,11 +14,24 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
 {
     private readonly List<WorkflowStep> _steps = new();
 
+    public IWorkflowBuilder<TWorkflowData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        Core.Runtime.WorkflowStepIdentity.Assign(_steps, id, sourcePath, sourceLine);
+        return this;
+    }
+
+    public IWorkflowBuilder<TWorkflowData> Named(string name)
+    {
+        Core.Runtime.WorkflowStepIdentity.Name(_steps, name);
+        return this;
+    }
+
     public IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
         _steps.Add(new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData>(),
             Name = "Delay",
             StepType = WorkflowStepType.Delay,
             WorkflowDataType = typeof(TWorkflowData),
@@ -32,7 +46,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
     /// </summary>
     public WorkflowDefinition Build()
     {
-        return new WorkflowDefinition
+        var definition = new WorkflowDefinition
         {
             Id = Guid.NewGuid().ToString(),
             Name = workflowName,
@@ -40,8 +54,10 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = WorkflowDefinitionValidator.Apply(_steps)
+            Steps = _steps
         };
+        WorkflowDefinitionValidator.Apply(definition);
+        return definition;
     }
 
     public IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
@@ -50,6 +66,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
     {
         var step = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData>(),
             Id = Guid.NewGuid().ToString(),
             Name = typeof(TActivity).Name,
             StepType = WorkflowStepType.Activity,
@@ -80,6 +97,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
         var step = _steps[^1];
         step.RequestName = name;
         step.ReplyType = replyType;
+        step.RequestSubjectBehavior = subject;
         if (subject != null)
             step.RequestSubject = context => subject((WorkflowContext<TWorkflowData>)context);
         return next;
@@ -99,11 +117,24 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 {
     protected readonly List<WorkflowStep> _steps = steps;
 
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        Core.Runtime.WorkflowStepIdentity.Assign(_steps, id, sourcePath, sourceLine);
+        return this;
+    }
+
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name)
+    {
+        Core.Runtime.WorkflowStepIdentity.Name(_steps, name);
+        return this;
+    }
+
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
         _steps.Add(new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Name = "Delay",
             StepType = WorkflowStepType.Delay,
             WorkflowDataType = typeof(TWorkflowData),
@@ -123,6 +154,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     {
         var step = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = typeof(TActivity).Name,
             StepType = WorkflowStepType.Activity,
@@ -153,6 +185,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         var step = _steps[^1];
         step.RequestName = requestName;
         step.ReplyType = replyType;
+        step.RequestSubjectBehavior = subject;
         if (subject != null)
             step.RequestSubject = context => subject((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
         return next;
@@ -167,6 +200,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     {
         var step = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(Core.Runtime.ChildWorkflowBinding.Resolve<TWorkflow, TInvokedData>),
             Id = Guid.NewGuid().ToString(),
             Name = typeof(TWorkflow).Name,
             StepType = WorkflowStepType.WorkflowInvocation,
@@ -195,6 +229,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     {
         var step = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = workflowName,
             StepType = WorkflowStepType.WorkflowInvocation,
@@ -223,6 +258,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     {
         var sequenceStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Sequence",
             StepType = WorkflowStepType.Sequence,
@@ -258,6 +294,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         var conditionalStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Conditional",
             StepType = WorkflowStepType.Conditional,
@@ -292,6 +329,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     {
         var parallelStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Parallel",
             StepType = WorkflowStepType.Parallel,
@@ -317,6 +355,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     {
         var tryStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Try",
             StepType = WorkflowStepType.TryCatch,
@@ -343,6 +382,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     {
         var sagaStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Saga",
             StepType = WorkflowStepType.Saga,
@@ -393,6 +433,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     {
         var suspendStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Wait<TWorkflowData, TResumeEvent, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Suspend",
             StepType = WorkflowStepType.SuspendResume,
@@ -429,6 +470,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             };
             
             suspendStep.CompiledCondition = conditionWrapper;
+            suspendStep.ConditionBehavior = resumeCondition;
         }
 
         // Configure the suspend step if a setup action is provided
@@ -457,10 +499,12 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         var loopStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "DoWhile",
             StepType = WorkflowStepType.Loop,
             LoopType = LoopType.DoWhile,
+            ConditionBehavior = condition,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             CompiledCondition = conditionWrapper,
@@ -491,10 +535,12 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         var loopStep = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "WhileDo",
             StepType = WorkflowStepType.Loop,
             LoopType = LoopType.WhileDo,
+            ConditionBehavior = condition,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             CompiledCondition = conditionWrapper,
@@ -512,6 +558,30 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         return this;
     }
 
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?>> itemsExpression,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null)
+    {
+        ArgumentNullException.ThrowIfNull(itemsExpression);
+        var expression = Core.Runtime.WorkflowExpressionSignature.Checked(itemsExpression);
+        var result = ForEach(itemsExpression.Compile(), body, setup);
+        _steps[^1].ForEachItemsExpression = expression;
+        return result;
+    }
+
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult>> valueExpression)
+    {
+        ArgumentNullException.ThrowIfNull(valueExpression);
+        var expression = Core.Runtime.WorkflowExpressionSignature.Checked(valueExpression);
+        var result = Result(valueExpression.Compile());
+        _steps[^1].ResultExpression = expression;
+        return result;
+    }
+
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
@@ -521,11 +591,13 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         ArgumentNullException.ThrowIfNull(body);
         var step = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "ForEach",
             StepType = WorkflowStepType.ForEach,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
+            ForEachItemsBehavior = items,
             ForEachItems = context => items((WorkflowContext<TWorkflowData, TPreviousStepData>)context),
             Order = _steps.Count
         };
@@ -545,12 +617,14 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         ArgumentNullException.ThrowIfNull(value);
         _steps.Add(new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Result",
             StepType = WorkflowStepType.ForEachResult,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             ResultType = typeof(TResult),
+            ResultBehavior = value,
             ResultSelector = context => value((WorkflowContext<TWorkflowData, TPreviousStepData>)context),
             Order = _steps.Count
         });
@@ -562,7 +636,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     /// </summary>
     public WorkflowDefinition Build()
     {
-        return new WorkflowDefinition
+        var definition = new WorkflowDefinition
         {
             Id = Guid.NewGuid().ToString(),
             Name = name,
@@ -570,8 +644,10 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             EstimatedStepCount = _steps.Count,
-            Steps = WorkflowDefinitionValidator.Apply(_steps)
+            Steps = _steps
         };
+        WorkflowDefinitionValidator.Apply(definition);
+        return definition;
     }
 
     /// <summary>Adds a saga error handler without exception properties.</summary>
@@ -591,6 +667,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
                 "OnError can only be called after a Saga block");
         var handlerBlock = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Name = $"OnError<{typeof(TException).Name}>",
             StepType = WorkflowStepType.CatchBlock,
             WorkflowDataType = typeof(TWorkflowData),
@@ -630,10 +707,6 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         };
         if (policy != null)
             handlerBlock.StepMetadata["SagaErrorConfig"] = policy;
-        if (policy?.ContinuationAction == null && handlerBlock.SequenceSteps.Any(step =>
-                step.StepMetadata.ContainsKey("WaitKey")))
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                "A saga error handler with WaitFor must end with ThenContinue, ThenRetry, or ThenTerminate");
         sagaStep.CatchBlocks.Add(handlerBlock);
         return new SagaContainerBuilder<TWorkflowData, TPreviousStepData>(_steps, name, workflowVersion);
     }

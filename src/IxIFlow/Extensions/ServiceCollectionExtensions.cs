@@ -297,13 +297,7 @@ public static class ServiceCollectionExtensions
     }
 }
 
-internal interface IRegisteredWorkflowDefinition
-{
-    WorkflowDefinition Definition { get; }
-}
-
-internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinition Definition)
-    : IRegisteredWorkflowDefinition where TWorkflow : class;
+internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinition Definition);
 
 /// <summary>
 /// Builder for registering multiple workflows

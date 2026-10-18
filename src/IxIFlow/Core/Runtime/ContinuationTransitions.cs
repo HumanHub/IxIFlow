@@ -188,8 +188,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             case WorkflowStepType.Conditional:
                 if (step.OutcomeSelector != null)
                 {
-                    var outcomeContext = WorkflowValueBinding.EvaluationContext(workflowData,
-                        step.PreviousStepDataType, continuation.GetPrevious(services),
+                    var outcomeContext = WorkflowValueBinding.EvaluationContext(step, workflowData,
+                        continuation.GetPrevious(services),
                         ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
                     var outcome = step.OutcomeSelector(outcomeContext);
                     var selectedOutcome = step.OutcomeBranches.FindIndex(branch =>
@@ -208,7 +208,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     });
                     break;
                 }
-                var conditionContext = WorkflowValueBinding.EvaluationContext(workflowData, step.PreviousStepDataType,
+                var conditionContext = WorkflowValueBinding.EvaluationContext(step, workflowData,
                     continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
                 var selected = step.CompiledCondition?.Invoke(conditionContext)
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
@@ -240,8 +240,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 var shouldRun = position.LoopIterationCount == 0 && step.LoopType == LoopType.DoWhile;
                 if (!shouldRun)
                 {
-                    var loopContext = WorkflowValueBinding.EvaluationContext(workflowData,
-                        step.PreviousStepDataType, continuation.GetPrevious(services),
+                    var loopContext = WorkflowValueBinding.EvaluationContext(step, workflowData,
+                        continuation.GetPrevious(services),
                         ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
                     shouldRun = step.CompiledCondition?.Invoke(loopContext)
                         ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,

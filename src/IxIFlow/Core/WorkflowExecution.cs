@@ -708,6 +708,20 @@ public class WorkflowDefinition
 /// </summary>
 public class WorkflowStep
 {
+    /// <summary>The authoring source location, when available.</summary>
+    public string? SourceLocation { get; set; }
+
+    internal Runtime.WorkflowStepDelegates Runtime { get; set; } = null!;
+
+    // Author-supplied behavior, kept separately from the runtime adapters built around it.
+    internal Delegate? ConditionBehavior { get; set; }
+    internal Delegate? ParallelCompletionBehavior { get; set; }
+    internal Delegate? RequestSubjectBehavior { get; set; }
+    internal Delegate? ForEachCompletionBehavior { get; set; }
+    internal Delegate? ForEachItemsBehavior { get; set; }
+    internal Delegate? ResultBehavior { get; set; }
+    internal System.Linq.Expressions.LambdaExpression? OutcomeExpression { get; set; }
+
     /// <summary>
     ///     Unique identifier for this step
     /// </summary>
@@ -765,6 +779,21 @@ public class WorkflowStep
     /// <summary>For an expression-based condition, the expression it was compiled from; its shape and captures are fingerprinted.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public System.Linq.Expressions.LambdaExpression? ConditionExpression { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? ForEachItemsExpression { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? ResultExpression { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? ForEachCompletionExpression { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal Type? ForEachStoredResultType { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal Type? ForEachConditionResultType { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
     public Func<object, object?>? OutcomeSelector { get; set; }
@@ -958,6 +987,15 @@ public class WorkflowStep
             CancelWithParent = CancelWithParent,
             InputMappings = InputMappings.Select(m => m.Clone()).ToList(),
             OutputMappings = OutputMappings.Select(m => m.Clone()).ToList(),
+            SourceLocation = SourceLocation,
+            Runtime = Runtime,
+            ConditionBehavior = ConditionBehavior,
+            ParallelCompletionBehavior = ParallelCompletionBehavior,
+            RequestSubjectBehavior = RequestSubjectBehavior,
+            ForEachCompletionBehavior = ForEachCompletionBehavior,
+            ForEachItemsBehavior = ForEachItemsBehavior,
+            ResultBehavior = ResultBehavior,
+            OutcomeExpression = OutcomeExpression,
             CompiledCondition = CompiledCondition,
             ConditionExpression = ConditionExpression,
             OutcomeSelector = OutcomeSelector,
@@ -985,6 +1023,11 @@ public class WorkflowStep
             ForEachBodySteps = ForEachBodySteps.Select(s => s.Clone()).ToList(),
             ForEachItem = ForEachItem,
             ForEachItems = ForEachItems,
+            ForEachItemsExpression = ForEachItemsExpression,
+            ResultExpression = ResultExpression,
+            ForEachCompletionExpression = ForEachCompletionExpression,
+            ForEachStoredResultType = ForEachStoredResultType,
+            ForEachConditionResultType = ForEachConditionResultType,
             ForEachInto = ForEachInto,
             ForEachIntoPath = ForEachIntoPath,
             ForEachParallel = ForEachParallel,
@@ -1102,6 +1145,8 @@ public enum LoopType
 /// </summary>
 public class PropertyMapping
 {
+    internal Func<Runtime.MappingContextValues, object>? ContextFactory { get; set; }
+
     /// <summary>
     ///     Unique identifier for this mapping
     /// </summary>
@@ -1157,6 +1202,7 @@ public class PropertyMapping
         return new PropertyMapping
         {
             Id = Id,
+            ContextFactory = ContextFactory,
             TargetProperty = TargetProperty,
             Expression = Expression,
             TargetPath = TargetPath,
