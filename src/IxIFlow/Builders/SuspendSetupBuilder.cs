@@ -252,7 +252,7 @@ public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevi
     private Action<WorkflowContext<TWorkflowData>, TProperty> CompileOutputAssignment(
         Expression<Func<WorkflowContext<TWorkflowData>, TProperty>> destination)
     {
-        // Use the same logic as ExpressionEvaluator.CreateSetterExpression but inline
+        // Build a setter for the destination member
         if (destination.Body is not MemberExpression memberExpression)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Output destination must be a member access expression: {destination}");
