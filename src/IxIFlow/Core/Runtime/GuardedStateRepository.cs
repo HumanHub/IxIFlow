@@ -5,14 +5,37 @@ namespace IxIFlow.Core.Runtime;
 /// <see cref="WorkflowErrorKind.Infrastructure"/> engine failure, so it interrupts the
 /// instance instead of being handled as a workflow failure.
 /// </summary>
-internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkflowInbox
+internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
+    public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
+        Guard(() => _store.RegisterPublisherAsync(name, eventTypes, replayRetained), "Accessing workflow outbox");
+    public Task UnregisterPublisherAsync(string name) =>
+        Guard(() => _store.UnregisterPublisherAsync(name), "Unregistering workflow outbox publisher");
+    public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
+        Guard(() => _store.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit), "Accessing workflow outbox");
+    public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
+        Guard(() => _store.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration), "Accessing workflow outbox");
+    public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result) =>
+        Guard(() => _store.SettleDeliveryAsync(eventId, publisherName, token, result), "Accessing workflow outbox");
+    public Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName) =>
+        Guard(() => _store.GetDeliveryAsync(eventId, publisherName), "Accessing workflow outbox");
+    public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
+        Guard(() => _store.GetPublisherAsync(publisherName), "Accessing workflow outbox");
+
     private readonly IWorkflowStateRepository _store;
 
     private GuardedStateRepository(IWorkflowStateRepository store) => _store = store;
 
     public static IWorkflowStateRepository Wrap(IWorkflowStateRepository store) =>
         store as GuardedStateRepository ?? new GuardedStateRepository(store);
+
+    public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => _store.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken),
+            "Purging retained workflows");
+
+    public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
+        Guard(() => _store.GetTombstoneAsync(instanceId), $"Reading retention tombstone for '{instanceId}'");
 
     public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
         Guard(() => _store.RequestCancellationAsync(instanceId, reason),
@@ -30,31 +53,27 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
     public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
         Guard(() => _store.GetRunnableInstancesAsync(limit), "Listing runnable workflow instances");
 
-    private IWorkflowInbox Inbox => _store as IWorkflowInbox
-        ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-            "The workflow state store has no inbox");
-
     public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
-        Guard(() => Inbox.AppendEventAsync(workflowEvent),
+        Guard(() => _store.AppendEventAsync(workflowEvent),
             $"Storing event '{workflowEvent.EventId}' for workflow instance '{workflowEvent.InstanceId}'");
 
     public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
-        Guard(() => Inbox.GetPendingEventsAsync(instanceId, afterSequence, limit),
+        Guard(() => _store.GetPendingEventsAsync(instanceId, afterSequence, limit),
             $"Reading the inbox of workflow instance '{instanceId}'");
 
     public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
-        Guard(() => Inbox.GetEventAsync(instanceId, eventId),
+        Guard(() => _store.GetEventAsync(instanceId, eventId),
             $"Reading event '{eventId}' of workflow instance '{instanceId}'");
 
     public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
-        Guard(() => Inbox.GetWaitAsync(instanceId, waitId),
+        Guard(() => _store.GetWaitAsync(instanceId, waitId),
             $"Reading wait '{waitId}' of workflow instance '{instanceId}'");
 
     public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
-        Guard(() => Inbox.GetOpenWaitsAsync(query), "Listing open workflow waits");
+        Guard(() => _store.GetOpenWaitsAsync(query), "Listing open workflow waits");
 
     public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds) =>
-        Guard(() => Inbox.GetInboxSequencesAsync(instanceIds), "Reading workflow inbox sequences");
+        Guard(() => _store.GetInboxSequencesAsync(instanceIds), "Reading workflow inbox sequences");
 
     public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit) =>
         Guard(() => _store.CommitWorkflowInstanceAsync(commit),
@@ -106,8 +125,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
         Guard(() => _store.GetWorkflowInstancesByCorrelationIdAsync(correlationId),
             $"Listing workflow instances correlated by '{correlationId}'");
 
-    public Task DeleteWorkflowInstanceAsync(string instanceId) =>
-        Guard(() => _store.DeleteWorkflowInstanceAsync(instanceId),
+    public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) =>
+        Guard(() => _store.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention),
             $"Deleting workflow instance '{instanceId}'");
 
     private static async Task<T> Guard<T>(Func<Task<T>> call, string operation)
@@ -116,7 +135,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
         {
             return await call();
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException &&
+            error is not WorkflowEngineException { Kind: WorkflowErrorKind.InstanceRemoved })
         {
             throw Failure(operation, error);
         }
@@ -128,7 +148,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
         {
             await call();
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException &&
+            error is not WorkflowEngineException { Kind: WorkflowErrorKind.InstanceRemoved })
         {
             throw Failure(operation, error);
         }

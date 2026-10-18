@@ -51,6 +51,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IxIFlow.Samples", "samples\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IxIFlow.Samples.Tests", "tests\IxIFlow.Samples.Tests\IxIFlow.Samples.Tests.csproj", "{239A2C06-3685-4A9D-82AF-360ED5EA7D58}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IxIFlow.Webhooks", "src\IxIFlow.Webhooks\IxIFlow.Webhooks.csproj", "{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -313,6 +315,18 @@ Global
 		{239A2C06-3685-4A9D-82AF-360ED5EA7D58}.Release|x64.Build.0 = Release|Any CPU
 		{239A2C06-3685-4A9D-82AF-360ED5EA7D58}.Release|x86.ActiveCfg = Release|Any CPU
 		{239A2C06-3685-4A9D-82AF-360ED5EA7D58}.Release|x86.Build.0 = Release|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Debug|x64.Build.0 = Debug|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Debug|x86.Build.0 = Debug|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Release|x64.ActiveCfg = Release|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Release|x64.Build.0 = Release|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Release|x86.ActiveCfg = Release|Any CPU
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -339,6 +353,7 @@ Global
 		{1D252899-FC16-4D41-AF52-608EE0073E60} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{3F89FD84-AB02-4AD6-9033-E84D33C3CBD7} = {5D20AA90-6969-D8BD-9DCD-8634F4692FDA}
 		{239A2C06-3685-4A9D-82AF-360ED5EA7D58} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{D38F97A0-C6CB-4CF0-A37E-68098609CBF3} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {8D5D7E22-F7E0-402B-8513-7C386281C933}

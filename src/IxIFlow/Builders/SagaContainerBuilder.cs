@@ -1,3 +1,4 @@
+using IxIFlow.Core.Runtime;
 using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
 using IxIFlow.Builders.Interfaces;
@@ -21,20 +22,23 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
 
     // ISagaContainerBuilder specific methods
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException>(
-        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
+        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TException : Exception
     {
-        return _workflowBuilder.OnError<TException>(configure);
+        return _workflowBuilder.OnError<TException>(configure, id, sourcePath, sourceLine);
     }
 
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException, TFault>(
-        Action<ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>> configure)
-        where TException : Exception => _workflowBuilder.OnError<TException, TFault>(configure);
+        Action<ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TException : Exception => _workflowBuilder.OnError<TException, TFault>(configure, id, sourcePath, sourceLine);
 
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError(
-        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
+        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
-        return _workflowBuilder.OnError(configure);
+        return _workflowBuilder.OnError(configure, id, sourcePath, sourceLine);
     }
 
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
@@ -52,6 +56,15 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
     {
         return _workflowBuilder.Step(configure);
     }
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
+        string name,
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null)
+        where TActivity : class, IAsyncActivity =>
+        _workflowBuilder.Request<TActivity>(name, configure, subjectExpression: subjectExpression);
 
     public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(string name,
         Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
@@ -93,12 +106,26 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         return _workflowBuilder.Parallel(configure);
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> DoWhile(
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression) =>
+        _workflowBuilder.DoWhile(configure, conditionExpression: conditionExpression);
+
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> DoWhile(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition)
     {
         return _workflowBuilder.DoWhile(configure, condition);
     }
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> WhileDo(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure) =>
+        _workflowBuilder.WhileDo(conditionExpression: conditionExpression, configure: configure);
 
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> WhileDo(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition,
@@ -139,6 +166,15 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         return _workflowBuilder.Saga(configure);
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
+        string suspendReason,
+        Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>>? resumeExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class =>
+        _workflowBuilder.Suspend<TResumeEvent>(suspendReason, resumeExpression: resumeExpression, configure: configure);
+
     public IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(string suspendReason,
         Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>? resumeCondition = null,
         Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
@@ -146,6 +182,15 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
     {
         return _workflowBuilder.Suspend(suspendReason, resumeCondition, configure);
     }
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(
+        string key,
+        Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class =>
+        _workflowBuilder.WaitFor<TEvent>(key, matchesExpression: matchesExpression, configure: configure);
 
     public IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(string key,
         Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
@@ -159,4 +204,5 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
     {
         return _workflowBuilder.Build();
     }
+
 }

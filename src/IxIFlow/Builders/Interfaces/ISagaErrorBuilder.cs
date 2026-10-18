@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using IxIFlow.Core;
 
@@ -34,9 +35,18 @@ public interface ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>
         Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>> configure)
         where TActivity : class, IAsyncActivity;
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    ISagaErrorBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
+        string key,
+        Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class;
+
     ISagaErrorBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
         string key,
         Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
         Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
         where TEvent : class;
+
 }

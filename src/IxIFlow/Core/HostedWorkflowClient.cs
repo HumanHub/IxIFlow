@@ -104,20 +104,24 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
             client => client.DeliverReplyAsync(instanceId, waitId, reply, eventId, subject), cancellationToken);
     }
 
-    public async Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query)
+    public async Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
         // Only waits without a request are listed: a request's answer goes to the token the request
         // sent, and a child's waits shown on its parent are listed on the child (D-33). The store
         // applies the filter, so paging by wait ID never skips a listed wait.
+        if (query.InstanceId is { } id && await GetStatusAsync(id) == WorkflowExecutionStatus.Removed)
+            return new([], isRemoved: true);
         if (query.Kind is not (null or WaitKind.Event))
-            return [];
+            return new([]);
         var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(query with { Kind = WaitKind.Event }));
-        return waits
+        var removed = query.InstanceId is { } instanceId &&
+            await GetStatusAsync(instanceId) == WorkflowExecutionStatus.Removed;
+        return new(removed ? [] : waits
             .Select(wait => new OpenWait(wait.InstanceId, wait.WaitId, wait.Kind, wait.Key, wait.EventType,
                 EventSchema(wait.EventType), wait.DeadlineUtc, wait.OpenedAtUtc,
                 ReplyToken.Create(wait.InstanceId, wait.WaitId)))
-            .ToArray();
+            .ToArray(), removed);
     }
 
     // The JSON schema of an event type that this process can load, or null.
@@ -253,14 +257,29 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
             cancellationToken), cancellationToken);
     }
 
-    public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
-        host.ReadAsync(client => client.GetPendingActivitiesAsync(instanceId));
+    public Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId) =>
+        host.ReadAsync(client => client.ReadStatusAsync(instanceId));
 
-    public Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId) =>
-        host.ReadAsync(client => client.GetSnapshotAsync(instanceId));
+    public async Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId)
+    {
+        var items = await host.ReadAsync(client => client.GetPendingActivitiesAsync(instanceId));
+        var removed = await GetStatusAsync(instanceId) == WorkflowExecutionStatus.Removed;
+        return new(removed ? [] : items, removed);
+    }
 
-    public Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
-        host.ReadAsync(client => client.GetTraceAsync(instanceId));
+    public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId)
+    {
+        var snapshot = await host.ReadAsync(client => client.GetSnapshotAsync(instanceId));
+        return await GetStatusAsync(instanceId) == WorkflowExecutionStatus.Removed
+            ? new WorkflowExecutionSnapshot { InstanceId = instanceId, IsRemoved = true } : snapshot;
+    }
+
+    public async Task<WorkflowReadResult<ExecutionTraceEntry>> GetTraceAsync(string instanceId)
+    {
+        var items = await host.ReadAsync(client => client.GetTraceAsync(instanceId));
+        var removed = await GetStatusAsync(instanceId) == WorkflowExecutionStatus.Removed;
+        return new(removed ? [] : items, removed);
+    }
 
     public async Task<WorkflowExecutionResult> AwaitAsync(string instanceId,
         WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle, CancellationToken cancellationToken = default)
@@ -291,5 +310,5 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
             ? status != WorkflowExecutionStatus.Running
             : status is WorkflowExecutionStatus.Success or WorkflowExecutionStatus.Faulted or
                 WorkflowExecutionStatus.Failed or WorkflowExecutionStatus.Cancelled or
-                WorkflowExecutionStatus.TimedOut;
+                WorkflowExecutionStatus.TimedOut or WorkflowExecutionStatus.Removed;
 }

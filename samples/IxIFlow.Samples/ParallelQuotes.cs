@@ -7,7 +7,7 @@ namespace IxIFlow.Samples;
 public static class ParallelQuotes
 {
     public static WorkflowDefinition Definition(string join = "all") =>
-        new WorkflowBuilder<QuoteData, object>([], "ParallelQuotes")
+        new WorkflowBuilder<QuoteData, object>([], "ParallelQuotes-" + join)
             .Parallel(parallel =>
             {
                 var branches = parallel
@@ -24,7 +24,7 @@ public static class ParallelQuotes
                 if (join == "any")
                     branches.WaitAny();
                 if (join == "conditional")
-                    branches.WaitConditionally(data => data.Amount >= 12.5m);
+                    branches.WaitConditionally(completeWhenExpression: data => data.Amount >= 12.5m);
             })
             .Build();
 }

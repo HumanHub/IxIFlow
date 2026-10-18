@@ -22,9 +22,25 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
         Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity;
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
+        string key,
+        Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class;
+
     ICatchWorkflowBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
         string key,
         Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class;
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TEvent> Suspend<TEvent>(
+        string reason,
+        Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
         Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
         where TEvent : class;
 
@@ -55,13 +71,32 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> then,
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>>? @else = null);
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> DoWhile(
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression);
+
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> DoWhile(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition);
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> WhileDo(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure);
+
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> WhileDo(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure);
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> ForEach<TItem>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?>> itemsExpression,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null);
 
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> ForEach<TItem>(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
@@ -73,4 +108,5 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
 
     ISagaContainerBuilder<TWorkflowData, TPreviousStepData> Saga(
         Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure);
+
 }

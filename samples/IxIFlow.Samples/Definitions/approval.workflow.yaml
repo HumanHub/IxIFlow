@@ -1,0 +1,62 @@
+# Ask the manager about this order. Escalate if the answer misses the deadline.
+workflow:
+  name: OneApprover
+  dataType: IxIFlow.Recipes.Order
+code:
+  subject:
+    language: csharp-expression
+    source: '$"{workflow.OrderId}:{workflow.Amount}"'
+definitions:
+  - kind: activity
+    activity: IxIFlow.Recipes.ValidateOrder
+  - kind: request
+    activity: IxIFlow.Recipes.RequestApproval
+    key: approval
+    subject: { kind: function, function: subject }
+    input:
+      - target: Approver
+        from: { kind: constant, value: manager }
+      - target: OrderId
+        from: { path: workflow.OrderId }
+      - target: Amount
+        from: { path: workflow.Amount }
+  - kind: waitFor
+    key: approval
+    event: IxIFlow.Recipes.ApprovalDecision
+    output:
+      - source: Approved
+        sourceContext: event
+        to: { path: workflow.Approved }
+      - source: By
+        sourceContext: event
+        to: { path: workflow.ApprovedBy }
+    timeout: '01:00:00'
+    onTimeout:
+      - kind: activity
+        activity: IxIFlow.Recipes.Escalate
+        output:
+          - source: Escalated
+            to: { path: workflow.Escalated }
+  - kind: if
+    condition: { path: workflow.Approved }
+    then:
+      - kind: activity
+        activity: IxIFlow.Recipes.Decide
+        input:
+          - target: Value
+            from: { kind: constant, value: approved }
+        output:
+          - source: Value
+            to: { path: workflow.Outcome }
+    else:
+      - kind: activity
+        activity: IxIFlow.Recipes.Decide
+        input:
+          - target: Value
+            from: { kind: constant, value: rejected }
+        output:
+          - source: Value
+            to: { path: workflow.Outcome }
+  - kind: waitFor
+    key: dispatched
+    event: IxIFlow.Recipes.OrderDispatched
