@@ -199,7 +199,8 @@ public sealed class ActivityRecoveryTests
         var history = await TraceAsync(store, running.InstanceId);
         var decision = history.Last(entry => entry.EntryType == TraceEntryType.ActivityStarted);
         Assert.Equal("OperatorCompleted", decision.Metadata["Kind"].ToString());
-        Assert.Equal("operator-1", decision.Metadata["DecidedBy"].ToString());
+        Assert.Equal("operator-1", Assert.IsType<ActivityResolutionTrace>(history.Single(entry =>
+            entry.EntryType == TraceEntryType.ActivityResolved).Payload).DecidedBy);
         Assert.Equal("Checked the provider receipt", decision.Metadata["DecisionNote"].ToString());
     }
 

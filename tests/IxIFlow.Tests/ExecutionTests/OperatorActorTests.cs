@@ -31,8 +31,8 @@ public sealed class OperatorActorTests
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
         var entry = Assert.Single(await client.GetTraceAsync(started.InstanceId),
             item => item.EntryType == TraceEntryType.CancellationRequested);
-        Assert.Equal(recorded, entry.Metadata["Actor"].ToString());
-        Assert.Equal("withdrawn", entry.Metadata["ReasonCode"].ToString());
+        Assert.Equal(recorded, Assert.IsType<CancellationTrace>(entry.Payload).Actor);
+        Assert.Equal("withdrawn", Assert.IsType<CancellationTrace>(entry.Payload).ReasonCode);
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public sealed class OperatorActorTests
         Assert.True(released.Status == WorkflowExecutionStatus.Success, released.ErrorMessage);
         var entry = Assert.Single(await client.GetTraceAsync(instanceId),
             item => item.EntryType == TraceEntryType.Released);
-        Assert.Equal("joe@ops", entry.Metadata["Actor"].ToString());
+        Assert.Equal("joe@ops", Assert.IsType<ReleaseTrace>(entry.Payload).Actor);
     }
 
     // Without a default and without a name, nothing is invented.
@@ -73,7 +73,7 @@ public sealed class OperatorActorTests
 
         var entry = Assert.Single(await client.GetTraceAsync(started.InstanceId),
             item => item.EntryType == TraceEntryType.CancellationRequested);
-        Assert.False(entry.Metadata.ContainsKey("Actor"));
+        Assert.Null(Assert.IsType<CancellationTrace>(entry.Payload).Actor);
     }
 
     private static WorkflowDefinition Growing() =>

@@ -36,7 +36,8 @@ Optional fixed statements are LockIdentity, AdvanceInbox (when InsertEvent advan
 | OutboxClock | The store clock after delivery locks have been acquired. SQLite samples its injected clock instead. |
 | ReadInstanceSql | Trunk, then parts (InstanceId, PartKey, Json), then current stamp (InstanceId, Revision, Incarnation) when needed. Retry reads reapply the original filter. |
 | ReadParts | Parts for selected IDs, then current stamps when needed. Snapshot reads return only parts. |
-| LockInbox, DeleteParentInbox | Status and InboxSequence, followed by server time for server-clock stores. |
+| LockInbox | Status, InboxSequence and TracingEnabled (projected from StateJson), followed by server time for server-clock stores. |
+| DeleteParentInbox | Status and InboxSequence, followed by server time for server-clock stores. |
 | ParentInbox | Status and InboxSequence, with no clock result. |
 | CommitState | Revision, CancellationJson, CancellationAcknowledged, InboxSequence, followed by server time when applicable. |
 | Receipt, Lease | ExpectedRevision, Revision, PayloadHash; Epoch, CrashCount, IsActive respectively. |

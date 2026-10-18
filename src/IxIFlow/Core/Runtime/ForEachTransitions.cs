@@ -18,7 +18,7 @@ internal static class ForEachTransitions
     /// </summary>
     public static void Advance(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, ScopePosition position, WorkflowStep step, object workflowData,
-        IServiceProvider services, int maxItems, int maxActiveBranches = int.MaxValue)
+        IServiceProvider services, int maxItems, int maxActiveBranches)
     {
         var handle = step.ForEachItem ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
             $"ForEach step '{step.Name}' has no item handle");
@@ -26,6 +26,7 @@ internal static class ForEachTransitions
         var saved = state != null;
         if (state == null)
         {
+            checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
             var list = step.ForEachItems!(Context(scopes, checkpoint, continuation, step, workflowData, services))
                 ?? throw new InvalidOperationException($"ForEach step '{step.Name}' was given no list");
             var items = new List<string>();
@@ -71,6 +72,7 @@ internal static class ForEachTransitions
                 RuntimeEntryPrevious = continuation.RuntimePrevious,
                 RestorePreviousOnExit = true
             });
+            checkpoint.Trace.ItemStarted(step, continuation, continuation.Stack[^1]);
             state.Next++;
             return;
         }
@@ -133,6 +135,8 @@ internal static class ForEachTransitions
         };
         join.ChildContinuationIds.Add(child.Id);
         checkpoint.Continuations.Add(child);
+        checkpoint.Trace.Record(TraceEntryType.BranchStarted, step, child, index, child.Stack[0].ScopeId, join.Id);
+        checkpoint.Trace.ItemStarted(step, child, child.Stack[0]);
     }
 
     /// <summary>
