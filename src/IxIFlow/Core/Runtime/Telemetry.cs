@@ -51,6 +51,10 @@ internal static class Telemetry
     public static readonly Counter<long> OutboxSettleFailures = Meter.CreateCounter<long>(
         "ixiflow.outbox.settle_failure", "{delivery}", "Successful publishes whose settlement failed or was rejected");
 
+    public static readonly Counter<long> RetentionSkippedUnattempted = Meter.CreateCounter<long>(
+        "ixiflow.retention.skipped_unattempted", "{instance}",
+        "Finished candidates skipped per pass because a publisher has never attempted their pending deliveries");
+
     public static readonly Histogram<double> OutboxAge = Meter.CreateHistogram<double>(
         "ixiflow.outbox.age", "s", "Age of an outbox event when delivery is attempted");
 

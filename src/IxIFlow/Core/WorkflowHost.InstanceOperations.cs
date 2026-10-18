@@ -63,6 +63,8 @@ public sealed partial class WorkflowHost
             {
                 var existing = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
                 if (existing == null)
+                    await RefuseRemovedAsync(instanceId);
+                if (existing == null)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                         $"Workflow instance '{instanceId}' does not exist");
                 if (existing.Status is WorkflowStatus.Running or WorkflowStatus.Suspended or
@@ -90,7 +92,7 @@ public sealed partial class WorkflowHost
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
-            return instance == null ? null : ReadResult(instance);
+            return instance == null ? await RemovedResultAsync(instanceId) : ReadResult(instance);
         }
 
         /// <summary>The status of an instance as a result would report it, without reading its data.</summary>
@@ -98,7 +100,20 @@ public sealed partial class WorkflowHost
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
-            return instance == null ? null : StatusOf(instance.Status);
+            return instance == null ? (await RemovedResultAsync(instanceId))?.Status : StatusOf(instance.Status);
+        }
+
+        private async Task<WorkflowExecutionResult?> RemovedResultAsync(string instanceId) =>
+            await _store.GetTombstoneAsync(instanceId) != null
+                ? new WorkflowExecutionResult { InstanceId = instanceId, Status = WorkflowExecutionStatus.Removed,
+                    ErrorMessage = "The workflow instance and its retained result were removed by retention" }
+                : null;
+
+        private async Task RefuseRemovedAsync(string instanceId)
+        {
+            if (await _store.GetTombstoneAsync(instanceId) != null)
+                throw new WorkflowEngineException(WorkflowErrorKind.InstanceRemoved,
+                    $"Workflow instance '{instanceId}' was removed; its ID is reserved").At(instanceId);
         }
 
         public async Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
@@ -109,6 +124,8 @@ public sealed partial class WorkflowHost
             ArgumentNullException.ThrowIfNull(resolution);
             using var lease = await gate.EnterAsync(instanceId, cancellationToken);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+            if (instance == null)
+                await RefuseRemovedAsync(instanceId);
             if (instance?.Status != WorkflowStatus.NeedsResolution || !HasStructuredCheckpoint(instance))
                 return Rejected(instanceId, "The workflow instance has no activity awaiting resolution");
 
@@ -347,6 +364,8 @@ public sealed partial class WorkflowHost
             try
             {
                 using var lease = await gate.EnterAsync(instance.InstanceId, cancellationToken);
+                if (options.InstanceId != null)
+                    await RefuseRemovedAsync(instance.InstanceId);
                 // A repeated start of an existing instance is answered without claiming it, so retries
                 // never count as crashes of an instance another host lost (B-08).
                 if (options.InstanceId != null &&
@@ -523,6 +542,8 @@ public sealed partial class WorkflowHost
         private async Task<EventAppendResult> AppendAsync(WorkflowEvent stored)
         {
             var appended = await _store.AppendEventAsync(stored);
+            if (appended.Status is EventAppendStatus.Closed or EventAppendStatus.NotFound)
+                await RefuseRemovedAsync(stored.InstanceId);
             return appended.Status == EventAppendStatus.Conflict
                 ? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"Event ID '{stored.EventId}' was already used for a different event").At(stored.InstanceId)
@@ -534,6 +555,9 @@ public sealed partial class WorkflowHost
         {
             var result = await ReadAsync(instanceId) ?? throw new WorkflowEngineException(
                 WorkflowErrorKind.InvalidRequest, $"Workflow instance '{instanceId}' does not exist").At(instanceId);
+            if (result.Status == WorkflowExecutionStatus.Removed)
+                throw new WorkflowEngineException(WorkflowErrorKind.InstanceRemoved,
+                    $"Workflow instance '{instanceId}' was removed; its ID is reserved").At(instanceId);
             result.Event = receipt;
             return result;
         }
@@ -556,6 +580,8 @@ public sealed partial class WorkflowHost
         {
             using var lease = await gate.EnterAsync(instanceId, cancellationToken);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+            if (instance == null)
+                await RefuseRemovedAsync(instanceId);
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
             var canRecover = instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
                 instance?.Status == WorkflowStatus.Suspended &&

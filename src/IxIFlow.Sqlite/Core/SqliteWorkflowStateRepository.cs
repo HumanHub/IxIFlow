@@ -486,15 +486,15 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision)
-              VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @RunnableAtUtc, @StateJson, @Revision);
+                  (instance_id, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
+              VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
                   workflow_name = @WorkflowName, status = @Status,
-                  correlation_id = @CorrelationId,
+                  correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
                   runnable_at_utc = @RunnableAtUtc,
                   inbox_read_through = COALESCE(@InboxReadThrough, inbox_read_through),
                   state_json = @StateJson, revision = @Revision,
@@ -522,12 +522,12 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 """,
         Statement.Save => """
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, workflow_name, status, correlation_id, runnable_at_utc, state_json)
-                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId,
+                    (instance_id, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json)
+                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
                     CASE WHEN @RunnableNow THEN @Now ELSE @RunnableAtUtc END, @StateJson)
                 ON CONFLICT (instance_id) DO UPDATE
                 SET workflow_name = excluded.workflow_name, status = excluded.status,
-                    correlation_id = excluded.correlation_id, runnable_at_utc = excluded.runnable_at_utc,
+                    correlation_id = excluded.correlation_id, parent_instance_id = excluded.parent_instance_id, runnable_at_utc = excluded.runnable_at_utc,
                     state_json = excluded.state_json
                 WHERE ixiflow_workflow_instances.revision = 0
                 RETURNING COALESCE(runnable_at_utc <= @Now, false)
@@ -567,7 +567,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key IN @Keys
                 """,
-        _ => null
+        _ => RetentionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -583,6 +583,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             status TEXT COLLATE BINARY NOT NULL,
             correlation_id TEXT COLLATE BINARY NULL,
             runnable_at_utc TEXT NULL,
+            ended_at_utc TEXT NULL,
             state_json TEXT NOT NULL,
             cancellation_json TEXT NULL,
             cancellation_acknowledged INTEGER NOT NULL DEFAULT false,
@@ -666,6 +667,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             ON ixiflow_workflow_leases (expires_at_utc);
         """, transaction: transaction);
     await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
+    await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 

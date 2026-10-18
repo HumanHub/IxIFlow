@@ -48,5 +48,8 @@ public enum WorkflowExecutionStatus
     /// <summary>
     /// An activity invocation has an unknown result and was not replayed automatically.
     /// </summary>
-    NeedsResolution
+    NeedsResolution,
+
+    /// <summary>Retention removed the result; the instance ID is still reserved.</summary>
+    Removed
 }

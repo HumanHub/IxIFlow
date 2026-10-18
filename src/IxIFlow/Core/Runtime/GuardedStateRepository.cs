@@ -29,6 +29,14 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public static IWorkflowStateRepository Wrap(IWorkflowStateRepository store) =>
         store as GuardedStateRepository ?? new GuardedStateRepository(store);
 
+    public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => _store.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken),
+            "Purging retained workflows");
+
+    public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
+        Guard(() => _store.GetTombstoneAsync(instanceId), $"Reading retention tombstone for '{instanceId}'");
+
     public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
         Guard(() => _store.RequestCancellationAsync(instanceId, reason),
             $"Requesting cancellation of workflow instance '{instanceId}'");
@@ -117,8 +125,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetWorkflowInstancesByCorrelationIdAsync(correlationId),
             $"Listing workflow instances correlated by '{correlationId}'");
 
-    public Task DeleteWorkflowInstanceAsync(string instanceId) =>
-        Guard(() => _store.DeleteWorkflowInstanceAsync(instanceId),
+    public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) =>
+        Guard(() => _store.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention),
             $"Deleting workflow instance '{instanceId}'");
 
     private static async Task<T> Guard<T>(Func<Task<T>> call, string operation)
@@ -127,7 +135,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         {
             return await call();
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException &&
+            error is not WorkflowEngineException { Kind: WorkflowErrorKind.InstanceRemoved })
         {
             throw Failure(operation, error);
         }
@@ -139,7 +148,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         {
             await call();
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException &&
+            error is not WorkflowEngineException { Kind: WorkflowErrorKind.InstanceRemoved })
         {
             throw Failure(operation, error);
         }

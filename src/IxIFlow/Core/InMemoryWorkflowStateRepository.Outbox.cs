@@ -10,6 +10,8 @@ public partial class InMemoryWorkflowStateRepository
 
     private void RecordCompletion(WorkflowInstance instance, DateTime now)
     {
+        if (WorkflowStoreRules.IsTerminal(instance.Status))
+            _endedAt.TryAdd(instance.InstanceId, now);
         if (!WorkflowStoreRules.IsTerminal(instance.Status) || _completionEvents.ContainsKey(instance.InstanceId))
             return;
         var item = OutboxEvent.Completion(instance, now);

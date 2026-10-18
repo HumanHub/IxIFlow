@@ -6,7 +6,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 internal static class OutboxStoreContract
 {
     internal static async Task VerifyAsync(IWorkflowStateRepository repository,
-        Func<OutboxDelivery, TimeSpan, Task> advance)
+        Func<OutboxDelivery, TimeSpan, Task> advance, Func<string, Task> expireTombstone)
     {
         var outbox = repository;
         await RegistrationStartsWithFutureEventsUnlessReplayIsExplicit(repository);
@@ -16,7 +16,7 @@ internal static class OutboxStoreContract
         await outbox.RegisterPublisherAsync("secondary", [OutboxEvent.WorkflowCompleted]);
         await PerPublisherIsolationAndBackoff(repository, outbox, advance);
         await LeaseReclaimDeliversAtLeastOnceWithTheSameId(repository, outbox, advance);
-        await PendingDeliveriesSurviveDeletionAndRecreation(repository, outbox);
+        await PendingDeliveriesSurviveDeletionAndRecreation(repository, outbox, expireTombstone);
         await DisablePersistsAcrossRegistrationAndFutureEvents(repository, outbox);
     }
 
@@ -157,12 +157,17 @@ internal static class OutboxStoreContract
     }
 
     internal static async Task PendingDeliveriesSurviveDeletionAndRecreation(IWorkflowStateRepository repository,
-        IWorkflowOutbox store)
+        IWorkflowOutbox store, Func<string, Task> expireTombstone)
     {
         var original = await CompleteAsync(repository);
         await repository.DeleteWorkflowInstanceAsync(original.InstanceId);
         var replacement = new WorkflowInstance { InstanceId = original.InstanceId,
             WorkflowName = "Replacement", Status = WorkflowStatus.Completed };
+        Assert.NotNull(await repository.GetTombstoneAsync(original.InstanceId));
+        Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+            repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(replacement, 0, 0)))).Kind);
+        await expireTombstone(original.InstanceId);
+        Assert.Null(await repository.GetTombstoneAsync(original.InstanceId));
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(replacement, 0, 0, Guid.NewGuid().ToString("N")))).Status);
         foreach (var name in new[] { "primary", "secondary" })
