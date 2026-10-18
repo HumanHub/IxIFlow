@@ -80,8 +80,7 @@ public sealed partial class WorkflowHost
                     Status = WorkflowExecutionStatus.Running,
                     ErrorMessage = "Cancellation was requested; the executing host will stop the workflow"
                 };
-            if (instance?.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
-                WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut)
+            if (instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
                 return ExistingResult(instance);
             return null;
         }
@@ -718,8 +717,7 @@ public sealed partial class WorkflowHost
                     result.Status is WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended or
                         WorkflowExecutionStatus.NeedsResolution)
                     _control.Schedule(instance.InstanceId, due);
-                else if (persistState && instance.Status is WorkflowStatus.Completed or WorkflowStatus.Failed or
-                             WorkflowStatus.Cancelled or WorkflowStatus.TimedOut or WorkflowStatus.Terminated)
+                else if (persistState && WorkflowStoreRules.IsTerminal(instance.Status))
                     _control.Unschedule(instance.InstanceId);
                 return result;
             }

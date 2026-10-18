@@ -1293,6 +1293,20 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     private sealed class PausedReadRepository(InMemoryWorkflowStateRepository inner) : IWorkflowStateRepository
     {
+        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
+            inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
+        public Task UnregisterPublisherAsync(string name) => inner.UnregisterPublisherAsync(name);
+        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
+            inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
+        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
+            inner.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration);
+        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result) =>
+            inner.SettleDeliveryAsync(eventId, publisherName, token, result);
+        public Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName) =>
+            inner.GetDeliveryAsync(eventId, publisherName);
+        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
+            inner.GetPublisherAsync(publisherName);
+
         public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
             inner.AppendEventAsync(workflowEvent);
         public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
