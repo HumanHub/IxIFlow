@@ -1,0 +1,15 @@
+# A child adds its handling fee and returns the updated amount.
+workflow:
+  name: ReviewChild
+  dataType: IxIFlow.Samples.QuoteData
+definitions:
+  - kind: activity
+    activity: samples.add-fee
+    input:
+      - target: Customer
+        from: { kind: path, path: workflow.Customer }
+      - target: Amount
+        from: { kind: path, path: workflow.Amount }
+    output:
+      - source: Amount
+        to: { kind: path, path: workflow.Amount }

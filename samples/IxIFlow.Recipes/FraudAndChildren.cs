@@ -23,7 +23,7 @@ public sealed class CancelFlaggedOrder(IWorkflowClient client) : IAsyncActivity
 }
 
 /// <summary>
-/// Recipe 9, cancel another instance (spec D-17): a fraud workflow cancels the order workflow it
+/// Recipe 9, cancel another instance: a fraud workflow cancels the order workflow it
 /// flagged. The order's open waits close as cancelled, so an approver's late click is refused as
 /// cancelled.
 /// </summary>
@@ -45,7 +45,7 @@ public sealed class Purchase
 }
 
 /// <summary>
-/// Recipe 10, a child asks (spec D-17): a child workflow sends the approval request. The answer goes to
+/// Recipe 10, a child asks: a child workflow sends the approval request. The answer goes to
 /// the child by its token, and the parent continues with the child's result when the child finishes.
 /// </summary>
 public static class ChildApprovalRecipe

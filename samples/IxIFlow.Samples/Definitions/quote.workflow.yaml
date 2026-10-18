@@ -1,0 +1,49 @@
+# A quote adds a default handling fee, then selects its outcome.
+workflow:
+  name: Quote
+  dataType: IxIFlow.Samples.QuoteData
+definitions:
+  - kind: activity
+    activity: samples.add-fee
+    input:
+      - target: Customer
+        from: { kind: path, path: workflow.Customer }
+      - target: Amount
+        from: { kind: path, path: workflow.Amount }
+    output:
+      - source: Amount
+        to: { kind: path, path: workflow.Amount }
+  - kind: sequence
+    steps:
+      - kind: activity
+        activity: samples.label
+        input:
+          - target: Value
+            from: { kind: path, path: previousStep.Receipt }
+        output:
+          - source: Value
+            to: { kind: path, path: workflow.Outcome }
+  - kind: if
+    condition:
+      kind: binary
+      operator: gt
+      left: { kind: path, path: workflow.Amount }
+      right: { kind: constant, value: 10 }
+    then:
+      - kind: activity
+        activity: samples.label
+        input:
+          - target: Value
+            from: { kind: constant, value: ready }
+        output:
+          - source: Value
+            to: { kind: path, path: workflow.Outcome }
+    else:
+      - kind: activity
+        activity: samples.label
+        input:
+          - target: Value
+            from: { kind: constant, value: small order }
+        output:
+          - source: Value
+            to: { kind: path, path: workflow.Outcome }

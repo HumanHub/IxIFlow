@@ -1,0 +1,52 @@
+# Local references expand into the same fluent steps, without a publishing service.
+workflow:
+  name: Reusable
+  dataType: IxIFlow.Samples.QuoteData
+activities:
+  price:
+    activity: samples.add-fee
+    defaults: { Fee: 1 }
+    input:
+    - target: Customer
+      from: { kind: path, path: workflow.Customer }
+    - target: Amount
+      from: { kind: function, function: positive }
+    output:
+    - source: Amount
+      to: { kind: path, path: workflow.Amount }
+steps:
+  mark:
+    kind: sequence
+    parameters:
+      label: { type: string, required: true }
+    steps:
+    - kind: activity
+      activity: samples.label
+      input:
+      - target: Value
+        from: { kind: path, path: label }
+      output:
+      - source: Value
+        to: { kind: path, path: workflow.Outcome }
+code:
+  positive:
+    language: csharp-expression
+    source: System.Math.Abs(workflow.Amount)
+  now:
+    language: csharp-expression
+    source: ctx.UtcNow
+definitions:
+- kind: activityRef
+  ref: price
+- kind: activity
+  activity: samples.stamp-time
+  input:
+  - target: At
+    from: { kind: function, function: now }
+  output:
+  - source: At
+    to: { kind: path, path: workflow.PricedAt }
+- kind: stepRef
+  ref: mark
+  arguments:
+    label: { kind: constant, value: quoted }

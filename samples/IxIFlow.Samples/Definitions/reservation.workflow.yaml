@@ -1,0 +1,10 @@
+# The activity's C# recovery contract also applies when its step comes from YAML.
+workflow:
+  name: Reservation
+  dataType: IxIFlow.Samples.ReservationData
+definitions:
+- kind: activity
+  activity: samples.reserve-quote
+  output:
+  - source: Reference
+    to: { kind: path, path: workflow.Reference }

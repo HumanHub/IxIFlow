@@ -1,0 +1,25 @@
+# Each parcel produces one result; parallel joins cancel unfinished parcels when complete.
+workflow:
+  name: Batch-conditional
+  dataType: IxIFlow.Samples.BatchData
+definitions:
+- kind: forEach
+  items: { kind: path, path: workflow.Weights }
+  as: parcel
+  parallel:
+    maxConcurrency: 2
+    join: conditionally
+    resultType: int
+    condition:
+      kind: binary
+      operator: ge
+      left: { kind: path, path: results.Count }
+      right: { kind: constant, value: 2 }
+  steps:
+  - kind: activity
+    activity: samples.weigh
+    input:
+    - target: Weight
+      from: { kind: path, path: parcel }
+  result: { kind: path, path: previousStep.Grams }
+  into: { kind: path, path: workflow.Results }

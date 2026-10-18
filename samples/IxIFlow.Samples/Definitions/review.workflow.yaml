@@ -1,0 +1,23 @@
+# An event supplies the customer before the pinned child prices the quote.
+workflow:
+  name: Review
+  dataType: IxIFlow.Samples.QuoteData
+definitions:
+- kind: suspend
+  event: IxIFlow.Samples.ReviewAnswer
+  reason: review
+  output:
+  - source: Customer
+    sourceContext: event
+    to: { kind: path, path: workflow.Customer }
+- kind: invokeWorkflow
+  workflow: { name: ReviewChild, version: 1 }
+  input:
+  - target: Customer
+    from: { kind: path, path: workflow.Customer }
+  - target: Amount
+    from: { kind: path, path: workflow.Amount }
+  output:
+  - source: Amount
+    sourceContext: workflow
+    to: { kind: path, path: workflow.Amount }

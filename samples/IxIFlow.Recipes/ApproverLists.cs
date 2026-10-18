@@ -15,7 +15,7 @@ public sealed class ApprovalRound
 }
 
 /// <summary>
-/// Recipe 13, any one of N approvers from the data, and recipe 18, empty and all rejected (spec D-17):
+/// Recipe 13, any one of N approvers from the data, and recipe 18, empty and all rejected:
 /// a parallel <c>ForEach</c> asks every approver and continues on the first approval. A rejection does
 /// not end it. The other approvers' late clicks are refused as cancelled, and the decisions show who
 /// approved, who rejected and who was cancelled. An empty list, or one where everyone rejects, takes the
@@ -51,7 +51,7 @@ public static class AnyApproverFromListRecipe
 
 /// <summary>
 /// Recipe 14, every approver from the data, recipe 19, one item fails, and recipe 21, queued requests are
-/// not sent (spec D-17): a parallel <c>ForEach</c> collects one decision per approver, in approver order,
+/// not sent: a parallel <c>ForEach</c> collects one decision per approver, in approver order,
 /// whatever order they answer in. With a cap, only that many requests are out at once; the next is sent
 /// when one is answered. If asking any approver fails, the others are cancelled, their waits close as
 /// cancelled, and the round fails with no decisions stored.
@@ -84,7 +84,7 @@ public sealed class Billing
 }
 
 /// <summary>
-/// Recipe 16, a child per customer, capped (spec D-17): a parallel <c>ForEach</c> with
+/// Recipe 16, a child per customer, capped: a parallel <c>ForEach</c> with
 /// <c>maxConcurrency</c> invokes a child workflow per customer. No more than the cap run at once, a
 /// queued customer's child has not started, and the results land in customer order.
 /// </summary>
