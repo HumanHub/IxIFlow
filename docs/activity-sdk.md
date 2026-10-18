@@ -60,7 +60,7 @@ The bundled analyzers check mapping direction, required mappings, accessors and 
 
 ## Register installed activities
 
-`[WorkflowActivity]` supplies the key plus optional `Version`, `Name`, `Category`, `Icon` and `Designer`. In `IxIFlow.Authoring`, `ActivityPackageRegistry.AddAssembly(assembly, packageName, packageVersion)` scans exported attributed types. `RegisterActivities(services)` registers resolved implementations with DI.
+`[WorkflowActivity]` supplies the key plus optional `Version`, `Name`, `Category`, `Icon` and `Designer`. The `IxIFlow.Authoring` package provides `ActivityPackageRegistry` in the `IxIFlow.ActivitySdk` namespace. Its `AddAssembly(assembly, packageName, packageVersion)` method scans exported attributed types. `RegisterActivities(services)` registers resolved implementations with DI.
 
 [Contracts.Catalog](../samples/IxIFlow.Samples/Contracts.cs) compiles installed-assembly catalog registration. Its manifest's `Fields` describe input controls, labels, help and required flags; `Defaults` holds declared attribute values, and `Outputs` describes output labels/help. In-out properties appear on both sides. `AddPackage(manifestYaml, assembly)` and `AddEmbeddedPackage` accept installed package manifests too. This registry does not fetch or isolate assemblies; the application installs dependencies.
 

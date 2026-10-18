@@ -30,7 +30,7 @@ The singleton `InMemoryWorkflowStateRepository` survives DI request scopes in on
 
 ## SQLite
 
-Use a file connection string, for example `Data Source=workflows.db`. In-memory SQLite is not the supported durable configuration. The provider uses WAL and takes an exclusive OS handle on the normalized database path plus `.ixiflow-owner`. Ownership is enforced even when the repository is constructed directly.
+Use a file connection string, for example `Data Source=workflows.db`. `UseSqlite` rejects `Mode=Memory`, `:memory:`, an empty data source and `file:` URIs with `ArgumentException` during registration. The provider uses WAL and takes an exclusive OS handle on the normalized database path plus `.ixiflow-owner`. Ownership is enforced even when the repository is constructed directly.
 
 A second owner cannot open that database concurrently. Asynchronously dispose the service provider/repository before reopening it; a process crash releases the OS handle. Use a local file system with working file locking. UNC and network paths are rejected, and startup probes that the ownership lock is enforced. SQLite does not support coordinator or multiple-host execution.
 
@@ -52,6 +52,6 @@ The provider implements `IRunnableWakeSource` using `LISTEN`/`NOTIFY`. Notificat
 
 ## Store extensions
 
-`UseCustomStateRepository` can register an application repository as a singleton. It must support concurrent calls and the complete public store contract, including inbox, outbox and retention. `IxIFlow.Relational` is an internal implementation dependency, not a public provider SDK.
+Set `IxIFlowOptions.UseCustomStateRepository` to the repository type in `AddIxIFlow(options => ...)`; it is registered as a singleton and counts as the chosen store. It must support concurrent calls and the complete public store contract, including inbox, outbox and retention. `IxIFlow.Relational` is an internal implementation dependency, not a public provider SDK.
 
 Read [execution model](execution-model.md), [retention](retention-and-tombstones.md) and [outbox delivery](outbox-and-publishers.md) before implementing a store.
