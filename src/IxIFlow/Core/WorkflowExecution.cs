@@ -781,6 +781,12 @@ public class WorkflowStep
     public System.Linq.Expressions.LambdaExpression? ConditionExpression { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? ParallelCompletionExpression { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? RequestSubjectExpression { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
     public System.Linq.Expressions.LambdaExpression? ForEachItemsExpression { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
@@ -998,6 +1004,8 @@ public class WorkflowStep
             OutcomeExpression = OutcomeExpression,
             CompiledCondition = CompiledCondition,
             ConditionExpression = ConditionExpression,
+            ParallelCompletionExpression = ParallelCompletionExpression,
+            RequestSubjectExpression = RequestSubjectExpression,
             OutcomeSelector = OutcomeSelector,
             OutcomeBranches = OutcomeBranches.Select(branch => new WorkflowOutcomeBranch
             {

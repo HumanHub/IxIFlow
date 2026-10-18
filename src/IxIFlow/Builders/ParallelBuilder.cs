@@ -1,3 +1,6 @@
+using IxIFlow.Core.Runtime;
+using System.Runtime.CompilerServices;
+using System.Linq.Expressions;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
 
@@ -24,6 +27,17 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
     {
         SetJoinMode(ParallelJoinMode.WaitAny);
         return this;
+    }
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IParallelBuilder<TWorkflowData, TPreviousStepData> WaitConditionally(
+        Expression<Func<TWorkflowData, bool>> completeWhenExpression)
+    {
+        var expression = WorkflowExpressionSignature.Checked(completeWhenExpression);
+        var result = WaitConditionally(completeWhenExpression.Compile());
+        _step.ParallelCompletionExpression = expression;
+        return result;
     }
 
     public IParallelBuilder<TWorkflowData, TPreviousStepData> WaitConditionally(
@@ -73,4 +87,5 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
 
         return this;
     }
+
 }

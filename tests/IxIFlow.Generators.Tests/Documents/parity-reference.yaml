@@ -1,0 +1,84 @@
+workflow: {name: ParityReference, dataType: IxIFlow.Generators.Tests.ParityData}
+definitions:
+  - kind: parallel
+    branches:
+      - steps: [{kind: delay, duration: '00:00:01'}]
+    join: conditionally
+    condition: {path: workflow.Selected}
+    combine: [{property: {path: workflow.Result}, propertyType: int, combiner: 'IxIFlow.Core.Sum<int>'}]
+  - kind: whileDo
+    condition: {kind: constant, value: false}
+    steps: []
+  - kind: doWhile
+    condition: {kind: constant, value: false}
+    steps: []
+  - kind: try
+    steps: []
+    catches:
+      - id: caught
+        exception: IxIFlow.Generators.Tests.ParityFailure
+        faultType: IxIFlow.Generators.Tests.ParityFault
+        steps: []
+    finally: []
+  - kind: activity
+    activity: IxIFlow.Generators.Tests.ParityEcho
+  - kind: saga
+    steps:
+      - kind: request
+        key: request
+        subject: {path: workflow.Subject}
+        activity: IxIFlow.Generators.Tests.ParityRequest
+        compensation:
+          - activity: IxIFlow.Generators.Tests.ParityUndo
+            replyType: IxIFlow.Generators.Tests.Answer
+            input: [{target: Answered, from: {path: answered}}]
+            output: [{source: Value, to: {path: workflow.Result}}]
+          - activity: IxIFlow.Generators.Tests.ParityUndo
+            previousActivity: IxIFlow.Generators.Tests.ParityUndo
+            previousStepInput: [{target: Value, from: {path: previousStep.Value}}]
+            previousCompensationInput: [{target: Value, from: {path: previousCompensation.Value}}]
+        onError:
+          - exception: IxIFlow.Generators.Tests.ParityFailure
+            then: retry
+            retry: {maximumAttempts: 2, initialInterval: '00:00:00', maximumInterval: '00:00:05', backoffCoefficient: 1.5}
+      - kind: waitFor
+        key: request
+        event: IxIFlow.Generators.Tests.Answer
+        timeout: '01:00:00'
+        onTimeout: [{kind: activity, activity: IxIFlow.Generators.Tests.ParityEcho}]
+      - kind: outcome
+        value: {path: workflow.Selected}
+        branches: [{value: {kind: constant, value: true}, steps: []}]
+        default: []
+    onError:
+      - exception: IxIFlow.Generators.Tests.ParityFailure
+        faultType: IxIFlow.Generators.Tests.ParityFault
+        id: recover
+        steps: [{kind: activity, activity: IxIFlow.Generators.Tests.ParityEcho}]
+        compensateUpTo: IxIFlow.Generators.Tests.ParityRequest
+        then: continue
+        ignoreCompensationErrors: true
+      - compensate: none
+        then: retry
+        retry: {}
+  - kind: forEach
+    items: {path: workflow.Values}
+    parallel:
+      combine: [{property: {path: workflow.Result}, propertyType: int, combiner: 'IxIFlow.Core.Sum<int>'}]
+    steps:
+      - kind: waitFor
+        key: value
+        event: IxIFlow.Generators.Tests.Answer
+        timeout: '01:00:00'
+        onTimeout: [{kind: result, value: {kind: constant, value: 0}}]
+    result: {path: previousStep.Value}
+    into: {path: workflow.Results}
+  - kind: invokeWorkflow
+    workflow: {name: Child, version: 3}
+    cancelWithParent: false
+  - kind: invokeWorkflowType
+    workflowType: IxIFlow.Generators.Tests.ParityChildWorkflow
+    dataType: IxIFlow.Generators.Tests.FlowData
+    cancelWithParent: false
+    input: [{target: Value, from: {kind: constant, value: 5}}]
+    output: [{source: Result, sourceContext: workflow, to: {path: workflow.Result}}]

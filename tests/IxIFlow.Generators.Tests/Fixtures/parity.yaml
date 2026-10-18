@@ -1,0 +1,50 @@
+workflow: {name: ParityFixture, dataType: IxIFlow.Generators.Tests.ParityData}
+definitions:
+  - kind: whileDo
+    id: while
+    condition: {path: workflow.Result < 2}
+    steps:
+      - kind: activity
+        id: increment
+        activity: IxIFlow.Generators.Tests.ParityEcho
+        input: [{target: Value, from: {path: workflow.Result + 1}}]
+        output: [{source: Value, to: {path: workflow.Result}}]
+  - kind: doWhile
+    id: once
+    condition: {kind: constant, value: false}
+    steps: []
+  - kind: parallel
+    id: fork
+    branches:
+      - steps: [{kind: activity, id: left, activity: IxIFlow.Generators.Tests.ParityEcho}]
+      - steps: [{kind: activity, id: right, activity: IxIFlow.Generators.Tests.ParityEcho}]
+  - kind: try
+    id: try
+    steps: [{kind: activity, id: fail, activity: IxIFlow.Generators.Tests.ParityFail}]
+    catches:
+      - exception: IxIFlow.Generators.Tests.ParityFailure
+        faultType: IxIFlow.Generators.Tests.ParityFault
+        steps:
+          - kind: activity
+            id: handle
+            activity: IxIFlow.Generators.Tests.ParityEcho
+            input: [{target: Value, from: {path: fault.Code}}]
+            output: [{source: Value, to: {path: workflow.Result}}]
+    finally: []
+  - kind: saga
+    id: saga
+    steps:
+      - kind: activity
+        id: work
+        activity: IxIFlow.Generators.Tests.ParityWork
+        compensation: [{activity: IxIFlow.Generators.Tests.ParityUndo}]
+      - kind: outcome
+        id: outcome
+        value: {path: workflow.Selected}
+        branches:
+          - value: {kind: constant, value: true}
+            steps: []
+        default: []
+  - kind: delay
+    id: timer
+    duration: '01:00:00'

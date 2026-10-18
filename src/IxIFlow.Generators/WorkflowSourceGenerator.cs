@@ -88,8 +88,10 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
                 var attribute = type.GetAttributes().FirstOrDefault(item => item.AttributeClass?.ToDisplayString() == ActivityAttribute);
                 var version = attribute?.NamedArguments.FirstOrDefault(pair => pair.Key == "Version").Value.Value as string ??
                     (attribute == null ? "" : "1.0");
+                var dataTypes = type.AllInterfaces.Where(contract => contract.OriginalDefinition.ToDisplayString() == "IxIFlow.Builders.Interfaces.IWorkflow<TWorkflowData>")
+                    .Select(contract => contract.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)).Distinct().ToArray();
                 rows.Add(string.Join("\t", name, type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), version,
-                    string.Join(";", properties.Distinct(StringComparer.Ordinal))));
+                    string.Join(";", properties.Distinct(StringComparer.Ordinal)), dataTypes.Length == 1 ? dataTypes[0] : ""));
             }
         }
         return new BoundTypes(Lines(rows));
@@ -99,6 +101,7 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
     {
         var names = new SortedDictionary<string, string>(StringComparer.Ordinal);
         var members = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        var workflowDataTypes = new SortedDictionary<string, string>(StringComparer.Ordinal);
         var versions = new SortedDictionary<string, string>(StringComparer.Ordinal);
         foreach (var group in bound.Rows.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries)
                      .Select(line => line.Split('\t')).GroupBy(row => row[0], StringComparer.Ordinal))
@@ -107,6 +110,7 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
             if (matches.Length != 1) continue;
             var row = matches[0];
             names.Add(row[0], row[1]);
+            if (row[4].Length > 0) workflowDataTypes.Add(row[0], row[4]);
             if (row[2].Length != 0) versions.Add(row[0], row[2]);
             foreach (var property in row[3].Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
             {
@@ -116,7 +120,8 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
         }
         return new TypeModel(Lines(names.Select(pair => pair.Key + "\t" + pair.Value)),
             Lines(members.Select(pair => pair.Key + "\t" + pair.Value)),
-            Lines(versions.Select(pair => pair.Key + "\t" + pair.Value)));
+            Lines(versions.Select(pair => pair.Key + "\t" + pair.Value)),
+            Lines(workflowDataTypes.Select(pair => pair.Key + "\t" + pair.Value)));
     }
 
     private static string ReferencedAliases(MetadataReference reference, CancellationToken token)
@@ -168,10 +173,11 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
 
     private static void Generate(SourceProductionContext context, ImmutableArray<Input> files, TypeModel types, string generatedNamespace)
     {
-        var options = new WorkflowSourceOptions { Namespace = generatedNamespace };
+        var options = new WorkflowSourceOptions { Namespace = generatedNamespace, RequireResolvedTypes = true };
         Copy(types.Names, options.Types);
         Copy(types.Members, options.Members);
         Copy(types.Versions, options.ActivityVersions);
+        Copy(types.WorkflowDataTypes, options.WorkflowDataTypes);
         var documents = new Dictionary<Input, WorkflowDocument>();
         var classNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var file in files)
@@ -200,12 +206,12 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
                 if (!classNames.Add(className))
                     throw new WorkflowSourceException($"Duplicate generated class '{className}'; use distinct YAML filenames", file.Path, 1, 1);
                 var validation = new WorkflowDocumentValidator().ValidateAsync(pair.Value,
-                    new SourceContracts(options), context.CancellationToken).GetAwaiter().GetResult();
+                    new WorkflowSourceContracts(options), context.CancellationToken).GetAwaiter().GetResult();
                 if (!validation.IsValid)
                 {
                     foreach (var diagnostic in validation.Diagnostics.Where(item => item.Severity == WorkflowDiagnosticSeverity.Error))
                     {
-                        var location = DocumentPosition(pair.Value, diagnostic.Path);
+                        var location = DocumentModel.GetLocation(pair.Value, diagnostic.Path);
                         Report(context, file, new WorkflowSourceException(diagnostic.Message, file.Path, location.Line, location.Column));
                     }
                     continue;
@@ -223,40 +229,6 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
         { var entry = line.Split('\t'); target.Add(entry[0], entry[1]); }
     }
 
-    private static DocumentLocation DocumentPosition(WorkflowDocument document, string? path)
-    {
-        object? current = document;
-        var location = document.Location;
-        foreach (System.Text.RegularExpressions.Match segment in System.Text.RegularExpressions.Regex.Matches(path ?? "", @"([^\.\[\]]+)|\[(\d+)\]"))
-        {
-            if (current is DocumentNode node)
-            {
-                var member = segment.Value;
-                location = node.Members.TryGetValue(member, out var found) ? found : node.Location;
-                current = node.GetType().GetProperties().FirstOrDefault(property =>
-                    string.Equals(property.Name, member, StringComparison.OrdinalIgnoreCase))?.GetValue(node);
-            }
-            else if (current is System.Collections.IDictionary dictionary) current = dictionary[segment.Value];
-            else if (current is System.Collections.IList list && int.TryParse(segment.Groups[2].Value, out var index) && index < list.Count)
-                current = list[index];
-            else break;
-            if (current is DocumentNode child) location = child.Location;
-        }
-        return location;
-    }
-
-    private sealed class SourceContracts(WorkflowSourceOptions options) : IWorkflowValidationContext
-    {
-        public Task<ActivityDocumentContract?> FindActivityAsync(string key, CancellationToken token) =>
-            Task.FromResult(options.Types.ContainsKey(key) ? new ActivityDocumentContract(key,
-                options.ActivityVersions.TryGetValue(key, out var version) ? version : "") : null);
-        public Task<bool> HasDataTypeAsync(string key, CancellationToken token) => Task.FromResult(options.Types.ContainsKey(key));
-        public Task<bool> HasEventAsync(string key, CancellationToken token) => Task.FromResult(options.Types.ContainsKey(key));
-        public Task<bool> HasWorkflowAsync(string name, int? version, CancellationToken token) =>
-            Task.FromResult(options.Workflows.ContainsKey(name + "@" + version));
-        public Task<bool> HasStepTemplateAsync(string key, CancellationToken token) => Task.FromResult(false);
-    }
-
     private static void Report(SourceProductionContext context, Input file, WorkflowSourceException error)
     {
         var text = SourceText.From(file.Text);
@@ -272,5 +244,5 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
     private sealed record TypeRequests(string Names);
     private sealed record Lookup(string Names, string Aliases);
     private sealed record BoundTypes(string Rows);
-    private sealed record TypeModel(string Names, string Members, string Versions);
+    private sealed record TypeModel(string Names, string Members, string Versions, string WorkflowDataTypes);
 }

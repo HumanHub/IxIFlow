@@ -14,15 +14,18 @@ public sealed class TryBuilder<TWorkflowData, TPreviousStepData>(
     where TPreviousStepData : class
 {
     public ICatchBuilder<TWorkflowData, TPreviousStepData> Catch<TException>(
-        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
-        where TException : Exception => Catch<TException, EmptyFault>(configure);
+        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TException : Exception => Catch<TException, EmptyFault>(configure, id, sourcePath, sourceLine);
 
     public ICatchBuilder<TWorkflowData, TPreviousStepData> Catch(
-        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure) =>
-        Catch<Exception, EmptyFault>(configure);
+        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        Catch<Exception, EmptyFault>(configure, id, sourcePath, sourceLine);
 
     public ICatchBuilder<TWorkflowData, TPreviousStepData> Catch<TException, TFault>(
-        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure)
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TException : Exception
     {
         ArgumentNullException.ThrowIfNull(configure);
@@ -36,6 +39,8 @@ public sealed class TryBuilder<TWorkflowData, TPreviousStepData>(
             PreviousStepDataType = typeof(TPreviousStepData),
             ExceptionType = typeof(TException),
             FaultType = typeof(TFault),
+            Id = id ?? Guid.NewGuid().ToString(),
+            SourceLocation = sourcePath + ":" + sourceLine,
             Order = tryStep.CatchBlocks.Count
         };
         configure(new CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(
@@ -61,15 +66,18 @@ public sealed class CatchBuilder<TWorkflowData, TPreviousStepData>(
     where TPreviousStepData : class
 {
     public ICatchBuilder<TWorkflowData, TPreviousStepData> Catch(
-        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure) =>
-        Catch<Exception, EmptyFault>(configure);
+        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        Catch<Exception, EmptyFault>(configure, id, sourcePath, sourceLine);
 
     public ICatchBuilder<TWorkflowData, TPreviousStepData> Catch<TException>(
-        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
-        where TException : Exception => Catch<TException, EmptyFault>(configure);
+        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TException : Exception => Catch<TException, EmptyFault>(configure, id, sourcePath, sourceLine);
 
     public ICatchBuilder<TWorkflowData, TPreviousStepData> Catch<TException, TFault>(
-        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure)
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TException : Exception
     {
         ArgumentNullException.ThrowIfNull(configure);
@@ -83,6 +91,8 @@ public sealed class CatchBuilder<TWorkflowData, TPreviousStepData>(
             PreviousStepDataType = typeof(TPreviousStepData),
             ExceptionType = typeof(TException),
             FaultType = typeof(TFault),
+            Id = id ?? Guid.NewGuid().ToString(),
+            SourceLocation = sourcePath + ":" + sourceLine,
             Order = tryStep.CatchBlocks.Count
         };
         configure(new CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(
@@ -144,6 +154,20 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         return new CatchWorkflowBuilder<TWorkflowData, TFault, TActivity>(steps, exceptionType);
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
+        string key,
+        Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class
+    {
+        var expression = matchesExpression == null ? null : WorkflowExpressionSignature.Checked(matchesExpression);
+        var result = WaitFor<TEvent>(key, matchesExpression?.Compile(), configure);
+        steps[^1].ConditionExpression = expression;
+        return result;
+    }
+
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
         string key,
         Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
@@ -154,6 +178,20 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
             .WaitFor(key, matches, configure);
         CaptureFaults(steps[^1]);
         return new CatchWorkflowBuilder<TWorkflowData, TFault, TEvent>(steps, exceptionType);
+    }
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TEvent> Suspend<TEvent>(
+        string reason,
+        Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class
+    {
+        var expression = matchesExpression == null ? null : WorkflowExpressionSignature.Checked(matchesExpression);
+        var result = Suspend<TEvent>(reason, matchesExpression?.Compile(), configure);
+        steps[^1].ConditionExpression = expression;
+        return result;
     }
 
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TEvent> Suspend<TEvent>(
@@ -216,6 +254,18 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         return this;
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> DoWhile(
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression)
+    {
+        var expression = WorkflowExpressionSignature.Checked(conditionExpression);
+        var result = DoWhile(configure, conditionExpression.Compile());
+        steps[^1].ConditionExpression = expression;
+        return result;
+    }
+
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> DoWhile(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition)
@@ -225,6 +275,18 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         return this;
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> WhileDo(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
+    {
+        var expression = WorkflowExpressionSignature.Checked(conditionExpression);
+        var result = WhileDo(conditionExpression.Compile(), configure);
+        steps[^1].ConditionExpression = expression;
+        return result;
+    }
+
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> WhileDo(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
@@ -232,6 +294,19 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).WhileDo(condition, configure);
         CaptureFaults(steps[^1]);
         return this;
+    }
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> ForEach<TItem>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?>> itemsExpression,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null)
+    {
+        var expression = WorkflowExpressionSignature.Checked(itemsExpression);
+        var result = ForEach(itemsExpression.Compile(), body, setup);
+        steps[^1].ForEachItemsExpression = expression;
+        return result;
     }
 
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> ForEach<TItem>(
@@ -260,6 +335,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
                      .SelectMany(body => body))
             CaptureFaults(child);
     }
+
 }
 
 public sealed class CatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>(WorkflowStep step)
