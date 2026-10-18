@@ -1,0 +1,45 @@
+# Refund the first payment if stock is unavailable, then retry with a fresh reply token.
+workflow:
+  name: PaymentInASaga
+  dataType: IxIFlow.Recipes.Payment
+definitions:
+  - kind: activity
+    activity: IxIFlow.Recipes.ValidateOrder
+  - kind: saga
+    steps:
+      - kind: request
+        activity: IxIFlow.Recipes.CreatePayment
+        key: payment
+        input:
+          - target: Amount
+            from: { path: workflow.Amount }
+        output:
+          - source: Reference
+            to: { path: workflow.PaymentReference }
+        compensation:
+          - activity: IxIFlow.Recipes.RefundPayment
+            input:
+              - target: Reference
+                from: { path: currentStep.Reference }
+      - kind: activity
+        activity: IxIFlow.Recipes.ReserveStock
+        input:
+          - target: OrderId
+            from: { path: workflow.OrderId }
+      - kind: waitFor
+        key: payment
+        event: IxIFlow.Recipes.PaymentReceived
+        resumeCondition: { path: 'event.Status != "pending"' }
+        output:
+          - source: Status
+            sourceContext: event
+            to: { path: workflow.PaymentStatus }
+    onError:
+      - exception: IxIFlow.Recipes.StockUnavailable
+        compensate: all
+        then: retry
+        retry:
+          maximumAttempts: 1
+          initialInterval: '00:00:00'
+          maximumInterval: '00:00:00'
+          backoffCoefficient: 1
