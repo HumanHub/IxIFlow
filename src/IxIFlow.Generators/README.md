@@ -82,9 +82,10 @@ Relative paths resolve from the YAML file. In VS Code, associate a workspace in 
 In JetBrains IDEs, use Settings → Languages & Frameworks → Schemas and DTDs →
 JSON Schema Mappings with the same filename patterns.
 
-The schema provides completion, hover descriptions and validation for the canonical
-document form: camelCase member names, with unknown members reported as errors.
-The YAML reader currently matches member names case-insensitively and ignores unknown members.
+The schema provides completion, hover descriptions and validation for the document form
+that the YAML and JSON readers accept. Member names are camelCase and exact. An unknown
+member, or a `kind` that differs from the type a position requires, is an error at that
+member, including in the generator.
 The schema is generated from the document model by `WorkflowDocumentSchema.Write()` in Authoring.
 
 The supported catalog includes activities, activity and step references, sequences, conditions,
