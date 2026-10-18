@@ -9,7 +9,6 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Feature", "authoring")]
 public class ExpressionTests
 {
-    private readonly IExpressionEvaluator _expressionEvaluator;
     private readonly IServiceProvider _serviceProvider;
     private readonly IWorkflowClient _workflowEngine;
 
@@ -22,7 +21,6 @@ public class ExpressionTests
 
         _serviceProvider = services.BuildServiceProvider();
         _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
-        _expressionEvaluator = _serviceProvider.GetRequiredService<IExpressionEvaluator>();
     }
 
     [Fact]
