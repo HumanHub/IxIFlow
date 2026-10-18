@@ -58,7 +58,7 @@ public sealed class Order
 }
 
 /// <summary>
-/// Recipe 1, one approver (spec D-17): ask a manager and wait for the decision, with a timeout path.
+/// Recipe 1, one approver: ask a manager and wait for the decision, with a timeout path.
 /// The request names the order and amount as its subject, so an answer can only confirm what the
 /// manager was shown. After approval the order waits to be dispatched.
 /// </summary>
@@ -90,7 +90,7 @@ public static class OneApproverRecipe
 }
 
 /// <summary>
-/// Recipe 3, any one of several approvers (spec D-17): one request and wait per branch, and a join that
+/// Recipe 3, any one of several approvers: one request and wait per branch, and a join that
 /// continues on the first approval. A rejection does not end it; once someone approves, the other
 /// branch is cancelled and its approver's late click is refused as cancelled.
 /// </summary>
@@ -130,7 +130,7 @@ public static class AnyApproverRecipe
 }
 
 /// <summary>
-/// Recipe 4, every approver (spec D-17): one request and wait per branch with the default join, so the
+/// Recipe 4, every approver: one request and wait per branch with the default join, so the
 /// order continues only when both have answered, in whatever order they answer.
 /// </summary>
 public static class EveryApproverRecipe
@@ -166,7 +166,7 @@ public sealed class OrderLines
 }
 
 /// <summary>
-/// Recipe 5, an approval per loop iteration (spec D-17): each order line is approved on its own. Each
+/// Recipe 5, an approval per loop iteration: each order line is approved on its own. Each
 /// iteration sends its own request, so an earlier line's token, or its approval sent again, can never
 /// approve a later line.
 /// </summary>

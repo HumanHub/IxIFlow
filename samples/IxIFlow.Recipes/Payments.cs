@@ -96,7 +96,7 @@ public sealed class CancelPayment : IAsyncActivity
 }
 
 /// <summary>
-/// Recipe 2, request now and wait later (spec D-17), and recipe 11, on time beats the deadline: create
+/// Recipe 2, request now and wait later, and recipe 11, on time beats the deadline: create
 /// the payment, check for fraud while it is pending, then wait for the provider's callback. A callback
 /// that arrives during the fraud check is kept for the wait; a "pending" callback is refused by the
 /// wait's condition and the wait stays open for "paid". A callback received before the deadline wins
@@ -122,7 +122,7 @@ public static class PaymentRecipe
 }
 
 /// <summary>
-/// Recipe 8, payment in a saga (spec D-17): the payment request is a saga step, refunded when a later
+/// Recipe 8, payment in a saga: the payment request is a saga step, refunded when a later
 /// step fails. The refund runs whether or not the provider already called back. Compensation closes the
 /// payment's wait, so a later callback for that payment is refused as cancelled. The saga's retry creates
 /// a new payment with a new token, which the old token cannot answer.

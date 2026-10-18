@@ -39,7 +39,7 @@ public sealed class Ship(IShipping shipping) : IAsyncActivity
 }
 
 /// <summary>
-/// Recipe 6, a human task inbox (spec D-17): a wait with no request. A task list finds it with
+/// Recipe 6, a human task inbox: a wait with no request. A task list finds it with
 /// <c>IWorkflowClient.GetOpenWaitsAsync</c> and answers it with the token listed for it; a screen that
 /// answers after the wait closed is told why.
 /// </summary>
@@ -54,7 +54,7 @@ public static class ConfirmShipmentRecipe
 }
 
 /// <summary>
-/// Recipe 7, a notification (spec D-17): after shipping, wait for the carrier's "delivered" event, sent
+/// Recipe 7, a notification: after shipping, wait for the carrier's "delivered" event, sent
 /// by key. It completes a wait that is open when it arrives; sent earlier, it is refused and not kept.
 /// </summary>
 public static class DeliveryRecipe
