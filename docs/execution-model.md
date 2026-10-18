@@ -19,7 +19,7 @@ Conditions, mappings, wait predicates, result/outcome selectors and combiners mu
 
 ## Leases and recovery
 
-An instance has one executing owner, protected by an instance gate and a renewable store lease with a monotonically increasing epoch. Commits also compare revisions. The host stops work when ownership is lost; another host can claim expired work and continue from its checkpoint.
+An instance has one executing owner, protected by an instance gate and a renewable store lease. An epoch is never granted twice in a store, and epochs strictly increase for each instance ID, including across deletions and re-creations. Across instances, epochs follow allocation order, with gaps allowed; grants may complete in a different order. Leased commits must match the active lease's epoch. Commits also compare revisions, and every commit after the first must carry the row's incarnation, including unleased commits at epoch zero. Unleased commits require no active lease. The host stops work when ownership is lost; another host can claim expired work and continue from its checkpoint.
 
 `RunnableAtUtc` on the instance is the backlog. Local scheduling and store polling recover due, unowned work. A long retry parks the instance and releases its slot and lease; foreground callers continue waiting across that park, while `RecoverAsync` can return `Scheduled`. Always read the returned data.
 

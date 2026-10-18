@@ -440,20 +440,25 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             WHERE InstanceId = @InstanceId
             """,
         Statement.ClaimLease => """
+            -- Lock the lease before allocating so a waiting claim cannot install an older epoch.
+            DECLARE @Epoch BIGINT;
+            SELECT @Epoch = Epoch FROM dbo.IxIFlowWorkflowLeases WITH (UPDLOCK, HOLDLOCK)
+            WHERE InstanceId = @InstanceId;
+            SET @Epoch = NEXT VALUE FOR dbo.IxIFlowExecutionEpoch;
             MERGE dbo.IxIFlowWorkflowLeases WITH (UPDLOCK, HOLDLOCK) AS target
             USING (SELECT @InstanceId AS InstanceId) AS source
             ON target.InstanceId = source.InstanceId
             WHEN MATCHED AND target.ExpiresAtUtc <= SYSUTCDATETIME() THEN
                 UPDATE SET Token = @Token,
                     ExpiresAtUtc = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()),
-                    Epoch = target.Epoch + 1,
+                    Epoch = @Epoch,
                     CrashCount = target.CrashCount + CASE
                         WHEN @Running = 1 AND target.ExpiresAtUtc > CAST('0001-01-01' AS DATETIME2) THEN 1
                         ELSE 0 END
             WHEN NOT MATCHED THEN
                 INSERT (InstanceId, Token, ExpiresAtUtc, Epoch, CrashCount)
                 VALUES (@InstanceId, @Token,
-                    DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()), 1, 0)
+                    DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()), @Epoch, 0)
             OUTPUT inserted.Epoch, inserted.CrashCount;
             """,
         Statement.RenewLease => """
@@ -779,6 +784,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             );
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowLeases', N'U') IS NULL
         BEGIN
+            CREATE SEQUENCE dbo.IxIFlowExecutionEpoch AS BIGINT
+                START WITH 1 INCREMENT BY 1 NO CYCLE;
             CREATE TABLE dbo.IxIFlowWorkflowLeases (
                 InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
                 Token NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
