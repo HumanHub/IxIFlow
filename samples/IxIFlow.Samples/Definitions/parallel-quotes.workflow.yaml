@@ -1,0 +1,40 @@
+# Each branch prices its own copy. The join adds the fee changes.
+workflow:
+  name: ParallelQuotes-all
+  dataType: IxIFlow.Samples.QuoteData
+code:
+  largerFee:
+    language: csharp-expression
+    source: 5m
+definitions:
+  - kind: parallel
+    join: all
+    combine:
+      - property: { path: workflow.Amount }
+        propertyType: decimal
+        combiner: IxIFlow.Core.Sum<decimal>
+    branches:
+      - steps:
+          - kind: activity
+            activity: samples.add-fee
+            input:
+              - target: Customer
+                from: { path: workflow.Customer }
+              - target: Amount
+                from: { path: workflow.Amount }
+            output:
+              - source: Amount
+                to: { path: workflow.Amount }
+      - steps:
+          - kind: activity
+            activity: samples.add-fee
+            input:
+              - target: Customer
+                from: { path: workflow.Customer }
+              - target: Fee
+                from: { kind: function, function: largerFee }
+              - target: Amount
+                from: { path: workflow.Amount }
+            output:
+              - source: Amount
+                to: { path: workflow.Amount }

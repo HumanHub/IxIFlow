@@ -1,0 +1,27 @@
+# Save the refusal as typed fault data and audit the quote on every exit.
+workflow:
+  name: FailedQuote
+  dataType: IxIFlow.Samples.FailureData
+definitions:
+  - kind: try
+    steps:
+      - kind: activity
+        activity: IxIFlow.Samples.RefuseQuote
+    catches:
+      - exception: System.InvalidOperationException
+        faultType: IxIFlow.Samples.QuoteFault
+        steps:
+          - kind: activity
+            activity: samples.label
+            input:
+              - target: Value
+                from: { path: fault.Message }
+            output:
+              - source: Value
+                to: { path: workflow.Message }
+    finally:
+      - kind: activity
+        activity: IxIFlow.Samples.AuditQuote
+        output:
+          - source: Audited
+            to: { path: workflow.Audited }
