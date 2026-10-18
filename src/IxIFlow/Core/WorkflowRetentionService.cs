@@ -1,3 +1,4 @@
+using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -7,9 +8,19 @@ namespace IxIFlow.Core;
 internal sealed class WorkflowRetentionService(IWorkflowStateRepository repository, RetentionSettings settings,
     TimeProvider time, ILogger<WorkflowRetentionService> logger) : BackgroundService
 {
-    internal Task<RetentionResult> PurgeOnceAsync(CancellationToken cancellationToken) =>
-        repository.PurgeAsync(settings.FinishedRetention, settings.TombstoneRetention, settings.BatchSize,
-            cancellationToken);
+    internal async Task<RetentionResult> PurgeOnceAsync(CancellationToken cancellationToken)
+    {
+        var result = await repository.PurgeAsync(settings.FinishedRetention, settings.TombstoneRetention,
+            settings.BatchSize, cancellationToken);
+        foreach (var (publisher, count) in result.SkippedUnattemptedByPublisher)
+        {
+            Telemetry.RetentionSkippedUnattempted.Add(count,
+                new KeyValuePair<string, object?>(Telemetry.PublisherName, publisher));
+            logger.LogWarning("Retention skipped {InstanceCount} finished candidates because publisher {PublisherName} has pending deliveries that were never attempted",
+                count, publisher);
+        }
+        return result;
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

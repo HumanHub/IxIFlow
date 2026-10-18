@@ -259,16 +259,18 @@ public sealed class WorkflowRecoveryServiceTests
         public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply, string eventId,
             CancellationToken cancellationToken = default) where TReply : class =>
             throw new NotSupportedException();
-        public Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query) =>
+        public Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query) =>
             throw new NotSupportedException();
         public Task<IReadOnlyList<EventDelivery>> PublishAsync<TEventData>(string key, TEventData @event,
             string eventId, CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
-        public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
+        public Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId) =>
+            throw new NotSupportedException();
+        public Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
             throw new NotSupportedException();
         public Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId) =>
             throw new NotSupportedException();
-        public Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
+        public Task<WorkflowReadResult<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
             throw new NotSupportedException();
         public Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
             string invocationId, ActivityResolution resolution,
@@ -348,16 +350,18 @@ public sealed class WorkflowRecoveryServiceTests
         public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply, string eventId,
             CancellationToken cancellationToken = default) where TReply : class =>
             throw new NotSupportedException();
-        public Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query) =>
+        public Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query) =>
             throw new NotSupportedException();
         public Task<IReadOnlyList<EventDelivery>> PublishAsync<TEventData>(string key, TEventData @event,
             string eventId, CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
-        public Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
+        public Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId) =>
+            throw new NotSupportedException();
+        public Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId) =>
             throw new NotSupportedException();
         public Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId) =>
             throw new NotSupportedException();
-        public Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
+        public Task<WorkflowReadResult<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
             throw new NotSupportedException();
         public Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
             string invocationId, ActivityResolution resolution,

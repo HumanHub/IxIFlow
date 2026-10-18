@@ -43,8 +43,11 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         "ClosedAtUtc";
     private const string ServerRowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation";
 
-    // Resetting outside the delete transaction avoids taking a lease lock before the instance lock.
-    internal override DeletePlan Deletion => new(LeaseResetPoint.BeforeTransaction);
+    // Lock and revalidate the instance before its lease and tombstone, including absent-key admission.
+    internal override DeletePlan Deletion => new(LeaseResetPoint.AfterInstanceLock, """
+        SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+        WHERE InstanceId = @InstanceId
+        """);
     internal override object LeaseParameters(string instanceId, DateTime now) => new { InstanceId = instanceId };
     internal override object? At(DateTime? value) => value;
     internal override DbType? TimeDbType => DbType.DateTime2;

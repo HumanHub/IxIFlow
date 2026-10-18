@@ -1,7 +1,8 @@
 namespace IxIFlow.Core;
 
 /// <summary>
-/// Starts, resumes, cancels, recovers and resolves workflow instances. A call that runs an
+/// Starts, resumes, cancels, recovers and resolves workflow instances. Writes to a tombstoned ID
+/// throw InstanceRemoved. A call that runs an
 /// instance returns when the instance is idle: suspended at a wait, stopped for resolution,
 /// completed, cancelled, timed out or failed.
 /// </summary>
@@ -95,10 +96,10 @@ public interface IWorkflowClient
 
     /// <summary>
     /// Lists open waits that have no request, across instances (D-14), with the token that answers each.
-    /// A token is the right to answer, so this listing is for trusted callers such as a task inbox. A
+    /// For an instance filter, IsRemoved marks a removed ID. A token is the right to answer, so this listing is for trusted callers such as a task inbox. A
     /// child's waits are listed on the child; a request's answer goes to the token the request sent.
     /// </summary>
-    Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query);
+    Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query);
 
     /// <summary>
     /// Sends one event to every instance with an open wait for <paramref name="key"/> (D-13), under one
@@ -148,8 +149,11 @@ public interface IWorkflowClient
         ActivityResolution resolution,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Lists the saved activity attempts awaiting an operator decision.</summary>
-    Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId);
+    /// <summary>The current status, Removed while tombstoned, or null for an unknown ID.</summary>
+    Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId);
+
+    /// <summary>Lists the saved activity attempts awaiting an operator decision; IsRemoved marks a removed ID.</summary>
+    Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId);
 
     /// <summary>
     /// Where the instance's branches are and which scopes they are in, computed from its saved checkpoint and
@@ -159,9 +163,9 @@ public interface IWorkflowClient
 
     /// <summary>
     /// The instance's trace: what its runs recorded and committed, in order (G-01). A run's result carries the
-    /// entries of that run.
+    /// entries of that run. IsRemoved marks a removed ID.
     /// </summary>
-    Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId);
+    Task<WorkflowReadResult<ExecutionTraceEntry>> GetTraceAsync(string instanceId);
 }
 
 /// <summary>What <see cref="IWorkflowClient.AwaitAsync"/> waits for.</summary>

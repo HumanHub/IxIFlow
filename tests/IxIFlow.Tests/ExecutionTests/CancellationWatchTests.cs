@@ -279,6 +279,12 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
     /// <summary>A store that leaves the batch read to the interface's fallback.</summary>
     private sealed class SingleReadStore : IWorkflowStateRepository
     {
+        public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
+            throw new NotSupportedException();
+
         public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
             throw new NotSupportedException();
         public Task UnregisterPublisherAsync(string name) => throw new NotSupportedException();
@@ -339,7 +345,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             throw new NotSupportedException();
-        public Task DeleteWorkflowInstanceAsync(string instanceId) => throw new NotSupportedException();
+        public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) => throw new NotSupportedException();
     }
     [Theory]
     [InlineData(false)]

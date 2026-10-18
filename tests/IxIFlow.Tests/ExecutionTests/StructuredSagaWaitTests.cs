@@ -1739,6 +1739,12 @@ public class StructuredSagaWaitTests
 
     public sealed class HandlerStartCrashStore : IWorkflowStateRepository
     {
+        public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
+            CancellationToken cancellationToken = default) =>
+            _inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
+        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
+            _inner.GetTombstoneAsync(instanceId);
+
         public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
             _inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
         public Task UnregisterPublisherAsync(string name) => _inner.UnregisterPublisherAsync(name);
@@ -1806,8 +1812,8 @@ public class StructuredSagaWaitTests
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);
-        public Task DeleteWorkflowInstanceAsync(string instanceId) =>
-            _inner.DeleteWorkflowInstanceAsync(instanceId);
+        public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) =>
+            _inner.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention);
     }
 
     public sealed class SagaRetryProbe
