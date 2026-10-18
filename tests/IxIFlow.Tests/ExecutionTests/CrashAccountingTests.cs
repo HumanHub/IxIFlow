@@ -16,7 +16,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// </summary>
 [Trait("Feature", "recovery")]
 [Trait("Spec", "B-08")]
-public sealed class CrashAccountingTests
+public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<CrashAccountingTests>>
 {
     private static readonly TimeSpan Short = TimeSpan.FromMilliseconds(500);
 
@@ -41,6 +41,17 @@ public sealed class CrashAccountingTests
         VerifyCrashCounting(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CrashAccountingTests>.ConnectionString), SqlLease);
 
     // On a fake clock a lease expires by advancing it; on SQL Server's clock the claims poll for the expiry.
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteStoreCountsLeasesLostWhileRunning()
+    {
+        var time = new FakeTimeProvider();
+        await using var repository = new SqliteWorkflowStateRepository(
+            SqliteTestDatabase<CrashAccountingTests>.ConnectionString, time);
+        await VerifyCrashCounting(repository, Short, time);
+    }
     private static async Task VerifyCrashCounting(IWorkflowStateRepository repository, TimeSpan lease,
         FakeTimeProvider? time = null)
     {

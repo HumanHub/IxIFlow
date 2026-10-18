@@ -12,6 +12,20 @@ namespace IxIFlow.Tests.Conformance;
 public sealed class CoreScenarios
 {
     [Theory]
+    [InlineData(StoreProfiles.LocalSqlite)]
+    [Trait("Spec", "C-18")]
+    public async Task ASecondHostIsRefusedByTheStore(string profile)
+    {
+        await using var cluster = await CreateClusterAsync(profile);
+        cluster.AddHost();
+
+        var error = Assert.Throws<InvalidOperationException>(() => cluster.AddHost());
+
+        Assert.Contains("already owned", error.Message);
+        Assert.Contains("one host and no coordinator", error.Message);
+    }
+
+    [Theory]
     [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
     public async Task CompletedWorkflowIsSavedWithItsData(string profile)
     {
@@ -32,7 +46,7 @@ public sealed class CoreScenarios
     }
 
     [Theory]
-    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
     public async Task SuspendedWorkflowResumesOnAnotherHost(string profile)
     {
         await using var cluster = await CreateClusterAsync(profile);
@@ -52,7 +66,7 @@ public sealed class CoreScenarios
     }
 
     [Theory]
-    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
     public async Task ConcurrentResumesOfOneDeliveryApplyOnce(string profile)
     {
         var counter = new ExecutionCounter();
@@ -84,7 +98,7 @@ public sealed class CoreScenarios
     }
 
     [Theory]
-    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
     public async Task CancelledSuspendedWorkflowCannotBeResumed(string profile)
     {
         await using var cluster = await CreateClusterAsync(profile);
@@ -106,7 +120,7 @@ public sealed class CoreScenarios
 
     [Theory]
     [Trait("Spec", "D-06")]
-    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
     public async Task EventOnAnotherHostCompletesChildAndWakesParent(string profile)
     {
         // The child's event arrives on a second host, as a webhook landing on another machine would.

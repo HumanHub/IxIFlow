@@ -67,7 +67,7 @@ public sealed class FaultScenarios
     }
 
     [Theory]
-    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
     public async Task CancellingAParentFromAnotherHostCancelsItsWaitingChild(string profile)
     {
         await using var cluster = await CreateClusterAsync(profile);
@@ -105,7 +105,7 @@ public sealed class FaultScenarios
 
     [Theory]
     [Trait("Spec", "B-08")]
-    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
     public async Task AWorkflowThatKeepsLosingItsOwnersIsQuarantinedUntilReleased(string profile)
     {
         var counter = new CoreScenarios.ExecutionCounter();
