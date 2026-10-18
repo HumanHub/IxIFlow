@@ -7,6 +7,32 @@ namespace IxIFlow.Core.Runtime;
 
 internal sealed class ExecutionCheckpoint
 {
+    [JsonIgnore]
+    public TraceBuffer Trace { get; set; } = new();
+
+    /// <summary>Only callers returning a run's trace collect acknowledged entries. Never saved.</summary>
+    [JsonIgnore]
+    public List<ExecutionTraceEntry>? ResultTrace { get; set; }
+
+    public void AcknowledgeTrace()
+    {
+        ResultTrace?.AddRange(Trace.Pending);
+        Trace.Committed();
+    }
+
+    public List<ExecutionTraceEntry> TakeTraceResult()
+    {
+        var result = ResultTrace ?? [];
+        ResultTrace = null;
+        return result;
+    }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public long TraceEntriesRecorded { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool TraceBudgetExhausted { get; set; }
+
     public string Runtime { get; set; } = "structured-v2";
     /// <summary>
     /// The form the checkpoint is saved in; 3 is the trunk and parts of A-08. A checkpoint in another form is refused
@@ -358,6 +384,9 @@ internal enum ContinuationStatus
 
 internal sealed class ContinuationState
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ItemEndCause? ItemUnwindCause { get; set; }
+
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string? ParentJoinId { get; set; }
 
@@ -654,6 +683,9 @@ internal sealed class ActivityInputValue
 
 internal sealed class ScopePosition
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool CompensationFailed { get; set; }
+
     public string ScopeId { get; set; } = "";
     public string ActivationId { get; set; } = Guid.NewGuid().ToString("N");
     public int NextStepIndex { get; set; }
@@ -829,6 +861,8 @@ internal sealed class SagaCompletedStep
     /// <summary>For a request, whether its answer's wait timed out.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool ReplyTimedOut { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TimedOutWaitId { get; set; }
 }
 
 /// <summary>A request's answer, as its compensation and a retried <c>WaitFor</c> read it.</summary>

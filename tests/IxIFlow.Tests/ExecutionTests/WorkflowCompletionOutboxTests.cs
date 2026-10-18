@@ -1,14 +1,12 @@
 using IxIFlow.Core;
 using IxIFlow.Tests.Infrastructure;
-using Dapper;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// The completion outbox at store level: a finished instance's completion waits, claimed by one publisher at a time,
-/// until it is marked published (D-11). Publishing it is D-11's.
+/// The completion outbox at store level: a finished instance's event waits for each publisher,
+/// with a delivery lease fencing acknowledgments from a previous claim (D-11).
 /// </summary>
 [Trait("Feature", "durability")]
 public sealed class WorkflowCompletionOutboxTests : IClassFixture<SqliteTestDatabase<WorkflowCompletionOutboxTests>>
@@ -46,9 +44,10 @@ public sealed class WorkflowCompletionOutboxTests : IClassFixture<SqliteTestData
     }
     private static async Task VerifyExpiredClaimCanBeRecovered(IWorkflowStateRepository repository,
         TimeSpan deadHostClaim,
-        Func<Func<Task<IEnumerable<WorkflowInstance>>>, Task<IEnumerable<WorkflowInstance>>> reclaimOnceExpired)
+        Func<Func<Task<IReadOnlyList<OutboxDelivery>>>, Task<IReadOnlyList<OutboxDelivery>>> reclaimOnceExpired)
     {
-        var outbox = Assert.IsAssignableFrom<IWorkflowCompletionOutbox>(repository);
+        var outbox = Assert.IsAssignableFrom<IWorkflowOutbox>(repository);
+        var publisherName = "expired-claim-" + Guid.NewGuid().ToString("N");
         var instance = new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"),
@@ -57,20 +56,23 @@ public sealed class WorkflowCompletionOutboxTests : IClassFixture<SqliteTestData
         };
         try
         {
+            await outbox.RegisterPublisherAsync(publisherName, [OutboxEvent.WorkflowCompleted]);
             Assert.Equal(WorkflowCommitStatus.Applied,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
                     Guid.NewGuid().ToString("N")))).Status);
-            Assert.Single(await outbox.ClaimUnpublishedCompletionsAsync(
-                instance.InstanceId, "dead-host", deadHostClaim));
-            Assert.Empty(await outbox.ClaimUnpublishedCompletionsAsync(
-                instance.InstanceId, "new-host", TimeSpan.FromSeconds(5)));
+            var original = Assert.Single(await outbox.ClaimDeliveriesAsync(
+                publisherName, "dead-host", deadHostClaim, 1));
+            Assert.Equal(instance.InstanceId, original.Event.InstanceId);
+            Assert.Empty(await outbox.ClaimDeliveriesAsync(
+                publisherName, "new-host", TimeSpan.FromSeconds(5), 1));
 
-            var recovered = Assert.Single(await reclaimOnceExpired(() => outbox.ClaimUnpublishedCompletionsAsync(
-                instance.InstanceId, "new-host", TimeSpan.FromSeconds(5))));
-            Assert.False(await outbox.MarkCompletionPublishedAsync(
-                instance.InstanceId, recovered.Revision, "dead-host"));
-            Assert.True(await outbox.MarkCompletionPublishedAsync(
-                instance.InstanceId, recovered.Revision, "new-host"));
+            var recovered = Assert.Single(await reclaimOnceExpired(() => outbox.ClaimDeliveriesAsync(
+                publisherName, "new-host", TimeSpan.FromSeconds(5), 1)));
+            Assert.Equal(original.Event.Id, recovered.Event.Id);
+            Assert.False(await outbox.SettleDeliveryAsync(
+                original.Event.Id, publisherName, "dead-host", OutboxPublishResult.Delivered()));
+            Assert.True(await outbox.SettleDeliveryAsync(
+                recovered.Event.Id, publisherName, "new-host", OutboxPublishResult.Delivered()));
         }
         finally
         {
@@ -78,58 +80,6 @@ public sealed class WorkflowCompletionOutboxTests : IClassFixture<SqliteTestData
         }
     }
 
-    [SqlServerFact]
-    [Trait("Category", "SqlIntegration")]
-    public async Task AddingOutboxColumnDoesNotRepublishHistoricalCompletions()
-    {
-        var masterConnectionString = SqlTestDatabase<WorkflowCompletionOutboxTests>.ConnectionString;
-        var databaseName = "IxIFlowOutboxMigration_" + Guid.NewGuid().ToString("N");
-        var builder = new SqlConnectionStringBuilder(masterConnectionString)
-        {
-            InitialCatalog = databaseName
-        };
-        await using var master = new SqlConnection(masterConnectionString);
-        await master.OpenAsync();
-        await master.ExecuteAsync($"CREATE DATABASE [{databaseName}]");
-        try
-        {
-            await using (var connection = new SqlConnection(builder.ConnectionString))
-            {
-                await connection.OpenAsync();
-                await connection.ExecuteAsync("""
-                    CREATE TABLE dbo.IxIFlowWorkflowInstances (
-                        InstanceId NVARCHAR(100) NOT NULL PRIMARY KEY,
-                        WorkflowName NVARCHAR(200) NOT NULL,
-                        Status NVARCHAR(50) NOT NULL,
-                        CorrelationId NVARCHAR(100) NULL,
-                        SuspensionExpiresAt DATETIME2 NULL,
-                        StateJson NVARCHAR(MAX) NOT NULL
-                    );
-                    """);
-                var historical = new WorkflowInstance
-                {
-                    InstanceId = Guid.NewGuid().ToString("N"),
-                    WorkflowName = "Historical",
-                    Status = WorkflowStatus.Completed
-                };
-                await connection.ExecuteAsync("""
-                    INSERT INTO dbo.IxIFlowWorkflowInstances
-                        (InstanceId, WorkflowName, Status, StateJson)
-                    VALUES (@InstanceId, @WorkflowName, @Status, @StateJson)
-                    """, new { historical.InstanceId, historical.WorkflowName,
-                        Status = historical.Status.ToString(),
-                        StateJson = System.Text.Json.JsonSerializer.Serialize(historical) });
-            }
-
-            var repository = new SqlWorkflowStateRepository(builder.ConnectionString);
-            Assert.Empty(await repository.GetUnpublishedCompletionsAsync());
-        }
-        finally
-        {
-            await master.ExecuteAsync($"ALTER DATABASE [{databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE");
-            await master.ExecuteAsync($"DROP DATABASE [{databaseName}]");
-        }
-    }
     private static async Task VerifyExpiredStoreClaimCanBeRecovered(Func<TimeProvider, IWorkflowStateRepository> newRepository, TimeSpan duration, FakeTimeProvider? time = null)
     {
         var repository = newRepository(time ?? TimeProvider.System);

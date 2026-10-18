@@ -47,7 +47,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             Description = "The workflow execution deadline expired",
             RequestedAt = Now
         };
-        OperatorTrace.Cancellation(instance, instance.CancellationReason, Now);
+        OperatorTrace.Cancellation(checkpoint, instance.CancellationReason, Now);
         CancelTree(checkpoint, checkpoint.Continuations[0]);
         return true;
     }
@@ -73,11 +73,13 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             continuation.Status = ContinuationStatus.Active;
             if (step.StepType == WorkflowStepType.Delay)
             {
+                checkpoint.Trace.Timeout(step, continuation, wait.Id, null);
                 continuation.Stack[^1].NextStepIndex++;
                 continue;
             }
             if (wait.IsReply)
-                SagaScopeTransitions.NoteTimeout(continuation, wait.InvocationId);
+                SagaScopeTransitions.NoteTimeout(continuation, wait.InvocationId, wait.Id);
+            checkpoint.Trace.Timeout(step, continuation, wait.Id, scopes.TimeoutScope(step));
             EnterTimeoutPath(scopes, continuation, step);
         }
         return due.Length != 0;
@@ -103,8 +105,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         WorkflowScopeCatalog scopes,
         ExecutionCheckpoint checkpoint,
         ContinuationState continuation,
-        int maxActiveBranches = int.MaxValue,
-        int maxForEachItems = int.MaxValue)
+        int maxActiveBranches,
+        int maxForEachItems)
     {
         checkpoint.Touch(continuation);
         var workflowData = checkpoint.DataOf(continuation);
@@ -144,6 +146,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             if (continuation.Stack.Count == 0)
             {
                 continuation.Status = ContinuationStatus.Completed;
+                checkpoint.Trace.ItemEnded(continuation, position);
                 ForEachTransitions.BranchFinished(scopes, checkpoint, continuation, position);
                 CompleteJoin(scopes, checkpoint, continuation);
             }
@@ -163,10 +166,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 }
                 else if (ForEachTransitions.ItemFinished(scopes, parent, position, currentStep))
                 {
+                    checkpoint.Trace.ItemEnded(continuation, position);
                     // The ForEach runs its next item, or completes, when it is advanced again.
                 }
-                else if (!TryScopeTransitions.Exit(scopes, parent, position, currentStep, continuation) &&
-                         !SagaScopeTransitions.Exit(scopes, parent, position, currentStep, continuation))
+                else if (!TryScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation) &&
+                         !SagaScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation))
                     parent.NextStepIndex++;
             }
             return;
@@ -176,6 +180,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         switch (step.StepType)
         {
             case WorkflowStepType.Sequence:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 continuation.Stack.Add(new ScopePosition
                 {
                     ScopeId = scopes.SequenceScope(step),
@@ -199,6 +204,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     if (selectedOutcome < 0)
                         throw new InvalidOperationException(
                             $"Outcome step '{step.Id}' has no branch for '{outcome}'");
+                    checkpoint.Trace.Condition(step, continuation, selectedOutcome,
+                        scopes.OutcomeScope(step, selectedOutcome), ConditionPath.Outcome);
                     continuation.Stack.Add(new ScopePosition
                     {
                         ScopeId = scopes.OutcomeScope(step, selectedOutcome),
@@ -213,6 +220,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 var selected = step.CompiledCondition?.Invoke(conditionContext)
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                         $"If step '{step.Id}' has no condition");
+                checkpoint.Trace.Condition(step, continuation, selected ? 0 : 1,
+                    selected ? scopes.ThenScope(step) : scopes.ElseScope(step), selected ? ConditionPath.Then : ConditionPath.Else);
                 continuation.Stack.Add(new ScopePosition
                 {
                     ScopeId = selected
@@ -229,7 +238,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 break;
 
             case WorkflowStepType.TryCatch:
-                TryScopeTransitions.Enter(scopes, step, position, continuation);
+                TryScopeTransitions.Enter(scopes, checkpoint, step, position, continuation);
                 break;
 
             case WorkflowStepType.Saga:
@@ -249,11 +258,13 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 }
                 if (!shouldRun)
                 {
+                    checkpoint.Trace.Record(TraceEntryType.LoopCompleted, step, continuation, position.LoopIterationCount);
                     position.LoopIterationCount = 0;
                     position.NextStepIndex++;
                     break;
                 }
                 position.LoopIterationCount++;
+                checkpoint.Trace.Record(TraceEntryType.LoopIteration, step, continuation, position.LoopIterationCount);
                 continuation.Stack.Add(new ScopePosition
                 {
                     ScopeId = scopes.LoopScope(step),
@@ -269,16 +280,19 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 break;
 
             case WorkflowStepType.ForEachResult:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 ForEachTransitions.TakeResult(scopes, checkpoint, continuation, position, step, workflowData,
                     services);
                 break;
 
             case WorkflowStepType.SuspendResume when step.ReplyToRequest != null:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 TryScopeTransitions.EnsureCanWait(checkpoint, continuation);
                 AwaitReply(scopes, checkpoint, continuation, step);
                 break;
 
             case WorkflowStepType.SuspendResume when step.StepMetadata.TryGetValue("WaitKey", out var keyValue):
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 TryScopeTransitions.EnsureCanWait(checkpoint, continuation);
                 if (SagaScopeTransitions.TryReuseAcceptedWait(continuation, scopes.Id(step),
                         services, out var acceptedEvent))
@@ -310,6 +324,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 break;
 
             case WorkflowStepType.Delay:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 TryScopeTransitions.EnsureCanWait(checkpoint, continuation);
                 checkpoint.AddWait(new WaitState
                 {
@@ -363,6 +378,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             // Its answer timed out in an earlier attempt: the timeout path runs again.
             if (kept.ReplyTimedOut)
             {
+                checkpoint.Trace.Timeout(step, continuation, kept.TimedOutWaitId!, scopes.TimeoutScope(step), replayed: true);
                 EnterTimeoutPath(scopes, continuation, step);
                 return;
             }
@@ -437,6 +453,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             };
             join.ChildContinuationIds.Add(child.Id);
             checkpoint.Continuations.Add(child);
+            checkpoint.Trace.Record(TraceEntryType.BranchStarted, step, child, index, child.Stack[0].ScopeId, join.Id);
         }
     }
 
@@ -553,11 +570,13 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         checkpoint.ChildStarts.Clear();
     }
 
-    public static void CancelTree(ExecutionCheckpoint checkpoint, ContinuationState continuation)
+    public static void CancelTree(ExecutionCheckpoint checkpoint, ContinuationState continuation,
+        ItemEndCause cause = ItemEndCause.Cancelled)
     {
         if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             return;
         checkpoint.Touch(continuation);
+        continuation.ItemUnwindCause ??= cause;
         var first = !continuation.CancellationUnwind;
         continuation.CancellationUnwind = true;
         continuation.RetryAfterUtc = null;
@@ -734,6 +753,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     conflict = error;
                 }
             }
+            checkpoint.Trace.Join(scopes.Step(join.StepId), parent, join.Id,
+                conflict != null ? JoinPath.Conflict : merges ? JoinPath.Merged : JoinPath.Unwound);
             checkpoint.Joins.Remove(join);
             checkpoint.TouchOwner(join.ParentContinuationId);
             completed = true;
@@ -791,10 +812,19 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         continuation.RetryInputs = null;
         if (allowStepRetry && !continuation.CancellationUnwind &&
             SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, StoreNow(checkpoint), retryInputs))
+        {
+            var position = continuation.Stack[^1];
+            if (position.StepRetryCounts.TryGetValue(position.NextStepIndex, out var attempt))
+            {
+                var step = scopes.Steps(position.ScopeId)[position.NextStepIndex];
+                checkpoint.Trace.Retry(TraceEntryType.StepRetryScheduled, step, continuation, attempt,
+                    scopes.Id(step), position.ScopeId);
+            }
             return true;
+        }
         if (continuation.CancellationUnwind)
         {
-            if (SagaScopeTransitions.SkipFailedCompensation(scopes, continuation, error))
+            if (SagaScopeTransitions.SkipFailedCompensation(scopes, checkpoint, continuation, error))
                 return true;
             var cleanupBoundary = continuation.Stack.FindIndex(frame =>
                 frame.TryState?.Phase == TryPhase.Finally);
@@ -803,17 +833,17 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 return true;
             checkpoint.UnhandledError ??= SerializedException.From(error);
             checkpoint.RuntimeUnhandledError ??= error;
-            TryScopeTransitions.AbortFailedFinally(continuation);
-            TryScopeTransitions.ContinueCancellation(scopes, continuation);
+            TryScopeTransitions.AbortFailedFinally(checkpoint, continuation);
+            TryScopeTransitions.ContinueCancellation(scopes, checkpoint, continuation);
             CancelAncestorJoins(checkpoint, continuation);
             return true;
         }
         while (true)
         {
-            if (SagaScopeTransitions.SkipFailedCompensation(scopes, continuation, error) ||
+            if (SagaScopeTransitions.SkipFailedCompensation(scopes, checkpoint, continuation, error) ||
                 CaptureScopeFailure(scopes, checkpoint, continuation, error))
                 return true;
-            TryScopeTransitions.AbortFailedFinally(continuation);
+            TryScopeTransitions.AbortFailedFinally(checkpoint, continuation);
             if (continuation.ParentJoinId == null)
             {
                 if (!checkpoint.Joins.Any(join => join.IsCompleting))
@@ -829,12 +859,12 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             join.IsCompleting = true;
             join.ResumeParentWithoutAdvance = true;
             foreach (var branch in checkpoint.BranchesOf(join))
-                CancelTree(checkpoint, branch);
+                CancelTree(checkpoint, branch, branch == continuation ? ItemEndCause.Failed : ItemEndCause.Cancelled);
             continuation = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
             checkpoint.Touch(continuation);
             if (continuation.CancellationUnwind)
                 return CaptureFailure(scopes, checkpoint, continuation, error);
-            if (TryScopeTransitions.Capture(scopes, continuation, error))
+            if (TryScopeTransitions.Capture(scopes, checkpoint, continuation, error))
             {
                 checkpoint.UnhandledError = null;
                 checkpoint.RuntimeUnhandledError = null;
@@ -859,7 +889,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             retryIndex = -1;
         if (retryIndex > tryIndex && retryIndex > sagaIndex)
         {
-            SagaScopeTransitions.GiveUpAfterHandlerFailure(continuation, retryIndex, error);
+            SagaScopeTransitions.GiveUpAfterHandlerFailure(checkpoint, continuation, retryIndex, error);
             return true;
         }
         if (sagaIndex > tryIndex)
@@ -867,7 +897,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             SagaScopeTransitions.Capture(scopes, checkpoint, continuation, sagaIndex, error);
             return true;
         }
-        return tryIndex >= 0 && TryScopeTransitions.Capture(scopes, continuation, error);
+        return tryIndex >= 0 && TryScopeTransitions.Capture(scopes, checkpoint, continuation, error);
     }
 
     private static void CancelAncestorJoins(ExecutionCheckpoint checkpoint,

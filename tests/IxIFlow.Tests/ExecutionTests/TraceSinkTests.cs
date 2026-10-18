@@ -26,14 +26,15 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
 
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         var trace = await engine.GetTraceAsync(started.InstanceId);
-        Assert.Equal([TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted,
-            TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted], trace.Select(entry => entry.EntryType));
-        Assert.Equal([1L, 2, 3, 4], (await repository.GetTraceAsync(started.InstanceId)).Select(entry => entry.Sequence));
+        Assert.Equal([TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted, TraceEntryType.StepEntered,
+            TraceEntryType.EventReceived, TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted],
+            trace.Select(entry => entry.EntryType));
+        Assert.Equal([1L, 2, 3, 4, 5, 6], (await repository.GetTraceAsync(started.InstanceId)).Select(entry => entry.Sequence));
         Assert.DoesNotContain("ExecutionHistory",
             System.Text.Json.JsonSerializer.Serialize(await repository.GetWorkflowInstanceAsync(started.InstanceId)));
         // A result carries what its own run recorded.
-        Assert.Equal(2, started.TraceEntries.Count);
-        Assert.Equal(2, resumed.TraceEntries.Count);
+        Assert.Equal(3, started.TraceEntries.Count);
+        Assert.Equal(3, resumed.TraceEntries.Count);
         Assert.Equal(started.TraceEntries.Select(entry => entry.TraceId).Concat(resumed.TraceEntries.Select(entry => entry.TraceId)),
             trace.Select(entry => entry.TraceId));
     }
@@ -138,7 +139,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         var awaited = await engine.AwaitAsync(started.InstanceId);
 
         Assert.Empty(awaited.TraceEntries);
-        Assert.Equal(2, (await engine.GetTraceAsync(started.InstanceId)).Count);
+        Assert.Equal(3, (await engine.GetTraceAsync(started.InstanceId)).Count);
     }
 
     [SqlServerFact]

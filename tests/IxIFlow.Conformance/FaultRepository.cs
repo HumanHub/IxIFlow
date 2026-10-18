@@ -8,6 +8,26 @@ namespace IxIFlow.Tests.Conformance;
 /// </summary>
 internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflowStateRepository
 {
+    public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
+        CancellationToken cancellationToken = default) =>
+        inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
+    public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
+        inner.GetTombstoneAsync(instanceId);
+
+    public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
+        inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
+    public Task UnregisterPublisherAsync(string name) => inner.UnregisterPublisherAsync(name);
+    public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
+        inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
+    public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
+        inner.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration);
+    public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result) =>
+        inner.SettleDeliveryAsync(eventId, publisherName, token, result);
+    public Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName) =>
+        inner.GetDeliveryAsync(eventId, publisherName);
+    public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
+        inner.GetPublisherAsync(publisherName);
+
     public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
         inner.AppendEventAsync(workflowEvent);
     public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
@@ -69,5 +89,5 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
         int limit = 1000) =>
         inner.GetTraceAsync(instanceId, afterSequence, limit);
-    public Task DeleteWorkflowInstanceAsync(string instanceId) => inner.DeleteWorkflowInstanceAsync(instanceId);
+    public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) => inner.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention);
 }

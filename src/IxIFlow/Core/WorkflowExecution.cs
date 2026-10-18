@@ -304,13 +304,6 @@ public class WorkflowInstance
     public bool TracingEnabled { get; set; } = true;
 
     /// <summary>
-    /// The trace entries this run recorded, and how many of them its commits carried. The trace is not part of
-    /// the instance: each commit carries the entries since the last one to the store's trace (G-01).
-    /// </summary>
-    [System.Text.Json.Serialization.JsonIgnore]
-    internal TraceBuffer Trace { get; } = new();
-
-    /// <summary>
     /// The parts the instance's state is stored in as of its last commit or read, by key, or null when that is not
     /// known; a commit writes only the parts that differ, and deletes those that are gone (A-08).
     /// </summary>
@@ -359,6 +352,9 @@ public class WorkflowInstance
 /// </summary>
 public class WorkflowExecutionSnapshot
 {
+    /// <summary>True when only the instance's removal tombstone remains; all collections are empty.</summary>
+    public bool IsRemoved { get; set; }
+
     /// <summary>
     ///     Workflow instance identifier that owns this snapshot
     /// </summary>
@@ -486,9 +482,14 @@ public class ExecutionTraceEntry
     /// </summary>
     public DateTime Timestamp { get; set; }
 
+    /// <summary>Sequence orders the trace; host and store clocks can differ.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public TraceClock Clock { get; set; }
+
     /// <summary>
     ///     Step number in the workflow
     /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public int StepNumber { get; set; }
 
     /// <summary>
@@ -504,32 +505,29 @@ public class ExecutionTraceEntry
     /// <summary>
     ///     Execution duration (for completion entries)
     /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public TimeSpan? Duration { get; set; }
-
-    /// <summary>
-    ///     Input data for the activity (serialized)
-    /// </summary>
-    public string InputDataJson { get; set; } = "";
-
-    /// <summary>
-    ///     Output data from the activity (serialized)
-    /// </summary>
-    public string OutputDataJson { get; set; } = "";
 
     /// <summary>
     ///     Error information (if applicable)
     /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? ErrorMessage { get; set; }
 
     /// <summary>
     ///     Stack trace (if error occurred)
     /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? StackTrace { get; set; }
 
     /// <summary>
-    ///     Additional metadata for this trace entry
+    ///     Activity attempt facts; other kinds carry only their typed payload.
     /// </summary>
     public Dictionary<string, object> Metadata { get; set; } = new();
+
+    /// <summary>The typed facts for this entry kind.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public TracePayload? Payload { get; set; }
 }
 
 /// <summary>
@@ -606,7 +604,45 @@ public enum TraceEntryType
     CancellationRequested,
 
     /// <summary>An operator released an instance stopped for them, with who did (D-38).</summary>
-    Released
+    Released,
+
+    // Append kinds to preserve the stored numeric values of existing entries (G-01).
+    /// <summary>A control-flow step was entered.</summary>
+    StepEntered,
+    /// <summary>A conditional selected its branch, identified by index and scope, never its value.</summary>
+    ConditionTaken,
+    /// <summary>One loop iteration started, with its one-based index.</summary>
+    LoopIteration,
+    /// <summary>A loop guard ended the loop.</summary>
+    LoopCompleted,
+    /// <summary>A parallel branch started.</summary>
+    BranchStarted,
+    /// <summary>A join finished, including joins unwound by cancellation or failure.</summary>
+    JoinCompleted,
+    /// <summary>A catch body was entered.</summary>
+    CatchEntered,
+    /// <summary>A finally body was entered.</summary>
+    FinallyEntered,
+    /// <summary>A ForEach item started.</summary>
+    ForEachItemStarted,
+    /// <summary>A ForEach item ended, normally or through unwind.</summary>
+    ForEachItemEnded,
+    /// <summary>An event was taken by a wait.</summary>
+    EventReceived,
+    /// <summary>An event was refused, with its reason.</summary>
+    EventRefused,
+    /// <summary>An operator resolved an invocation.</summary>
+    ActivityResolved,
+    /// <summary>A parent asked its child to cancel.</summary>
+    ChildCancellationRequested,
+    /// <summary>The per-commit trace limit omitted entries.</summary>
+    Truncated,
+    WaitTimedOut,
+    DelayFired,
+    SagaRetryStarted,
+    StepRetryScheduled,
+    CompensationFailed,
+    TraceBudgetReached
 }
 
 /// <summary>

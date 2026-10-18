@@ -5,7 +5,7 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal static class TryScopeTransitions
 {
-    public static void Enter(WorkflowScopeCatalog scopes, WorkflowStep step,
+    public static void Enter(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, WorkflowStep step,
         ScopePosition owner, ContinuationState continuation)
     {
         var state = owner.TryState ??= new TryScopeState
@@ -20,6 +20,12 @@ internal static class TryScopeTransitions
             TryPhase.Finally => scopes.FinallyScope(step),
             _ => throw new ArgumentOutOfRangeException(nameof(state.Phase))
         };
+        checkpoint.Trace.Record(state.Phase switch
+        {
+            TryPhase.Catch => TraceEntryType.CatchEntered,
+            TryPhase.Finally => TraceEntryType.FinallyEntered,
+            _ => TraceEntryType.StepEntered
+        }, step, continuation, state.Phase == TryPhase.Catch ? state.CatchIndex : null, scopeId);
         continuation.Stack.Add(new ScopePosition
         {
             ScopeId = scopeId,
@@ -29,7 +35,7 @@ internal static class TryScopeTransitions
         });
     }
 
-    public static bool Exit(WorkflowScopeCatalog scopes, ScopePosition owner,
+    public static bool Exit(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, ScopePosition owner,
         ScopePosition child, WorkflowStep step, ContinuationState continuation)
     {
         var state = owner.TryState;
@@ -54,7 +60,7 @@ internal static class TryScopeTransitions
             owner.NextStepIndex++;
             if (isCancellationCleanup)
             {
-                ContinueCancellation(scopes, continuation);
+                ContinueCancellation(scopes, checkpoint, continuation);
                 return true;
             }
             if (unhandled != null)
@@ -77,7 +83,7 @@ internal static class TryScopeTransitions
         return true;
     }
 
-    public static bool Capture(WorkflowScopeCatalog scopes, ContinuationState continuation, Exception error)
+    public static bool Capture(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, ContinuationState continuation, Exception error)
     {
         var index = HandlerIndex(scopes, continuation, error);
         if (index < 0)
@@ -110,7 +116,7 @@ internal static class TryScopeTransitions
                 catchIndex = -1;
             }
         }
-        continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+        checkpoint.Trace.DropFrames(continuation, index + 1, ItemEndCause.UnwoundByOuterHandler);
         continuation.Previous = state.EntryPrevious;
         continuation.RuntimePrevious = state.RuntimeEntryPrevious;
         state.RuntimeError = error;
@@ -206,13 +212,13 @@ internal static class TryScopeTransitions
     public static bool IsInsideFinally(ContinuationState continuation) =>
         continuation.Stack.Any(frame => frame.TryState?.Phase == TryPhase.Finally);
 
-    public static void AbortFailedFinally(ContinuationState continuation)
+    public static void AbortFailedFinally(ExecutionCheckpoint checkpoint, ContinuationState continuation)
     {
         var index = continuation.Stack.FindIndex(frame => frame.TryState?.Phase == TryPhase.Finally);
         if (index < 0)
             return;
 
-        continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+        checkpoint.Trace.DropFrames(continuation, index + 1, ItemEndCause.Failed);
         var owner = continuation.Stack[index];
         owner.TryState = null;
         owner.NextStepIndex++;
@@ -227,13 +233,13 @@ internal static class TryScopeTransitions
             outermost.IsCancellationCleanup = true;
     }
 
-    public static void ContinueCancellation(WorkflowScopeCatalog scopes, ContinuationState continuation)
+    public static void ContinueCancellation(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, ContinuationState continuation)
     {
         for (var index = continuation.Stack.Count - 1; index >= 0; index--)
         {
             var owner = continuation.Stack[index];
-            if (SagaScopeTransitions.BeginCancellation(continuation, index) ||
-                SagaScopeTransitions.CancelRetryHandler(scopes, continuation, index))
+            if (SagaScopeTransitions.BeginCancellation(checkpoint, continuation, index) ||
+                SagaScopeTransitions.CancelRetryHandler(scopes, checkpoint, continuation, index))
                 return;
             var state = owner.TryState;
             if (state == null || state.Phase == TryPhase.Finally)
@@ -242,7 +248,8 @@ internal static class TryScopeTransitions
             if (step.StepType != WorkflowStepType.TryCatch || step.FinallySteps.Count == 0)
                 continue;
 
-            continuation.Stack.RemoveRange(index + 1, continuation.Stack.Count - index - 1);
+            checkpoint.Trace.DropFrames(continuation, index + 1, continuation.CancellationUnwind
+            ? continuation.ItemUnwindCause ?? ItemEndCause.Cancelled : ItemEndCause.UnwoundByOuterHandler);
             continuation.Previous = state.EntryPrevious;
             continuation.RuntimePrevious = state.RuntimeEntryPrevious;
             state.Error = null;
@@ -252,6 +259,7 @@ internal static class TryScopeTransitions
             continuation.Status = ContinuationStatus.Active;
             return;
         }
+        checkpoint.Trace.DropFrames(continuation, 0, continuation.ItemUnwindCause ?? ItemEndCause.Cancelled);
         continuation.CancellationUnwind = false;
         continuation.Status = ContinuationStatus.Cancelled;
     }

@@ -1,35 +1,27 @@
 namespace IxIFlow.Core.Runtime;
 
-/// <summary>The client's default actor (D-38), from <c>IxIFlowOptions.Actor</c>; none when it names nobody.</summary>
 internal sealed record ClientActor(string? Name);
 
-/// <summary>
-/// Trace entries for what operators do to an instance, with who did it (D-38). The actor is a plain string the caller
-/// supplies; the engine records it and never checks it.
-/// </summary>
+/// <summary>Operator facts live only in typed payloads (D-38).</summary>
 internal static class OperatorTrace
 {
-    /// <summary>The request, naming <paramref name="defaultActor"/> when it names nobody, without changing the caller's.</summary>
-    public static CancellationReason WithActor(CancellationReason reason, string? defaultActor) =>
-        !string.IsNullOrEmpty(reason.RequestedBy) || defaultActor == null
+    public static CancellationReason WithActor(CancellationReason reason, string? defaultActor, DateTime now) =>
+        (!string.IsNullOrEmpty(reason.RequestedBy) || defaultActor == null) && reason.RequestedAt != default
             ? reason
             : new CancellationReason
             {
                 ReasonCode = reason.ReasonCode,
                 Description = reason.Description,
-                RequestedAt = reason.RequestedAt,
-                RequestedBy = defaultActor,
+                RequestedAt = reason.RequestedAt == default ? now : reason.RequestedAt,
+                RequestedBy = string.IsNullOrEmpty(reason.RequestedBy) ? defaultActor ?? "" : reason.RequestedBy,
                 Metadata = reason.Metadata
             };
 
-    /// <summary>
-    /// Applies a cancellation request to a run: it is traced with who made it, recorded on the instance, and the root
-    /// unwinds. Every path that applies a request goes through here, so each is traced once.
-    /// </summary>
     public static void ApplyCancellation(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
         CancellationReason reason, DateTime now)
     {
-        Cancellation(instance, reason, now);
+        reason = WithActor(reason, null, now);
+        Cancellation(checkpoint, reason, now);
         instance.CancellationReason = reason;
         checkpoint.CancellationRequested = true;
         checkpoint.UnhandledError = null;
@@ -37,27 +29,52 @@ internal static class OperatorTrace
         ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
     }
 
-    public static void Cancellation(WorkflowInstance instance, CancellationReason reason, DateTime now)
+    public static void Cancellation(ExecutionCheckpoint checkpoint, CancellationReason reason, DateTime now)
     {
-        var entry = Entry(TraceEntryType.CancellationRequested, reason.RequestedBy, now);
-        entry.Metadata["ReasonCode"] = reason.ReasonCode;
-        Add(instance, entry);
+        if (checkpoint.Trace.Accepts(TraceEntryType.CancellationRequested, now))
+            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now,
+                EntryType = TraceEntryType.CancellationRequested, Payload = Payload(reason, now) });
     }
 
-    public static void Released(WorkflowInstance instance, string? actor, DateTime now) =>
-        Add(instance, Entry(TraceEntryType.Released, actor, now));
-
-    private static ExecutionTraceEntry Entry(TraceEntryType type, string? actor, DateTime now)
+    public static void CompletedCancellation(WorkflowInstance instance, ExecutionCheckpoint checkpoint, DateTime now)
     {
-        var entry = new ExecutionTraceEntry { Timestamp = now, EntryType = type };
-        if (!string.IsNullOrEmpty(actor))
-            entry.Metadata["Actor"] = actor;
-        return entry;
+        if (checkpoint.Trace.Accepts(TraceEntryType.WorkflowCancelled, now))
+            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now,
+                EntryType = TraceEntryType.WorkflowCancelled, Payload = Payload(instance.CancellationReason!, now) });
     }
 
-    private static void Add(WorkflowInstance instance, ExecutionTraceEntry entry)
+    public static void ChildCancellations(WorkflowInstance instance, ExecutionCheckpoint checkpoint, DateTime now)
     {
-        if (instance.TracingEnabled)
-            instance.Trace.Add(entry);
+        for (var index = 0; index < checkpoint.ChildCancellations.Count; index++)
+        {
+            var command = checkpoint.ChildCancellations[index];
+            var reason = WithActor(command.Reason, instance.CancellationReason?.RequestedBy,
+                instance.CancellationReason?.RequestedAt ?? now);
+            checkpoint.ChildCancellations[index] = command with { Reason = reason };
+            if (checkpoint.Trace.Accepts(TraceEntryType.ChildCancellationRequested, now))
+                checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now,
+                    EntryType = TraceEntryType.ChildCancellationRequested, Payload = Payload(reason, now) with
+                    { ChildInstanceId = command.ChildInstanceId,
+                        WaitRef = WaitReference.Of(instance.InstanceId, command.ParentWaitId) } });
+        }
+    }
+
+    private static CancellationTrace Payload(CancellationReason reason, DateTime now) =>
+        new(string.IsNullOrEmpty(reason.RequestedBy) ? null : reason.RequestedBy,
+            reason.RequestedAt == default ? now : reason.RequestedAt, reason.ReasonCode);
+
+    public static void Resolved(ExecutionCheckpoint checkpoint, ActivityInvocationState pending,
+        ActivityResolutionState decision, DateTime now)
+    {
+        if (checkpoint.Trace.Accepts(TraceEntryType.ActivityResolved, now))
+            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now, EntryType = TraceEntryType.ActivityResolved,
+                Payload = new ActivityResolutionTrace(pending.Id, pending.StepId, decision.Kind, decision.DecidedBy) });
+    }
+
+    public static void Released(ExecutionCheckpoint checkpoint, string? actor, DateTime now)
+    {
+        if (checkpoint.Trace.Accepts(TraceEntryType.Released, now))
+            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now, EntryType = TraceEntryType.Released,
+                Payload = new ReleaseTrace(string.IsNullOrEmpty(actor) ? null : actor) });
     }
 }

@@ -68,10 +68,10 @@ public static class OneApproverRecipe
         Workflow.Create<Order>("OneApprover")
             .Step<ValidateOrder>()
             .Request<RequestApproval>("approval", step => step
-                    .Input(activity => activity.Approver).From(_ => "manager")
+                    .Input(activity => activity.Approver).From(ctx => "manager")
                     .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount),
-                subject: ctx => $"{ctx.WorkflowData.OrderId}:{ctx.WorkflowData.Amount}")
+                subjectExpression: ctx => $"{ctx.WorkflowData.OrderId}:{ctx.WorkflowData.Amount}")
             .WaitFor<ApprovalDecision>("approval", configure: wait => wait
                 .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved)
                 .Output(decision => decision.By).To(ctx => ctx.WorkflowData.ApprovedBy)
@@ -80,10 +80,10 @@ public static class OneApproverRecipe
                     .Output(activity => activity.Escalated).To(ctx => ctx.WorkflowData.Escalated))))
             .If(ctx => ctx.WorkflowData.Approved,
                 then => then.Step<Decide>(step => step
-                    .Input(activity => activity.Value).From(_ => "approved")
+                    .Input(activity => activity.Value).From(ctx => "approved")
                     .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome)),
                 @else => @else.Step<Decide>(step => step
-                    .Input(activity => activity.Value).From(_ => "rejected")
+                    .Input(activity => activity.Value).From(ctx => "rejected")
                     .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome)))
             .WaitFor<OrderDispatched>("dispatched")
             .Build();
