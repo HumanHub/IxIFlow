@@ -41,6 +41,9 @@ public sealed record WorkflowCommitResult(
     bool UnreadEvents = false,
     IReadOnlyList<string>? MadeRunnable = null)
 {
+    /// <summary>The store-allocated incarnation of the written or current row; empty when no row was read.</summary>
+    public Guid Incarnation { get; init; }
+
     /// <summary>
     /// Other instances the commit made runnable: the children it started, and a parent whose inbox took
     /// the child's completion. A host may run them at once; the poll finds them otherwise.
@@ -49,12 +52,12 @@ public sealed record WorkflowCommitResult(
 
     /// <summary>Receipts are equal when every field is, the instances made runnable compared in order.</summary>
     public bool Equals(WorkflowCommitResult? other) =>
-        other is not null && Status == other.Status && Revision == other.Revision &&
+        other is not null && Status == other.Status && Revision == other.Revision && Incarnation == other.Incarnation &&
         Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
         UnreadEvents == other.UnreadEvents && MadeRunnable.SequenceEqual(other.MadeRunnable, StringComparer.Ordinal);
 
     public override int GetHashCode() =>
-        HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count);
+        HashCode.Combine(Status, Revision, Incarnation, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count);
 }
 
 /// <summary>

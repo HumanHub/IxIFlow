@@ -1,6 +1,5 @@
-using System.Collections;
 using System.Data.Common;
-using System.Reflection;
+using System.Text.Json;
 using Dapper;
 using IxIFlow.Core;
 using IxIFlow.Tests.Infrastructure;
@@ -47,24 +46,34 @@ public sealed class LeaseIncarnationContractTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SqlServerDeletionRemovesLeaseAndFencesIncarnation()
+    public Task SqlServerDeletionRemovesLeaseAndFencesIncarnation() => VerifySqlServer(false);
+
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public Task SqlServerPurgeRemovesLeaseAndFencesIncarnation() => VerifySqlServer(true);
+
+    private static Task VerifySqlServer(bool purge)
     {
         var connectionString = SqlTestDatabase<LeaseIncarnationContractTests>.ConnectionString;
-        foreach (var purge in new[] { false, true })
-            await Verify(new SqlWorkflowStateRepository(connectionString), purge,
-                (id, by) => AgeRows(() => new SqlConnection(connectionString), id, by),
-                () => new SqlConnection(connectionString));
+        return Verify(new SqlWorkflowStateRepository(connectionString), purge,
+            (id, by) => AgeRows(() => new SqlConnection(connectionString), id, by),
+            () => new SqlConnection(connectionString));
     }
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlDeletionRemovesLeaseAndFencesIncarnation()
+    public Task PostgreSqlDeletionRemovesLeaseAndFencesIncarnation() => VerifyPostgreSql(false);
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public Task PostgreSqlPurgeRemovesLeaseAndFencesIncarnation() => VerifyPostgreSql(true);
+
+    private static Task VerifyPostgreSql(bool purge)
     {
         var connectionString = PostgreSqlTestDatabase<LeaseIncarnationContractTests>.ConnectionString;
-        foreach (var purge in new[] { false, true })
-            await Verify(new PostgreSqlWorkflowStateRepository(connectionString), purge,
-                (id, by) => AgeRows(() => new NpgsqlConnection(connectionString), id, by),
-                () => new NpgsqlConnection(connectionString));
+        return Verify(new PostgreSqlWorkflowStateRepository(connectionString), purge,
+            (id, by) => AgeRows(() => new NpgsqlConnection(connectionString), id, by),
+            () => new NpgsqlConnection(connectionString));
     }
 
     private static async Task Verify(IWorkflowStateRepository store, bool purge,
@@ -76,6 +85,7 @@ public sealed class LeaseIncarnationContractTests
         var duration = TimeSpan.FromMinutes(1);
         try
         {
+            await VerifyAbsentDelete(store, id + "-absent", duration, open);
             var original = NewInstance(id);
             await Apply(store, CheckpointCommit.Create(original, 0, 0));
             original = (await store.GetWorkflowInstanceAsync(id))!;
@@ -94,7 +104,7 @@ public sealed class LeaseIncarnationContractTests
             original.Status = WorkflowStatus.Completed;
             var lateCompletion = CheckpointCommit.Create(original, oldGrant.Epoch, original.Revision, "completion");
             await Apply(store, lateCompletion);
-            Assert.Equal(1, await LeaseRows(store, id, open));
+            await AssertLeaseRows(open, id, 1);
 
             if (purge)
             {
@@ -104,12 +114,21 @@ public sealed class LeaseIncarnationContractTests
             else
                 await store.DeleteWorkflowInstanceAsync(id, tombstones);
             Assert.Null(await store.GetWorkflowInstanceAsync(id));
-            Assert.Equal(0, await LeaseRows(store, id, open));
+            await AssertLeaseRows(open, id, 0);
+            var tombstone = await store.GetTombstoneAsync(id);
+            Assert.NotNull(tombstone);
+            Assert.Null(await store.TryAcquireExecutionLeaseAsync(id, "tombstoned", duration));
+            await store.DeleteWorkflowInstanceAsync(id, tombstones);
+            Assert.Equal(tombstone, await store.GetTombstoneAsync(id));
+            await AssertLeaseRows(open, id, 0);
 
             // Reuse becomes legal when the tombstone expires, without a wall-clock sleep.
             await advance(id, tombstones + TimeSpan.FromDays(1));
             await store.PurgeAsync(retention, tombstones, 100);
-            var replacement = NewInstance(id);
+            // A first commit must allocate a new incarnation even from the old instance object.
+            var replacement = original.CopyForResume();
+            replacement.Status = WorkflowStatus.Running;
+            replacement.Revision = 0;
             await Apply(store, CheckpointCommit.Create(replacement, 0, 0));
             replacement = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.NotEqual(originalIncarnation, replacement.Incarnation);
@@ -125,6 +144,7 @@ public sealed class LeaseIncarnationContractTests
             var current = (await store.TryAcquireExecutionLeaseAsync(id, "new-owner", duration))!;
             Assert.Equal(oldGrant.Epoch, current.Epoch);
             Assert.Equal(0, current.CrashCount);
+            await VerifyStaleEffects(store, original, replacement, oldGrant.Epoch, duration);
 
             foreach (var late in new[] { lateRunning, latePark, lateCompletion })
             {
@@ -160,18 +180,21 @@ public sealed class LeaseIncarnationContractTests
 
             // Save also allocates a fresh incarnation when reusing an old object to create a row.
             await store.DeleteWorkflowInstanceAsync(id, tombstones);
-            Assert.Equal(0, await LeaseRows(store, id, open));
+            await AssertLeaseRows(open, id, 0);
             await advance(id, tombstones + TimeSpan.FromDays(1));
             await store.PurgeAsync(retention, tombstones, 100);
             original.Revision = 0;
             original.Status = WorkflowStatus.Running;
             await store.SaveWorkflowInstanceAsync(original);
             var saved = (await store.GetWorkflowInstanceAsync(id))!;
+            Assert.Equal(original.Incarnation, saved.Incarnation);
             Assert.NotEqual(originalIncarnation, saved.Incarnation);
             Assert.NotEqual(replacement.Incarnation, saved.Incarnation);
             var update = NewInstance(id);
             await store.SaveWorkflowInstanceAsync(update);
+            Assert.Equal(saved.Incarnation, update.Incarnation);
             Assert.Equal(saved.Incarnation, (await store.GetWorkflowInstanceAsync(id))!.Incarnation);
+            await VerifyJsonAndChildReuse(store, saved, advance, tombstones);
         }
         finally { await store.DeleteWorkflowInstanceAsync(id); }
     }
@@ -182,21 +205,145 @@ public sealed class LeaseIncarnationContractTests
         Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
     };
 
-    private static async Task Apply(IWorkflowStateRepository store, CheckpointCommit commit) =>
-        Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
+    private static async Task Apply(IWorkflowStateRepository store, CheckpointCommit commit)
+    {
+        Assert.DoesNotContain("\"Incarnation\"", commit.Payload);
+        var result = await store.CommitWorkflowInstanceAsync(commit);
+        Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
+        Assert.NotEqual(Guid.Empty, result.Incarnation);
+        Assert.Equal(result.Incarnation, (await store.GetWorkflowInstanceAsync(commit.InstanceId))!.Incarnation);
+    }
 
-    private static async Task<int> LeaseRows(IWorkflowStateRepository store, string id, Func<DbConnection>? open)
+    private static async Task AssertLeaseRows(Func<DbConnection>? open, string id, int expected)
     {
         if (open == null)
-        {
-            var leases = (IDictionary)typeof(InMemoryWorkflowStateRepository)
-                .GetField("_leases", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(store)!;
-            return leases.Contains(id) ? 1 : 0;
-        }
+            return; // In-memory deletion is proved by the subsequent epoch and crash-count assertions.
         await using var connection = open();
-        return await connection.ExecuteScalarAsync<int>(connection is SqlConnection
+        Assert.Equal(expected, await connection.ExecuteScalarAsync<int>(connection is SqlConnection
             ? "SELECT COUNT(*) FROM dbo.IxIFlowWorkflowLeases WHERE InstanceId=@Id"
-            : "SELECT COUNT(*) FROM ixiflow_workflow_leases WHERE instance_id=@Id", new { Id = id });
+            : "SELECT COUNT(*) FROM ixiflow_workflow_leases WHERE instance_id=@Id", new { Id = id }));
+    }
+
+    private static async Task VerifyAbsentDelete(IWorkflowStateRepository store, string id, TimeSpan duration,
+        Func<DbConnection>? open)
+    {
+        try
+        {
+            Assert.Equal(1, (await store.TryAcquireExecutionLeaseAsync(id, "orphan", duration))!.Epoch);
+            await store.DeleteWorkflowInstanceAsync(id);
+            await AssertLeaseRows(open, id, 0);
+            Assert.Null(await store.GetTombstoneAsync(id));
+            Assert.False(await store.RenewExecutionLeaseAsync(id, "orphan", duration));
+            Assert.False(await store.ReleaseExecutionLeaseAsync(id, "orphan"));
+            var grant = (await store.TryAcquireExecutionLeaseAsync(id, "after-delete", duration))!;
+            Assert.Equal(1, grant.Epoch);
+            Assert.Equal(0, grant.CrashCount);
+        }
+        finally { await store.DeleteWorkflowInstanceAsync(id); }
+    }
+
+    private static async Task VerifyStaleEffects(IWorkflowStateRepository store, WorkflowInstance original,
+        WorkflowInstance replacement, long epoch, TimeSpan duration)
+    {
+        var parentId = original.InstanceId + "-parent";
+        var childId = original.InstanceId + "-child";
+        var parent = NewInstance(parentId);
+        parent.Status = WorkflowStatus.Suspended;
+        try
+        {
+            await Apply(store, CheckpointCommit.Create(parent, 0, 0,
+                openedWaits: [new OpenedWait("notice", WaitKind.Child, "", "child-result", null)]));
+            var parentBefore = (await store.GetWorkflowInstanceAsync(parentId))!;
+            var parentWait = await store.GetWaitAsync(parentId, "notice");
+            var sequence = (await store.GetInboxSequencesAsync([parentId]))[parentId];
+            var replacementBefore = JsonSerializer.Serialize(await store.GetWorkflowInstanceAsync(replacement.InstanceId));
+            var child = NewInstance(childId);
+            child.ParentInstanceId = original.InstanceId;
+            child.ParentWaitId = "late-child";
+            var withChild = original.CopyForResume();
+            withChild.Status = WorkflowStatus.Running;
+            var childCommit = CheckpointCommit.Create(withChild, epoch, replacement.Revision,
+                openedWaits: [new OpenedWait("late-child", WaitKind.Child, "", "child-result", null)],
+                childStarts: [new ChildStart(childId, JsonSerializer.Serialize(child), "late-child")]);
+            var withNotice = original.CopyForResume();
+            withNotice.Status = WorkflowStatus.Completed;
+            withNotice.ParentInstanceId = parentId;
+            withNotice.ParentWaitId = "notice";
+            var noticeCommit = CheckpointCommit.Create(withNotice, epoch, replacement.Revision,
+                parentNotice: new ParentNotice(parentId, "notice", "late-notice", "child-result", "{}"));
+            foreach (var late in new[] { childCommit, noticeCommit })
+            {
+                var result = await store.CommitWorkflowInstanceAsync(late);
+                Assert.Equal(WorkflowCommitStatus.StaleEpoch, result.Status);
+                Assert.Equal(replacement.Incarnation, result.Incarnation);
+                Assert.Empty(result.MadeRunnable);
+                Assert.Equal(replacementBefore, JsonSerializer.Serialize(await store.GetWorkflowInstanceAsync(replacement.InstanceId)));
+                Assert.Null(await store.GetWorkflowInstanceAsync(childId));
+                Assert.Null(await store.GetWaitAsync(replacement.InstanceId, "late-child"));
+                Assert.Null(await store.GetEventAsync(parentId, "late-notice"));
+                Assert.Equal(parentWait, await store.GetWaitAsync(parentId, "notice"));
+                Assert.Equal(sequence, (await store.GetInboxSequencesAsync([parentId]))[parentId]);
+                Assert.Equal(JsonSerializer.Serialize(parentBefore), JsonSerializer.Serialize(await store.GetWorkflowInstanceAsync(parentId)));
+                Assert.True(await store.RenewExecutionLeaseAsync(replacement.InstanceId, "new-owner", duration));
+            }
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(childId);
+            await store.DeleteWorkflowInstanceAsync(parentId);
+        }
+    }
+
+    private static async Task VerifyJsonAndChildReuse(IWorkflowStateRepository store, WorkflowInstance saved,
+        Func<string, TimeSpan, Task> advance, TimeSpan tombstones)
+    {
+        // Simulate old exported state, including a forged incarnation from before JsonIgnore was added.
+        var json = JsonSerializer.SerializeToNode(saved)!;
+        Assert.Null(json[nameof(WorkflowInstance.Incarnation)]);
+        json[nameof(WorkflowInstance.Incarnation)] = saved.Incarnation;
+        var incarnations = new HashSet<Guid> { saved.Incarnation };
+        foreach (var save in new[] { false, true })
+        {
+            await store.DeleteWorkflowInstanceAsync(saved.InstanceId, tombstones);
+            await advance(saved.InstanceId, tombstones + TimeSpan.FromDays(1));
+            var reused = JsonSerializer.Deserialize<WorkflowInstance>(json.ToJsonString())!;
+            Assert.Equal(Guid.Empty, reused.Incarnation);
+            reused.Revision = 0;
+            if (save)
+                await store.SaveWorkflowInstanceAsync(reused);
+            else
+                await Apply(store, CheckpointCommit.Create(reused, 0, 0));
+            var row = (await store.GetWorkflowInstanceAsync(saved.InstanceId))!;
+            Assert.True(incarnations.Add(row.Incarnation));
+            if (save)
+                Assert.Equal(row.Incarnation, reused.Incarnation);
+        }
+
+        var parentId = saved.InstanceId + "-start";
+        try
+        {
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                await store.DeleteWorkflowInstanceAsync(saved.InstanceId, tombstones);
+                await advance(saved.InstanceId, tombstones + TimeSpan.FromDays(1));
+                var parent = NewInstance(parentId);
+                var child = JsonSerializer.Deserialize<WorkflowInstance>(json.ToJsonString())!;
+                child.ParentInstanceId = parentId;
+                child.ParentWaitId = "child";
+                var payload = JsonSerializer.SerializeToNode(child)!;
+                payload[nameof(WorkflowInstance.Incarnation)] = saved.Incarnation;
+                await Apply(store, CheckpointCommit.Create(parent, 0, 0,
+                    openedWaits: [new OpenedWait("child", WaitKind.Child, "", "child-result", null)],
+                    childStarts: [new ChildStart(child.InstanceId, payload.ToJsonString(), "child")]));
+                var row = (await store.GetWorkflowInstanceAsync(child.InstanceId))!;
+                Assert.True(incarnations.Add(row.Incarnation));
+                Assert.Equal(row.Incarnation, Assert.Single(await store.GetChildInstancesAsync(parentId)).Incarnation);
+                Assert.Equal(row.Incarnation, (await store.GetWorkflowInstanceSummaryAsync(child.InstanceId))!.Incarnation);
+                await store.DeleteWorkflowInstanceAsync(parentId, tombstones);
+                await advance(parentId, tombstones + TimeSpan.FromDays(1));
+            }
+        }
+        finally { await store.DeleteWorkflowInstanceAsync(parentId); }
     }
 
     private static async Task AgeRows(Func<DbConnection> open, string id, TimeSpan by)

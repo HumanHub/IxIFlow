@@ -805,6 +805,7 @@ public sealed partial class WorkflowHost
             switch (result.Status)
             {
                 case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
+                    instance.Incarnation = result.Incarnation;
                     // A child the commit started, or a parent its completion woke, runs here without waiting
                     // for the poll (D-17).
                     foreach (var runnable in result.MadeRunnable)
@@ -823,7 +824,8 @@ public sealed partial class WorkflowHost
                 case WorkflowCommitStatus.StaleEpoch:
                     return new CheckpointReply(CheckpointReplyKind.Conflict, result.Revision,
                         new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                            $"Workflow instance '{commit.InstanceId}' has a newer owner than execution epoch {commit.Epoch}"));
+                            $"Workflow instance '{commit.InstanceId}' is no longer owned by incarnation {commit.Incarnation} " +
+                            $"at execution epoch {commit.Epoch}"));
                 default:
                     return new CheckpointReply(CheckpointReplyKind.Retry, Error: new WorkflowEngineException(
                         WorkflowErrorKind.Infrastructure,

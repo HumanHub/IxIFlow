@@ -73,9 +73,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     // child's, as a child's terminal commit locks them, so the parent is read before any lock is taken, and read
     // again once the instance is locked; when it changed in between, nothing is done and the delete starts over.
     // Only the locked row is deleted: a later save or child insertion without the identity lock is left whole.
-    internal override DeletePlan Deletion => new("""
+    internal override string DeleteRevalidationSql => """
             SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE
-            """);
+            """;
 
     internal override bool ReleaseReturnsDue => true;
     // In key order, so two commits that start the same children wait for each other rather than deadlock.
@@ -249,17 +249,18 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
+                    (instance_id, incarnation, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
                      parent_instance_id)
-                SELECT child.instance_id, child.workflow_name, child.status, child.correlation_id, @Now,
+                SELECT child.instance_id, child.incarnation, child.workflow_name, child.status, child.correlation_id, @Now,
                     child.state_json, 1, @ParentInstanceId
-                FROM unnest(@Ids::text[], @Names::text[], @Statuses::text[], @CorrelationIds::text[],
-                    @Payloads::text[]) AS child (instance_id, workflow_name, status, correlation_id, state_json)
+                FROM unnest(@Ids::text[], @Incarnations::uuid[], @Names::text[], @Statuses::text[], @CorrelationIds::text[],
+                    @Payloads::text[]) AS child (instance_id, incarnation, workflow_name, status, correlation_id, state_json)
                 """, new
         {
             Now = Timestamp(now),
             ParentInstanceId = parentInstanceId,
             Ids = children.Select(child => child.Instance!.InstanceId).ToArray(),
+            Incarnations = children.Select(_ => Guid.NewGuid()).ToArray(),
             Names = children.Select(child => child.Instance!.WorkflowName).ToArray(),
             Statuses = children.Select(child => child.Instance!.Status.ToString()).ToArray(),
             CorrelationIds = children.Select(child => child.Instance!.CorrelationId).ToArray(),
