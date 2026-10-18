@@ -9,5 +9,10 @@ IXIF0001 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0002 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0003 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0004 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0005 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0006 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0007 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0008 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0009 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0101 | IxIFlow.Purity | Error | PurityAnalyzer
 IXIF0102 | IxIFlow.Purity | Error | PurityAnalyzer

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -10,7 +11,7 @@ namespace IxIFlow.Analyzers;
 
 /// <summary>
 /// The mapping rules of D-26 (spec F-22, F-24) at compile time, as the engine applies them when a fluent workflow is
-/// built. An activity that marks its properties with <c>[WorkflowInput]</c> or <c>[WorkflowOutput]</c> takes inputs
+/// built. An activity that marks its properties with <c>[ActivityInput]</c> or <c>[ActivityOutput]</c> takes inputs
 /// only into its marked inputs and gives outputs only from its marked outputs, and each input it requires is mapped
 /// unless it has a default. An activity without the attributes takes inputs into properties with a public setter and
 /// gives outputs from properties with a public getter. A child workflow's data takes inputs into public settable
@@ -25,7 +26,8 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         Descriptors.NotAnInput, Descriptors.NotAnOutput, Descriptors.RequiredInputNotMapped,
-        Descriptors.NoPublicProperty);
+        Descriptors.NoPublicProperty, Descriptors.InputNeedsSetter, Descriptors.OutputNeedsGetter,
+        Descriptors.RequiredOnOutput, Descriptors.DefaultNeedsSetter, Descriptors.InvalidDefault);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -35,12 +37,14 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         {
             if (EngineSymbols.For(start.Compilation) is not { } engine)
                 return;
+            var checkedActivities = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
             start.RegisterOperationAction(operation =>
             {
                 var invocation = (IInvocationOperation)operation.Operation;
                 if (!engine.IsBuilderMethod(invocation.TargetMethod))
                     return;
                 CheckMapping(operation, engine, invocation);
+                CheckContract(operation, engine, invocation, checkedActivities);
                 CheckRequiredInputs(operation, engine, invocation);
             }, OperationKind.Invocation);
         });
@@ -66,14 +70,14 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
             return;
         }
         var marked = kind == ActivityKind && properties.Values.Any(each =>
-            Attribute(engine.Input, each) != null || Attribute(engine.Output, each) != null);
+            Marked(engine, each));
         var qualified = $"{owner.MetadataName}.{property.Name}";
-        if (input && marked && Attribute(engine.Input, property) == null)
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnInput, location, kind, qualified, "[WorkflowInput]"));
+        if (input && marked && !Input(engine, property, true))
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnInput, location, kind, qualified, "[ActivityInput]"));
         else if (input && !marked && property.SetMethod is not { DeclaredAccessibility: Accessibility.Public })
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnInput, location, kind, qualified, "public setter"));
-        else if (!input && marked && Attribute(engine.Output, property) == null)
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnOutput, location, kind, qualified, "[WorkflowOutput]"));
+        else if (!input && marked && !Output(engine, property, true))
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnOutput, location, kind, qualified, "[ActivityOutput]"));
         else if (!input && !marked && property.GetMethod is not { DeclaredAccessibility: Accessibility.Public })
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnOutput, location, kind, qualified, "public getter"));
     }
@@ -83,8 +87,11 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         if (Declared(engine, invocation) is not ({ } activity, var setup))
             return;
-        var required = PublicProperties(activity).Values
-            .Where(property => Attribute(engine.Input, property) is { } attribute && Required(attribute))
+        var properties = PublicProperties(activity).Values.ToList();
+        var marked = properties.Any(property => Marked(engine, property));
+        var required = properties
+            .Where(property => Input(engine, property, marked) && Attribute(engine.Required, property) != null &&
+                Attribute(engine.DefaultValue, property) == null)
             .ToList();
         if (required.Count == 0)
             return;
@@ -267,12 +274,13 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     }
 
     // Public instance properties by name, the most derived first, as reflection's GetProperty finds them.
-    private static Dictionary<string, IPropertySymbol> PublicProperties(INamedTypeSymbol type)
+    private static Dictionary<string, IPropertySymbol> PublicProperties(INamedTypeSymbol type, bool publicOnly = true)
     {
         var properties = new Dictionary<string, IPropertySymbol>();
         for (var each = type; each != null; each = each.BaseType)
             foreach (var property in each.GetMembers().OfType<IPropertySymbol>())
-                if (property is { IsStatic: false, IsIndexer: false, DeclaredAccessibility: Accessibility.Public } &&
+                if (property is { IsStatic: false, IsIndexer: false } &&
+                    (!publicOnly || property.DeclaredAccessibility == Accessibility.Public) &&
                     !properties.ContainsKey(property.Name))
                     properties.Add(property.Name, property);
         return properties;
@@ -290,16 +298,51 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         return null;
     }
 
-    private static bool Required(AttributeData input)
+    private static bool Marked(EngineSymbols engine, IPropertySymbol property) =>
+        Attribute(engine.Input, property) != null || Attribute(engine.Output, property) != null ||
+        Attribute(engine.InputOutput, property) != null;
+
+    private static bool Input(EngineSymbols engine, IPropertySymbol property, bool marked) => marked
+        ? Attribute(engine.Input, property) != null || Attribute(engine.InputOutput, property) != null
+        : property.SetMethod is { DeclaredAccessibility: Accessibility.Public };
+
+    private static bool Output(EngineSymbols engine, IPropertySymbol property, bool marked) => marked
+        ? Attribute(engine.Output, property) != null || Attribute(engine.InputOutput, property) != null
+        : property.GetMethod is { DeclaredAccessibility: Accessibility.Public };
+
+    // Check the contract when a type is used as an activity, including properties no mapping selects. The same type
+    // may also be child data; that use follows the data rules. Report each activity contract once, at its property declarations.
+    private static void CheckContract(OperationAnalysisContext context, EngineSymbols engine,
+        IInvocationOperation invocation, ConcurrentDictionary<INamedTypeSymbol, byte> checkedActivities)
     {
-        var required = false;
-        string? fallback = null;
-        foreach (var argument in input.NamedArguments)
-            if (argument.Key == "Required" && argument.Value.Value is bool value)
-                required = value;
-            else if (argument.Key == "Default")
-                fallback = argument.Value.Value as string;
-        return required && fallback == null;
+        if (Declared(engine, invocation) is not ({ } activity, _) || !checkedActivities.TryAdd(activity, 0))
+            return;
+        var properties = PublicProperties(activity, publicOnly: false).Values.ToList();
+        var marked = properties.Any(property => Marked(engine, property));
+        foreach (var property in properties)
+        {
+            var location = property.Locations.FirstOrDefault(each => each.IsInSource) ?? NameLocation(invocation);
+            var qualified = $"{activity.MetadataName}.{property.Name}";
+            if (Marked(engine, property))
+            {
+                if (Input(engine, property, true) && property.SetMethod is not { DeclaredAccessibility: Accessibility.Public })
+                    Report(Descriptors.InputNeedsSetter);
+                if (Output(engine, property, true) && property.GetMethod is not { DeclaredAccessibility: Accessibility.Public })
+                    Report(Descriptors.OutputNeedsGetter);
+            }
+            if (Attribute(engine.Required, property) != null && Output(engine, property, marked) &&
+                !Input(engine, property, marked))
+                Report(Descriptors.RequiredOnOutput);
+            if (Attribute(engine.DefaultValue, property) is { } fallback)
+            {
+                if (property.SetMethod is not { DeclaredAccessibility: Accessibility.Public })
+                    Report(Descriptors.DefaultNeedsSetter);
+                if (!ActivityDefaults.CanConvert(engine.Compilation, fallback, property.Type))
+                    context.ReportDiagnostic(Diagnostic.Create(Descriptors.InvalidDefault, location, qualified, property.Type.MetadataName));
+            }
+            void Report(DiagnosticDescriptor descriptor) =>
+                context.ReportDiagnostic(Diagnostic.Create(descriptor, location, qualified));
+        }
     }
 
     private static Location NameLocation(IInvocationOperation invocation) =>

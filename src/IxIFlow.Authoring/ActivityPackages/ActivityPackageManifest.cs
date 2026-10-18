@@ -68,6 +68,12 @@ public sealed class ActivityPackageManifest
                 }
             }
 
+            foreach (var (key, output) in activity.Outputs)
+            {
+                if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(output.Label))
+                    throw new InvalidOperationException($"Activity {activity.Key} has an invalid output");
+            }
+
             foreach (var key in activity.Defaults.Keys)
             {
                 if (!fieldKeys.Contains(key))
@@ -98,8 +104,8 @@ public sealed class ActivityManifestEntry
     public string? Icon { get; set; }
     public string? Designer { get; set; }
     public List<ActivityManifestField> Fields { get; set; } = [];
-    public List<string> Outputs { get; set; } = [];
-    public Dictionary<string, string> Defaults { get; set; } = new();
+    public Dictionary<string, ActivityManifestOutput> Outputs { get; set; } = new();
+    public Dictionary<string, object?> Defaults { get; set; } = new();
 }
 
 public sealed class ActivityManifestField
@@ -108,5 +114,11 @@ public sealed class ActivityManifestField
     public string Label { get; set; } = string.Empty;
     public string Control { get; set; } = "text";
     public bool Required { get; set; }
+    public string? Help { get; set; }
+}
+
+public sealed class ActivityManifestOutput
+{
+    public string Label { get; set; } = string.Empty;
     public string? Help { get; set; }
 }

@@ -43,16 +43,16 @@ public sealed class MappingAnalyzerTests
 
         public class Marked : IAsyncActivity
         {
-            [WorkflowInput(Required = true)]
+            [ActivityInput, System.ComponentModel.DataAnnotations.Required]
             public virtual int Amount { get; set; }
 
-            [WorkflowInput(Required = true, Default = "1")]
+            [ActivityInput, System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DefaultValue(1)]
             public int Factor { get; set; } = 1;
 
-            [WorkflowInput]
+            [ActivityInput]
             public int Optional { get; set; }
 
-            [WorkflowOutput]
+            [ActivityOutput]
             public int Result { get; set; }
 
             public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
@@ -76,12 +76,12 @@ public sealed class MappingAnalyzerTests
         // Child data that happens to be an activity too: as a child's data it follows the data rules.
         public sealed class HybridData : IAsyncActivity
         {
-            [WorkflowInput(Required = true)]
+            [ActivityInput, System.ComponentModel.DataAnnotations.Required]
             public int Needed { get; set; }
 
             public int Open { get; set; }
 
-            [WorkflowInput]
+            [ActivityInput]
             public int Fixed { get; private set; }
 
             public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
@@ -131,8 +131,8 @@ public sealed class MappingAnalyzerTests
                     .Build();
             }
             """ + Types,
-            Diagnostic(Descriptors.NotAnInput, 0, "Activity", "Marked.Result", "[WorkflowInput]"),
-            Diagnostic(Descriptors.NotAnOutput, 1, "Activity", "Marked.Amount", "[WorkflowOutput]"));
+            Diagnostic(Descriptors.NotAnInput, 0, "Activity", "Marked.Result", "[ActivityInput]"),
+            Diagnostic(Descriptors.NotAnOutput, 1, "Activity", "Marked.Amount", "[ActivityOutput]"));
     }
 
     // Without a setup, with a null one, or with one that maps something else, the required input is missing; the
