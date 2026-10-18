@@ -13,7 +13,7 @@ namespace IxIFlow.Core;
 /// Construction takes exclusive file ownership; dispose the repository to clear its pool and release it.
 /// Unix requires working flock support and enabled .NET file locking. Network paths are unsupported.
 /// </summary>
-public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepository, IAsyncDisposable
+public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowStateRepository, IAsyncDisposable
 {
     private readonly string _connectionString;
     private readonly TimeProvider _time;
@@ -235,40 +235,126 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
 
     internal override string? Sql(Statement statement) => statement switch
     {
-        Statement.Unpublished => $"""
-            SELECT {RowColumns} FROM ixiflow_workflow_instances
-            WHERE instance_id = @InstanceId {UnpublishedCompletion}
+        Statement.PublisherUpsert => """
+            INSERT INTO ixiflow_outbox_publishers (name, types_json)
+            VALUES (@Name, @TypesJson)
+            ON CONFLICT (name) DO UPDATE
+            SET types_json=excluded.types_json
             """,
-        Statement.UnpublishedBatch => $"""
-            SELECT {RowColumns} FROM ixiflow_workflow_instances
-            WHERE true {UnpublishedCompletion}
-            ORDER BY instance_id
-            LIMIT 100
+        Statement.Publishers => """
+            SELECT name AS Name, types_json AS TypesJson, disabled_at_utc AS DisabledAtUtc, last_error AS LastError
+            FROM ixiflow_outbox_publishers
             """,
-        Statement.ClaimCompletions => $"""
-                UPDATE ixiflow_workflow_instances
-                SET completion_claim_token = @Token, completion_claim_until = @Until
-                WHERE instance_id IN (
-                    SELECT instance_id FROM ixiflow_workflow_instances
-                    WHERE (@InstanceId IS NULL OR instance_id = @InstanceId) {UnpublishedCompletion}
-                      AND (completion_claim_until IS NULL OR completion_claim_until <= @Now)
-                    ORDER BY instance_id LIMIT 100)
-                RETURNING {RowColumns}
-                """,
-        Statement.MarkCompletion => $"""
-                UPDATE ixiflow_workflow_instances
-                SET completion_published = true,
-                    completion_claim_token = NULL, completion_claim_until = NULL
-                WHERE instance_id = @InstanceId AND revision = @Revision
-                  {UnpublishedCompletion}
-                  AND completion_claim_token = @Token
-                  AND completion_claim_until > @Now
-                """,
-        Statement.ReleaseCompletion => """
-                UPDATE ixiflow_workflow_instances
-                SET completion_claim_token = NULL, completion_claim_until = NULL
-                WHERE instance_id = @InstanceId AND completion_claim_token = @Token
-                """,
+        Statement.PublisherRead => """
+            SELECT name AS Name, types_json AS TypesJson, disabled_at_utc AS DisabledAtUtc, last_error AS LastError
+            FROM ixiflow_outbox_publishers
+            WHERE name=@Name
+            """,
+        Statement.BackfillDeliveries => """
+            INSERT INTO ixiflow_outbox_deliveries (event_id, publisher_name, attempts, next_attempt_at_utc, status, last_error)
+            SELECT e.event_id, @Name, 0, @Now, CASE WHEN p.disabled_at_utc IS NULL THEN 0 ELSE 2 END,
+                p.last_error
+            FROM ixiflow_outbox_events e
+            CROSS JOIN ixiflow_outbox_publishers p
+            WHERE p.name=@Name
+              AND e.event_type=@EventType
+              AND NOT EXISTS (SELECT 1
+            FROM ixiflow_outbox_deliveries d
+            WHERE d.event_id=e.event_id
+              AND d.publisher_name=@Name)
+            """,
+        Statement.InsertOutboxEvent => """
+            INSERT INTO ixiflow_outbox_events (event_id, instance_id, incarnation, event_type, event_json, occurred_at_utc)
+            SELECT @EventId, @InstanceId,
+                instance.incarnation, @EventType, @EventJson, @Now
+            FROM ixiflow_workflow_instances instance
+            WHERE instance.instance_id=@InstanceId
+              AND NOT EXISTS (SELECT 1
+            FROM ixiflow_outbox_events event
+            WHERE event.instance_id=@InstanceId
+              AND event.incarnation=instance.incarnation
+              AND event.event_type=@EventType)
+            """,
+        Statement.InsertDelivery => """
+            INSERT INTO ixiflow_outbox_deliveries (event_id, publisher_name, attempts, next_attempt_at_utc, status, last_error)
+            VALUES (@EventId, @Name, 0, @Now, @Status, @LastError)
+            """,
+        Statement.ClaimDeliveries => """
+            SELECT d.event_id AS EventId,
+                d.publisher_name AS PublisherName,
+                d.attempts AS Attempts,
+                d.first_attempt_at_utc AS FirstAttemptAtUtc,
+                d.next_attempt_at_utc AS NextAttemptAtUtc,
+                d.status AS Status,
+                d.last_error AS LastError,
+                d.lease_token AS LeaseToken,
+                d.lease_until_utc AS LeaseUntilUtc,
+                e.event_json AS EventJson
+            FROM ixiflow_outbox_deliveries d
+            JOIN ixiflow_outbox_events e ON e.event_id=d.event_id
+            JOIN ixiflow_outbox_publishers p ON p.name=d.publisher_name
+            WHERE d.publisher_name=@Name
+              AND p.disabled_at_utc IS NULL
+              AND d.status=0
+              AND d.next_attempt_at_utc<=@Now
+              AND (d.lease_until_utc IS NULL OR d.lease_until_utc<=@Now)
+            ORDER BY d.next_attempt_at_utc,
+                d.event_id
+            LIMIT @Limit
+            """,
+        Statement.DeliveryLock => """
+            SELECT d.event_id AS EventId,
+                d.publisher_name AS PublisherName,
+                d.attempts AS Attempts,
+                d.first_attempt_at_utc AS FirstAttemptAtUtc,
+                d.next_attempt_at_utc AS NextAttemptAtUtc,
+                d.status AS Status,
+                d.last_error AS LastError,
+                d.lease_token AS LeaseToken,
+                d.lease_until_utc AS LeaseUntilUtc,
+                e.event_json AS EventJson
+            FROM ixiflow_outbox_deliveries d
+            JOIN ixiflow_outbox_events e ON e.event_id=d.event_id
+            WHERE d.event_id=@EventId
+              AND d.publisher_name=@Name
+            """,
+        Statement.DeliveryRead => """
+            SELECT d.event_id AS EventId,
+                d.publisher_name AS PublisherName,
+                d.attempts AS Attempts,
+                d.first_attempt_at_utc AS FirstAttemptAtUtc,
+                d.next_attempt_at_utc AS NextAttemptAtUtc,
+                d.status AS Status,
+                d.last_error AS LastError,
+                d.lease_token AS LeaseToken,
+                d.lease_until_utc AS LeaseUntilUtc,
+                e.event_json AS EventJson
+            FROM ixiflow_outbox_deliveries d
+            JOIN ixiflow_outbox_events e ON e.event_id=d.event_id
+            WHERE d.event_id=@EventId
+              AND d.publisher_name=@Name
+            """,
+        Statement.DeliveryUpdate => """
+            UPDATE ixiflow_outbox_deliveries
+            SET first_attempt_at_utc=@FirstAttemptAtUtc, attempts=@Attempts, next_attempt_at_utc=@NextAttemptAtUtc, status=@Status, last_error=@LastError, lease_token=@LeaseToken, lease_until_utc=@LeaseUntilUtc
+            WHERE event_id=@EventId
+              AND publisher_name=@Name
+            """,
+        Statement.UnregisterPublisher => """
+            UPDATE ixiflow_outbox_deliveries
+            SET status=2, lease_token=NULL, lease_until_utc=NULL
+            WHERE publisher_name=@Name AND status=0;
+            DELETE FROM ixiflow_outbox_publishers WHERE name=@Name;
+            """,
+        Statement.DisablePublisher => """
+            UPDATE ixiflow_outbox_publishers
+            SET disabled_at_utc=COALESCE(disabled_at_utc, @Now), last_error=@Error
+            WHERE name=@Name;
+            UPDATE ixiflow_outbox_deliveries
+            SET status=2, last_error=@Error, lease_token=NULL, lease_until_utc=NULL
+            WHERE publisher_name=@Name
+              AND status=0;
+            """,
         Statement.Cancellation => """
             SELECT cancellation_json FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
@@ -458,6 +544,8 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
                 WHERE instance_id = @InstanceId
                 """,
         Statement.DeleteRows => """
+                DELETE FROM ixiflow_outbox_deliveries WHERE event_id IN (SELECT e.event_id FROM ixiflow_outbox_events e WHERE e.instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=e.event_id AND pending.status=0));
+                DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId;
@@ -475,8 +563,6 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
         Statement.ByStatus => "status = @Value",
         Statement.ByCorrelation => "correlation_id = @Value",
         Statement.ByParent => "parent_instance_id = @Value",
-        Statement.UnpublishedFilter => UnpublishedCompletion,
-        Statement.ClaimedFilter => UnpublishedCompletion + " AND completion_claim_token = @Token",
         Statement.DeleteAllParts => "DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId",
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key IN @Keys
@@ -492,6 +578,7 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
     await connection.ExecuteAsync("""
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
+            incarnation TEXT NOT NULL DEFAULT (lower(hex(randomblob(16)))),
             workflow_name TEXT COLLATE BINARY NOT NULL,
             status TEXT COLLATE BINARY NOT NULL,
             correlation_id TEXT COLLATE BINARY NULL,
@@ -499,9 +586,6 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
             state_json TEXT NOT NULL,
             cancellation_json TEXT NULL,
             cancellation_acknowledged INTEGER NOT NULL DEFAULT false,
-            completion_published INTEGER NOT NULL DEFAULT false,
-            completion_claim_token TEXT COLLATE BINARY NULL,
-            completion_claim_until TEXT NULL,
             revision INTEGER NOT NULL DEFAULT 0,
             inbox_sequence INTEGER NOT NULL DEFAULT 0,
             inbox_read_through INTEGER NOT NULL DEFAULT 0,
@@ -517,9 +601,6 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
             ON ixiflow_workflow_instances (parent_instance_id) WHERE parent_instance_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_runnable
             ON ixiflow_workflow_instances (runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_pending_completion
-            ON ixiflow_workflow_instances (instance_id)
-            WHERE NOT completion_published;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_events (
             instance_id TEXT COLLATE BINARY NOT NULL,
             event_id TEXT COLLATE BINARY NOT NULL,
@@ -584,6 +665,7 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_leases_expires_at
             ON ixiflow_workflow_leases (expires_at_utc);
         """, transaction: transaction);
+    await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 

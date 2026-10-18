@@ -21,6 +21,7 @@ internal static class Telemetry
     public const string AttemptId = "ixiflow.attempt.id";
     public const string AttemptNumber = "ixiflow.attempt.number";
     public const string ActivityType = "ixiflow.activity.type";
+    public const string PublisherName = "ixiflow.publisher.name";
     public const string Outcome = "ixiflow.outcome";
 
     public static readonly ActivitySource Source = new(Name);
@@ -43,6 +44,15 @@ internal static class Telemetry
 
     public static readonly Histogram<double> BacklogAge = Meter.CreateHistogram<double>(
         "ixiflow.backlog.age", "s", "How long an instance was runnable before a host claimed it");
+
+    public static readonly Counter<long> OutboxDeliveries = Meter.CreateCounter<long>(
+        "ixiflow.outbox.delivery", "{delivery}", "Outbox attempts settled, by publisher and outcome");
+
+    public static readonly Counter<long> OutboxSettleFailures = Meter.CreateCounter<long>(
+        "ixiflow.outbox.settle_failure", "{delivery}", "Successful publishes whose settlement failed or was rejected");
+
+    public static readonly Histogram<double> OutboxAge = Meter.CreateHistogram<double>(
+        "ixiflow.outbox.age", "s", "Age of an outbox event when delivery is attempted");
 
     public static TagList Workflow(WorkflowInstance instance) => new()
     {
