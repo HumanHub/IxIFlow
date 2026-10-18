@@ -19,7 +19,6 @@ activities:
         from: {kind: path, path: workflow.Total}
     output:
       - source: Receipt
-        sourceContext: activity
         to: {path: workflow.Receipt}
 steps:
   notify:
@@ -40,9 +39,13 @@ steps:
 code:
   isLarge:
     language: csharp-expression
-    returns: bool
-    entryPoint: Evaluate
     source: workflow.Total > 1000
+  roundedTotal:
+    language: csharp-expression
+    source: System.Math.Round(workflow.Total)
+  resultCount:
+    language: csharp-expression
+    source: System.Linq.Enumerable.Count(results)
 definitions:
   - kind: activityRef
     id: charge
@@ -67,7 +70,7 @@ definitions:
             activityVersion: "2.0"
             input:
               - target: Rounded
-                from: {kind: function, function: System.Math.Round, arguments: [{path: workflow.Total}]}
+                from: {kind: function, function: roundedTotal}
     else: []
   - kind: forEach
     id: lines
@@ -90,7 +93,7 @@ definitions:
       condition:
         kind: binary
         operator: ge
-        left: {kind: function, function: System.Linq.Enumerable.Count, arguments: [{path: results}]}
+        left: {kind: function, function: resultCount}
         right: {kind: constant, value: 2}
     steps:
       - kind: activity
@@ -114,7 +117,6 @@ definitions:
         from: {path: workflow.Id}
     output:
       - source: Approved
-        sourceContext: event
         to: {path: workflow.Approved}
   - kind: invokeWorkflow
     id: ship
@@ -124,5 +126,4 @@ definitions:
         from: {path: workflow.Id}
     output:
       - source: TrackingNumber
-        sourceContext: workflow
         to: {path: workflow.Tracking}

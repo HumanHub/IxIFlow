@@ -79,7 +79,9 @@ All steps accept `id` and `description`; `name` is accepted only in workflow-sco
 
 The schema describes possible nodes; shared builder rules also enforce where constructs are legal. Saga bodies accept activities/references, requests, waits and outcomes. Saga handlers accept ordinary activities/references and `waitFor`; catch bodies exclude requests, delays, results and outcomes. Timeout paths and result-producing lists retain the fluent API's scope restrictions. Step `description` is retained in the document, not emitted as runtime step metadata.
 
-Plain and request waits accept `resumeCondition`, `input`, `output`, `defaultPayload`, positive `timeout` and `onTimeout` steps. A default payload is suggested discovery data, not an automatic reply. `timeout` and a nonempty `onTimeout` must be supplied together; the timeout path exits the containing body. `defaultPayload` accepts scalar, list or object literals shaped for the event type. Wait `input` mappings are retained by the builder but are not applied to accepted events or used to construct default payloads; use `defaultPayload` and `output` for those purposes. Pair requests and reply waits by key in the same body; a plain `suspend` is not a request pairing.
+Plain and request waits accept `resumeCondition`, `input`, `output`, `defaultPayload`, positive `timeout` and `onTimeout` steps. A default payload is suggested discovery data, not an automatic reply. `timeout` and a nonempty `onTimeout` must be supplied together; the timeout path exits the containing body. `defaultPayload` accepts scalar, list or object literals shaped for the event type. When a wait opens, its pure `input` mappings read the workflow data and previous step, overlay `defaultPayload` (or a new event instance), and save the result as the suggested payload. Recovery and replay use the saved suggestion. Only the submitted event supplies the answer; suggestions never fill in an answer. For request replies, the token is reserved before the request runs; the suggestion is computed when execution reaches `waitFor`, using the completed previous step. Pair requests and reply waits by key in the same body; a plain `suspend` is not a request pairing.
+
+Wait inputs require public setters and compatible property types. When constructing a suggestion, `[Required]` event members must be mapped or supplied by the default payload, and cannot be null or empty at runtime. Without a default payload, the event type needs a public parameterless constructor. A failed mapping fails the wait step.
 
 General parallel joins use provisional merged workflow data for `condition`. A `combine` entry declares `property: { path: workflow.Member }`, `propertyType` and `combiner`. The [parallel twins](../samples/IxIFlow.Samples/Definitions/parallel-quotes.workflow.yaml) show isolated data and sum merging.
 
@@ -95,14 +97,14 @@ Retry objects mirror `RetryPolicy`: `maximumAttempts`, `initialInterval`, `maxim
 
 ## Mappings and expressions
 
-An input has `target` and `from`. An output has `source`, optional `sourceContext: activity|event|workflow`, and `to: { path: workflow.Member }`. Explicit input mappings override YAML defaults and attribute defaults. `sourceContext` is accepted metadata; the step kind determines the object read (activity, event or child workflow data), and the translator does not switch that object based on `sourceContext`.
+An input has `target` and `from`. An output has `source` and `to: { path: workflow.Member }`. The step kind determines the source: activity outputs, the event on a wait, or the child workflow data on an invoke. Explicit activity input mappings override YAML defaults and attribute defaults. Wait input mappings override the initial suggested payload.
 
 | Expression `kind` | Shape |
 | --- | --- |
 | `constant` | `value`: locally translated literals are scalar |
 | `path` | `path`: a C# expression rewritten against the current context; `kind` may be omitted when `path` is present |
 | `binary` | `operator`, `left`, `right`; operators are `eq`, `ne`, `and`, `or`, `gt`, `ge`, `lt`, `le`, `add`, `subtract`, `multiply`, `divide` |
-| `function` | `function` names a local `csharp-expression` code asset; `arguments` must be empty. Put a pure C# method call inside the asset source |
+| `function` | `function` names a `code` asset with language `csharp-expression`, taking no arguments. Put a pure C# method call inside the asset source |
 
 Use CLR member names such as `workflow.Amount`, `previousStep.Receipt`, `event.Approved` and handler `fault.Message`. The generator also resolves camel-case workflow aliases. Expression assets may use `ctx.UtcNow`; other context names depend on scope. These are trusted C# expressions and must obey [purity rules](execution-model.md#checkpoints-and-commits).
 
