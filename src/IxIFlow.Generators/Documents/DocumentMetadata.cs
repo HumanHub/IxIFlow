@@ -20,6 +20,7 @@ public sealed class DocumentRequiredAttribute : Attribute;
 public sealed class DocumentValuesAttribute(params string[] values) : Attribute
 {
     public IReadOnlyList<string> Values { get; } = values;
+    public string DiagnosticCode { get; set; } = "CHOICE001";
 }
 
 /// <summary>A key a document node accepts, with the member it reads into when there is one.</summary>
@@ -77,4 +78,27 @@ public static class DocumentModel
             var contract = GetKind(candidate)!;
             return hasMember("kind") ? contract.Kind == kind : contract.ImpliedBy is { } member && hasMember(member);
         });
+    public static DocumentLocation GetLocation(WorkflowDocument document, string? path)
+    {
+        object? current = document;
+        var location = document.Location;
+        foreach (System.Text.RegularExpressions.Match segment in System.Text.RegularExpressions.Regex.Matches(path ?? "", @"([^\.\[\]]+)|\[(\d+)\]"))
+        {
+            if (current is DocumentNode node)
+            {
+                var member = segment.Value;
+                if (document.Members.Count > 0 && !node.Members.ContainsKey(member)) return node.Location;
+                location = node.Members.TryGetValue(member, out var found) ? found : node.Location;
+                current = node.GetType().GetProperties().FirstOrDefault(property =>
+                    string.Equals(property.Name, member, StringComparison.OrdinalIgnoreCase))?.GetValue(node);
+            }
+            else if (current is System.Collections.IDictionary dictionary) current = dictionary[segment.Value];
+            else if (current is System.Collections.IList list && int.TryParse(segment.Groups[2].Value, out var index) && index < list.Count)
+                current = list[index];
+            else break;
+            if (current is DocumentNode child) location = child.Location;
+        }
+        return location;
+    }
+
 }

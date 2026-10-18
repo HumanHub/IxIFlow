@@ -1,3 +1,5 @@
+using IxIFlow.Core.Runtime;
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
@@ -80,6 +82,20 @@ public sealed class SagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>(
         return new SagaErrorBuilder<TWorkflowData, TFault, TActivity>(steps, sagaSteps, errorHandlers);
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public ISagaErrorBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
+        string key,
+        Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class
+    {
+        var expression = matchesExpression == null ? null : WorkflowExpressionSignature.Checked(matchesExpression);
+        var result = WaitFor<TEvent>(key, matchesExpression?.Compile(), configure);
+        steps[^1].ConditionExpression = expression;
+        return result;
+    }
+
     public ISagaErrorBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
         string key,
         Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
@@ -90,4 +106,5 @@ public sealed class SagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>(
         steps[^1].Runtime = steps[^1].Runtime.ForFault<TFault>();
         return new SagaErrorBuilder<TWorkflowData, TFault, TEvent>(steps, sagaSteps, errorHandlers);
     }
+
 }

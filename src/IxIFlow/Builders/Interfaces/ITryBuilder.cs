@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using IxIFlow.Core;
 
 namespace IxIFlow.Builders.Interfaces;
@@ -14,11 +15,13 @@ public interface ITryBuilder<TWorkflowData, TPreviousStepData>
     /// <typeparam name="TException">Type of exception to catch</typeparam>
     /// <param name="configure">Configuration for the catch block</param>
     ICatchBuilder<TWorkflowData, TPreviousStepData> Catch<TException>(
-        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
+        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TException : Exception;
 
     ICatchBuilder<TWorkflowData, TPreviousStepData> Catch<TException, TFault>(
-        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure)
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TException : Exception;
 
     /// <summary>
@@ -26,7 +29,8 @@ public interface ITryBuilder<TWorkflowData, TPreviousStepData>
     /// </summary>
     /// <param name="configure">Configuration for the catch block</param>
     ICatchBuilder<TWorkflowData, TPreviousStepData> Catch(
-        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure); // Catch-all
+        Action<ICatchWorkflowBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0); // Catch-all
 
     /// <summary>
     /// Defines a finally block that executes regardless of whether an exception occurred
