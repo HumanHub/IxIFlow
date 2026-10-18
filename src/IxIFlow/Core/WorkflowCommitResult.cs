@@ -41,9 +41,6 @@ public sealed record WorkflowCommitResult(
     bool UnreadEvents = false,
     IReadOnlyList<string>? MadeRunnable = null)
 {
-    /// <summary>The store-allocated incarnation of the written or current row; empty when no row was read.</summary>
-    public Guid Incarnation { get; init; }
-
     /// <summary>
     /// Other instances the commit made runnable: the children it started, and a parent whose inbox took
     /// the child's completion. A host may run them at once; the poll finds them otherwise.
@@ -52,12 +49,12 @@ public sealed record WorkflowCommitResult(
 
     /// <summary>Receipts are equal when every field is, the instances made runnable compared in order.</summary>
     public bool Equals(WorkflowCommitResult? other) =>
-        other is not null && Status == other.Status && Revision == other.Revision && Incarnation == other.Incarnation &&
+        other is not null && Status == other.Status && Revision == other.Revision &&
         Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
         UnreadEvents == other.UnreadEvents && MadeRunnable.SequenceEqual(other.MadeRunnable, StringComparer.Ordinal);
 
     public override int GetHashCode() =>
-        HashCode.Combine(Status, Revision, Incarnation, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count);
+        HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count);
 }
 
 /// <summary>
@@ -167,7 +164,7 @@ public sealed class CheckpointCommit
     /// <summary>The execution epoch granted with the owner's lease; zero when the instance was never leased.</summary>
     public long Epoch { get; }
 
-    /// <summary>The incarnation read by the executor; a leased commit must still name the current instance.</summary>
+    /// <summary>The incarnation chosen for a first insert, or read by the executor for a later commit.</summary>
     public Guid Incarnation { get; }
 
     public string CommitId { get; }
@@ -361,6 +358,9 @@ public sealed class CheckpointCommit
             .Select(part => new CheckpointPart(part.Key, part.Value)).ToArray();
         var deleted = saved == null ? [] : saved.Keys.Where(key => !stored.Parts.ContainsKey(key))
             .Order(StringComparer.Ordinal).ToArray();
+        // Stamp the caller too, so later checkpoints use the same incarnation as this immutable first commit.
+        if (expectedRevision == 0)
+            instance.Incarnation = Guid.NewGuid();
         return new CheckpointCommit(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(stored.Trunk)),
             Array.AsReadOnly(written), Array.AsReadOnly(deleted), saved == null, stored.Parts.AsReadOnly(), instance.Incarnation, epoch, commitId,
             expectedRevision, clearsCrashCount, parks, Array.AsReadOnly(settled), inboxReadThrough,

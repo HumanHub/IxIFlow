@@ -161,8 +161,8 @@ public static class WorkflowStoreRules
 }
 
 /// <summary>
-/// Stores workflow instances. Every insert allocates a fresh incarnation in the store, and every
-/// instance read round-trips that incarnation separately from serialized state.
+/// Stores workflow instances. First commits carry a fresh incarnation; saves and child starts allocate
+/// one in the store on insertion. Every instance read round-trips it separately from serialized state.
 /// </summary>
 public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 {
@@ -224,8 +224,8 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 
     /// <summary>
     /// Atomically saves the commit's payload at its expected revision + 1. Revision zero also
-    /// represents an absent instance. Every insert, including a child start, allocates a fresh
-    /// incarnation in the store, ignoring caller values. The result returns the written row's incarnation.
+    /// represents an absent instance. An insert adopts the commit's incarnation; an update preserves
+    /// the row's existing incarnation. Child starts allocate fresh incarnations in the store.
     /// Repeating a commit ID with the same payload returns its original receipt, even after subsequent
     /// commits. A leased commit from another incarnation, from an epoch older than the
     /// instance's latest lease, or from a lease that is no longer active while the instance runs,
@@ -262,7 +262,7 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     /// <summary>
     /// The whole instance: its trunk and every part of its state, read at one revision (A-08).
     /// Every instance read, including summaries, queries and child lists, must round-trip the row's
-    /// store-allocated Incarnation separately from serialized state.
+    /// Incarnation separately from serialized state.
     /// </summary>
     Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId);
 
@@ -485,10 +485,6 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             RefuseRemoved(commit.InstanceId, Now);
             var key = (commit.InstanceId, commit.CommitId);
             var revision = _instances.TryGetValue(commit.InstanceId, out var stored) ? stored.Revision : 0;
-            var incarnation = stored?.Incarnation ?? Guid.Empty;
-            // Check before receipts too: an old terminal or parking replay cannot borrow a new receipt.
-            if (commit.Epoch != 0 && stored != null && stored.Incarnation != commit.Incarnation)
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision) { Incarnation = incarnation });
             var owns = OwnsInstance(commit);
             if (_commits.TryGetValue(key, out var receipt))
             {
@@ -497,25 +493,28 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
                 // A terminal or parking commit released the lease; only a running owner must still hold it.
                 if (snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks)
-                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision) { Incarnation = incarnation });
+                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
                 // The same commit gets the same answer, including arrivals it has not read.
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
-                    PendingCancellation(commit.InstanceId), commit.Parks && !owns, Unread(commit)) { Incarnation = incarnation });
+                    PendingCancellation(commit.InstanceId), commit.Parks && !owns, Unread(commit)));
             }
 
+            // Receipts are deleted with the instance, so any replay above belongs to its current creation.
+            if (commit.Epoch != 0 && stored != null && stored.Incarnation != commit.Incarnation)
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
             if (!owns)
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision) { Incarnation = incarnation });
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
             // An event this commit settles must still be pending.
             if (commit.Settlements.Any(settlement =>
                     !_events.TryGetValue((commit.InstanceId, settlement.EventId), out var pending) ||
                     pending.Event.Outcome != EventOutcome.Pending))
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, revision) { Incarnation = incarnation });
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, revision));
             if (revision != commit.ExpectedRevision ||
                 ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or
                     WorkflowStatus.TimedOut) &&
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision) { Incarnation = incarnation });
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
             foreach (var child in commit.ChildStarts)
                 RefuseRemoved(child.ChildInstanceId, Now);
             // A child's ID is new; a commit that names an existing instance changes nothing.
@@ -576,7 +575,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 parts.Remove(deleted);
             foreach (var part in commit.Parts)
                 parts[part.Key] = part.Json;
-            snapshot.Incarnation = stored?.Incarnation ?? Guid.NewGuid();
+            snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
             _instances[commit.InstanceId] = snapshot;
             RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
@@ -623,7 +622,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 Append(ToEvent(notice), now) is { Status: EventAppendStatus.Stored, MadeRunnable: true })
                 madeRunnable.Add(notice.ParentInstanceId);
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
-                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable) { Incarnation = snapshot.Incarnation });
+                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable));
         }
     }
 

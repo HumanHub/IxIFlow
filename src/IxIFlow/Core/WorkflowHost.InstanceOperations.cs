@@ -805,7 +805,6 @@ public sealed partial class WorkflowHost
             switch (result.Status)
             {
                 case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
-                    instance.Incarnation = result.Incarnation;
                     // A child the commit started, or a parent its completion woke, runs here without waiting
                     // for the poll (D-17).
                     foreach (var runnable in result.MadeRunnable)

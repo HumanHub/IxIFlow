@@ -623,14 +623,13 @@ public abstract partial class RelationalWorkflowStateRepository :
             (current, now) = await LockAsync<CommitState>(connection, transaction, Statement.CommitState, commit.InstanceId);
         await RefuseRemovedAsync(connection, transaction, commit.InstanceId, now);
         var currentRevision = current?.Revision ?? 0;
-        var currentIncarnation = current?.Incarnation ?? Guid.Empty;
-        // Incarnation fences every leased path, including terminal and parking receipt replays.
-        if (commit.Epoch != 0 && current != null && current.Incarnation != commit.Incarnation)
+        var receipt = await connection.QuerySingleOrDefaultAsync<CommitReceipt>(RequiredSql(Statement.Receipt), new { commit.InstanceId, commit.CommitId }, transaction);
+        // Receipts are deleted with the instance, so a present receipt belongs to its current creation.
+        if (receipt == null && commit.Epoch != 0 && current != null && current.Incarnation != commit.Incarnation)
         {
             await transaction.CommitAsync();
-            return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision) { Incarnation = currentIncarnation };
+            return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision);
         }
-        var receipt = await connection.QuerySingleOrDefaultAsync<CommitReceipt>(RequiredSql(Statement.Receipt), new { commit.InstanceId, commit.CommitId }, transaction);
         // Replays answer their receipt without re-admitting children that may already be removed.
         if (receipt == null && commit.ChildStarts.Count > 0)
         {
@@ -661,22 +660,22 @@ public abstract partial class RelationalWorkflowStateRepository :
             // A terminal or parking commit released the lease; only a running owner must still hold it.
             // The same commit gets the same answer, including arrivals it has not read.
             return snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks
-                ? new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision) { Incarnation = currentIncarnation }
+                ? new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision)
                 : new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
                     ReadReason(current?.CancellationJson), commit.Parks && !owns,
-                    commit.InboxReadThrough is { } replayRead && current?.InboxSequence > replayRead) { Incarnation = currentIncarnation };
+                    commit.InboxReadThrough is { } replayRead && current?.InboxSequence > replayRead);
         }
         if (!owns)
         {
             await transaction.CommitAsync();
-            return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision) { Incarnation = currentIncarnation };
+            return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision);
         }
         if (currentRevision != commit.ExpectedRevision ||
             (current?.CancellationJson != null && !snapshot.AcknowledgesCancellation &&
              snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut))
         {
             await transaction.CommitAsync();
-            return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision) { Incarnation = currentIncarnation };
+            return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
         }
         // A child's ID is new; a commit that names an existing instance changes nothing.
         if (commit.ChildStarts.Count > 0 && await connection.ExecuteScalarAsync<string?>(RequiredSql(Statement.TakenChild), new { Ids = commit.ChildStarts.Select(child => child.ChildInstanceId).ToArray() }, transaction)
@@ -691,7 +690,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         if (settled != commit.Settlements.Count)
         {
             await transaction.RollbackAsync();
-            return new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, currentRevision) { Incarnation = currentIncarnation };
+            return new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, currentRevision);
         }
         var unacknowledged = current is { CancellationJson: not null, CancellationAcknowledged: false };
         // A run that has not read every arrival neither parks nor goes idle out of reach.
@@ -712,14 +711,13 @@ public abstract partial class RelationalWorkflowStateRepository :
             : null;
         var runnableAt = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit, runnableNow, now,
             earliestDeadline is { } deadline && NormalizeRunnableTime ? Utc(deadline) : earliestDeadline);
-        var incarnation = current?.Incarnation ?? Guid.NewGuid();
         var values = WithTimes(new
         {
             snapshot.InstanceId,
             snapshot.WorkflowName,
             snapshot.CorrelationId,
             snapshot.ParentInstanceId,
-            Incarnation = incarnation,
+            commit.Incarnation,
             Status = snapshot.Status.ToString(),
             commit.InboxReadThrough,
             StateJson = commit.Payload,
@@ -797,7 +795,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             await NotifyRunnableAsync(connection, transaction);
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,
-            ReadReason(current?.CancellationJson), parked, unread, madeRunnable) { Incarnation = incarnation };
+            ReadReason(current?.CancellationJson), parked, unread, madeRunnable);
     }
 
     // Replaced and removed parts go before inserts, in the same transaction as the trunk.
