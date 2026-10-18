@@ -134,6 +134,8 @@ Choose one store through the builder returned by `AddIxIFlow()`. All provider ex
 
 [Hosting.cs](samples/IxIFlow.Samples/Hosting.cs) compiles all four registrations. Provider schemas are created on first use. SQLite requires a file connection string and exclusive ownership; asynchronously dispose its service provider before reopening the file. SQL Server and PostgreSQL use database time for deadlines; memory and SQLite use the registered `TimeProvider`.
 
+Before 1.0, any store schema change requires a fresh database. Recreate existing databases when the schema changes; the stores do not upgrade existing tables or add missing columns or indexes.
+
 Definition and version registries are currently in memory. Every host that may resume an instance must load the matching definitions and activity code. Runtime fingerprints verify definition compatibility, resolving IL member tokens rather than relying on token numbers; they are not yet the planned published artifact identity.
 
 ## Hosting
