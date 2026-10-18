@@ -66,23 +66,22 @@ from the consuming project's folder:
 dotnet msbuild -getProperty:IxIFlowWorkflowSchema
 ```
 
-The same file is published with each release at
-`https://raw.githubusercontent.com/HumanHub/IxIFlow/v<version>/src/IxIFlow/schemas/workflow.schema.json`,
-which is also the schema's `$id`. Use the version of the IxIFlow package you reference.
+The schema declares a versioned GitHub URL as its `$id`. Use the installed package file
+through `$(IxIFlowWorkflowSchema)`; the repository code does not establish that a matching
+release tag or hosted schema is available.
 
-With the Red Hat YAML extension or another yaml-language-server client, associate a file using
-the URL or the path printed above:
+With a yaml-language-server client, associate a file using the path printed above:
 
 ```yaml
-# yaml-language-server: $schema=<url or path>
+# yaml-language-server: $schema=<installed schema path>
 ```
 
-Relative paths resolve from the YAML file. In VS Code, associate a workspace in `settings.json`:
+For example, after copying that schema to the workspace root, a workspace association in `settings.json` is:
 
 ```json
 {
   "yaml.schemas": {
-    "https://raw.githubusercontent.com/HumanHub/IxIFlow/v1.0.0/src/IxIFlow/schemas/workflow.schema.json": ["*.workflow.yaml", "*.workflow.yml"]
+    "./workflow.schema.json": ["*.workflow.yaml", "*.workflow.yml"]
   }
 }
 ```
@@ -100,17 +99,20 @@ or Booleans, such as `activityVersion: "1.2"`: the reader takes them as text, bu
 type them first. The schema is generated from the document model by
 `WorkflowDocumentSchema.Write()` in Authoring.
 
-**Behaviour change.** Earlier builds matched member names case-insensitively and ignored
-unknown members, so `Output:` or `ouptut:` was silently dropped. Such files now fail the
-build with IXIYAML001 at the member. The JSON reader applies the same rules, and the JSON
-writer now writes `kind` on every typed node, including the fixed path in `to` and `into`.
+The YAML and JSON readers reject unknown or miscased members; generator errors use
+IXIYAML001 at the member. The JSON writer writes `kind` on every typed node, including
+the fixed path in `to` and `into`. The YAML reader also rejects duplicate keys,
+including case-insensitive duplicates; the JSON reader accepts duplicate keys with the last value winning.
 
-The supported catalog includes activities, activity and step references, sequences, conditions,
-suspend/resume, pinned child workflows and sequential or parallel `forEach`. Activity defaults
-apply before explicit inputs. Step parameters use supplied arguments, then scalar defaults,
+The supported catalog includes activities and references, sequences, conditions, `WhileDo`/`DoWhile`,
+general parallel branches and combiners, sequential or parallel `forEach` with results, typed
+catch/finally blocks, sagas with outcome branches, compensation and retry, delays, requests with
+replies and timeouts, event waits, suspend/resume and both named and typed child invocations. Explicit inputs
+override YAML and attribute defaults. Step parameters use supplied arguments, then scalar defaults,
 and reject missing required arguments. Declared parameter types support string, bool, int, long, double
-and decimal; other parameter types require publishing. Code assets use `language: csharp-expression`; expressions
-can also call C# methods such as `System.Math.Abs`. YAML floats emit double literals; decimal
+and decimal; other parameter types are unsupported by local translation. Code assets use
+`language: csharp-expression`; their source can call pure C# methods such as `System.Math.Abs`.
+A `function` expression names a local asset and takes no arguments. YAML floats emit double literals; decimal
 values can use an expression asset. `event` references work anywhere in an expression.
 
 Paths use CLR property names: `workflow.Value`, `previousStep.Result`, `event.Value`.
@@ -130,7 +132,8 @@ resolve and pin dependencies; publishing hosts attest completed pins through `Re
 A workflow display name is retained in `definition.Metadata["DisplayName"]`.
 
 A `forEach` infers its item type from `items`; its `as` name becomes a typed item handle.
-`steps` defines the body, `result` ends it, and `into` targets a `List<ItemResult<T>>`.
+`as` defaults to `item`. `steps` defines the body; use a trailing `result` expression or a
+`kind: result` step to finish a result-producing body. `into` targets a `List<ItemResult<T>>`.
 Optional `parallel` accepts `maxConcurrency` and `join: all|any|conditionally`. A conditional
 join also declares `resultType` and `condition`, which can read `workflow` and `results`.
 Document validation checks the selector, alias, body, result target and parallel options.
@@ -169,15 +172,9 @@ references, defaults and assets. A baseline fluent workflow pins the existing fi
 Fingerprints sign the author-supplied delegates and expression trees. Runtime/context factories,
 compiled expression adapters and the adapters for conditions, request subjects, joins and ForEach
 selectors are excluded. Into contributes its expression and Combine its property/combiner type.
-The baseline on origin/main already signed adapter IL as well as author code, so removing it changes
-fingerprints for fluent workflows with mappings, conditions, delegate selectors or join predicates,
-in addition to the positional item-capture correction. Workflows without those adapters keep their
-fingerprints. Declared fingerprints and compatibility/migration policy remain F-03 work.
-
-The direct document compiler and its interface have been deleted. The ten former compiler tests
-now translate YAML, compile it with Roslyn and build through the fluent API. Serialization
-tests cover JSON and YAML round trips through the shared model.
+Runtime fingerprints describe the current definition. Declared artifact fingerprints and a
+compatibility/migration policy are planned; do not infer compatibility with older builds.
 
 Publishing orchestration, dependency resolution, package pinning, inline `use`, code activities,
-bundles and artifact storage remain separate work. Declared canonical fingerprints (F-03) and
-Native AOT validation (F-07) are not established by these JIT tests.
+bundles and artifact storage remain planned. Declared canonical fingerprints and
+Native AOT validation remain planned too.

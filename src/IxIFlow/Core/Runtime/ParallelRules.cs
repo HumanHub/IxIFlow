@@ -3,7 +3,7 @@ using IxIFlow.Builders;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// The build rules of parallel data (D-14, spec E-04, E-05): under <c>WaitAll</c> or
+/// The build rules of parallel data: under <c>WaitAll</c> or
 /// <c>WaitConditionally</c>, two branches whose outputs write the same property, or a property and one
 /// inside it, are a build error unless a combiner on that property or one above it merges them. A write
 /// into a value the join merges whole, such as a list, writes that value; a write into a dictionary is
@@ -139,6 +139,6 @@ internal static class ParallelRules
         }
     }
 
-    /// <summary>The combiners a data type declares where a join uses them, for the fingerprint (spec E-05).</summary>
+    /// <summary>The combiners a data type declares where a join uses them, for the fingerprint.</summary>
     public static string CombinerSignature(Type? dataType) => BranchData.CombinerSignature(dataType);
 }

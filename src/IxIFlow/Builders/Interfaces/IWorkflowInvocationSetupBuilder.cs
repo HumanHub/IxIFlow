@@ -28,7 +28,7 @@ public interface IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>
     /// <summary>
     /// Whether cancelling the invoking branch, or failing the parent, cancels the child and waits for it to end
     /// (the default). With <c>false</c> the child is left running on its own: the branch stops waiting for it and
-    /// unwinds at once, and the child's later completion is refused (D-09).
+    /// unwinds at once, and the child's later completion is refused.
     /// </summary>
     IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> CancelWithParent(bool cancel);
 }

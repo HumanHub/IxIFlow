@@ -4,7 +4,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace IxIFlow.Extensions;
 
-/// <summary>Chooses SQLite as the single-host store (D-21).</summary>
+/// <summary>Chooses SQLite as the single-host store.</summary>
 public static class IxIFlowSqliteExtensions
 {
     /// <summary>

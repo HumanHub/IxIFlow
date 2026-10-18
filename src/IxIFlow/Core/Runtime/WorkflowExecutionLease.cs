@@ -65,7 +65,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     /// <summary>The execution epoch the store granted with this lease; commits are fenced by it.</summary>
     public long Epoch { get; }
 
-    /// <summary>How many owners in a row lost the instance while it was running, before this one (B-08).</summary>
+    /// <summary>How many owners in a row lost the instance while it was running, before this one.</summary>
     public int CrashCount { get; }
 
     public Task Loss => _loss.Task;

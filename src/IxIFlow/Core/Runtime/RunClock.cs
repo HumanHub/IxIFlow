@@ -1,7 +1,7 @@
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// The clock of the run evaluating a workflow's expressions (D-42). A run sets it for everything it evaluates, so
+/// The clock of the run evaluating a workflow's expressions. A run sets it for everything it evaluates, so
 /// <see cref="WorkflowContext{TWorkflowData}.UtcNow"/> reads the engine's <see cref="TimeProvider"/>, fake time in
 /// tests included, and never the machine's clock.
 /// </summary>

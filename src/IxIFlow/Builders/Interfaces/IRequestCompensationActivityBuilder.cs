@@ -4,7 +4,7 @@ using IxIFlow.Core;
 namespace IxIFlow.Builders.Interfaces;
 
 /// <summary>
-/// Configures the compensation of a saga request that reads the request's answer (D-36): its inputs map from
+/// Configures the compensation of a saga request that reads the request's answer: its inputs map from
 /// a <see cref="RequestCompensationContext{TWorkflowData,TCurrentStepData,TReply}"/>, whose <c>Reply</c> is the
 /// answer the request received and <c>Answered</c> whether there was one.
 /// </summary>

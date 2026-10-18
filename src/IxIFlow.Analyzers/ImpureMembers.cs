@@ -6,7 +6,7 @@ namespace IxIFlow.Analyzers;
 
 /// <summary>
 /// The members that read the clock or the environment, make values that differ per run, wait, or do I/O: the list
-/// the engine's build rule refuses in expressions (D-42), applied to symbols. Each is named as the build error names
+/// the engine's build rule refuses in expressions, applied to symbols. Each is named as the build error names
 /// it, such as <c>DateTime.UtcNow</c>, <c>new Random(...)</c> or <c>new StreamReader(path)</c>.
 /// </summary>
 internal static class ImpureMembers

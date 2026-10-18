@@ -25,7 +25,7 @@ internal interface IExecutionHost
     /// <summary>The highest inbox sequence the host has seen for the instance while the run owns it.</summary>
     long ObservedInboxSequence { get; }
 
-    /// <summary>Completes when the host sees the instance's inbox sequence rise (D-32).</summary>
+    /// <summary>Completes when the host sees the instance's inbox sequence rise.</summary>
     Task? InboxChanged { get; }
 
     /// <summary>The cancellation request the host has observed, if any.</summary>
@@ -54,7 +54,7 @@ internal interface IExecutionHost
 
     /// <summary>
     /// The definition an invocation step invokes. When <paramref name="starting"/>, it is checked to be active
-    /// and registered, so any host can run the child (D-17); a child already started is read as it is.
+    /// and registered, so any host can run the child; a child already started is read as it is.
     /// </summary>
     Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting);
 

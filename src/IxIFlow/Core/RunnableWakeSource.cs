@@ -1,8 +1,8 @@
 namespace IxIFlow.Core;
 
 /// <summary>
-/// A store that tells hosts when an instance may have become claimable, so they claim it before their next poll
-/// (C-13). A host keeps polling while it listens: a wake-up only adds a pass, and a lost one costs latency, not work.
+/// A store that tells hosts when an instance may have become claimable, so they claim it before their next poll.
+/// A host keeps polling while it listens: a wake-up only adds a pass, and a lost one costs latency, not work.
 /// </summary>
 public interface IRunnableWakeSource
 {

@@ -39,7 +39,7 @@ public interface IWorkflowBuilder<TWorkflowData>
 
     /// <summary>
     /// Runs a request activity (<see cref="IRequestActivity{TReply}"/>) whose answer the workflow takes
-    /// with <c>WaitFor&lt;TReply&gt;(name)</c> later in the same body (D-33). The answer's wait opens
+    /// with <c>WaitFor&lt;TReply&gt;(name)</c> later in the same body. The answer's wait opens
     /// before the activity runs, and the activity sends <see cref="IActivityContext.Reply"/> with the
     /// request. An answer that arrives before the <c>WaitFor</c> is kept for it. A
     /// <paramref name="subject"/> says what the request is about; an answer must carry the same one.
@@ -95,7 +95,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
 
     /// <summary>
     /// Runs a request activity (<see cref="IRequestActivity{TReply}"/>) whose answer the workflow takes
-    /// with <c>WaitFor&lt;TReply&gt;(name)</c> later in the same body (D-33). The answer's wait opens
+    /// with <c>WaitFor&lt;TReply&gt;(name)</c> later in the same body. The answer's wait opens
     /// before the activity runs, and the activity sends <see cref="IActivityContext.Reply"/> with the
     /// request. An answer that arrives before the <c>WaitFor</c> is kept for it. A
     /// <paramref name="subject"/> says what the request is about; an answer must carry the same one.
@@ -192,7 +192,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
 
     /// <summary>
     /// Runs <paramref name="body"/> once per item of the list <paramref name="items"/> gives when the step
-    /// starts, one item after another (D-34). The list is saved then, so later changes to the data add or
+    /// starts, one item after another. The list is saved then, so later changes to the data add or
     /// remove no item. Each item sees the data changes of the items before it. The body reads the item
     /// with <c>ctx.Item(item)</c> and its position with <c>ctx.Index(item)</c>, and may end with
     /// <see cref="Result{TResult}"/>; <paramref name="setup"/> names the handle and says where the results go.

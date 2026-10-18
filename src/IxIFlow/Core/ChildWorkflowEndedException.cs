@@ -2,7 +2,7 @@ namespace IxIFlow.Core;
 
 /// <summary>
 /// A child workflow ended without completing or failing on its own: it was cancelled, timed out or was
-/// terminated (D-17). Raised at the parent's invocation step, where a <c>Catch</c> can handle it; never
+/// terminated. Raised at the parent's invocation step, where a <c>Catch</c> can handle it; never
 /// while the parent itself is unwinding.
 /// </summary>
 public sealed class ChildWorkflowEndedException(string childInstanceId, WorkflowStatus status)

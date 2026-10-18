@@ -4,7 +4,7 @@ using IxIFlow.Core;
 namespace IxIFlow.Builders;
 
 /// <summary>
-/// Pairs each request step with the one <c>WaitFor</c> that takes its answer (D-33): it has the
+/// Pairs each request step with the one <c>WaitFor</c> that takes its answer: it has the
 /// request's name and answer type and follows the request in the same body, so both belong to the same
 /// loop iteration or branch occurrence. Anything else fails when the workflow is built.
 /// </summary>

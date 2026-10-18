@@ -27,7 +27,7 @@ public interface IParallelBuilder<TWorkflowData, TPreviousStepData>
     /// <summary>
     /// Merges the branches' changes to <paramref name="property"/>, and to everything inside it, with
     /// <typeparamref name="TCombiner"/> at this step's join, instead of the combiner the data type declares
-    /// for it, if any (spec E-05). The property is reached through members only, has a setter, and is not
+    /// for it, if any. The property is reached through members only, has a setter, and is not
     /// inside a value merged whole or one that already has a combiner.
     /// </summary>
     IParallelBuilder<TWorkflowData, TPreviousStepData> Combine<TValue, TCombiner>(

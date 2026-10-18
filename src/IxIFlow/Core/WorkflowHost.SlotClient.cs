@@ -7,7 +7,7 @@ public sealed partial class WorkflowHost
     /// <summary>
     /// Runs instance operations inline on the current scope's <see cref="InstanceOperations"/>. The host uses it for
     /// each work item, and a call made from inside a slot, such as an activity calling the client, uses it to run in
-    /// that slot. Children are independent instances that the host schedules on their own (D-17).
+    /// that slot. Children are independent instances that the host schedules on their own.
     /// </summary>
     internal sealed class SlotClient
     {
