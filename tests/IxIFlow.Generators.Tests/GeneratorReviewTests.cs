@@ -31,7 +31,7 @@ public sealed class GeneratorReviewTests
         var translated = Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(yaml, "invalid.yaml"));
         Assert.Equal(line, translated.Line);
         Assert.Equal(column, translated.Column);
-        var diagnostic = Assert.Single(Generate(yaml).Diagnostics);
+        var diagnostic = Assert.Single(WorkflowGeneratorHarness.Generate(yaml).Diagnostics);
         Assert.Equal("IXIYAML001", diagnostic.Id);
         Assert.Equal(new LinePosition(line - 1, column - 1), diagnostic.Location.GetLineSpan().StartLinePosition);
     }
@@ -47,17 +47,17 @@ public sealed class GeneratorReviewTests
         options.ActivityVersions[typeof(Multiply).FullName!] = "1.0";
         var error = Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(yaml, "invalid.yaml", options));
         Assert.Contains("requires version '1.0'", error.Message);
-        var diagnostic = Assert.Single(Generate(yaml).Diagnostics);
+        var diagnostic = Assert.Single(WorkflowGeneratorHarness.Generate(yaml).Diagnostics);
         Assert.Contains("declares '2.0'", diagnostic.GetMessage());
         Assert.Equal(error.Line - 1, diagnostic.Location.GetLineSpan().StartLinePosition.Line);
-        Assert.Empty(Generate(yaml.Replace("'2.0'", "'1.0'")).Diagnostics);
+        Assert.Empty(WorkflowGeneratorHarness.Generate(yaml.Replace("'2.0'", "'1.0'")).Diagnostics);
     }
 
     [Fact]
     public void GeneratorRunsDocumentRulesAtTheYamlMember()
     {
         var yaml = Header + Activity + "    output:\n      - source: Result\n        to: {path: previousStep.Value}\n";
-        var diagnostic = Assert.Single(Generate(yaml).Diagnostics);
+        var diagnostic = Assert.Single(WorkflowGeneratorHarness.Generate(yaml).Diagnostics);
         Assert.Contains("Output mapping target path", diagnostic.GetMessage());
         Assert.Equal(12, diagnostic.Location.GetLineSpan().StartLinePosition.Line);
     }
@@ -71,7 +71,7 @@ public sealed class GeneratorReviewTests
         var error = Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(yaml, "invalid.yaml"));
         Assert.Contains("requires publishing", error.Message);
         Assert.True(error.Line > 1);
-        Assert.Contains("requires publishing", Assert.Single(Generate(yaml).Diagnostics).GetMessage());
+        Assert.Contains("requires publishing", Assert.Single(WorkflowGeneratorHarness.Generate(yaml).Diagnostics).GetMessage());
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public sealed class GeneratorReviewTests
         var error = Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(yaml, "invalid.yaml"));
         Assert.Contains(expected, error.Message);
         Assert.True(error.Line > 1);
-        Assert.Contains(expected, Assert.Single(Generate(yaml).Diagnostics).GetMessage());
+        Assert.Contains(expected, Assert.Single(WorkflowGeneratorHarness.Generate(yaml).Diagnostics).GetMessage());
     }
 
     [Fact]
@@ -111,7 +111,7 @@ public sealed class GeneratorReviewTests
         var tree = CSharpSyntaxTree.ParseText(source);
         var compilation = GeneratorRegressionTests.Compilation().AddSyntaxTrees(tree);
         var yaml = Header + Activity.Replace(typeof(Multiply).FullName!, "local.multiply");
-        var driver = Driver(yaml).RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+        var driver = WorkflowGeneratorHarness.Driver(yaml).RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
         Assert.Empty(diagnostics);
         Assert.Empty(output.GetDiagnostics().Where(item => item.Severity == DiagnosticSeverity.Error));
         Assert.Contains("global::Local.Multiply", Assert.Single(driver.GetRunResult().GeneratedTrees).ToString());
@@ -129,7 +129,7 @@ public sealed class GeneratorReviewTests
             var compilation = GeneratorRegressionTests.Compilation().WithAssemblyName(name);
             if (reference != null) compilation = compilation.AddReferences(reference);
             var space = rootNamespace ? name + ".Root" : name;
-            var driver = Driver(Header + Activity, "Orders.workflow.yaml", rootNamespace ? space : null)
+            var driver = WorkflowGeneratorHarness.Driver(Header + Activity, "Orders.workflow.yaml", rootNamespace ? space : null)
                 .RunGeneratorsAndUpdateCompilation(compilation, out var generated, out var diagnostics);
             Assert.Empty(diagnostics);
             Assert.Contains("namespace " + space + ".Generated;", Assert.Single(driver.GetRunResult().GeneratedTrees).ToString());
@@ -142,16 +142,5 @@ public sealed class GeneratorReviewTests
         var space = rootNamespace ? "OrdersApp.Root" : "OrdersApp";
         app = app.AddSyntaxTrees(CSharpSyntaxTree.ParseText("public static class UseOrders { public static object Build() => " + space + ".Generated.Workflow_Orders_workflow.Build(); }"));
         Assert.Empty(app.GetDiagnostics().Where(item => item.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
-    }
-
-    private static GeneratorDriverRunResult Generate(string yaml) => Driver(yaml)
-        .RunGenerators(GeneratorRegressionTests.Compilation()).GetRunResult();
-    private static GeneratorDriver Driver(string yaml, string path = "invalid.yaml", string? rootNamespace = null) =>
-        CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()], [new YamlFile(path, yaml)],
-            optionsProvider: new WorkflowFileOptionsProvider(path) { RootNamespace = rootNamespace });
-    private sealed class YamlFile(string path, string text) : AdditionalText
-    {
-        public override string Path => path;
-        public override SourceText GetText(CancellationToken cancellationToken = default) => SourceText.From(text);
     }
 }
