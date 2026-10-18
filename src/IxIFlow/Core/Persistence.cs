@@ -229,10 +229,11 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     /// lease and revision rules. An existing row above revision zero returns a revision conflict.
     /// Later commits preserve the row's incarnation. Child starts allocate fresh incarnations in the store.
     /// Repeating a commit ID with the same payload returns its original receipt, even after subsequent
-    /// commits. Receipt lookup precedes incarnation and revision checks. A leased commit above
-    /// expected revision zero from another incarnation, or a leased commit from an epoch older than the
-    /// instance's latest lease, or from a lease that is no longer active while the instance runs,
-    /// returns <see cref="WorkflowCommitStatus.StaleEpoch"/>. A store that knows nothing was
+    /// commits. Receipt lookup precedes incarnation and revision checks. Every commit above expected
+    /// revision zero must carry the row's incarnation, including an unleased (epoch-zero) commit.
+    /// A different incarnation or a leased commit without an active lease at exactly its epoch returns
+    /// <see cref="WorkflowCommitStatus.StaleEpoch"/>. An unleased commit requires no active lease,
+    /// with revision checks ordering the write. A store that knows nothing was
     /// written may return <see cref="WorkflowCommitStatus.Retry"/>; any exception means the
     /// outcome is unknown and the same commit may be sent again.
     /// </summary>
@@ -240,7 +241,8 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 
     /// <summary>
     /// Acquires an absent or expired execution lease for one instance. The grant's epoch is greater
-    /// than every epoch granted since the ID's lease row was last deleted. When the previous lease expired without
+    /// than every epoch previously granted by this store, across all instances, deletions and
+    /// re-creations. Gaps are allowed. When the previous lease expired without
     /// being released while the instance was <see cref="WorkflowStatus.Running"/>, its owner lost the
     /// instance with work in flight, and the grant's crash count is one higher, in the same atomic
     /// step. Returns null while another owner holds the lease or the ID has a live tombstone,
@@ -341,8 +343,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] ContentHash, long Revision)> _commits = new();
-    // A lease record lasts until the instance is deleted, so its later owners get higher epochs. It keeps
-    // the instance's crash count. A released lease expires at DateTime.MinValue.
+    private long _executionEpoch;
+    // A lease record keeps the instance's crash count until deletion. Epochs come from the store-wide
+    // counter and survive lease-row deletion. A released lease expires at DateTime.MinValue.
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch, int CrashCount)> _leases =
         new();
     private readonly Dictionary<string, CancellationReason> _cancellations = new();
@@ -443,7 +446,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
             var crashed = exists && lease.ExpiresAtUtc != DateTime.MinValue &&
                 _instances.TryGetValue(instanceId, out var instance) && instance.Status == WorkflowStatus.Running;
-            var grant = new ExecutionLeaseGrant((exists ? lease.Epoch : 0) + 1,
+            if (_executionEpoch == long.MaxValue)
+                throw new InvalidOperationException("The execution lease epoch sequence is exhausted");
+            var grant = new ExecutionLeaseGrant(Interlocked.Increment(ref _executionEpoch),
                 (exists ? lease.CrashCount : 0) + (crashed ? 1 : 0));
             _leases[instanceId] = (token, now.Add(duration), grant.Epoch, grant.CrashCount);
             return Task.FromResult<ExecutionLeaseGrant?>(grant);
@@ -503,7 +508,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             }
 
             // Receipts are deleted with the instance, so any replay above belongs to its current creation.
-            if (commit.ExpectedRevision > 0 && commit.Epoch != 0 && stored != null &&
+            if (commit.ExpectedRevision > 0 && stored != null &&
                 stored.Incarnation != commit.Incarnation)
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
             if (!owns)
