@@ -11,7 +11,7 @@ public interface ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStep
     where TPreviousStepData : class
 {
     /// <summary>
-    ///     Configures an input property for the resume event
+    ///     Maps a value into the suggested event payload once when the wait opens.
     /// </summary>
     /// <typeparam name="TProperty">Type of the input property</typeparam>
     /// <param name="property">Expression identifying the property</param>
@@ -26,7 +26,7 @@ public interface ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStep
     ISuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData> Output<TProperty>(
         Expression<Func<TResumeEvent, TProperty>> property);
 
-    /// <summary>Declares a suggested answer for UIs. The engine never applies it automatically.</summary>
+    /// <summary>Declares the initial suggested answer for UIs, overlaid by input mappings when the wait opens.</summary>
     ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> DefaultPayload(TResumeEvent payload);
 
     ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> TimeoutAfter(

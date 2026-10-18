@@ -15,7 +15,8 @@ namespace IxIFlow.Analyzers;
 /// only into its marked inputs and gives outputs only from its marked outputs, and each input it requires is mapped
 /// unless it has a default. An activity without the attributes takes inputs into properties with a public setter and
 /// gives outputs from properties with a public getter. A child workflow's data takes inputs into public settable
-/// properties and gives outputs from public readable ones, and an event gives outputs from public readable ones.
+/// properties and gives outputs from public readable ones. An event takes suggestion inputs into public settable
+/// properties and gives outputs from public readable ones.
 /// A required input is reported only where every mapping of the step is in sight: when the step's setup is a lambda
 /// that does not hand its builder elsewhere.
 /// </summary>
@@ -46,6 +47,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                 CheckMapping(operation, engine, invocation);
                 CheckContract(operation, engine, invocation, checkedActivities);
                 CheckRequiredInputs(operation, engine, invocation);
+                CheckWaitRequiredInputs(operation, engine, invocation);
             }, OperationKind.Invocation);
         });
     }
@@ -59,9 +61,6 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
             mapping.TargetMethod.Name != (input ? "Input" : "Output") || !engine.IsBuilderMethod(mapping.TargetMethod) ||
             Selected(mapping) is not ({ } owner, { } name, { } location) ||
             Kind(engine, owner, mapping.TargetMethod.ContainingType) is not { } kind)
-            return;
-        // The engine does not check the inputs of an event, which a wait does not use.
-        if (input && kind == "Event")
             return;
         var properties = PublicProperties(owner);
         if (!properties.TryGetValue(name, out var property))
@@ -108,6 +107,31 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         foreach (var property in required.Where(property => !mapped.Contains(property.Name)))
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.RequiredInputNotMapped, location, ActivityKind,
                 $"{activity.MetadataName}.{property.Name}"));
+    }
+
+    private static void CheckWaitRequiredInputs(OperationAnalysisContext context, EngineSymbols engine,
+        IInvocationOperation invocation)
+    {
+        if (invocation.TargetMethod.Name is not ("WaitFor" or "Suspend"))
+            return;
+        foreach (var argument in invocation.Arguments)
+        {
+            if (argument.Parameter?.Type is not INamedTypeSymbol { Name: "Action", TypeArguments.Length: 1 } action ||
+                action.TypeArguments[0] is not INamedTypeSymbol builder || !builder.Name.Contains("Suspend") ||
+                InputOwner(builder) is not INamedTypeSymbol owner ||
+                EngineSymbols.Unwrapped(argument.Value) is not IAnonymousFunctionOperation setup)
+                continue;
+            // A supplied payload may provide required values; inspect its value at build time instead.
+            if (setup.Body.Descendants().OfType<IInvocationOperation>().Any(call =>
+                    call.TargetMethod.Name == "DefaultPayload" && engine.IsBuilderMethod(call.TargetMethod)))
+                return;
+            if (MappedInputs(engine, setup, owner) is not { Count: > 0 } mapped)
+                return;
+            foreach (var property in PublicProperties(owner).Values.Where(property =>
+                         Attribute(engine.Required, property) != null && !mapped.Contains(property.Name)))
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.RequiredInputNotMapped, NameLocation(invocation),
+                    "Event", $"{owner.MetadataName}.{property.Name}"));
+        }
     }
 
     // The activity a builder call adds, and the argument that sets it up: the Action whose builder maps into the

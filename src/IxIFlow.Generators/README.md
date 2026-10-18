@@ -108,7 +108,9 @@ The supported catalog includes activities and references, sequences, conditions,
 general parallel branches and combiners, sequential or parallel `forEach` with results, typed
 catch/finally blocks, sagas with outcome branches, compensation and retry, delays, requests with
 replies and timeouts, event waits, suspend/resume and both named and typed child invocations. Explicit inputs
-override YAML and attribute defaults. Step parameters use supplied arguments, then scalar defaults,
+override YAML and attribute defaults on activities. Wait inputs overlay the declared default payload or a new
+event instance once when the wait opens, saving the suggested payload for discovery and recovery. Only submitted
+events answer waits. Step parameters use supplied arguments, then scalar defaults,
 and reject missing required arguments. Declared parameter types support string, bool, int, long, double
 and decimal; other parameter types are unsupported by local translation. Code assets use
 `language: csharp-expression`; their source can call pure C# methods such as `System.Math.Abs`.

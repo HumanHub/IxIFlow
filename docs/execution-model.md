@@ -64,6 +64,8 @@ public static WorkflowDefinition DiscoverableReview() =>
 
 `GetOpenWaitsAsync` returns request-free event waits with owner instance, `WaitId`, key, event type and optional schema, opening time, deadline, token and optional `DefaultPayloadJson`. `WaitQuery` filters by instance, key or event type and pages in wait-ID order with `AfterWaitId` and `Limit` (100 by default). Request replies, child-completion waits, delays and execution deadlines are excluded. The default is a UI suggestion; it never answers automatically. A child task belongs to the child instance. Only trusted callers should receive this listing: the token grants the ability to answer.
 
+Wait input mappings compute that suggestion once when the wait opens, reading workflow data and the previous step. They overlay a deserialized copy of `DefaultPayload`, or a new event instance when no default is declared. The wait saves the resulting JSON, so recovery and replay never evaluate the mappings again. Mapping failures fail the wait step. Request reply tokens are reserved before the request runs; their suggestion is computed when execution reaches `WaitFor`, using the completed previous step.
+
 Inside a method with `client`, `instanceId` and `customer` parameters:
 
 <!-- snippet: samples/IxIFlow.Samples/DocumentationExamples.cs#answer-review -->

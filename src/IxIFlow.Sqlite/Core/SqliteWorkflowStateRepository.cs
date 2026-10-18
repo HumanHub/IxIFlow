@@ -146,14 +146,16 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         string instanceId, IReadOnlyList<ArmedWait> waits, DateTime now)
     {
         await connection.ExecuteAsync("""
-                UPDATE ixiflow_workflow_waits SET deadline_utc = @Deadline
+                UPDATE ixiflow_workflow_waits SET deadline_utc = COALESCE(deadline_utc, @Deadline),
+                    default_payload_json = COALESCE(default_payload_json, @DefaultPayloadJson)
                 WHERE instance_id = @InstanceId AND wait_id = @WaitId
-                    AND close_reason IS NULL AND deadline_utc IS NULL
+                    AND close_reason IS NULL
                 """, waits.Select(wait => new
         {
             InstanceId = instanceId,
             wait.WaitId,
-            Deadline = Timestamp(now + wait.Timeout)
+            Deadline = Timestamp(now + wait.Timeout),
+            wait.DefaultPayloadJson
         }), transaction);
     }
 
