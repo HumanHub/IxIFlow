@@ -58,7 +58,7 @@ public sealed partial class WorkflowHost
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             ArgumentNullException.ThrowIfNull(reason);
             cancellationToken.ThrowIfCancellationRequested();
-            reason = OperatorTrace.WithActor(reason, _defaultActor);
+            reason = OperatorTrace.WithActor(reason, _defaultActor, Now);
             if (!await _store.RequestCancellationAsync(instanceId, reason))
             {
                 var existing = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
@@ -156,6 +156,9 @@ public sealed partial class WorkflowHost
                     ? WorkflowExecutor.Busy(instanceId)
                     : Rejected(instanceId, "The activity changed before resolution could be saved");
 
+            checkpoint.Trace.Configure(instance, checkpoint, _limits, _time, scopes);
+            checkpoint.ResultTrace ??= [];
+            OperatorTrace.Resolved(checkpoint, pending, decision, Now);
             pending.Resolution = decision;
             pending.ResolutionReason = null;
             continuation.Status = ContinuationStatus.Active;
@@ -604,6 +607,8 @@ public sealed partial class WorkflowHost
             // records progress and clears the count, and other entry points refuse running instances.
             if (owner.CrashCount >= _limits.MaxCrashes)
                 return await QuarantineAsync(instance, checkpoint, scopes, owner);
+            checkpoint.Trace.Configure(instance, checkpoint, _limits, _time, scopes);
+            checkpoint.ResultTrace ??= [];
             var stopCleared = checkpoint.OperatorStop != null;
             if (stopCleared)
             {
@@ -611,7 +616,7 @@ public sealed partial class WorkflowHost
                 instance.LastError = null;
                 instance.LastErrorStackTrace = null;
                 if (release)
-                    OperatorTrace.Released(instance, actor, Now);
+                    OperatorTrace.Released(checkpoint, actor, Now);
             }
             // A run for an event only takes it: an activity waiting for an operator stays waiting.
             foreach (var continuation in checkpoint.Continuations.Where(item =>

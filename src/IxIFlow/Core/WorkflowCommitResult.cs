@@ -360,7 +360,7 @@ public sealed class CheckpointCommit
             expectedRevision, clearsCrashCount, parks, Array.AsReadOnly(settled), inboxReadThrough,
             Array.AsReadOnly(opened), Array.AsReadOnly(armed), Array.AsReadOnly(closed), wakeAfter, stopped,
             Array.AsReadOnly(started), Array.AsReadOnly(cancelled), parentNotice,
-            Array.AsReadOnly((traceEntries ?? []).Select(entry => JsonSerializer.Serialize(entry)).ToArray()));
+            Array.AsReadOnly((traceEntries ?? []).Select(WorkflowStoreRules.SerializeTrace).ToArray()));
     }
 
     private static void ValidateDuration(TimeSpan? duration, string parameter)

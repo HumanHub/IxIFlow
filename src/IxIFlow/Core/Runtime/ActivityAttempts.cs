@@ -135,28 +135,26 @@ internal sealed class ActivityAttempts(
 
         pending!.ResolutionReason = null;
         pending.Attempts.Add(attempt);
-        var startTrace = new ExecutionTraceEntry
+        if (checkpoint.Trace.Accepts(TraceEntryType.ActivityStarted, Now))
         {
-            Timestamp = Now,
-            EntryType = TraceEntryType.ActivityStarted,
-            ActivityName = step.ActivityType?.Name ?? "Activity",
-            StepNumber = continuation.Stack[^1].NextStepIndex,
-            Metadata = new Dictionary<string, object>
+            var startTrace = new ExecutionTraceEntry
             {
-                ["InvocationId"] = invocationId,
-                ["AttemptId"] = attempt.Id,
-                ["Kind"] = attempt.Kind,
-                ["Host"] = _hostName
-            }
-        };
-        if (pending.Resolution != null)
-        {
-            startTrace.Metadata["DecisionNote"] = pending.Resolution.Note;
-            if (pending.Resolution.DecidedBy != null)
-                startTrace.Metadata["DecidedBy"] = pending.Resolution.DecidedBy;
+                Timestamp = Now,
+                EntryType = TraceEntryType.ActivityStarted,
+                ActivityName = step.ActivityType?.Name ?? "Activity",
+                StepNumber = continuation.Stack[^1].NextStepIndex,
+                Metadata = new Dictionary<string, object>
+                {
+                    ["InvocationId"] = invocationId,
+                    ["AttemptId"] = attempt.Id,
+                    ["Kind"] = attempt.Kind,
+                    ["Host"] = _hostName
+                }
+            };
+            if (pending.Resolution != null)
+                startTrace.Metadata!["DecisionNote"] = pending.Resolution.Note;
+            checkpoint.Trace.Add(startTrace);
         }
-        if (instance.TracingEnabled)
-            instance.Trace.Add(startTrace);
         // Claiming the attempt is not progress: an activity that kills its owner keeps counting.
         await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
             clearsCrashCount: false);
@@ -308,7 +306,7 @@ internal sealed class ActivityAttempts(
         var pending = continuation.PendingActivity;
         if (pending?.Resolution is { } decision)
         {
-            Attempt(instance, continuation, step, pending, $"Operator{decision.Kind}");
+            Attempt(instance, checkpoint, continuation, step, pending, $"Operator{decision.Kind}");
             return Settles(decision.Kind == ActivityResolutionKind.Completed
                 ? ActivityRunResult.Returned(decision.InvocationResult?.Read(services))
                 : ActivityRunResult.Threw(decision.Failure?.ForPropagation()
@@ -353,7 +351,7 @@ internal sealed class ActivityAttempts(
         {
             // The same child would be refused again, so an operator decides (A-08, D-28).
             continuation.PendingActivity = pending;
-            Attempt(instance, continuation, step, pending, "InvokeWorkflow");
+            Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
             return Settles(ActivityRunResult.Unresolved($"The child workflow could not start: {error.Message}"));
         }
         catch (Exception error) when (!WorkflowEngineException.IsEngineFailure(error))
@@ -361,18 +359,18 @@ internal sealed class ActivityAttempts(
             return Settles(ActivityRunResult.Threw(error));
         }
         continuation.PendingActivity = pending;
-        Attempt(instance, continuation, step, pending, "InvokeWorkflow");
+        Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
         transitions.AwaitChild(checkpoint, continuation, scopes.Id(step), start, detached: !step.CancelWithParent);
         return null;
     }
 
     // Records an invocation attempt and its start in the trace.
-    private void Attempt(WorkflowInstance instance, ContinuationState continuation, WorkflowStep step,
+    private void Attempt(WorkflowInstance instance, ExecutionCheckpoint checkpoint, ContinuationState continuation, WorkflowStep step,
         ActivityInvocationState pending, string kind)
     {
         var attempt = new ActivityAttemptState { StartedAtUtc = Now, Kind = kind, Host = _hostName };
         pending.Attempts.Add(attempt);
-        if (!instance.TracingEnabled)
+        if (!checkpoint.Trace.Accepts(TraceEntryType.ActivityStarted, Now))
             return;
         var startTrace = new ExecutionTraceEntry
         {
@@ -388,12 +386,8 @@ internal sealed class ActivityAttempts(
             }
         };
         if (pending.Resolution != null)
-        {
-            startTrace.Metadata["DecisionNote"] = pending.Resolution.Note;
-            if (pending.Resolution.DecidedBy != null)
-                startTrace.Metadata["DecidedBy"] = pending.Resolution.DecidedBy;
-        }
-        instance.Trace.Add(startTrace);
+            startTrace.Metadata!["DecisionNote"] = pending.Resolution.Note;
+        checkpoint.Trace.Add(startTrace);
     }
 
     public async Task SettleAsync(
@@ -420,7 +414,7 @@ internal sealed class ActivityAttempts(
 
             if (outcome.Kind == ActivityRunKind.Skipped)
             {
-                MarkActivityEnd(activity, instance, "NotRun");
+                MarkActivityEnd(activity, instance, checkpoint, "NotRun");
                 activity.Continuation.Status = ContinuationStatus.Cancelling;
                 return;
             }
@@ -439,7 +433,7 @@ internal sealed class ActivityAttempts(
                         StartedAtUtc = failed.StartedAtUtc,
                         Attempts = failed.Attempts
                     };
-                MarkActivityEnd(activity, instance, "Threw", outcome.Error);
+                MarkActivityEnd(activity, instance, checkpoint, "Threw", outcome.Error);
                 throw outcome.Error ?? new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "Activity failed without an exception");
             }
@@ -472,7 +466,7 @@ internal sealed class ActivityAttempts(
                     !TryScopeTransitions.IsInsideFinally(activity.Continuation) &&
                     !SagaScopeTransitions.IsInsideCompensation(activity.Continuation))
                 {
-                    MarkActivityEnd(activity, instance, "Returned");
+                    MarkActivityEnd(activity, instance, checkpoint, "Returned");
                     activity.Continuation.Status = ContinuationStatus.Cancelling;
                     return;
                 }
@@ -484,11 +478,11 @@ internal sealed class ActivityAttempts(
                 activity.Continuation.Stack[^1].StepRetryCounts.Remove(
                     activity.Continuation.Stack[^1].NextStepIndex);
                 activity.Continuation.Stack[^1].NextStepIndex++;
-                MarkActivityEnd(activity, instance, "Returned");
+                MarkActivityEnd(activity, instance, checkpoint, "Returned");
             }
             catch (Exception error)
             {
-                MarkActivityEnd(activity, instance, "OutputFailed", error);
+                MarkActivityEnd(activity, instance, checkpoint, "OutputFailed", error);
                 throw;
             }
         }
@@ -554,7 +548,7 @@ internal sealed class ActivityAttempts(
         }
     }
 
-    private void MarkActivityEnd(RunningActivity running, WorkflowInstance instance,
+    private void MarkActivityEnd(RunningActivity running, WorkflowInstance instance, ExecutionCheckpoint checkpoint,
         string observation,
         Exception? error = null)
     {
@@ -565,8 +559,8 @@ internal sealed class ActivityAttempts(
         attempt.EndedAtUtc = Now;
         attempt.Observation = observation;
         running.Continuation.PendingActivity = null;
-        if (instance.TracingEnabled)
-            instance.Trace.Add(new ExecutionTraceEntry
+        if (checkpoint.Trace.Accepts(error == null ? TraceEntryType.ActivityCompleted : TraceEntryType.ActivityFailed, Now))
+            checkpoint.Trace.Add(new ExecutionTraceEntry
         {
             Timestamp = Now,
             EntryType = error == null ? TraceEntryType.ActivityCompleted : TraceEntryType.ActivityFailed,
