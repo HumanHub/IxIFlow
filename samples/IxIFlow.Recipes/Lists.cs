@@ -36,7 +36,7 @@ public sealed class PriceLine : IAsyncActivity
 }
 
 /// <summary>
-/// Recipe 15, a step per order line (spec D-17): a sequential <c>ForEach</c> over the order's lines prices
+/// Recipe 15, a step per order line: a sequential <c>ForEach</c> over the order's lines prices
 /// each one and keeps a running total; each line sees the total of the lines before it. Each line's total
 /// is also kept, in line order, with <c>.Result(...)</c> and <c>Into</c>.
 /// </summary>
@@ -85,7 +85,7 @@ public sealed class WriteInvoiceLine : IAsyncActivity
 }
 
 /// <summary>
-/// Recipe 17, nested lists (spec D-17): a <c>ForEach</c> over customers holds a <c>ForEach</c> over each
+/// Recipe 17, nested lists: a <c>ForEach</c> over customers holds a <c>ForEach</c> over each
 /// customer's lines, and the inner body reads both the customer and the line through their handles.
 /// </summary>
 public static class InvoiceCustomersRecipe
