@@ -145,15 +145,17 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         var rows = new List<string>();
         for (var index = 0; index < waits.Count; index++)
         {
-            rows.Add($"(@AW{index}, @AD{index})");
+            rows.Add($"(@AW{index}, @AD{index}, @AP{index})");
             parameters.Add($"AW{index}", waits[index].WaitId);
             parameters.Add($"AD{index}", now + waits[index].Timeout, DbType.DateTime2);
+            parameters.Add($"AP{index}", waits[index].DefaultPayloadJson, DbType.String, size: -1);
         }
         await connection.ExecuteAsync($"""
-                UPDATE stored SET DeadlineUtc = armed.DeadlineUtc
+                UPDATE stored SET DeadlineUtc = COALESCE(stored.DeadlineUtc, armed.DeadlineUtc),
+                    DefaultPayloadJson = COALESCE(stored.DefaultPayloadJson, armed.DefaultPayloadJson)
                 FROM dbo.IxIFlowWorkflowWaits AS stored
-                JOIN (VALUES {string.Join(", ", rows)}) AS armed (WaitId, DeadlineUtc) ON stored.WaitId = armed.WaitId
-                WHERE stored.InstanceId = @InstanceId AND stored.CloseReason IS NULL AND stored.DeadlineUtc IS NULL;
+                JOIN (VALUES {string.Join(", ", rows)}) AS armed (WaitId, DeadlineUtc, DefaultPayloadJson) ON stored.WaitId = armed.WaitId
+                WHERE stored.InstanceId = @InstanceId AND stored.CloseReason IS NULL;
 
                 """, parameters, transaction);
     }

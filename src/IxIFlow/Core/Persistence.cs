@@ -551,8 +551,12 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     _inboxSequence.GetValueOrDefault(commit.InstanceId), now,
                     DefaultPayloadJson: opened.DefaultPayloadJson));
             foreach (var armed in commit.ArmedWaits)
-                if (waits.TryGetValue(armed.WaitId, out var wait) && wait is { IsOpen: true, DeadlineUtc: null })
-                    waits[armed.WaitId] = wait with { DeadlineUtc = now + armed.Timeout };
+                if (waits.TryGetValue(armed.WaitId, out var wait) && wait.IsOpen)
+                    waits[armed.WaitId] = wait with
+                    {
+                        DeadlineUtc = wait.DeadlineUtc ?? now + armed.Timeout,
+                        DefaultPayloadJson = wait.DefaultPayloadJson ?? armed.DefaultPayloadJson
+                    };
             foreach (var closed in commit.ClosedWaits)
                 CloseWait(commit.InstanceId, closed.WaitId, closed.Reason, now);
             snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit,
