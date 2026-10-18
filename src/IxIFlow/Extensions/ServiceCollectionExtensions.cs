@@ -52,11 +52,6 @@ public static class ServiceCollectionExtensions
         // Workflow state and persistence
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
-        
-        // Workflow tracing and monitoring
-        
-        // Expression evaluation
-        services.AddScoped<IExpressionEvaluator, ExpressionEvaluator>();
         return new IxIFlowBuilder(services);
     }
 
