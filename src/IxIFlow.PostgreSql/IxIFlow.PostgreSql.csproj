@@ -7,7 +7,7 @@
     <Description>PostgreSQL store for IxIFlow: instances, inbox, waits, traces, the completion outbox and LISTEN/NOTIFY wake-ups.</Description>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
+    <ProjectReference Include="..\IxIFlow.Relational\IxIFlow.Relational.csproj" />
     <PackageReference Include="Dapper" Version="2.1.89" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>

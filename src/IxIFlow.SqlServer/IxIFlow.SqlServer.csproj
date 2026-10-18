@@ -7,7 +7,7 @@
     <Description>SQL Server store for IxIFlow: instances, inbox, waits, traces and the completion outbox.</Description>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
+    <ProjectReference Include="..\IxIFlow.Relational\IxIFlow.Relational.csproj" />
     <PackageReference Include="Dapper" Version="2.1.89" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
     <!-- SqlClient resolves a 9.0 Pkcs with known advisories (GHSA-846f-f764-76mx, GHSA-2fmv-rv2c-59x7). -->
