@@ -3,11 +3,11 @@ using System.Text.Json;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// Takes an instance's pending events at the start of a pass (D-32, D-33). Each event is decided once:
+/// Takes an instance's pending events at the start of a pass. Each event is decided once:
 /// consumed by exactly one open wait, or rejected with the reason. An event addressed by key may
 /// satisfy only a wait that was open when it arrived; one addressed to a wait may satisfy only that
 /// wait. The store's deadlines and its time are read with the events, so an event received before a
-/// wait's deadline still beats the deadline (D-35). Decisions are settled by the next commit, together
+/// wait's deadline still beats the deadline. Decisions are settled by the next commit, together
 /// with the checkpoint they produce.
 /// </summary>
 internal sealed class EventIntake(IServiceProvider services, TimeProvider time)

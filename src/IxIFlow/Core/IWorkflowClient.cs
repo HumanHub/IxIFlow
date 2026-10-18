@@ -42,7 +42,7 @@ public interface IWorkflowClient
     /// Sends an event to the instance's one open wait of its type, then waits until the event is
     /// decided and the instance is idle. The event is stored before it is acknowledged and may satisfy
     /// only a wait that was open when it arrived; <see cref="WorkflowExecutionResult.Event"/> says
-    /// whether a wait took it or why not (D-33). It stays pending while the instance is stopped for an
+    /// whether a wait took it or why not. It stays pending while the instance is stopped for an
     /// operator.
     /// </summary>
     Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
@@ -73,7 +73,7 @@ public interface IWorkflowClient
         where TEventData : class;
 
     /// <summary>
-    /// Answers the one wait a reply token addresses (D-33), then waits until the reply is decided and
+    /// Answers the one wait a reply token addresses, then waits until the reply is decided and
     /// the instance is idle. The reply can satisfy only that wait: once it has closed, the reply is
     /// rejected with the reason it closed. A text that is not a token is refused.
     /// </summary>
@@ -95,14 +95,14 @@ public interface IWorkflowClient
         where TReply : class;
 
     /// <summary>
-    /// Lists open waits that have no request, across instances (D-14), with the token that answers each.
+    /// Lists open waits that have no request, across instances, with the token that answers each.
     /// For an instance filter, IsRemoved marks a removed ID. A token is the right to answer, so this listing is for trusted callers such as a task inbox. A
     /// child's waits are listed on the child; a request's answer goes to the token the request sent.
     /// </summary>
     Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query);
 
     /// <summary>
-    /// Sends one event to every instance with an open wait for <paramref name="key"/> (D-13), under one
+    /// Sends one event to every instance with an open wait for <paramref name="key"/>, under one
     /// event ID, and wakes them. Each instance decides its copy at its next pass, including one that is
     /// busy; the result lists what each inbox answered. Sending again with the same ID reaches no
     /// instance twice.
@@ -126,7 +126,7 @@ public interface IWorkflowClient
     /// <summary>
     /// Releases an instance stopped for an operator, at a resource limit (after raising it) or in
     /// quarantine after repeated crashes, and runs it. Its crash count starts again from zero.
-    /// <paramref name="actor"/> is who released it, recorded in the trace; none takes the client's default actor (D-38).
+    /// <paramref name="actor"/> is who released it, recorded in the trace; none takes the client's default actor.
     /// </summary>
     Task<WorkflowExecutionResult> ReleaseAsync(
         string instanceId,
@@ -162,7 +162,7 @@ public interface IWorkflowClient
     Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId);
 
     /// <summary>
-    /// The instance's trace: what its runs recorded and committed, in order (G-01). A run's result carries the
+    /// The instance's trace: what its runs recorded and committed, in order. A run's result carries the
     /// entries of that run. IsRemoved marks a removed ID.
     /// </summary>
     Task<WorkflowReadResult<ExecutionTraceEntry>> GetTraceAsync(string instanceId);

@@ -1,7 +1,7 @@
 namespace IxIFlow.Core;
 
 /// <summary>
-/// A <c>ForEach</c> body's handle on its current item (D-34). Mappings, conditions and predicates in the
+/// A <c>ForEach</c> body's handle on its current item. Mappings, conditions and predicates in the
 /// body read the item with <c>ctx.Item(item)</c> and its position with <c>ctx.Index(item)</c>. A handle
 /// belongs to its body: using it anywhere else is a build error.
 /// </summary>

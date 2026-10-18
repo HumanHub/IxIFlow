@@ -10,7 +10,7 @@ namespace IxIFlow.Templates.Liquid;
 /// every type reachable through them, through collections and string-keyed dictionaries included. A member is
 /// readable only when its declared type says what it holds: a member typed <c>object</c>, or a collection or
 /// dictionary of <c>object</c>, could hold anything, so it is not readable at all. Nothing else is readable, so a
-/// template reaches the model's members and no other object in the process (H-03).
+/// template reaches the model's members and no other object in the process.
 /// </summary>
 internal static class LiquidModel
 {

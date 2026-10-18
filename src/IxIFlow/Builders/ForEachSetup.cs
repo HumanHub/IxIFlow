@@ -5,7 +5,7 @@ using IxIFlow.Core;
 
 namespace IxIFlow.Builders;
 
-/// <summary>Sets up a <c>ForEach</c> step: its handle's label and where its results go (D-34).</summary>
+/// <summary>Sets up a <c>ForEach</c> step: its handle's label and where its results go.</summary>
 internal sealed class ForEachSetup<TWorkflowData>(WorkflowStep step) : IForEachSetup<TWorkflowData>
     where TWorkflowData : class
 {

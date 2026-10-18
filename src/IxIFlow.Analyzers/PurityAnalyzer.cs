@@ -10,7 +10,7 @@ using Microsoft.CodeAnalysis.Operations;
 namespace IxIFlow.Analyzers;
 
 /// <summary>
-/// The purity rule of D-07 and D-42 at compile time. Conditions, mappings, wait predicates, loop conditions,
+/// Checks expression purity at compile time. Conditions, mappings, wait predicates, loop conditions,
 /// selectors and combiners are evaluated again after a recovery, so they may not read the clock or the environment,
 /// make values that differ per run, wait, or do I/O. Workflow code is what is given to a <c>Func</c> or
 /// <c>Expression&lt;Func&gt;</c> parameter of the engine's builders: a lambda, a method group, or a local, field,

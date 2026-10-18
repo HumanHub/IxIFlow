@@ -5,7 +5,7 @@ using IxIFlow.Builders;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// The build rules of <c>ForEach</c> (D-34): a handle is read only inside its body; items are read-only, so
+/// The build rules of <c>ForEach</c>: a handle is read only inside its body; items are read-only, so
 /// no output writes through <c>ctx.Item(...)</c>; a result ends a body, or a timeout branch that leaves the
 /// body; results stored with <c>Into</c> come from a result of exactly their type on every way out of the
 /// body; and nothing in a body writes where its step stores its results, or anywhere the rules cannot

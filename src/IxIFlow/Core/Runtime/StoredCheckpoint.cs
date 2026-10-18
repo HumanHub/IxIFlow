@@ -6,7 +6,7 @@ using System.Text.Json.Serialization.Metadata;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// A checkpoint as it is stored (A-08): a trunk with what belongs to the instance and its root, and parts that each
+/// A checkpoint as it is stored: a trunk with what belongs to the instance and its root, and parts that each
 /// change on their own. A branch's part holds the branch with its joins, waits and kept answers; a <c>ForEach</c>'s
 /// list and each of its stored results are parts; the workflow data is a part. A commit writes only the parts that
 /// changed, so what one branch does never rewrites the others.
@@ -35,7 +35,7 @@ internal sealed class StoredCheckpoint
     /// <summary>Every part by key, the workflow data's included.</summary>
     public Dictionary<string, string> Parts { get; }
 
-    /// <summary>The size a checkpoint limit applies to: the trunk and every part, as UTF-8 (D-28).</summary>
+    /// <summary>The size a checkpoint limit applies to: the trunk and every part, as UTF-8.</summary>
     public long Bytes => Encoding.UTF8.GetByteCount(Trunk) +
                          Parts.Values.Sum(part => (long)Encoding.UTF8.GetByteCount(part));
 
@@ -296,8 +296,8 @@ internal sealed class StoredCheckpoint
 }
 
 /// <summary>
-/// A commit's parts differ from those serializing everything gives: a transition changed a branch without marking it
-/// (A-08). The commit is not saved, and the instance stops for an operator with its last checkpoint.
+/// A commit's parts differ from those serializing everything gives: a transition changed a branch without marking it.
+/// The commit is not saved, and the instance stops for an operator with its last checkpoint.
 /// </summary>
 internal sealed class CheckpointVerificationException(string reason) : Exception(
     $"The checkpoint could not be verified: {reason}");

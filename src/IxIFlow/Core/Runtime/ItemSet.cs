@@ -6,7 +6,7 @@ namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// A set of item positions, saved as a bitmap in base 64, so a <c>ForEach</c>'s record of finished items takes one bit
-/// per item rather than a number (A-08). It enumerates in item order.
+/// per item rather than a number. It enumerates in item order.
 /// </summary>
 [JsonConverter(typeof(ItemSetJson))]
 internal sealed class ItemSet : IEnumerable<int>
@@ -32,7 +32,7 @@ internal sealed class ItemSet : IEnumerable<int>
     public bool Contains(int index) =>
         index >= 0 && index / 8 < _bits.Length && (_bits[index / 8] & 1 << index % 8) != 0;
 
-    /// <summary>How many items a stored chunk of the set holds (A-08).</summary>
+    /// <summary>How many items a stored chunk of the set holds.</summary>
     public const int ChunkItems = 512;
 
     private const int ChunkBytes = ChunkItems / 8;
