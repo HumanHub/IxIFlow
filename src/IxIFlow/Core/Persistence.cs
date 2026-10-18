@@ -221,7 +221,8 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     /// <summary>
     /// Atomically saves the commit's payload at its expected revision + 1. Revision zero also
     /// represents an absent instance. Repeating a commit ID with the same payload returns its
-    /// original receipt, even after subsequent commits. A commit from an epoch older than the
+    /// original receipt, even after subsequent commits. A leased commit from another incarnation,
+    /// from an epoch older than the
     /// instance's latest lease, or from a lease that is no longer active while the instance runs,
     /// returns <see cref="WorkflowCommitStatus.StaleEpoch"/>. A store that knows nothing was
     /// written may return <see cref="WorkflowCommitStatus.Retry"/>; any exception means the
@@ -231,7 +232,8 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 
     /// <summary>
     /// Acquires an absent or expired execution lease for one instance. The grant's epoch is greater
-    /// than every epoch granted for the instance before. When the previous lease expired without
+    /// than every epoch granted for the same incarnation before. Deletion removes the lease, so a
+    /// recreated instance starts at epoch one. When the previous lease expired without
     /// being released while the instance was <see cref="WorkflowStatus.Running"/>, its owner lost the
     /// instance with work in flight, and the grant's crash count is one higher, in the same atomic
     /// step. Returns null while another owner holds the lease.
@@ -328,7 +330,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] ContentHash, long Revision)> _commits = new();
-    // A lease record outlives its lease, so a later owner always gets a higher epoch. It also keeps
+    // A lease record lasts until the instance is deleted, so its later owners get higher epochs. It keeps
     // the instance's crash count. A released lease expires at DateTime.MinValue.
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch, int CrashCount)> _leases =
         new();
@@ -473,6 +475,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             RefuseRemoved(commit.InstanceId, Now);
             var key = (commit.InstanceId, commit.CommitId);
             var revision = _instances.TryGetValue(commit.InstanceId, out var stored) ? stored.Revision : 0;
+            // Check before receipts too: an old terminal or parking replay cannot borrow a new receipt.
+            if (commit.Epoch != 0 && stored != null && stored.Incarnation != commit.Incarnation)
+                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
             var owns = OwnsInstance(commit);
             if (_commits.TryGetValue(key, out var receipt))
             {
@@ -560,6 +565,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 parts.Remove(deleted);
             foreach (var part in commit.Parts)
                 parts[part.Key] = part.Json;
+            snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
             _instances[commit.InstanceId] = snapshot;
             RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
@@ -583,6 +589,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             foreach (var start in commit.ChildStarts)
             {
                 var child = JsonSerializer.Deserialize<WorkflowInstance>(start.Payload)!;
+                child.Incarnation = Guid.NewGuid();
                 child.Revision = 1;
                 child.RunnableAtUtc = now;
                 _instances[child.InstanceId] = child;
@@ -802,6 +809,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             var saved = instance.Revision != 0 || ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
                 ? JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!
                 : instance;
+            instance.Incarnation = stored?.Incarnation ?? Guid.NewGuid();
+            saved.Incarnation = instance.Incarnation;
             saved.RunnableAtUtc = WorkflowStoreRules.RunnableAt(saved, false, Now);
             _instances[instance.InstanceId] = saved;
             RecordCompletion(saved, Now);
@@ -887,7 +896,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         return Task.CompletedTask;
     }
 
-    // Caller holds _claimLock. Keep the compact lease fence so ID reuse never reuses an epoch.
+    // Caller holds _claimLock.
     private void DeleteInstance(string instanceId)
     {
         // A child its parent still waits for ends that wait as terminated.
@@ -895,9 +904,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
             Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
         _instances.TryRemove(instanceId, out _);
-        // The lease record stays so a recreated instance never reuses an epoch; its crashes go.
-        if (_leases.TryGetValue(instanceId, out var lease))
-            _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue, CrashCount = 0 };
+        _leases.Remove(instanceId);
         _endedAt.Remove(instanceId);
         _cancellations.Remove(instanceId);
         _acknowledgedCancellations.Remove(instanceId);
