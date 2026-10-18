@@ -263,7 +263,10 @@ public sealed class StructuredChildWaitTests
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, recovered.Status);
 
         await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
-        await engine.AwaitAsync(childId, WorkflowAwaitCondition.Idle).WaitAsync(Patience);
+        await WaitUntilAsync(
+            () => store.GetWorkflowInstanceAsync(childId),
+            savedChild => savedChild is { Status: WorkflowStatus.NeedsResolution } &&
+                ExecutionCheckpoint.Read(savedChild.ExecutionStateJson).CancellationRequested);
 
         // The child keeps its unresolved activity through the cancellation, and its parent waits for it.
         Assert.Equal(WorkflowStatus.NeedsResolution, (await store.GetWorkflowInstanceAsync(childId))!.Status);
@@ -423,7 +426,9 @@ public sealed class StructuredChildWaitTests
         Assert.Equal(EventOutcome.Consumed, (await EventAssert.DecidedAsync((IWorkflowInbox)repository,
             started.InstanceId, $"child-completed-{finance}")).Outcome);
         // The finance branch has taken its child's output; the parent's data gets it at the join (D-14).
-        var halfway = await BranchProgress.ViewAsync<ParentData>(repository, started.InstanceId);
+        var halfway = await WaitUntilAsync(
+            () => BranchProgress.ViewAsync<ParentData>(repository, started.InstanceId),
+            saved => saved.ChildApproved);
         Assert.True(halfway.ChildApproved);
         Assert.False(halfway.LegalApproved);
         await ChildWaitingAsync(services, legal, "legal");
@@ -1062,6 +1067,18 @@ public sealed class StructuredChildWaitTests
 
     private static async Task<WorkflowExecutionResult> FinishedAsync(IWorkflowClient engine, string instanceId) =>
         await engine.AwaitAsync(instanceId, WorkflowAwaitCondition.Finished).WaitAsync(Patience);
+
+    private static async Task<T> WaitUntilAsync<T>(Func<Task<T>> read, Func<T, bool> ready)
+    {
+        using var patience = new CancellationTokenSource(Patience);
+        while (true)
+        {
+            var saved = await read().WaitAsync(patience.Token);
+            if (ready(saved))
+                return saved;
+            await Task.Delay(10, patience.Token);
+        }
+    }
 
     // A child runs as soon as a slot takes it; an event addressed by key needs its wait to be open.
     private static async Task ChildWaitingAsync(IServiceProvider services, string childId, string key)
