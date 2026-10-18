@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 using IxIFlow.ActivitySdk;
 using IxIFlow.Core;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,19 +16,19 @@ namespace IxIFlow.Templates;
 public sealed class RenderTemplate<TModel> : IRecoverableActivity<TemplateRenderRecovery>
 {
     /// <summary>The template version to render, pinned by the workflow definition.</summary>
-    [WorkflowInput(Label = "Template", Required = true)]
+    [ActivityInput, Required, Display(Name = "Template")]
     public TemplateReference Template { get; set; } = null!;
 
     /// <summary>The model the template renders.</summary>
-    [WorkflowInput(Label = "Model", Required = true)]
+    [ActivityInput, Required, Display(Name = "Model")]
     public TModel Model { get; set; } = default!;
 
     /// <summary>The culture to render for, such as <c>de-AT</c>; none for the base variant.</summary>
-    [WorkflowInput(Label = "Culture")]
+    [ActivityInput, Display(Name = "Culture")]
     public string? Culture { get; set; }
 
     /// <summary>The rendered text, with the version and culture variant that produced it.</summary>
-    [WorkflowOutput]
+    [ActivityOutput]
     public RenderedTemplate? Rendered { get; private set; }
 
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)

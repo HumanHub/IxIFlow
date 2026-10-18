@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 using IxIFlow.ActivitySdk;
 using IxIFlow.Core;
 using Microsoft.Extensions.DependencyInjection;
@@ -13,23 +15,23 @@ namespace IxIFlow.Templates;
 public sealed class SendTemplateMessage : IRecoverableActivity<TemplateMessageRecovery>
 {
     /// <summary>The channel the application sends through, such as <c>email</c> or <c>sms</c>.</summary>
-    [WorkflowInput(Label = "Channel", Required = true)]
+    [ActivityInput, Required, Display(Name = "Channel")]
     public string Channel { get; set; } = "";
 
     /// <summary>Who receives the message, in the channel's own addressing.</summary>
-    [WorkflowInput(Label = "Recipients", Required = true)]
+    [ActivityInput, Required, Display(Name = "Recipients")]
     public List<string> Recipients { get; set; } = [];
 
     /// <summary>The subject, for channels that have one.</summary>
-    [WorkflowInput(Label = "Subject")]
+    [ActivityInput, Display(Name = "Subject")]
     public string? Subject { get; set; }
 
     /// <summary>The body, as <see cref="RenderTemplate{TModel}"/> rendered it.</summary>
-    [WorkflowInput(Label = "Body", Required = true)]
+    [ActivityInput, Required, Display(Name = "Body")]
     public RenderedTemplate Body { get; set; } = null!;
 
     /// <summary>The ID the message was sent with.</summary>
-    [WorkflowOutput]
+    [ActivityOutput]
     public string? MessageId { get; private set; }
 
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -249,6 +250,20 @@ public class ActivityExecutor : IActivityExecutor
                 request.Step.Runtime?.Context, request.CompensationPreviousStepData,
                 request.CompensationPreviousChainData, request.Items, request.CompensationReply,
                 request.CompensationAnswered);
+
+        if (applyInputMappings)
+        {
+            var properties = activity.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance);
+            var marked = properties.Any(Runtime.ActivityContract.IsMarked);
+            foreach (var property in properties.Where(property => Runtime.ActivityContract.IsInput(property, marked) &&
+                         property.IsDefined(typeof(DefaultValueAttribute)) && !inputs.Properties.ContainsKey(property.Name)))
+            {
+                var (saved, copy) = Runtime.ActivityInputValue.Of(property,
+                    Runtime.ActivityContract.Default(property, activity.GetType()), _serviceProvider);
+                inputs.Properties[property.Name] = saved;
+                property.SetValue(activity, copy);
+            }
+        }
 
         return new PreparedActivity(activity, context,
             () => ApplyTypedOutputMappingsAsync(activity, request.OutputMappings,

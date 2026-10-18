@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 using System.Reflection;
 using IxIFlow.ActivitySdk;
 using IxIFlow.Builders;
@@ -6,7 +8,7 @@ namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// The build rules of mappings (D-26, spec F-22). An activity that marks its properties with
-/// <see cref="WorkflowInputAttribute"/> or <see cref="WorkflowOutputAttribute"/> takes inputs only into its marked
+/// <see cref="ActivityInputAttribute"/> or <see cref="ActivityOutputAttribute"/> takes inputs only into its marked
 /// inputs and gives outputs only from its marked outputs, and each input it requires is mapped unless it has a
 /// default. An activity without the attributes takes inputs into properties with a public setter and gives outputs
 /// from properties with a public getter. A child workflow's data takes inputs into public settable properties and
@@ -51,28 +53,48 @@ internal static class MappingRules
         IEnumerable<PropertyMapping> outputs)
     {
         var properties = activity.GetProperties(BindingFlags.Public | BindingFlags.Instance);
-        var marked = properties.Any(property =>
-            property.IsDefined(typeof(WorkflowInputAttribute)) || property.IsDefined(typeof(WorkflowOutputAttribute)));
+        var contractProperties = activity.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        var marked = contractProperties.Any(ActivityContract.IsMarked);
+        foreach (var property in contractProperties)
+        {
+            if (ActivityContract.IsMarked(property))
+            {
+                if (ActivityContract.IsInput(property, true) && property.SetMethod is not { IsPublic: true })
+                    throw Refused("Activity", activity, property, "is marked as an input but has no public setter");
+                if (ActivityContract.IsOutput(property, true) && property.GetMethod is not { IsPublic: true })
+                    throw Refused("Activity", activity, property, "is marked as an output but has no public getter");
+            }
+            if (property.IsDefined(typeof(RequiredAttribute)) && ActivityContract.IsOutput(property, marked) &&
+                !ActivityContract.IsInput(property, marked))
+                throw Refused("Activity", activity, property, "has [Required] but is output-only");
+            if (property.GetCustomAttribute<DefaultValueAttribute>() != null)
+            {
+                if (property.SetMethod is not { IsPublic: true })
+                    throw Refused("Activity", activity, property, "has [DefaultValue] but has no public setter");
+                _ = ActivityContract.Default(property, activity);
+            }
+        }
         var mappedInputs = new HashSet<string>(StringComparer.Ordinal);
         foreach (var mapping in inputs.Where(item => item.Direction == PropertyMappingDirection.Input))
         {
             var property = Property(activity, mapping, "Activity");
             mappedInputs.Add(property.Name);
-            if (marked && !property.IsDefined(typeof(WorkflowInputAttribute)))
-                throw Refused("Activity", activity, property, "is not an input: it has no [WorkflowInput]");
-            if (!marked && property.SetMethod is not { IsPublic: true })
+            if (marked && !ActivityContract.IsInput(property, marked))
+                throw Refused("Activity", activity, property, "is not an input: it has no [ActivityInput]");
+            if (property.SetMethod is not { IsPublic: true })
                 throw Refused("Activity", activity, property, "is not an input: it has no public setter");
         }
         foreach (var mapping in outputs.Where(item => item.Direction == PropertyMappingDirection.Output))
         {
             var property = Property(activity, mapping, "Activity");
-            if (marked && !property.IsDefined(typeof(WorkflowOutputAttribute)))
-                throw Refused("Activity", activity, property, "is not an output: it has no [WorkflowOutput]");
-            if (!marked && property.GetMethod is not { IsPublic: true })
+            if (marked && !ActivityContract.IsOutput(property, marked))
+                throw Refused("Activity", activity, property, "is not an output: it has no [ActivityOutput]");
+            if (property.GetMethod is not { IsPublic: true })
                 throw Refused("Activity", activity, property, "is not an output: it has no public getter");
         }
         foreach (var property in properties)
-            if (property.GetCustomAttribute<WorkflowInputAttribute>() is { Required: true, Default: null } &&
+            if (ActivityContract.IsInput(property, marked) && property.IsDefined(typeof(RequiredAttribute)) &&
+                property.GetCustomAttribute<DefaultValueAttribute>() == null &&
                 !mappedInputs.Contains(property.Name))
                 throw Refused("Activity", activity, property, "is a required input and is not mapped");
     }
