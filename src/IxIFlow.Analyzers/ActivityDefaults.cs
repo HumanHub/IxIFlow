@@ -57,9 +57,23 @@ internal static class ActivityDefaults
     }
 
     private static bool EnumValue(ITypeSymbol target, object? value) => value is string name
-        ? long.TryParse(name, NumberStyles.Integer, CultureInfo.InvariantCulture, out _) ||
+        ? EnumNumericValue(target, name) ||
           name.Split(',').All(part => target.GetMembers(part.Trim()).OfType<IFieldSymbol>().Any(field => field.HasConstantValue))
         : value != null && Type.GetTypeCode(value.GetType()) is >= TypeCode.SByte and <= TypeCode.UInt64;
+
+    private static bool EnumNumericValue(ITypeSymbol target, string value) =>
+        (target as INamedTypeSymbol)?.EnumUnderlyingType?.SpecialType switch
+        {
+            SpecialType.System_Byte => byte.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _),
+            SpecialType.System_SByte => sbyte.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _),
+            SpecialType.System_Int16 => short.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _),
+            SpecialType.System_UInt16 => ushort.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _),
+            SpecialType.System_Int32 => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _),
+            SpecialType.System_UInt32 => uint.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _),
+            SpecialType.System_Int64 => long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _),
+            SpecialType.System_UInt64 => ulong.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _),
+            _ => false
+        };
 
     private static Type? RuntimeType(ITypeSymbol type) => type.SpecialType switch
     {

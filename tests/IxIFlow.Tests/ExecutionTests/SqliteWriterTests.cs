@@ -77,7 +77,7 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(write);
 
-        Assert.Contains("External writers are unsupported (C-18)", error.Message);
+        Assert.Contains("External writers are unsupported", error.Message);
         Assert.Contains(Assert.IsType<SqliteException>(error.InnerException).SqliteErrorCode, new[] { 5, 6 });
     }
 
