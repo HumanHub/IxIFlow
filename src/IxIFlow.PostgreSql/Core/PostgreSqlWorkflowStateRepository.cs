@@ -166,15 +166,18 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         string instanceId, IReadOnlyList<ArmedWait> waits, DateTime now)
     {
         await connection.ExecuteAsync("""
-                UPDATE ixiflow_workflow_waits AS stored SET deadline_utc = armed.deadline_utc
-                FROM unnest(@WaitIds::text[], @Deadlines::timestamptz[]) AS armed (wait_id, deadline_utc)
+                UPDATE ixiflow_workflow_waits AS stored SET deadline_utc = COALESCE(stored.deadline_utc, armed.deadline_utc),
+                    default_payload_json = COALESCE(stored.default_payload_json, armed.default_payload_json)
+                FROM unnest(@WaitIds::text[], @Deadlines::timestamptz[], @DefaultPayloads::text[])
+                    AS armed (wait_id, deadline_utc, default_payload_json)
                 WHERE stored.instance_id = @InstanceId AND stored.wait_id = armed.wait_id
-                  AND stored.close_reason IS NULL AND stored.deadline_utc IS NULL
+                  AND stored.close_reason IS NULL
                 """, new
         {
             InstanceId = instanceId,
             WaitIds = waits.Select(wait => wait.WaitId).ToArray(),
-            Deadlines = waits.Select(wait => Timestamp(now + wait.Timeout)).ToArray()
+            Deadlines = waits.Select(wait => Timestamp(now + wait.Timeout)).ToArray(),
+            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson).ToArray()
         }, transaction);
     }
 

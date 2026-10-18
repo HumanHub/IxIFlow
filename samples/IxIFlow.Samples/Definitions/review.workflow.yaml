@@ -8,7 +8,6 @@ definitions:
   reason: review
   output:
   - source: Customer
-    sourceContext: event
     to: { kind: path, path: workflow.Customer }
 - kind: invokeWorkflow
   workflow: { name: ReviewChild, version: 1 }
@@ -19,5 +18,4 @@ definitions:
     from: { kind: path, path: workflow.Amount }
   output:
   - source: Amount
-    sourceContext: workflow
     to: { kind: path, path: workflow.Amount }

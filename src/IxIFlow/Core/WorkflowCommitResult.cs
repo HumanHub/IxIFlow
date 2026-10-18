@@ -297,6 +297,8 @@ public sealed class CheckpointCommit
         foreach (var wait in armed)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(wait.WaitId, nameof(armedWaits));
+            if (wait.Timeout == null && wait.DefaultPayloadJson == null)
+                throw new ArgumentException("An activated wait must supply a timeout or a suggested payload", nameof(armedWaits));
             ValidateDuration(wait.Timeout, nameof(armedWaits));
         }
         var closed = (closedWaits ?? []).ToArray();
