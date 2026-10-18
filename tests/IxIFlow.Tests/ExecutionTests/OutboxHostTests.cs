@@ -1,3 +1,4 @@
+using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
@@ -19,7 +20,7 @@ public sealed class OutboxHostTests
         new OutboxSettings(concurrency), time, NullLogger<WorkflowOutboxService>.Instance);
 
     [Fact]
-    public async Task InProcessPublisherCompletesAClientAwaitWithoutAdvancingThePollingClock()
+    public async Task CommittingHostCompletesItsOwnAwaitWithoutAnOutboxDelivery()
     {
         var time = new FakeTimeProvider();
         var services = new ServiceCollection();
@@ -27,23 +28,18 @@ public sealed class OutboxHostTests
         services.AddSingleton<TimeProvider>(time);
         services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
+        Assert.Empty(provider.GetServices<IOutboxPublisher>());
         var client = provider.GetRequiredService<IWorkflowClient>();
         var store = provider.GetRequiredService<IWorkflowStateRepository>();
-        var instance = new WorkflowInstance { InstanceId = "published-await", WorkflowName = "PublishedAwait",
-            Status = WorkflowStatus.Suspended, WorkflowDataJson = "{}", WorkflowDataType = typeof(Data).AssemblyQualifiedName! };
-        await store.SaveWorkflowInstanceAsync(instance);
-        var awaiting = client.AwaitAsync(instance.InstanceId, WorkflowAwaitCondition.Finished);
+        var definition = Workflow.Create<Data>("LocalAwait").Step<Noop>().WaitFor<Approval>("approval").Build();
+        var started = await client.RunAsync(definition, new Data());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        var awaiting = client.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished);
         Assert.False(awaiting.IsCompleted);
-        var publisher = provider.GetServices<IOutboxPublisher>().Single();
-        var outbox = store;
-        await outbox.RegisterPublisherAsync(publisher.Name, publisher.EventTypes);
-        instance.Status = WorkflowStatus.Completed;
-        Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(instance, instance.Revision, 0, Guid.NewGuid().ToString("N")))).Status);
-        Assert.False(awaiting.IsCompleted);
-        var delivery = Assert.Single(await outbox.ClaimDeliveriesAsync(publisher.Name, "owner", TimeSpan.FromMinutes(1), 1));
-        Assert.Equal(OutboxPublishOutcome.Delivered, (await publisher.PublishAsync(new(delivery.Event, delivery.Attempts, delivery.StoreNowUtc), default)).Outcome);
-        Assert.Equal(WorkflowExecutionStatus.Success, (await awaiting).Status);
+        await client.ResumeAsync(started.InstanceId, "approval", new Approval());
+        // The fake clock never advances, so store polling cannot complete the await; only the host can.
+        Assert.Equal(WorkflowExecutionStatus.Success, (await awaiting.WaitAsync(TimeSpan.FromSeconds(10))).Status);
+        Assert.Null(await store.GetPublisherAsync("ixiflow.in-process"));
     }
 
     [Fact]
@@ -272,4 +268,11 @@ public sealed class OutboxHostTests
     }
 
     public sealed class Data { }
+
+    public sealed class Approval { }
+
+    public sealed class Noop : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
 }
