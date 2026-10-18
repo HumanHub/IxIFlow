@@ -73,9 +73,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     // child's, as a child's terminal commit locks them, so the parent is read before any lock is taken, and read
     // again once the instance is locked; when it changed in between, nothing is done and the delete starts over.
     // Only the locked row is deleted: a later save or child insertion without the identity lock is left whole.
-    internal override DeletePlan Deletion => new(LeaseResetPoint.AfterInstanceLock, """
+    internal override string DeleteRevalidationSql => """
             SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE
-            """);
+            """;
 
     internal override bool ReleaseReturnsDue => true;
     // In key order, so two commits that start the same children wait for each other rather than deadlock.
@@ -249,17 +249,18 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
+                    (instance_id, incarnation, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
                      parent_instance_id)
-                SELECT child.instance_id, child.workflow_name, child.status, child.correlation_id, @Now,
+                SELECT child.instance_id, child.incarnation, child.workflow_name, child.status, child.correlation_id, @Now,
                     child.state_json, 1, @ParentInstanceId
-                FROM unnest(@Ids::text[], @Names::text[], @Statuses::text[], @CorrelationIds::text[],
-                    @Payloads::text[]) AS child (instance_id, workflow_name, status, correlation_id, state_json)
+                FROM unnest(@Ids::text[], @Incarnations::uuid[], @Names::text[], @Statuses::text[], @CorrelationIds::text[],
+                    @Payloads::text[]) AS child (instance_id, incarnation, workflow_name, status, correlation_id, state_json)
                 """, new
         {
             Now = Timestamp(now),
             ParentInstanceId = parentInstanceId,
             Ids = children.Select(child => child.Instance!.InstanceId).ToArray(),
+            Incarnations = children.Select(_ => Guid.NewGuid()).ToArray(),
             Names = children.Select(child => child.Instance!.WorkflowName).ToArray(),
             Statuses = children.Select(child => child.Instance!.Status.ToString()).ToArray(),
             CorrelationIds = children.Select(child => child.Instance!.CorrelationId).ToArray(),
@@ -483,7 +484,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // Identity serialization protects a missing instance; the row lock also orders appends.
         // Read clock_timestamp() in the next statement so commit time follows the lock wait (D-35).
         Statement.CommitState => """
-            SELECT revision AS Revision, cancellation_json AS CancellationJson,
+            SELECT revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
                 cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
@@ -569,13 +570,14 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
-              VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
+                  (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
+              VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
+                  incarnation = CASE WHEN @ExpectedRevision = 0 THEN @Incarnation ELSE incarnation END,
                   workflow_name = @WorkflowName, status = @Status,
                   correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
                   runnable_at_utc = @RunnableAtUtc,
@@ -605,8 +607,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             """,
         Statement.Save => """
             INSERT INTO ixiflow_workflow_instances AS target
-                (instance_id, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json)
-            VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
+                (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json)
+            VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
                 CASE WHEN @RunnableNow THEN clock_timestamp() ELSE @RunnableAtUtc END, @StateJson)
             ON CONFLICT (instance_id) DO UPDATE
             SET workflow_name = excluded.workflow_name, status = excluded.status,
@@ -626,8 +628,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId
             """,
         Statement.DeleteLease => """
-            UPDATE ixiflow_workflow_leases SET expires_at_utc = '-infinity', crash_count = 0
-            WHERE instance_id = @InstanceId
+            DELETE FROM ixiflow_workflow_leases WHERE instance_id = @InstanceId
             """,
         Statement.DeleteRows => """
                 DELETE FROM ixiflow_outbox_deliveries WHERE event_id IN (SELECT e.event_id FROM ixiflow_outbox_events e WHERE e.instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=e.event_id AND pending.status=0));

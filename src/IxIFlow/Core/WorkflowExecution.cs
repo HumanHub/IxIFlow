@@ -186,6 +186,10 @@ public class WorkflowOptions
 /// </summary>
 public class WorkflowInstance
 {
+    /// <summary>The identity of this creation of the instance, independent of its reusable ID.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Guid Incarnation { get; internal set; }
+
     /// <summary>The revision assigned by an atomic repository commit.</summary>
     public long Revision { get; set; }
 

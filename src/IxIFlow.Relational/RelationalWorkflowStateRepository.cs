@@ -114,17 +114,11 @@ public abstract partial class RelationalWorkflowStateRepository :
     private string CheckSql(string statement, string? sql) => !string.IsNullOrWhiteSpace(sql)
         ? sql : throw new InvalidOperationException($"Relational provider '{GetType().FullName}' is missing required statement '{statement}'.");
 
-    /// <summary>Where lease reset is safe relative to the provider's delete serialization locks.</summary>
-    internal enum LeaseResetPoint { BeforeTransaction, BeforeParentLock, AfterInstanceLock }
-
     /// <summary>
-    /// Orders lease reset during deletion. RevalidateStateSql locks and rechecks a possibly changed
+    /// Locks and rechecks a possibly changed
     /// parent under the identity lock; an absent locked row must leave any later insertion whole.
     /// </summary>
-    internal sealed record DeletePlan(LeaseResetPoint ResetAt, string? RevalidateStateSql = null);
-
-    /// <summary>Describes the locks under which deleting a row may reset its lease and revalidate its parent.</summary>
-    internal abstract DeletePlan Deletion { get; }
+    internal abstract string? DeleteRevalidationSql { get; }
 
     /// <summary>Supplies commit time only when the lease SQL compares expiry against that captured clock.</summary>
     internal virtual object LeaseParameters(string instanceId, DateTime now) =>
@@ -318,6 +312,12 @@ public abstract partial class RelationalWorkflowStateRepository :
             await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { InstanceId = instanceId });
             var running = await connection.ExecuteScalarAsync<int>(RequiredSql(Statement.Running),
                 new { InstanceId = instanceId }, transaction) > 0;
+            var now = await OutboxNowAsync(connection, transaction);
+            if (await TombstoneAsync(connection, transaction, instanceId, now) != null)
+            {
+                await transaction.CommitAsync();
+                return null;
+            }
             parameters.Add("Running", running);
             var grant = await connection.QuerySingleOrDefaultAsync<LeaseGrantRow>(RequiredSql(Statement.ClaimLease), parameters, transaction);
             await transaction.CommitAsync();
@@ -550,13 +550,15 @@ public abstract partial class RelationalWorkflowStateRepository :
             await using var connection = await OpenConnectionAsync();
             await using var transaction = await BeginTransactionAsync(connection, Operation.Save);
             await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { instance.InstanceId });
-            var (_, saveNow) = await LockAsync<CommitState>(connection, transaction!, Statement.CommitState, instance.InstanceId);
+            var (current, saveNow) = await LockAsync<CommitState>(connection, transaction!, Statement.CommitState, instance.InstanceId);
             await RefuseRemovedAsync(connection, transaction, instance.InstanceId, saveNow);
+            var incarnation = current?.Incarnation ?? Guid.NewGuid();
             var runnableNow = WorkflowStoreRules.IsRunnableNow(instance, false);
             await ExecuteOptionalAsync(connection, transaction, Statement.SaveParts, new { instance.InstanceId });
             var parameters = WithTimes(WithLocalTime(new
             {
                 instance.InstanceId,
+                Incarnation = incarnation,
                 instance.WorkflowName,
                 Status = instance.Status.ToString(),
                 instance.CorrelationId,
@@ -578,6 +580,7 @@ public abstract partial class RelationalWorkflowStateRepository :
                 await RecordCompletionAsync(connection, transaction, instance, 0,
                     await OutboxNowAsync(connection, transaction));
             await CompleteAsync(transaction);
+            instance.Incarnation = incarnation;
             return true;
         });
     }
@@ -621,6 +624,13 @@ public abstract partial class RelationalWorkflowStateRepository :
         await RefuseRemovedAsync(connection, transaction, commit.InstanceId, now);
         var currentRevision = current?.Revision ?? 0;
         var receipt = await connection.QuerySingleOrDefaultAsync<CommitReceipt>(RequiredSql(Statement.Receipt), new { commit.InstanceId, commit.CommitId }, transaction);
+        // Receipts are deleted with the instance, so a present receipt belongs to its current creation.
+        if (receipt == null && commit.ExpectedRevision > 0 && commit.Epoch != 0 &&
+            current != null && current.Incarnation != commit.Incarnation)
+        {
+            await transaction.CommitAsync();
+            return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision);
+        }
         // Replays answer their receipt without re-admitting children that may already be removed.
         if (receipt == null && commit.ChildStarts.Count > 0)
         {
@@ -708,6 +718,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             snapshot.WorkflowName,
             snapshot.CorrelationId,
             snapshot.ParentInstanceId,
+            commit.Incarnation,
             Status = snapshot.Status.ToString(),
             commit.InboxReadThrough,
             StateJson = commit.Payload,
@@ -921,39 +932,33 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             await using var connection = await OpenConnectionAsync();
             var parameters = new { InstanceId = instanceId };
-            var deletion = Deletion;
-            if (deletion.ResetAt == LeaseResetPoint.BeforeTransaction)
-                await connection.ExecuteAsync(RequiredSql(Statement.DeleteLease), parameters);
             while (true)
             {
                 await using var transaction = (await BeginTransactionAsync(connection, Operation.Delete))!;
                 var json = await connection.QuerySingleOrDefaultAsync<string>(RequiredSql(Statement.DeleteState), parameters, transaction);
                 var seen = WaitingParent(json);
-                if (deletion.ResetAt == LeaseResetPoint.BeforeParentLock)
-                    await connection.ExecuteAsync(RequiredSql(Statement.DeleteLease), parameters, transaction);
                 var parent = seen is { } waiting
                     ? await LockAsync<InboxRow>(connection, transaction, Statement.DeleteParentInbox, waiting.ParentId)
                     : default;
                 await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, parameters);
-                if (deletion.RevalidateStateSql is { } lockedSql)
+                if (DeleteRevalidationSql is { } lockedSql)
                 {
-                    json = await connection.QuerySingleOrDefaultAsync<string>(CheckSql("DeletePlan.RevalidateStateSql", lockedSql), parameters, transaction);
+                    json = await connection.QuerySingleOrDefaultAsync<string>(CheckSql(nameof(DeleteRevalidationSql), lockedSql), parameters, transaction);
                     if (WaitingParent(json) != seen)
                     {
                         await transaction.RollbackAsync();
                         continue;
                     }
                 }
-                if (deletion.ResetAt == LeaseResetPoint.AfterInstanceLock)
-                    await connection.ExecuteAsync(RequiredSql(Statement.DeleteLease), parameters, transaction);
                 if (seen is { } answering)
                 {
                     var gone = ToEvent(WorkflowStoreRules.ChildGone(instanceId, answering.ParentId, answering.WaitId));
                     if ((await AppendAsync(connection, transaction, gone, gone.ContentHash(), parent.Row, parent.Now)).MadeRunnable)
                         await NotifyRunnableAsync(connection, transaction);
                 }
+                await connection.ExecuteAsync(RequiredSql(Statement.DeleteLease), parameters, transaction);
                 // A provider that rechecks the row leaves an instance inserted after that read whole.
-                if (json != null || deletion.RevalidateStateSql == null)
+                if (json != null || DeleteRevalidationSql == null)
                 {
                     if (json != null)
                     {
@@ -1066,6 +1071,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     internal sealed class CommitState
     {
+        public Guid Incarnation { get; set; }
         public long Revision { get; set; }
         public string? CancellationJson { get; set; }
         public bool CancellationAcknowledged { get; set; }
@@ -1102,6 +1108,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
         private WorkflowInstance Runnable(WorkflowInstance instance, bool normalize)
         {
+            instance.Incarnation = Incarnation;
             instance.RunnableAtUtc = normalize && RunnableAtUtc is { } runnableAt ? Utc(runnableAt) : RunnableAtUtc;
             return instance;
         }
