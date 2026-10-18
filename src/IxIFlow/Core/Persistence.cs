@@ -128,7 +128,8 @@ public static class WorkflowStoreRules
         EntryType = TraceEntryType.EventRefused,
         Clock = TraceClock.Store,
         Payload = new ReceivedEventTrace(workflowEvent.EventId, workflowEvent.Key, workflowEvent.EventType,
-            workflowEvent.TargetWaitId, null, rejection)
+            workflowEvent.TargetWaitId is { } waitId ? WaitReference.Of(workflowEvent.InstanceId, waitId) : null,
+            null, rejection)
     };
 
     /// <summary>

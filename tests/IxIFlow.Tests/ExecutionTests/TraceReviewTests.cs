@@ -40,7 +40,7 @@ public sealed class TraceReviewTests
         var trace = await client.GetTraceAsync(started.InstanceId);
         var timedOut = Assert.Single(trace, entry => entry.EntryType == TraceEntryType.WaitTimedOut);
         var payload = Assert.IsType<TimeoutTrace>(timedOut.Payload);
-        Assert.Equal(wait.WaitId, payload.WaitId);
+        Assert.Equal(WaitReference.Of(started.InstanceId, wait.WaitId), payload.WaitRef);
         Assert.Equal(request ? "root/2" : "root/1", payload.StepId);
         Assert.Equal(payload.StepId + "/timeout", payload.ScopeId);
         Assert.Equal(WorkflowStepType.SuspendResume, payload.StepKind);
@@ -69,7 +69,7 @@ public sealed class TraceReviewTests
         Assert.Equal(2, timeouts.Length);
         Assert.False(timeouts[0].Replayed);
         Assert.True(timeouts[1].Replayed);
-        Assert.Equal(timeouts[0].WaitId, timeouts[1].WaitId);
+        Assert.Equal(timeouts[0].WaitRef, timeouts[1].WaitRef);
         Assert.Equal(timeouts[0].ScopeId, timeouts[1].ScopeId);
     }
 

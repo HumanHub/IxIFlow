@@ -103,7 +103,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         if (matching.Count == 1)
         {
             Consume(scopes, checkpoint, stored, matching[0], payload);
-            Record(checkpoint, stored, matching[0], null);
+            Record(instance, checkpoint, stored, matching[0], null);
             return;
         }
         var rejection = matching.Count > 1 ? EventRejection.Ambiguous
@@ -201,10 +201,11 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         EventRejection rejection)
     {
         checkpoint.Inbox.Settle(new EventSettlement(stored.EventId, EventOutcome.Rejected, Rejection: rejection));
-        Record(checkpoint, stored, null, rejection);
+        Record(instance, checkpoint, stored, null, rejection);
     }
 
-    private void Record(ExecutionCheckpoint checkpoint, StoredWorkflowEvent stored, WaitState? wait, EventRejection? refusal)
+    private void Record(WorkflowInstance instance, ExecutionCheckpoint checkpoint, StoredWorkflowEvent stored,
+        WaitState? wait, EventRejection? refusal)
     {
         if (checkpoint.Trace.Accepts(refusal == null ? TraceEntryType.EventReceived : TraceEntryType.EventRefused, Now))
             checkpoint.Trace.Add(new ExecutionTraceEntry
@@ -212,7 +213,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
                 Timestamp = Now,
                 EntryType = refusal == null ? TraceEntryType.EventReceived : TraceEntryType.EventRefused,
                 Payload = new ReceivedEventTrace(stored.EventId, stored.Key ?? wait?.Key, stored.EventType,
-                    wait?.Id ?? stored.TargetWaitId, wait?.StepId, refusal)
+                    (wait?.Id ?? stored.TargetWaitId) is { } waitId
+                        ? WaitReference.Of(instance.InstanceId, waitId) : null, wait?.StepId, refusal)
             });
     }
 

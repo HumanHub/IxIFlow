@@ -16,6 +16,7 @@ internal sealed partial class TraceBuffer
     private long _acknowledgedCount;
     private bool _acknowledgedBudget;
     private WorkflowScopeCatalog? _scopes;
+    private string _instanceId = "";
     private TimeProvider _time = TimeProvider.System;
 
     public IReadOnlyList<ExecutionTraceEntry> Pending => _pending;
@@ -30,6 +31,7 @@ internal sealed partial class TraceBuffer
         TimeProvider? time, WorkflowScopeCatalog scopes)
     {
         Configure(limits.MaxTraceEntriesPerCommit);
+        _instanceId = instance.InstanceId;
         _enabled = instance.TracingEnabled;
         _detail = limits.TraceDetail;
         _budget = limits.MaxTraceEntriesPerInstance;

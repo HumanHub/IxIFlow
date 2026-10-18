@@ -54,7 +54,8 @@ internal static class OperatorTrace
             if (checkpoint.Trace.Accepts(TraceEntryType.ChildCancellationRequested, now))
                 checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now,
                     EntryType = TraceEntryType.ChildCancellationRequested, Payload = Payload(reason, now) with
-                    { ChildInstanceId = command.ChildInstanceId, WaitId = command.ParentWaitId } });
+                    { ChildInstanceId = command.ChildInstanceId,
+                        WaitRef = WaitReference.Of(instance.InstanceId, command.ParentWaitId) } });
         }
     }
 
