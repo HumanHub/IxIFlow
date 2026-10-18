@@ -394,12 +394,13 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 SELECT COUNT(*) FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId AND status = 'Running'
                 """,
         Statement.ClaimLease => """
+                UPDATE ixiflow_execution_epoch SET epoch = epoch + 1 WHERE id = 1;
                 INSERT INTO ixiflow_workflow_leases (instance_id, token, expires_at_utc, epoch, crash_count)
-                VALUES (@InstanceId, @Token, @Until, 1, 0)
+                VALUES (@InstanceId, @Token, @Until, (SELECT epoch FROM ixiflow_execution_epoch WHERE id = 1), 0)
                 ON CONFLICT (instance_id) DO UPDATE
                 SET token = excluded.token,
                     expires_at_utc = @Until,
-                    epoch = ixiflow_workflow_leases.epoch + 1,
+                    epoch = excluded.epoch,
                     crash_count = ixiflow_workflow_leases.crash_count + CASE
                         WHEN @Running AND ixiflow_workflow_leases.expires_at_utc > '0001-01-01 00:00:00.0000000' THEN 1 ELSE 0 END
                 WHERE ixiflow_workflow_leases.expires_at_utc <= @Now
@@ -684,6 +685,11 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             payload_hash BLOB NOT NULL,
             PRIMARY KEY (instance_id, commit_id)
         );
+        CREATE TABLE ixiflow_execution_epoch (
+            id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+            epoch INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0)
+        );
+        INSERT INTO ixiflow_execution_epoch (id, epoch) VALUES (1, 0);
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_leases (
             instance_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
             token TEXT COLLATE BINARY NOT NULL,

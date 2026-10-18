@@ -440,11 +440,12 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             """,
         Statement.ClaimLease => """
             INSERT INTO ixiflow_workflow_leases AS lease (instance_id, token, expires_at_utc, epoch, crash_count)
-            VALUES (@InstanceId, @Token, clock_timestamp() + @Milliseconds * INTERVAL '1 millisecond', 1, 0)
+            VALUES (@InstanceId, @Token, clock_timestamp() + @Milliseconds * INTERVAL '1 millisecond',
+                nextval('ixiflow_execution_epoch'), 0)
             ON CONFLICT (instance_id) DO UPDATE
             SET token = excluded.token,
                 expires_at_utc = clock_timestamp() + @Milliseconds * INTERVAL '1 millisecond',
-                epoch = lease.epoch + 1,
+                epoch = excluded.epoch,
                 crash_count = lease.crash_count + CASE
                     WHEN @Running AND lease.expires_at_utc > '-infinity' THEN 1 ELSE 0 END
             WHERE lease.expires_at_utc <= clock_timestamp()
@@ -760,6 +761,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             payload_hash bytea NOT NULL,
             PRIMARY KEY (instance_id, commit_id)
         );
+        CREATE SEQUENCE ixiflow_execution_epoch AS bigint START WITH 1 INCREMENT BY 1 NO CYCLE;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_leases (
             instance_id varchar(100) COLLATE "C" NOT NULL PRIMARY KEY,
             token varchar(100) COLLATE "C" NOT NULL,
