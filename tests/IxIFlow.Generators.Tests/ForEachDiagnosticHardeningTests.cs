@@ -38,7 +38,7 @@ public sealed class ForEachDiagnosticHardeningTests
         Assert.Equal(member, diagnostic.Path);
         Assert.Equal(WorkflowDiagnosticSeverity.Error, diagnostic.Severity);
         var expected = DocumentModel.GetLocation(document, member);
-        var lines = yaml.Split('\n');
+        var lines = yaml.Split('\n').Select(line => line.TrimEnd('\r')).ToArray();
         var expectedLine = Array.FindLastIndex(lines, line => line == marker);
         Assert.True(expectedLine >= 0, marker);
         Assert.Equal(expectedLine + 1, expected.Line);
