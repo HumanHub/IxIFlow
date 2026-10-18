@@ -29,6 +29,14 @@ public interface IWorkflowBuilder<TWorkflowData>
         Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null)
         where TActivity : class, IAsyncActivity;
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
+        string name,
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null,
+        Expression<Func<WorkflowContext<TWorkflowData>, string>>? subjectExpression = null)
+        where TActivity : class, IAsyncActivity;
+
     /// <summary>
     /// Runs a request activity (<see cref="IRequestActivity{TReply}"/>) whose answer the workflow takes
     /// with <c>WaitFor&lt;TReply&gt;(name)</c> later in the same body (D-33). The answer's wait opens
@@ -47,6 +55,7 @@ public interface IWorkflowBuilder<TWorkflowData>
     /// </summary>
     /// <returns>The constructed workflow definition</returns>
     WorkflowDefinition Build();
+
 }
 
 /// <summary>
@@ -54,7 +63,7 @@ public interface IWorkflowBuilder<TWorkflowData>
 /// </summary>
 /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
 /// <typeparam name="TPreviousStepData">The previous step's data type</typeparam>
-public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData> 
+public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     where TPreviousStepData : class
 {
     /// <summary>Sets the last step's stable ID and source location.</summary>
@@ -74,6 +83,14 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
         Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
+        where TActivity : class, IAsyncActivity;
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
+        string name,
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
@@ -141,6 +158,12 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Parallel(
         Action<IParallelBuilder<TWorkflowData, TPreviousStepData>> configure);
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> DoWhile(
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression);
+
     /// <summary>
     /// Executes a loop with condition check after each iteration
     /// </summary>
@@ -150,6 +173,12 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> DoWhile(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition);
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> WhileDo(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure);
 
     /// <summary>
     /// Executes a loop with condition check before each iteration
@@ -213,6 +242,14 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     ISagaContainerBuilder<TWorkflowData, TPreviousStepData> Saga(
         Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure);
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
+        string suspendReason,
+        Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>>? resumeExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class;
+
     /// <summary>
     /// Suspends workflow execution until a resume event is received
     /// </summary>
@@ -226,6 +263,14 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
         Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>? resumeCondition = null,
         Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
         where TResumeEvent : class;
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(
+        string key,
+        Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class;
 
     /// <summary>
     /// Registers a wait for a correlated event and continues with that event as the previous step.
@@ -241,4 +286,5 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// </summary>
     /// <returns>The constructed workflow definition</returns>
     WorkflowDefinition Build();
+
 }

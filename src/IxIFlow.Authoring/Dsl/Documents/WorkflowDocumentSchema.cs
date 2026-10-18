@@ -44,7 +44,7 @@ public static class WorkflowDocumentSchema
             var allowsNull = underlying != null || nullable?.ReadState == NullabilityState.Nullable;
             type = underlying ?? type;
             if (type == typeof(object)) return new JsonObject();
-            var scalar = type == typeof(string) ? "string" : type == typeof(int) ? "integer" : type == typeof(bool) ? "boolean" : null;
+            var scalar = type == typeof(string) ? "string" : type == typeof(int) ? "integer" : type == typeof(bool) ? "boolean" : type == typeof(double) ? "number" : null;
             if (scalar != null)
                 return new JsonObject { ["type"] = allowsNull ? new JsonArray(scalar, "null") : JsonValue.Create(scalar) };
             if (type.IsArray)
@@ -84,8 +84,10 @@ public static class WorkflowDocumentSchema
                 }
                 var schema = ValueSchema(member.PropertyType, nullability.Create(member));
                 schema["description"] = Describe(member);
-                if (member.GetCustomAttribute<DocumentValuesAttribute>() is { } values) schema["enum"] = Strings(values.Values);
-                if (member.GetValue(instance) is { } value && (value is string text && text.Length > 0 || value is int or bool))
+                if (member.GetCustomAttribute<DocumentValuesAttribute>() is { } values)
+                    schema["enum"] = new JsonArray(values.Values.Select(value => (JsonNode?)JsonValue.Create(value))
+                        .Concat(nullability.Create(member).ReadState == NullabilityState.Nullable ? new JsonNode?[] { null } : []).ToArray());
+                if (member.GetValue(instance) is { } value && (value is string text && text.Length > 0 || value is int or bool or double))
                     schema["default"] = JsonSerializer.SerializeToNode(value);
                 properties[key.Name] = schema;
                 if (member.IsDefined(typeof(DocumentRequiredAttribute))) required.Add(key.Name);

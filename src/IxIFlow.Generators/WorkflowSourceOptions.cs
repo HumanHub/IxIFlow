@@ -5,10 +5,16 @@ public sealed class WorkflowSourceOptions
 {
     public string Namespace { get; set; } = "IxIFlow.Generated";
     public string? ClassName { get; set; }
+    /// <summary>Require every referenced type to have a host-resolved contract.
+    /// Without this option, type names are not resolved, so STEP003, STEP009 and WF003 cannot be reported.
+    /// </summary>
+    public bool RequireResolvedTypes { get; set; }
     public IDictionary<string, string> ActivityVersions { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
     /// <summary>Package or workflow imports resolved and pinned by the publishing host.</summary>
     public ISet<string> ResolvedImports { get; } = new HashSet<string>(StringComparer.Ordinal);
     public IDictionary<string, string> Types { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    /// <summary>The data type inferred from a workflow type's IWorkflow&lt;T&gt; contract.</summary>
+    public IDictionary<string, string> WorkflowDataTypes { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public IDictionary<string, string> Members { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public IDictionary<string, WorkflowSourceReference> Workflows { get; } =
         new Dictionary<string, WorkflowSourceReference>(StringComparer.Ordinal);

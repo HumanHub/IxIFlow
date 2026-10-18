@@ -22,6 +22,14 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
         Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
         where TActivity : class, IAsyncActivity;
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(
+        string name,
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null)
+        where TActivity : class, IAsyncActivity;
+
     /// <summary>
     /// Runs a request activity (<see cref="IRequestActivity{TReply}"/>) as a saga step, whose answer the
     /// saga takes with <c>WaitFor&lt;TReply&gt;(name)</c> later in the saga (D-33). The answer's wait opens
@@ -39,6 +47,14 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
         where TActivity : class, IAsyncActivity;
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
+        string suspendReason,
+        Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>>? resumeExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class;
+
     /// <summary>
     /// Suspends workflow execution until a resume event is received
     /// </summary>
@@ -50,6 +66,14 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? resumeCondition = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class;
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
+        string key,
+        Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>>? matchesExpression = null,
         Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
         where TResumeEvent : class;
 
@@ -69,4 +93,5 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     ISagaActivityBuilder<TWorkflowData, TPreviousStepData> OutcomeOn<TProperty>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TProperty>> propertySelector,
         Action<ISagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty>> configure);
+
 }
