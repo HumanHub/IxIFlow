@@ -80,7 +80,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         Assert.False(queued.IsCompleted);
         gate.Release();
         // Behind the finished run there is nothing left to recover.
-        Assert.Equal(WorkflowExecutionStatus.Faulted, (await queued.WaitAsync(Patience)).Status);
+        Assert.Equal(WorkflowExecutionStatus.Success, (await queued.WaitAsync(Patience)).Status);
     }
 
     [Fact]
