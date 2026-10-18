@@ -14,8 +14,11 @@ internal sealed class EngineSymbols
     {
         Compilation = compilation;
         Activity = activity;
-        Input = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.WorkflowInputAttribute");
-        Output = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.WorkflowOutputAttribute");
+        Input = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.ActivityInputAttribute");
+        Output = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.ActivityOutputAttribute");
+        InputOutput = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.ActivityInputOutputAttribute");
+        Required = compilation.GetTypeByMetadataName("System.ComponentModel.DataAnnotations.RequiredAttribute");
+        DefaultValue = compilation.GetTypeByMetadataName("System.ComponentModel.DefaultValueAttribute");
         Combiner = compilation.GetTypeByMetadataName("IxIFlow.Core.ICombiner`1");
         Context = compilation.GetTypeByMetadataName("IxIFlow.Core.WorkflowContext`1");
         Expression = compilation.GetTypeByMetadataName("System.Linq.Expressions.Expression`1");
@@ -26,6 +29,9 @@ internal sealed class EngineSymbols
     public INamedTypeSymbol Activity { get; }
     public INamedTypeSymbol? Input { get; }
     public INamedTypeSymbol? Output { get; }
+    public INamedTypeSymbol? InputOutput { get; }
+    public INamedTypeSymbol? Required { get; }
+    public INamedTypeSymbol? DefaultValue { get; }
     public INamedTypeSymbol? Combiner { get; }
     public INamedTypeSymbol? Context { get; }
     public INamedTypeSymbol? Expression { get; }

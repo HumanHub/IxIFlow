@@ -22,11 +22,11 @@ public sealed class Answer
 [WorkflowActivity("test.multiply")]
 public sealed class Multiply : IAsyncActivity
 {
-    [WorkflowInput(Required = true)]
+    [ActivityInput, System.ComponentModel.DataAnnotations.Required]
     public int Value { get; set; }
-    [WorkflowInput(Default = "2")]
+    [ActivityInput, System.ComponentModel.DefaultValue(2)]
     public int Factor { get; set; } = 2;
-    [WorkflowOutput]
+    [ActivityOutput]
     public int Result { get; private set; }
     public string? Internal { get; set; }
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)

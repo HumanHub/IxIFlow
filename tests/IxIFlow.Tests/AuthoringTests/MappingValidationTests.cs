@@ -43,7 +43,7 @@ public sealed class MappingValidationTests
                 .Input(activity => activity.Result).From(ctx => ctx.WorkflowData.Number))
             .Build());
 
-        Assert.Contains("Activity property 'Marked.Result' is not an input: it has no [WorkflowInput]", error.Message);
+        Assert.Contains("Activity property 'Marked.Result' is not an input: it has no [ActivityInput]", error.Message);
     }
 
     [Fact]
@@ -55,7 +55,7 @@ public sealed class MappingValidationTests
                 .Output(activity => activity.Amount).To(ctx => ctx.WorkflowData.Number))
             .Build());
 
-        Assert.Contains("Activity property 'Marked.Amount' is not an output: it has no [WorkflowOutput]", error.Message);
+        Assert.Contains("Activity property 'Marked.Amount' is not an output: it has no [ActivityOutput]", error.Message);
     }
 
     [Fact]
@@ -166,16 +166,16 @@ public sealed class MappingValidationTests
     /// <summary>Marked: only marked properties are inputs or outputs.</summary>
     public sealed class Marked : IAsyncActivity
     {
-        [WorkflowInput(Required = true)]
+        [ActivityInput, System.ComponentModel.DataAnnotations.Required]
         public int Amount { get; set; }
 
-        [WorkflowInput(Required = true, Default = "1")]
+        [ActivityInput, System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DefaultValue(1)]
         public int Factor { get; set; } = 1;
 
-        [WorkflowInput]
+        [ActivityInput]
         public int Optional { get; set; }
 
-        [WorkflowOutput]
+        [ActivityOutput]
         public int Result { get; set; }
 
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>

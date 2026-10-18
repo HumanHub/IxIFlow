@@ -7,9 +7,11 @@ An IxIFlow activity implements `IAsyncActivity`. The fluent C# builder can use a
 
 ## Define an activity
 
-`WorkflowActivityAttribute` supplies a stable key and optional version, name, category, icon name, and designer ID. Mark input properties with `WorkflowInputAttribute` and output properties with `WorkflowOutputAttribute`.
+`WorkflowActivityAttribute` supplies a stable key and optional version, name, category, icon name, and designer ID. The property markers `ActivityInput`, `ActivityOutput`, and `ActivityInputOutput` declare inputs, outputs, and properties mapped both ways. They have no properties of their own.
 
 ```csharp
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
 using IxIFlow.ActivitySdk;
 using IxIFlow.Core;
 
@@ -17,10 +19,10 @@ using IxIFlow.Core;
     Category = "Orders", Icon = "check-circle")]
 public sealed class ValidateOrderActivity : IAsyncActivity
 {
-    [WorkflowInput(Label = "Order ID", Required = true)]
+    [ActivityInput, Required, Display(Name = "Order ID", Description = "The order to validate")]
     public string OrderId { get; set; } = "";
 
-    [WorkflowOutput]
+    [ActivityOutput]
     public bool IsValid { get; private set; }
 
     public Task ExecuteAsync(IActivityContext context,
@@ -32,7 +34,16 @@ public sealed class ValidateOrderActivity : IAsyncActivity
 }
 ```
 
-`WorkflowInput` also accepts `Control`, `Help`, and a string `Default`. The supported catalog controls are `text`, `code`, `binding`, and `connection`. The metadata identifies fields and display choices; the activity's `ExecuteAsync` method defines its runtime behavior.
+A marker declares direction: an input needs a public setter, an output a public getter, and an in-out property both. Invalid accessors fail workflow building and produce analyzer errors at the property. Once an activity uses any marker, only marked properties are exposed. An activity without markers keeps the convention: every public setter is an input and every public getter is an output.
+
+Use .NET attributes for metadata and validation:
+
+- `[Required]` requires an input mapping, a `[DefaultValue]`, or a step-level YAML `defaults` entry at build time. Before `ExecuteAsync`, a null or empty string fails the attempt with an `InvalidInput` message and the existing `WorkflowErrorKind.InvalidRequest`. Output-only properties cannot have `[Required]`.
+- `[DefaultValue(2)]` supplies a typed default for an integer input; `[DefaultValue("customer-db")]` supplies a string. Build validation refuses values that cannot be assigned or converted to the property type, and defaults on properties without a public setter. A mapping or YAML step default takes precedence. The engine applies an attribute default before saving the input copy, so every retry starts from that same saved value, even if the failed attempt changed its property. An initializer is separate: a defaulted input may keep `= string.Empty;` and the engine supplies its declared default.
+- `[Display(Name = "Label", Description = "Help")]` supplies labels and help for inputs and outputs, including both sides of in-out properties. The label falls back to the property name.
+- `[UIHint("code")]` selects the input control. The catalog validates `text`, `code`, `binding`, and `connection`; an omitted hint means `text`.
+
+The catalog keeps default values typed when serializing them. Its `Fields` describe inputs; `Outputs` maps each output property name to its label and help. In-out properties appear in both.
 
 ## Register an installed assembly
 
