@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
 using IxIFlow.Core;
 
@@ -9,6 +10,9 @@ namespace IxIFlow.Builders.Interfaces;
 public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     where TPreviousStepData : class
 {
+    /// <summary>Identifies the preceding step and its source.</summary>
+    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>
     /// Adds a step to the saga execution
     /// </summary>

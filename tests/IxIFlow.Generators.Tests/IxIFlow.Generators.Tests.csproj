@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <ProjectReference Include="../../src/IxIFlow.Generators/IxIFlow.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="true" />
+    <ProjectReference Include="../../src/IxIFlow/IxIFlow.csproj" />
+    <ProjectReference Include="../../src/IxIFlow.Authoring/IxIFlow.Authoring.csproj" />
+    <ProjectReference Include="../../src/IxIFlow.Analyzers/IxIFlow.Analyzers.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <IxIFlowWorkflow Include="Fixtures/*.yaml" />
+  </ItemGroup>
+  <Import Project="../../src/IxIFlow/buildTransitive/IxIFlow.props" />
+</Project>

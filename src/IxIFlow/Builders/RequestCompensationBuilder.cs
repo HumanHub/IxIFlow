@@ -51,6 +51,7 @@ public sealed class RequestCompensationActivityInputBuilder<TWorkflowData, TComp
                     $"Expected {typeof(RequestCompensationContext<TWorkflowData, TCurrentStepData, TReply>).Name}, " +
                     $"got {context.GetType().Name}"),
             Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            ContextFactory = Core.Runtime.WorkflowStepDelegates.RequestCompensation<TWorkflowData, TCurrentStepData, TReply>,
             SourceType = typeof(RequestCompensationContext<TWorkflowData, TCurrentStepData, TReply>),
             CompensationSource = CompensationInputSource.CurrentStepContext,
             TargetType = typeof(TProperty),

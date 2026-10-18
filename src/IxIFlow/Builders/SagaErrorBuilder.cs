@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
 
@@ -12,6 +13,12 @@ public sealed class SagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>(
     where TWorkflowData : class
     where TPreviousStepData : class
 {
+    public ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        Core.Runtime.WorkflowStepIdentity.Assign(steps, id, sourcePath, sourceLine);
+        return this;
+    }
+
     public ISagaContinuationBuilder<TWorkflowData, TPreviousStepData> Compensate() =>
         ContinueWith(CompensationStrategy.CompensateAll);
 
@@ -42,6 +49,7 @@ public sealed class SagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>(
     {
         steps.Add(new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>().ForFault<TFault>(),
             Name = typeof(TActivity).Name,
             StepType = WorkflowStepType.Activity,
             ActivityType = typeof(TActivity),
@@ -58,6 +66,7 @@ public sealed class SagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>(
     {
         var step = new WorkflowStep
         {
+            Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>().ForFault<TFault>(),
             Name = typeof(TActivity).Name,
             StepType = WorkflowStepType.Activity,
             ActivityType = typeof(TActivity),
@@ -78,6 +87,7 @@ public sealed class SagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>(
         where TEvent : class
     {
         new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).WaitFor(key, matches, configure);
+        steps[^1].Runtime = steps[^1].Runtime.ForFault<TFault>();
         return new SagaErrorBuilder<TWorkflowData, TFault, TEvent>(steps, sagaSteps, errorHandlers);
     }
 }

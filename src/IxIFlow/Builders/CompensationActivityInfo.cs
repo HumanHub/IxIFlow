@@ -7,6 +7,8 @@ namespace IxIFlow.Builders;
 /// </summary>
 public class CompensationActivityInfo
 {
+    internal Core.Runtime.WorkflowStepDelegates Runtime { get; set; } = null!;
+
     public Type ActivityType { get; set; } = null!;
     public Type? PreviousChainActivityType { get; set; }
 

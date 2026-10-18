@@ -37,7 +37,7 @@ public class DslCompilationTests
     }
 
     [Fact]
-    public async Task WorkflowDocumentCompiler_Should_Compile_Basic_Activity_Steps()
+    public async Task GeneratedYaml_PreservesBasicActivitySteps()
     {
         var document = new WorkflowDocument
         {
@@ -58,8 +58,7 @@ public class DslCompilationTests
             ]
         };
 
-        var compiler = new WorkflowDocumentCompiler(new WorkflowDocumentValidator());
-        var definition = await compiler.CompileAsync(document, CreateContext());
+        var definition = await YamlTestCompilation.BuildAsync(document, CreateContext());
 
         Assert.Equal("OrderProcessing", definition.Name);
         Assert.Single(definition.Steps);
@@ -67,7 +66,7 @@ public class DslCompilationTests
     }
 
     [Fact]
-    public async Task WorkflowDocumentCompiler_Should_Compile_Activity_Reference_Sequence_Suspend_And_InvokeWorkflow_Steps()
+    public async Task GeneratedYaml_PreservesActivityReferencesSequencesWaitsAndChildInvocations()
     {
         var document = new WorkflowDocument
         {
@@ -144,21 +143,21 @@ public class DslCompilationTests
             ]
         };
 
-        var compiler = new WorkflowDocumentCompiler(new WorkflowDocumentValidator());
-        var definition = await compiler.CompileAsync(document, CreateContext());
+        var definition = await YamlTestCompilation.BuildAsync(document, CreateContext());
 
-        Assert.Equal(4, definition.Steps.Count);
+        Assert.Equal(2, definition.Steps.Count);
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
         Assert.Equal(typeof(ValidateOrderAsyncActivity), definition.Steps[0].ActivityType);
-        Assert.Equal(WorkflowStepType.Activity, definition.Steps[1].StepType);
-        Assert.Equal(typeof(ProcessOrderAsyncActivity), definition.Steps[1].ActivityType);
-        Assert.Equal(WorkflowStepType.SuspendResume, definition.Steps[2].StepType);
-        Assert.Equal(typeof(ApprovalEvent), definition.Steps[2].ResumeEventType);
-        Assert.Equal("Waiting for approval", definition.Steps[2].StepMetadata["SuspendReason"]);
-        Assert.Equal(WorkflowStepType.WorkflowInvocation, definition.Steps[3].StepType);
-        Assert.Equal("ChildWorkflow", definition.Steps[3].WorkflowName);
-        Assert.Equal(3, definition.Steps[3].WorkflowVersion);
-        Assert.Equal([0, 1, 2, 3], definition.Steps.Select(x => x.Order).ToArray());
+        var sequence = definition.Steps[1];
+        Assert.Equal(WorkflowStepType.Sequence, sequence.StepType);
+        Assert.Equal(typeof(ProcessOrderAsyncActivity), Assert.Single(sequence.SequenceSteps[0].SequenceSteps).ActivityType);
+        Assert.Equal(WorkflowStepType.SuspendResume, sequence.SequenceSteps[1].StepType);
+        Assert.Equal(typeof(ApprovalEvent), sequence.SequenceSteps[1].ResumeEventType);
+        Assert.Equal("Waiting for approval", sequence.SequenceSteps[1].StepMetadata["SuspendReason"]);
+        Assert.Equal(WorkflowStepType.WorkflowInvocation, sequence.SequenceSteps[2].StepType);
+        Assert.Equal("ChildWorkflow", sequence.SequenceSteps[2].WorkflowName);
+        Assert.Equal(3, sequence.SequenceSteps[2].WorkflowVersion);
+        Assert.Equal([0, 1, 2], sequence.SequenceSteps.Select(step => step.Order).ToArray());
     }
 
     [Fact]

@@ -26,17 +26,24 @@ internal static class MappingRules
     {
         foreach (var step in ParallelRules.Flatten(steps))
         {
-            if (step.ActivityType != null)
-                CheckActivity(step.ActivityType, step.InputMappings, step.OutputMappings);
-            if (step.StepType == WorkflowStepType.WorkflowInvocation && step.InvokedDataType != null)
-                CheckData(step.InvokedDataType, step.InputMappings, step.OutputMappings, "Child workflow");
-            if (step.ResumeEventType != null && step.ActivityType == null &&
-                step.StepType != WorkflowStepType.WorkflowInvocation)
-                CheckData(step.ResumeEventType, [], step.OutputMappings, "Event");
-            if (step.StepMetadata.TryGetValue("CompensationActivities", out var value) &&
-                value is List<CompensationActivityInfo> compensations)
-                foreach (var compensation in compensations)
-                    CheckActivity(compensation.ActivityType, compensation.InputMappings, compensation.OutputMappings);
+            try
+            {
+                if (step.ActivityType != null)
+                    CheckActivity(step.ActivityType, step.InputMappings, step.OutputMappings);
+                if (step.StepType == WorkflowStepType.WorkflowInvocation && step.InvokedDataType != null)
+                    CheckData(step.InvokedDataType, step.InputMappings, step.OutputMappings, "Child workflow");
+                if (step.ResumeEventType != null && step.ActivityType == null &&
+                    step.StepType != WorkflowStepType.WorkflowInvocation)
+                    CheckData(step.ResumeEventType, [], step.OutputMappings, "Event");
+                if (step.StepMetadata.TryGetValue("CompensationActivities", out var value) &&
+                    value is List<CompensationActivityInfo> compensations)
+                    foreach (var compensation in compensations)
+                        CheckActivity(compensation.ActivityType, compensation.InputMappings, compensation.OutputMappings);
+            }
+            catch (WorkflowEngineException error)
+            {
+                throw WorkflowBuildError.At(step, error);
+            }
         }
     }
 

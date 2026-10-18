@@ -320,7 +320,7 @@ internal static class ForEachTransitions
 
     private static object Context(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, WorkflowStep step, object workflowData, IServiceProvider services) =>
-        WorkflowValueBinding.EvaluationContext(workflowData, step.PreviousStepDataType,
+        WorkflowValueBinding.EvaluationContext(step, workflowData,
             continuation.GetPrevious(services), ItemsOf(scopes, checkpoint, continuation));
 
     private static WorkflowEngineException NoResult(WorkflowStep step) =>

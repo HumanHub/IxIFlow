@@ -906,16 +906,16 @@ public class EngineContractRegressionTests
 
     [Trait("Feature", "documents")]
     [Fact]
-    public async Task DocumentCompiler_PreservesConditionalSteps()
+    public async Task GeneratedYaml_PreservesConditionalSteps()
     {
         var document = Document(new ConditionalStepDocument
         {
             Id = "decision",
-            Condition = new ConstantExpressionDocument { Value = JsonSerializer.SerializeToElement(true) },
+            Condition = new ConstantExpressionDocument { Value = true },
             Then = [new ActivityStepDocument { Id = "yes", Activity = "Mark" }]
         });
 
-        var definition = await Compiler().CompileAsync(document, Registry());
+        var definition = await YamlTestCompilation.BuildAsync(document, Registry());
         Assert.Single(definition.Steps);
         Assert.Equal(WorkflowStepType.Conditional, definition.Steps[0].StepType);
         Assert.Single(definition.Steps[0].ThenSteps);
@@ -923,15 +923,15 @@ public class EngineContractRegressionTests
 
     [Trait("Feature", "documents")]
     [Fact]
-    public async Task DocumentCompiler_NeverSilentlyDropsExternalStepReferences()
+    public async Task GeneratedYaml_RejectsExternalStepReferences()
     {
         var document = Document(new StepReferenceStepDocument { Id = "external", Ref = "SharedSequence" });
-        await Assert.ThrowsAsync<InvalidOperationException>(() => Compiler().CompileAsync(document, Registry()));
+        await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => YamlTestCompilation.BuildAsync(document, Registry()));
     }
 
     [Trait("Feature", "documents")]
     [Fact]
-    public async Task DocumentCompiler_BindsWorkflowInputAndOutputPaths()
+    public async Task GeneratedYaml_BindsWorkflowInputAndOutputPaths()
     {
         var document = Document(new ActivityStepDocument
         {
@@ -949,7 +949,8 @@ public class EngineContractRegressionTests
             }]
         });
 
-        var step = Assert.Single((await Compiler().CompileAsync(document, Registry())).Steps);
+        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, Registry(),
+            new Dictionary<string, Type> { ["Mark"] = typeof(YamlMappingActivity) })).Steps);
         var data = new RegressionData { Value = "input" };
         var context = new WorkflowContext<RegressionData> { WorkflowData = data };
 
@@ -960,7 +961,7 @@ public class EngineContractRegressionTests
 
     [Trait("Feature", "documents")]
     [Fact]
-    public async Task DocumentCompiler_EvaluatesBinaryInputExpressions()
+    public async Task GeneratedYaml_EvaluatesBinaryInputExpressions()
     {
         var document = Document(new ActivityStepDocument
         {
@@ -972,13 +973,14 @@ public class EngineContractRegressionTests
                 From = new BinaryExpressionDocument
                 {
                     Operator = "eq",
-                    Left = new ConstantExpressionDocument { Value = JsonSerializer.SerializeToElement(2) },
-                    Right = new ConstantExpressionDocument { Value = JsonSerializer.SerializeToElement(2) }
+                    Left = new ConstantExpressionDocument { Value = 2 },
+                    Right = new ConstantExpressionDocument { Value = 2 }
                 }
             }]
         });
 
-        var step = Assert.Single((await Compiler().CompileAsync(document, Registry())).Steps);
+        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, Registry(),
+            new Dictionary<string, Type> { ["Mark"] = typeof(YamlMappingActivity) })).Steps);
         Assert.Equal(true, Assert.Single(step.InputMappings).SourceFunction(new WorkflowContext<RegressionData>
         {
             WorkflowData = new RegressionData()
@@ -1006,7 +1008,7 @@ public class EngineContractRegressionTests
 
     [Trait("Feature", "documents")]
     [Fact]
-    public async Task DocumentCompiler_EnforcesSuspendResumeCondition()
+    public async Task GeneratedYaml_EnforcesSuspendResumeCondition()
     {
         var document = Document(new SuspendStepDocument
         {
@@ -1015,7 +1017,7 @@ public class EngineContractRegressionTests
             ResumeCondition = new PathExpressionDocument { Path = "event.Approved" }
         });
 
-        var step = Assert.Single((await Compiler().CompileAsync(document, Registry())).Steps);
+        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, Registry())).Steps);
         Assert.NotNull(step.CompiledCondition);
         Assert.False(step.CompiledCondition(new ResumeEventContext<RegressionData, RegressionApprovalEvent>
         {
@@ -1029,7 +1031,7 @@ public class EngineContractRegressionTests
 
     [Trait("Feature", "documents")]
     [Fact]
-    public async Task DocumentCompiler_DoesNotTreatChildDataTypeAsWorkflowClass()
+    public async Task GeneratedYaml_KeepsChildDataSeparateFromWorkflowType()
     {
         var document = Document(new InvokeWorkflowStepDocument
         {
@@ -1037,7 +1039,7 @@ public class EngineContractRegressionTests
             Workflow = new WorkflowReferenceDocument { Name = "Child", Version = 1 }
         });
 
-        var step = Assert.Single((await Compiler().CompileAsync(document, Registry())).Steps);
+        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, Registry())).Steps);
         Assert.Null(step.WorkflowType);
         Assert.Equal("Child", step.WorkflowName);
     }
@@ -1111,8 +1113,6 @@ public class EngineContractRegressionTests
         Workflow = new WorkflowDefinitionDocument { Name = "Regression", Version = 1, DataType = "RegressionData" },
         Definitions = [step]
     };
-
-    private static WorkflowDocumentCompiler Compiler() => new(new WorkflowDocumentValidator());
 
     private static WorkflowValidationContext Registry()
     {

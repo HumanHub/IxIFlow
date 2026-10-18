@@ -30,7 +30,7 @@ public class ActivityPackageTests
         """;
 
     [Fact]
-    public async Task RegisteredPackage_CompilesAndExecutesItsActivity()
+    public async Task GeneratedYaml_ExecutesRegisteredPackageActivity()
     {
         var registry = new ActivityPackageRegistry();
         registry.AddPackage(Manifest, typeof(SendTestEmailActivity).Assembly);
@@ -42,8 +42,7 @@ public class ActivityPackageTests
         var document = Document();
         var support = new TestDocumentRegistry();
         var context = new WorkflowValidationContext(registry, support, support, support, support);
-        var definition = await new WorkflowDocumentCompiler(new WorkflowDocumentValidator())
-            .CompileAsync(document, context);
+        var definition = await YamlTestCompilation.BuildAsync(document, context);
 
         var services = new ServiceCollection();
         services.AddLogging();
@@ -88,7 +87,7 @@ public class ActivityPackageTests
     }
 
     [Fact]
-    public async Task YamlWorkflow_UsesTheSameActivityPackageContract()
+    public async Task GeneratedYaml_UsesTheActivityPackageContract()
     {
         const string yaml = """
             schemaVersion: "1.0"
@@ -119,8 +118,7 @@ public class ActivityPackageTests
         Assert.Equal("1.0", activity.ActivityVersion);
 
         var support = new TestDocumentRegistry();
-        var definition = await new WorkflowDocumentCompiler(new WorkflowDocumentValidator())
-            .CompileAsync(rewritten, new WorkflowValidationContext(registry, support, support, support, support));
+        var definition = await YamlTestCompilation.BuildAsync(rewritten, new WorkflowValidationContext(registry, support, support, support, support));
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();

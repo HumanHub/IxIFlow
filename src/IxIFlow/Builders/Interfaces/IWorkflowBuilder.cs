@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
 using IxIFlow.Core;
 
@@ -9,6 +10,12 @@ namespace IxIFlow.Builders.Interfaces;
 /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
 public interface IWorkflowBuilder<TWorkflowData>
 {
+    /// <summary>Sets the last step's stable ID and source location.</summary>
+    IWorkflowBuilder<TWorkflowData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
+    /// <summary>Names the preceding step.</summary>
+    IWorkflowBuilder<TWorkflowData> Named(string name);
+
     /// <summary>Wait for a duration without requiring a resume event.</summary>
     IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration);
 
@@ -50,6 +57,12 @@ public interface IWorkflowBuilder<TWorkflowData>
 public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData> 
     where TPreviousStepData : class
 {
+    /// <summary>Sets the last step's stable ID and source location.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
+    /// <summary>Names the preceding step.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name);
+
     /// <summary>Wait for a duration and retain the previous step value.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration);
 
@@ -158,6 +171,18 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// members, indexes, element selectors such as <c>First(...)</c> and built-in casts, such as
     /// <c>ctx.WorkflowData.Rows[ctx.Index(item)].Value</c>; any other target is a build error.
     /// </summary>
+    /// <summary>Captures the item selector as an expression.</summary>
+    [OverloadResolutionPriority(-1)]
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?>> itemsExpression,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
+        Action<IForEachSetup<TWorkflowData>>? setup = null);
+
+    /// <summary>Captures the result selector as an expression.</summary>
+    [OverloadResolutionPriority(-1)]
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult>> valueExpression);
+
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
