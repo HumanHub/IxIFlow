@@ -1,57 +1,60 @@
 ---
 title: Sagas and compensation
-description: Compensation, error handlers, and saved saga progress.
+description: Reverse compensation, saved handlers and retry scopes.
 ---
 
-A saga groups steps that need compensating actions when later work fails. The checkpointed runner records completed steps and runs their compensations in reverse order. The error handler is a saved sequence: its activities and waits resume at the saved position.
+A saga records completed forward steps and their compensations. If later work fails, it can undo completed effects in reverse order. Compensation is application code: it does not roll back a remote service automatically.
 
-An activity may call a remote service. Saga activities execute in the host process that runs the whole workflow.
+## Associate compensation with the effect
 
-## Define compensation
+[Payments.cs](../samples/IxIFlow.Recipes/Payments.cs) contains the complete payment recipe. A payment request records its provider reference and associates a refund with it. If stock reservation fails, the saga refunds and retries.
 
-The fluent API lets a saga step name a compensation activity:
+The same runnable definition is [saga-payment.workflow.yaml](../samples/IxIFlow.Samples/Definitions/saga-payment.workflow.yaml). Its C# and YAML forms are executed together by [YamlSampleTests.cs](../tests/IxIFlow.Samples.Tests/YamlSampleTests.cs), including the old-token refusal and the fresh request on retry.
 
-```csharp
-.Saga(saga =>
-{
-    saga.Step<ReserveProductActivity>(step => step
-            .Input(x => x.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-            .CompensateWith<ReleaseProductActivity>())
-        .Step<ChargeCustomerActivity>(step => step
-            .Input(x => x.Amount).From(ctx => ctx.WorkflowData.TotalAmount)
-            .CompensateWith<RefundCustomerActivity>());
-})
-.OnError<Exception>(error => error.Compensate().ThenTerminate())
-```
+Compensation mappings can read `CurrentStep`, the completed forward activity's saved result, and workflow data. Request compensation can also use a typed reply and whether the request was answered. Chained compensations can map incoming `PreviousStep` and `PreviousCompensation`. Declare outputs explicitly when undo work changes workflow data. Forward steps compensate newest first; multiple compensations attached to one step run in declaration order. A failed compensation is recorded and remaining compensations are still attempted.
 
-Compensation is an application action, not an automatic rollback of another service or database. Design it to be safe when retried, and test its behavior when a later activity fails.
+## Choose how much to undo
 
-`ThenContinue()` runs the remaining workflow after successful compensation. A compensation failure normally faults the workflow after the other compensations have been attempted. Use `ThenContinue(ignoreCompensationErrors: true)` when the workflow should continue despite those failures.
+The first matching saga `OnError` handler selects the policy. The runtime performs the selected compensation first, then runs the handler's activities and waits, then applies its continuation. A handler containing a wait must declare `ThenContinue`, `ThenRetry` or `ThenTerminate`.
 
-## Read a saved fault in an error handler
+| Policy | Behavior |
+| --- | --- |
+| `Compensate()` | Undo every completed step, newest first |
+| `CompensateNone()` | Keep completed steps; a retry restarts the failed step, except that an activity which returned before its output mapping failed must be undone and rerun |
+| `CompensateUpTo<TActivity>()` | Undo through that activity inclusively, preserving earlier steps; the activity must occur exactly once in the saga |
 
-Declare a fault type with the exception properties the handler needs. Public property names and types must match the caught exception. IxIFlow checks the fault shape when building the workflow and captures its values when the exception occurs.
+If the selected activity never completed, the up-to policy undoes all completed steps. Kept requests retain their wait and any answer. Undone requests close their waits; retrying those steps creates new invocation IDs and reply tokens.
 
-```csharp
-public sealed record PaymentFault(string Message);
+## Choose what follows
 
-.OnError<PaymentException, PaymentFault>(error => error
-    .Step<LogPaymentFailure>(step => step
-        .Input(x => x.Message).From(ctx => ctx.Fault.Message))
-    .WaitFor<ReviewResponse>("payment-review")
-    .Compensate().ThenContinue())
-```
+| Continuation | Behavior |
+| --- | --- |
+| `ThenContinue()` | Continue after the saga once compensation succeeds |
+| `ThenContinue(ignoreCompensationErrors: true)` | Continue even when compensation reported errors |
+| `ThenTerminate()` | Raise `SagaTerminatedException`, which an enclosing catch may handle |
+| `ThenRetry(count)` or `ThenRetry(policy)` | `Compensate()` restarts the saga from its first step, re-evaluating `OutcomeOn`; `CompensateUpTo<TActivity>()` restarts at that activity if it completed, otherwise at the saga's first step; `CompensateNone()` restarts at the failed step |
+| No continuation | Rethrow the original error after the selected undo |
 
-The handler can also read `ctx.WorkflowData` and `ctx.PreviousStep`. It does not receive the live exception object. `WaitFor` saves the fault and the handler position, so a new provider can resume the same handler when the state repository survives a restart.
+A compensation failure ends as `SagaTerminatedException` after remaining compensation work has been attempted. Exhausted saga retries and a failing retry-handler body also terminate the saga. When retry can no longer proceed because its budget is exhausted, cleanup failed or cancellation intervened, retained steps are undone too. Build rules reject continuation/termination policies that would keep a request whose answer the saga has not read.
 
-## Resume and persistence
+## Retry scopes and attempts
 
-Direct waits inside a saga resume the remaining saga activities. Completed activity results are saved at suspension and restored for compensation if later work fails.
+An activity-level saga `OnError` uses the first matching handler. `ThenRetry` retries the step; `ThenIgnore` skips it and clears its previous-step result. Step `ThenTerminate`, or an exhausted step retry, passes the original failure to the saga's error policy. A saga-level handler controls compensation and restarts part or all of the saga. They have separate budgets.
 
-The default state repository is process memory. It can retain an instance across request scopes in the same process, but not across a restart or another host. The optional SQL Server host stores instance state in SQL and uses renewable execution leases for cross-host resume and recovery. Definitions and activity code must still be registered on the resuming host.
+`RetryPolicy` supplies `MaximumAttempts`, `InitialInterval`, `MaximumInterval` and `BackoffCoefficient`. The current retry limit counts retries after the first execution: a budget of one permits a second execution. `ThenRetry(count)`, on a step and on a saga handler alike, waits one second, then doubles up to ten seconds. A `RetryPolicy` built with only a count retries immediately; property defaults use one-second initial delay, ten-second maximum and coefficient two. Long backoffs park durable instances and free host slots.
 
-## External effects
+[RetryQuote.cs](../samples/IxIFlow.Samples/RetryQuote.cs) demonstrates a single-step retry, including `context.Attempt.Number`, earlier errors/notes and distinct attempt IDs. [Payments.cs](../samples/IxIFlow.Recipes/Payments.cs) demonstrates a saga retry with compensation.
 
-The engine saves versioned checkpoints, activity attempts, and compensation progress. The SQL host scans for interrupted running instances. Activities that call external systems need idempotency or an explicit recovery policy. An uncertain external outcome is held for an explicit resolution decision before execution continues.
+## Faults, outcomes and saved progress
 
-Read [execution model](/docs/execution-model/) and [coordinator and hosts](/docs/coordinator-and-hosts/) for the wider runtime boundary.
+Typed `OnError<TException,TFault>` handlers project readable exception properties into a durable DTO with matching names/types. Handler mappings use `ctx.Fault`, plus workflow and previous-step data. The exception object itself is not the persisted contract.
+
+A saga uses `OutcomeOn(selector, configure)` to select a typed value, with `Outcome(value, body)` branches and an optional `DefaultOutcome(body)`. The first equal label wins; no match without a default raises `InvalidOperationException` through saga failure handling. Outcome selectors follow the same purity rules as other control flow.
+
+Handler position, accepted events, fault data, completed forward results and compensation progress survive waits and recovery. A resumed handler continues after its saved wait. Retries preserve kept work and replay eligible saved wait outcomes; newly executed requests get the appropriate new activation.
+
+## External effects and uncertainty
+
+Make forward effects and compensation idempotent or recoverable. The engine saves the activity start before invoking it and its outcome afterward. A crash between effect and outcome can require `IRecoverableActivity<TState>` or an operator decision. Earlier work is not compensated until the uncertain outcome is resolved.
+
+Saga activities and compensations currently run in the host process. Durable behavior is available on SQLite, SQL Server and PostgreSQL; memory retains it only during the process lifetime. Read the [execution model](execution-model.md) and [store guide](stores.md).

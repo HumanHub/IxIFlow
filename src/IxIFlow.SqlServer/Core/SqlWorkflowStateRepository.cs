@@ -20,7 +20,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     /// Creates a store on <paramref name="connectionString"/>. Lease and cancellation traffic uses a
     /// second connection pool of at most <paramref name="ownershipPoolSize"/> connections, so a host
     /// whose runs and the application's own work exhaust the main pool still renews its leases and
-    /// delivers cancellation (B-09). With pooling turned off the reservation has no effect.
+    /// delivers cancellation. With pooling turned off the reservation has no effect.
     /// </summary>
     public SqlWorkflowStateRepository(string connectionString, int ownershipPoolSize = DefaultOwnershipPoolSize,
         OutboxSettings? outboxSettings = null) : base(outboxSettings)

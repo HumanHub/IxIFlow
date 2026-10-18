@@ -3,7 +3,7 @@ using IxIFlow.Core;
 
 namespace IxIFlow.Builders.Interfaces;
 
-/// <summary>Sets up a <c>ForEach</c> step (D-34).</summary>
+/// <summary>Sets up a <c>ForEach</c> step.</summary>
 public interface IForEachSetup<TWorkflowData>
 {
     /// <summary>Names the item handle for diagnostics. The name never finds the item.</summary>
@@ -21,8 +21,8 @@ public interface IForEachSetup<TWorkflowData>
         Expression<Func<WorkflowContext<TWorkflowData>, List<ItemResult<TResult>>>> target);
 
     /// <summary>
-    /// Runs the items as parallel branches, each from a copy of the data at the fork, merged at the join
-    /// (D-14, D-34). With <paramref name="maxConcurrency"/>, at most that many run at once, started in
+    /// Runs the items as parallel branches, each from a copy of the data at the fork, merged at the join.
+    /// With <paramref name="maxConcurrency"/>, at most that many run at once, started in
     /// item order; the next starts after one completes while the join is still open. A body write that
     /// more than one item could make, to a property with no combiner, is a build error unless the join is
     /// <see cref="WaitAny"/>.
@@ -49,7 +49,7 @@ public interface IForEachSetup<TWorkflowData>
     /// <summary>
     /// Merges the items' changes to <paramref name="property"/>, and to everything inside it, with
     /// <typeparamref name="TCombiner"/> at the parallel step's join, instead of the combiner the data type
-    /// declares for it, if any (spec E-05). Only a parallel <c>ForEach</c> has a join to merge in.
+    /// declares for it, if any. Only a parallel <c>ForEach</c> has a join to merge in.
     /// </summary>
     IForEachSetup<TWorkflowData> Combine<TValue, TCombiner>(Expression<Func<TWorkflowData, TValue>> property)
         where TCombiner : ICombiner<TValue>, new();

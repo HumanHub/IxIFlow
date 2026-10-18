@@ -17,7 +17,7 @@ public static class ServiceCollectionExtensions
 {
     /// <summary>
     /// Adds IxIFlow workflow services to the service collection. The builder it returns chooses the store, such as
-    /// <c>.UseSqlServer(connectionString)</c> from IxIFlow.SqlServer; without one, instances live in memory (D-21).
+    /// <c>.UseSqlServer(connectionString)</c> from IxIFlow.SqlServer; without one, instances live in memory.
     /// </summary>
     /// <param name="services">The service collection to add services to</param>
     /// <returns>The builder, whose <see cref="IIxIFlowBuilder.Services"/> continues the service collection</returns>
@@ -396,7 +396,7 @@ public class IxIFlowOptions
     /// <summary>
     /// Maximum trace entries in one commit, default 1,000. On overflow the last slot becomes one Truncated
     /// entry counting all omissions, so at most 999 ordinary entries remain at the default. The bound resets
-    /// only after acknowledgement. Entries of a pass never committed are dropped (G-01).
+    /// only after acknowledgement. Entries of a pass never committed are dropped.
     /// </summary>
     public int MaxTraceEntriesPerCommit { get; set; } = ExecutionLimits.DefaultMaxTraceEntriesPerCommit;
 
@@ -420,8 +420,8 @@ public class IxIFlowOptions
     public int MaxCrashes { get; set; } = ExecutionLimits.DefaultMaxCrashes;
 
     /// <summary>
-    /// How many continuations of one instance may be live at once: the root, every parallel branch,
-    /// and every parent waiting at its join. A parallel step that would exceed it stops the instance
+    /// Maximum live branches of one instance, excluding the root, parents waiting at joins, and
+    /// completed, cancelled or cancelling branches. A parallel step that would exceed it stops the instance
     /// at NeedsResolution before forking, after its running activities finish; raise the limit and
     /// release the instance to continue.
     /// </summary>
@@ -467,14 +467,14 @@ public class IxIFlowOptions
     public TimeSpan DrainTimeout { get; set; } = HostSettings.DefaultDrainTimeout;
 
     /// <summary>
-    /// How this host names itself in the records it leaves, such as the attempts an activity sees (D-37). The default
+    /// How this host names itself in the records it leaves, such as the attempts an activity sees. The default
     /// is the process ID and machine name, <c>pid@machine</c>.
     /// </summary>
     public string HostName { get; set; } = HostSettings.DefaultName;
 
     /// <summary>
     /// Who this application's operator calls are recorded as when a call names nobody: a plain string the engine
-    /// stores and never checks, such as <c>"orders-service"</c> (D-38). A call that acts for a user names them
+    /// stores and never checks, such as <c>"orders-service"</c>. A call that acts for a user names them
     /// instead: <see cref="CancellationReason.RequestedBy"/>, the resolution's <c>decidedBy</c>, or the release's
     /// actor. Deciding who may call is the application's job.
     /// </summary>

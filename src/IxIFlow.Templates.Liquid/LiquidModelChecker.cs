@@ -5,7 +5,7 @@ using Fluid.Values;
 namespace IxIFlow.Templates.Liquid;
 
 /// <summary>
-/// Checks a parsed Liquid template against its model type when the template is published (H-03): every variable is
+/// Checks a parsed Liquid template against its model type when the template is published: every variable is
 /// a model member, a loop variable or a variable the template assigns, every member read exists on its type, every
 /// filter exists, and the template includes no other template. Where a value's type cannot be known, such as a
 /// filter's result, reads from it are left to the render, which refuses any member outside the model.

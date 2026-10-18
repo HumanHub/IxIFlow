@@ -3,11 +3,11 @@ using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
 
-/// <summary>One stored part of an instance's state (A-08): its key and its JSON.</summary>
+/// <summary>One stored part of an instance's state: its key and its JSON.</summary>
 public sealed record CheckpointPart(string Key, string Json);
 
 /// <summary>
-/// How a store turns what it holds of an instance back into the instance (A-08). A commit's payload is the
+/// How a store turns what it holds of an instance back into the instance. A commit's payload is the
 /// instance's trunk: its fields and the part of its execution state that belongs to no branch. The rest, the
 /// workflow data included, is in parts the store keeps by key beside it, all at the instance's revision.
 /// </summary>

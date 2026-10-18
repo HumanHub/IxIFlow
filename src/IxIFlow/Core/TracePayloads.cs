@@ -43,7 +43,7 @@ public sealed record RetryTrace(string StepId, WorkflowStepType StepKind, string
 public sealed record ReceivedEventTrace(string EventId, string? Key, string EventType, string? WaitRef,
     string? StepId, EventRejection? RefusalReason = null) : TracePayload;
 
-/// <summary>An operator decision, without outputs, notes or error contents (D-38).</summary>
+/// <summary>An operator decision, without outputs, notes or error contents.</summary>
 public sealed record ActivityResolutionTrace(string InvocationId, string StepId, ActivityResolutionKind Decision,
     string? DecidedBy) : TracePayload;
 

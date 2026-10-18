@@ -8,7 +8,7 @@ namespace IxIFlow.Core;
 
 /// <summary>
 /// Wakes due waits and deadlines, and recovers interrupted instances. It polls the store and, when the store can wake
-/// it, also claims as soon as the store says an instance became claimable (C-13).
+/// it, also claims as soon as the store says an instance became claimable.
 /// </summary>
 internal sealed class WorkflowRecoveryService(
     IServiceScopeFactory scopes,

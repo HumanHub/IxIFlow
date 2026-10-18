@@ -35,7 +35,7 @@ internal sealed class ExecutionCheckpoint
 
     public string Runtime { get; set; } = "structured-v2";
     /// <summary>
-    /// The form the checkpoint is saved in; 3 is the trunk and parts of A-08. A checkpoint in another form is refused
+    /// The form the checkpoint is saved in; 3 stores the trunk and separate state parts. A checkpoint in another form is refused
     /// as unsupported rather than read wrongly.
     /// </summary>
     public int SchemaVersion { get; set; } = 3;
@@ -49,20 +49,20 @@ internal sealed class ExecutionCheckpoint
     public int BranchesStarted { get; set; }
 
     /// <summary>
-    /// Set on the trunk of a saved checkpoint, which holds neither its branches nor its lists (A-08): only a read that
+    /// Set on the trunk of a saved checkpoint, which holds neither its branches nor its lists: only a read that
     /// assembles them can run it.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool StoredTrunk { get; set; }
 
     /// <summary>
-    /// Answers to requests that arrived before their <c>WaitFor</c> was reached (D-33). Each is taken
+    /// Answers to requests that arrived before their <c>WaitFor</c> was reached. Each is taken
     /// by the <c>WaitFor</c> of its request's scope occurrence, or dropped when that scope ends.
     /// </summary>
     public List<BoundReplyState> BoundReplies { get; set; } = [];
 
     /// <summary>
-    /// Children this run starts, carried by its next commit with the waits it opened for them (D-17).
+    /// Children this run starts, carried by its next commit with the waits it opened for them.
     /// Never saved: a run lost before that commit started neither.
     /// </summary>
     [JsonIgnore]
@@ -74,7 +74,7 @@ internal sealed class ExecutionCheckpoint
 
     /// <summary>
     /// How long the instance may run in all, or null. The store stamps the deadline when it records the
-    /// execution deadline's row, <see cref="ExecutionTimerId"/>, in the waits table (D-35).
+    /// execution deadline's row, <see cref="ExecutionTimerId"/>, in the waits table.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TimeSpan? ExecutionTimeout { get; set; }
@@ -91,7 +91,7 @@ internal sealed class ExecutionCheckpoint
 
     /// <summary>
     /// Set while the instance is stopped at NeedsResolution for an operator: after a commit exceeded a
-    /// resource limit (D-28) or after too many crashes (B-08). Only a release or a cancellation moves it.
+    /// resource limit or after too many crashes. Only a release or a cancellation moves it.
     /// </summary>
     public OperatorStopState? OperatorStop { get; set; }
 
@@ -105,7 +105,7 @@ internal sealed class ExecutionCheckpoint
     [JsonIgnore]
     public InboxProgress Inbox { get; private set; } = new();
 
-    /// <summary>The store's clock as this run last read it (D-35). It is not saved.</summary>
+    /// <summary>The store's clock as this run last read it. It is not saved.</summary>
     [JsonIgnore]
     public StoreClock Clock { get; } = new();
 
@@ -154,7 +154,7 @@ internal sealed class ExecutionCheckpoint
     }
 
     /// <summary>
-    /// Takes the deadlines the store stamped from a page it read (D-35). A wait the store has no deadline
+    /// Takes the deadlines the store stamped from a page it read. A wait the store has no deadline
     /// for has none yet: it is not committed, or not armed. A page without deadlines reports none.
     /// </summary>
     public void ReadDeadlines(InboxPage page)
@@ -260,7 +260,7 @@ internal sealed class ExecutionCheckpoint
 
     /// <summary>
     /// Records, for every branch whose copy may have changed, its changes against the data it was forked
-    /// from, so a recovery rebuilds the same copy (spec E-01). A branch is never recorded while its own
+    /// from, so a recovery rebuilds the same copy. A branch is never recorded while its own
     /// activity runs: it is marked only when it settles or advances.
     /// </summary>
     public void RecordBranchChanges()
@@ -284,9 +284,9 @@ internal sealed class ExecutionCheckpoint
     /// <summary>
     /// Closes the reply waits, and drops the answers kept, of scope occurrences that have ended: their
     /// iteration or branch finished, failed or was cancelled before the request's <c>WaitFor</c> took the
-    /// answer (D-33).
+    /// answer.
     /// </summary>
-    /// A request a saga retry keeps stays open while the saga compensates, until the retry restores it (D-36).
+    /// A request a saga retry keeps stays open while the saga compensates, until the retry restores it.
     public void CloseEndedRequests()
     {
         var running = Continuations
@@ -308,7 +308,7 @@ internal sealed class ExecutionCheckpoint
         });
     }
 
-    /// <summary>Removes the waits that match and records why each one closed, for the next commit (D-33).</summary>
+    /// <summary>Removes the waits that match and records why each one closed, for the next commit.</summary>
     public void RemoveWaits(Func<WaitState, bool> match, WaitCloseReason reason)
     {
         foreach (var wait in Waits.Where(match).ToArray())
@@ -367,7 +367,7 @@ internal enum OperatorStopKind
     ResourceLimit,
     Quarantine,
 
-    /// <summary>A commit failed the checkpoint parts' verification (A-08), which points at an engine fault.</summary>
+    /// <summary>A commit failed the checkpoint parts' verification, which points at an engine fault.</summary>
     Verification
 }
 
@@ -402,32 +402,32 @@ internal sealed class ContinuationState
 
     /// <summary>
     /// The inputs a failed attempt saved, kept while its step waits to be retried: a step retry is another attempt of
-    /// the same invocation and starts from them (D-14).
+    /// the same invocation and starts from them.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public KeptActivityInputs? RetryInputs { get; set; }
 
     public AcceptedWaitState? AcceptedWait { get; set; }
 
-    /// <summary>For a branch, the <c>ForEach</c> items in force where it was forked (D-34).</summary>
+    /// <summary>For a branch, the <c>ForEach</c> items in force where it was forked.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<InheritedItem>? InheritedItems { get; set; }
 
-    /// <summary>When the continuation's retry is due, on the store's clock as the run last read it (D-35).</summary>
+    /// <summary>When the continuation's retry is due, on the store's clock as the run last read it.</summary>
     public DateTime? RetryAfterUtc { get; set; }
 
     [JsonIgnore]
     public object? RuntimePrevious { get; set; }
 
     /// <summary>
-    /// For a branch, its own copy of the workflow data (D-14); null until it is needed, when it is
+    /// For a branch, its own copy of the workflow data; null until it is needed, when it is
     /// rebuilt from the data it was forked from and <see cref="DataChanges"/>. The root reads and writes
     /// the instance's data, <see cref="ExecutionCheckpoint.RootData"/>.
     /// </summary>
     [JsonIgnore]
     public object? Data { get; set; }
 
-    /// <summary>For a branch, its changes to the data it was forked from, as of the last commit (spec E-01).</summary>
+    /// <summary>For a branch, its changes to the data it was forked from, as of the last commit.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<DataChange>? DataChanges { get; set; }
 
@@ -491,18 +491,18 @@ internal sealed class ActivityAttemptState
     public string Kind { get; set; } = "Execute";
     public string? Observation { get; set; }
 
-    /// <summary>The host the attempt ran on, as it names itself (D-37).</summary>
+    /// <summary>The host the attempt ran on, as it names itself.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Host { get; set; }
 
-    /// <summary>The exception a thrown attempt ended with, for the attempts after it (D-37).</summary>
+    /// <summary>The exception a thrown attempt ended with, for the attempts after it.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ErrorType { get; set; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ErrorMessage { get; set; }
 
-    /// <summary>The note a failed attempt left for the next one (D-37).</summary>
+    /// <summary>The note a failed attempt left for the next one.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SerializedValue? Note { get; set; }
 
@@ -556,7 +556,7 @@ internal sealed class ActivityInputSnapshot
 }
 
 /// <summary>
-/// One activity input as its attempt saves it (A-09). The activity runs on a copy read back from this, on its first
+/// One activity input as its attempt saves it. The activity runs on a copy read back from this, on its first
 /// attempt as after a recovery, so a change it makes to an input reaches nothing outside it: the workflow data changes
 /// only through output mappings, whether or not the host crashed. A delegate input is bound again from the definition.
 /// </summary>
@@ -697,7 +697,7 @@ internal sealed class ScopePosition
     public bool RestorePreviousOnExit { get; set; }
     public bool ExitParentScopeOnExit { get; set; }
 
-    /// <summary>While the step at <see cref="NextStepIndex"/> is a <c>ForEach</c>: its saved list, next item and results (D-34).</summary>
+    /// <summary>While the step at <see cref="NextStepIndex"/> is a <c>ForEach</c>: its saved list, next item and results.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ForEachState? ForEach { get; set; }
 
@@ -723,12 +723,12 @@ internal sealed record PartMarks(HashSet<string>? Ids)
 
 /// <summary>
 /// A <c>ForEach</c>'s list, saved once in item order as JSON of the item type, the next item to run, and,
-/// when the step stores results, the results of the items that ran (D-34). The step's definition gives
+/// when the step stores results, the results of the items that ran. The step's definition gives
 /// the types.
 /// </summary>
 internal sealed class ForEachState
 {
-    /// <summary>This run of the step, which names its list and results where they are stored (A-08).</summary>
+    /// <summary>This run of the step, which names its list and results where they are stored.</summary>
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
     public List<string> Items { get; set; } = [];
@@ -801,7 +801,7 @@ internal sealed class SagaScopeState
     public bool IsCancellationCleanup { get; set; }
     public SerializedValue? PreviousCompensation { get; set; }
 
-    /// <summary>The saga's frames, each recorded once by activation, so a retry can restore a restart point (D-36).</summary>
+    /// <summary>The saga's frames, each recorded once by activation, so a retry can restore a restart point.</summary>
     public Dictionary<string, SagaFrameRecord> Frames { get; set; } = [];
 
     /// <summary>Where a retry starts again, with the <c>Previous</c> that step saw; none starts at the saga's first step.</summary>
@@ -846,7 +846,7 @@ internal sealed class SagaCompletedStep
     public SerializedValue? Output { get; set; }
     public SerializedValue? Previous { get; set; }
 
-    /// <summary>The frame the step ran in and its index there: the step's restart point (D-36).</summary>
+    /// <summary>The frame the step ran in and its index there: the step's restart point.</summary>
     public string FrameId { get; set; } = "";
     public int StepIndex { get; set; }
 
@@ -908,7 +908,7 @@ internal sealed class ParallelJoinState
 
     /// <summary>
     /// The join's branches, in the order they started. Not saved: each branch names its join, and reading a
-    /// checkpoint lists them again (A-08).
+    /// checkpoint lists them again.
     /// </summary>
     [JsonIgnore]
     public List<string> ChildContinuationIds { get; set; } = [];
@@ -916,7 +916,7 @@ internal sealed class ParallelJoinState
     public bool IsCompleting { get; set; }
     public bool ResumeParentWithoutAdvance { get; set; }
 
-    /// <summary>Set when a provisional merge found branches in conflict; the join fails with it (spec E-09).</summary>
+    /// <summary>Set when a provisional merge found branches in conflict; the join fails with it.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ConflictPath { get; set; }
 
@@ -937,29 +937,29 @@ internal sealed class WaitState
 
     /// <summary>
     /// For a wait the store times out, its deadline as the store stamped it, or the run's estimate until
-    /// the run reads it (D-35).
+    /// the run reads it.
     /// </summary>
     public DateTime? DeadlineUtc { get; set; }
 
     /// <summary>
     /// The wait's timeout or delay, from the commit that records it, or for a reply wait from the commit
-    /// that reaches its <c>WaitFor</c>. The store adds it to its own time (D-35).
+    /// that reaches its <c>WaitFor</c>. The store adds it to its own time.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TimeSpan? Timeout { get; set; }
-    /// <summary>For a child's wait, the child: only its completion, addressed to this wait, answers it (D-17).</summary>
+    /// <summary>For a child's wait, the child: only its completion, addressed to this wait, answers it.</summary>
     public string? ChildWorkflowId { get; set; }
 
     /// <summary>
     /// For a child's wait, set when the invocation says <c>CancelWithParent(false)</c>: cancelling the branch, or
-    /// failing the parent, closes the wait and leaves the child running (D-09).
+    /// failing the parent, closes the wait and leaves the child running.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Detached { get; set; }
 
     /// <summary>
     /// True for the answer to a request: opened when the request's activity starts, answered only by
-    /// its token, and taken by the request's <c>WaitFor</c> (D-33).
+    /// its token, and taken by the request's <c>WaitFor</c>.
     /// </summary>
     public bool IsReply { get; set; }
 
@@ -972,7 +972,7 @@ internal sealed class WaitState
     /// <summary>For a reply wait, the digest of what the request is about; an answer must carry it.</summary>
     public string? Subject { get; set; }
 
-    /// <summary>How the waits table knows this wait (D-33, D-35).</summary>
+    /// <summary>How the waits table knows this wait.</summary>
     [JsonIgnore]
     public WaitKind TableKind => string.IsNullOrEmpty(EventType) ? WaitKind.Delay
         : IsReply ? WaitKind.Reply
@@ -984,13 +984,13 @@ internal sealed class WaitState
     public bool Answerable => TableKind is WaitKind.Event or WaitKind.Reply or WaitKind.Child;
 }
 
-/// <summary>An answer to a request kept until its <c>WaitFor</c> takes it (D-33).</summary>
+/// <summary>An answer to a request kept until its <c>WaitFor</c> takes it.</summary>
 internal sealed class BoundReplyState
 {
     public string WaitId { get; set; } = "";
     public string EventId { get; set; } = "";
 
-    /// <summary>The continuation whose request it answers, which keeps it (A-08).</summary>
+    /// <summary>The continuation whose request it answers, which keeps it.</summary>
     public string ContinuationId { get; set; } = "";
 
     /// <summary>The <c>WaitFor</c> step that takes it.</summary>

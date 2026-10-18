@@ -5,7 +5,7 @@ namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// The completion a child's terminal commit appends to its parent's inbox, addressed to the parent's wait
-/// for it (D-17): how the child ended, its data as saved, and its error when it failed.
+/// for it: how the child ended, its data as saved, and its error when it failed.
 /// </summary>
 internal sealed class ChildCompleted
 {
@@ -45,7 +45,7 @@ internal sealed class ChildCompleted
 }
 
 /// <summary>
-/// Starts child workflows as instances of their own (D-17): resolves the child's definition, registered
+/// Starts child workflows as instances of their own: resolves the child's definition, registered
 /// so any host can run it, and builds its initial instance the way a client start does.
 /// </summary>
 internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersionRegistry registry, TimeProvider time)
@@ -127,13 +127,13 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
     }
 }
 
-/// <summary>The data a child invocation starts its child with (D-17).</summary>
+/// <summary>The data a child invocation starts its child with.</summary>
 internal static class ChildInputs
 {
     /// <summary>
     /// New data for a child of <paramref name="definition"/>, with the invocation's input mappings applied
     /// from the parent's <paramref name="context"/>. An input the child's data cannot take is an invalid definition,
-    /// never skipped (F-23).
+    /// never skipped.
     /// </summary>
     public static object NewData(WorkflowDefinition definition, WorkflowStep step, object context)
     {

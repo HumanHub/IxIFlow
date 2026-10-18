@@ -1,7 +1,7 @@
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// The store's clock as a run last read it (D-35). Deadlines and runnable times are the store's; the
+/// The store's clock as a run last read it. Deadlines and runnable times are the store's; the
 /// host's clock only decides when to look, shifted by the difference between the two at the last read.
 /// Until a run has read the store's time it assumes the clocks agree.
 /// </summary>

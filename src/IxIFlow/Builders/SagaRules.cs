@@ -4,7 +4,7 @@ using IxIFlow.Core;
 namespace IxIFlow.Builders;
 
 /// <summary>
-/// Checks each saga's error handlers against its steps when the workflow is built (D-36): the step a
+/// Checks each saga's error handlers against its steps when the workflow is built: the step a
 /// <c>CompensateUpTo</c> stops at is in the saga exactly once, and a handler that ends the saga keeps no
 /// request whose answer the saga has not read yet. Runs after <see cref="RequestPairing"/>, which pairs each
 /// request with its <c>WaitFor</c>.

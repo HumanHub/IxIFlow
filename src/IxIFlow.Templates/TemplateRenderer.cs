@@ -3,7 +3,7 @@ using System.Globalization;
 namespace IxIFlow.Templates;
 
 /// <summary>
-/// Renders a pinned template version (H-01): finds the version, resolves the variant for the culture, falling back to
+/// Renders a pinned template version: finds the version, resolves the variant for the culture, falling back to
 /// its parent cultures and then to the base variant, and renders it through the version's engine. Values are
 /// formatted for the culture asked for, even when a parent's variant or the base variant is the one rendered.
 /// </summary>

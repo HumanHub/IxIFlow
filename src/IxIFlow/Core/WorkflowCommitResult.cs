@@ -31,7 +31,7 @@ public enum WorkflowCommitStatus
 /// <summary>
 /// A durable commit receipt. On conflict or a stale epoch, Revision is the current stored revision.
 /// An applied commit also reports the instance's pending cancellation request, if any, so the owner
-/// learns of it with the commit instead of polling (B-10).
+/// learns of it with the commit instead of polling.
 /// </summary>
 public sealed record WorkflowCommitResult(
     WorkflowCommitStatus Status,
@@ -60,12 +60,12 @@ public sealed record WorkflowCommitResult(
 /// <summary>
 /// An execution lease granted by the store. <see cref="Epoch"/> fences the owner's commits.
 /// <see cref="CrashCount"/> counts how many owners in a row lost the instance while it was running,
-/// including the one before this grant; a commit that records progress resets it (B-08).
+/// including the one before this grant; a commit that records progress resets it.
 /// </summary>
 public sealed record ExecutionLeaseGrant(long Epoch, int CrashCount);
 
 /// <summary>
-/// One checkpoint write: the instance's trunk and the parts of its state that changed (A-08), fenced by the owner's
+/// One checkpoint write: the instance's trunk and the parts of its state that changed, fenced by the owner's
 /// incarnation, execution epoch and the revision it was based on. A commit is immutable, so sending the same commit again is safe.
 /// </summary>
 public sealed class CheckpointCommit
@@ -129,7 +129,7 @@ public sealed class CheckpointCommit
     /// </summary>
     public string Payload { get; }
 
-    /// <summary>The parts this commit writes, in key order: new ones, and those whose JSON changed (A-08).</summary>
+    /// <summary>The parts this commit writes, in key order: new ones, and those whose JSON changed.</summary>
     public IReadOnlyList<CheckpointPart> Parts { get; }
 
     /// <summary>The keys of the parts this commit deletes, in order.</summary>
@@ -144,7 +144,7 @@ public sealed class CheckpointCommit
     /// <summary>Every part the instance has once the commit is applied.</summary>
     internal IReadOnlyDictionary<string, string> StoredParts { get; }
 
-    /// <summary>The bytes of state the commit carries: its payload and the parts it writes, as UTF-8 (J-04).</summary>
+    /// <summary>The bytes of state the commit carries: its payload and the parts it writes, as UTF-8.</summary>
     public long StateBytes => Encoding.UTF8.GetByteCount(Payload) +
                               Parts.Sum(part => (long)Encoding.UTF8.GetByteCount(part.Json));
 
@@ -153,7 +153,7 @@ public sealed class CheckpointCommit
 
     /// <summary>
     /// The trace entries recorded since the last commit, as JSON, for the store to append to the instance's trace
-    /// in order (G-01).
+    /// in order.
     /// </summary>
     public IReadOnlyList<string> TraceEntries { get; }
 
@@ -174,13 +174,13 @@ public sealed class CheckpointCommit
     /// <summary>
     /// True when the commit records progress, so the instance's crash count starts again from zero.
     /// A commit that only claims an activity or child before it starts, or only reschedules a check,
-    /// leaves the count, so work that keeps killing its owner is still counted (B-08).
+    /// leaves the count, so work that keeps killing its owner is still counted.
     /// </summary>
     public bool ClearsCrashCount { get; }
 
     /// <summary>
     /// True when the run stops for <see cref="WakeAfter"/>, for example a retry backoff, while the
-    /// instance stays Running: the store releases the lease in the same step (C-03). If a cancellation
+    /// instance stays Running: the store releases the lease in the same step. If a cancellation
     /// request is waiting to be taken up, the store keeps the lease and makes the instance runnable now
     /// instead, and the receipt says it did not park.
     /// </summary>
@@ -189,7 +189,7 @@ public sealed class CheckpointCommit
     /// <summary>
     /// For a park, how long the run stops. For an idle instance, the longest it may wait before it is
     /// runnable again even with no deadline due, so it checks its children. The store adds it to its own
-    /// time at this commit (D-35).
+    /// time at this commit.
     /// </summary>
     public TimeSpan? WakeAfter { get; }
 
@@ -198,7 +198,7 @@ public sealed class CheckpointCommit
 
     /// <summary>
     /// Inbox events this commit settles, in the same transaction: consumed by the wait that took each,
-    /// or rejected. Each must still be pending, or the commit is a conflict (D-04).
+    /// or rejected. Each must still be pending, or the commit is a conflict.
     /// </summary>
     public IReadOnlyList<EventSettlement> Settlements { get; }
 
@@ -210,7 +210,7 @@ public sealed class CheckpointCommit
 
     /// <summary>
     /// Waits this commit opens. The store records each with the instance's inbox sequence at this
-    /// commit, so an event addressed by key that arrived earlier never satisfies it (D-33).
+    /// commit, so an event addressed by key that arrived earlier never satisfies it.
     /// </summary>
     public IReadOnlyList<OpenedWait> OpenedWaits { get; }
 
@@ -221,7 +221,7 @@ public sealed class CheckpointCommit
     public IReadOnlyList<ClosedWait> ClosedWaits { get; }
 
     /// <summary>
-    /// Children this commit starts, in the same transaction as the waits it opens for them (D-17). Each
+    /// Children this commit starts, in the same transaction as the waits it opens for them. Each
     /// is saved as revision 1 of a new instance, runnable now, with this instance as its parent.
     /// </summary>
     public IReadOnlyList<ChildStart> ChildStarts { get; }
@@ -421,7 +421,7 @@ public sealed class CheckpointCommit
     }
 }
 
-/// <summary>The fields of a committed instance a store applies the commit by (D-03).</summary>
+/// <summary>The fields of a committed instance a store applies the commit by.</summary>
 public sealed record CommittedInstance(string InstanceId, string WorkflowName, string CorrelationId,
     WorkflowStatus Status, bool AcknowledgesCancellation)
 {

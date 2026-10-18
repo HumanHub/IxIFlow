@@ -9,7 +9,7 @@ namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// One change a parallel branch made to its copy of the workflow data, against the data it was forked
-/// from (D-14, spec E-01): a JSON property path and the new value as JSON, or a dictionary entry's removal.
+/// from: a JSON property path and the new value as JSON, or a dictionary entry's removal.
 /// </summary>
 internal sealed class DataChange
 {
@@ -32,7 +32,7 @@ internal sealed record MergingBranch(IReadOnlyList<DataChange> Changes, Func<obj
 internal sealed record MergedData(object Data, IReadOnlyList<List<string>> Paths);
 
 /// <summary>
-/// Branch copies of the workflow data and their merge at a join (D-14, spec E-01 to E-07). The data is
+/// Branch copies of the workflow data and their merge at a join. The data is
 /// seen as System.Text.Json sees it, with every property written, null and default ones included, so a
 /// copy reads back what it was given. A class object is compared per property and a mutable dictionary
 /// class per key; anything else is one value: lists, structs, polymorphic values, objects with extension
@@ -192,7 +192,7 @@ internal static class BranchData
     /// read-back took, through a setter that reads state the copy does not have; then every value set,
     /// the refused one included, is put back and the join fails with <see cref="JoinConflictException"/>.
     /// Putting a value back assigns it again, so a setter on branch data must be a plain assignment that
-    /// can be undone (D-14); one that refuses even that leaves the data changed, which is an engine failure.
+    /// can be undone; one that refuses even that leaves the data changed, which is an engine failure.
     /// </summary>
     public static void Apply(object data, MergedData merge)
     {
@@ -591,7 +591,7 @@ internal static class BranchData
 
     /// <summary>
     /// Records a parallel step's choice of <paramref name="combiner"/> for the property
-    /// <paramref name="property"/> selects, instead of the one the data type declares, if any (spec E-05).
+    /// <paramref name="property"/> selects, instead of the one the data type declares, if any.
     /// </summary>
     public static void Choose(WorkflowStep step, System.Linq.Expressions.LambdaExpression property, Type dataType,
         Type valueType, Type combiner)
@@ -640,9 +640,9 @@ internal static class BranchData
     }
 
     /// <summary>
-    /// Checks that every combiner a data type declares fits its property, which can be set (spec E-05),
+    /// Checks that every combiner a data type declares fits its property, which can be set,
     /// and, when <paramref name="branches"/>, that parallel branches' copies of the data read back what
-    /// they were given and can be merged (spec E-01): the data is merged per member; every combiner sits
+    /// they were given and can be merged: the data is merged per member; every combiner sits
     /// where a join uses it, not inside a value merged whole or one with a combiner; and anywhere in the
     /// data, inside lists and polymorphic values too, a property with no setter is either a scalar the
     /// type computes, set by a constructor parameter, or an object read back into itself by
@@ -709,7 +709,7 @@ internal static class BranchData
            definition == typeof(IReadOnlyList<>) || definition == typeof(IReadOnlyDictionary<,>) ||
            definition == typeof(IReadOnlySet<>)));
 
-    /// <summary>The combiners a data type declares, for the fingerprint (spec E-05).</summary>
+    /// <summary>The combiners a data type declares, for the fingerprint.</summary>
     public static string CombinerSignature(Type? dataType)
     {
         if (dataType == null)

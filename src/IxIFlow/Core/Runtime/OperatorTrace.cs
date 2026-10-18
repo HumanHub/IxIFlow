@@ -2,7 +2,7 @@ namespace IxIFlow.Core.Runtime;
 
 internal sealed record ClientActor(string? Name);
 
-/// <summary>Operator facts live only in typed payloads (D-38).</summary>
+/// <summary>Operator facts live only in typed payloads.</summary>
 internal static class OperatorTrace
 {
     public static CancellationReason WithActor(CancellationReason reason, string? defaultActor, DateTime now) =>

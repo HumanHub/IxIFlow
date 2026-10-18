@@ -10,7 +10,7 @@ using Microsoft.CodeAnalysis.Operations;
 namespace IxIFlow.Analyzers;
 
 /// <summary>
-/// The mapping rules of D-26 (spec F-22, F-24) at compile time, as the engine applies them when a fluent workflow is
+/// The mapping rules at compile time, as the engine applies them when a fluent workflow is
 /// built. An activity that marks its properties with <c>[ActivityInput]</c> or <c>[ActivityOutput]</c> takes inputs
 /// only into its marked inputs and gives outputs only from its marked outputs, and each input it requires is mapped
 /// unless it has a default. An activity without the attributes takes inputs into properties with a public setter and

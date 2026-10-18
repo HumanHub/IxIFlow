@@ -1,7 +1,7 @@
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// A run's inbox and waits-table work since its last commit (D-32, D-33): the events it decided, how
+/// A run's inbox and waits-table work since its last commit: the events it decided, how
 /// far it read, and the waits it opened, armed and closed. The next commit carries all of it, so the
 /// store applies the decisions together with the checkpoint that results from them.
 /// </summary>
@@ -51,7 +51,7 @@ internal sealed class InboxProgress
         MayHaveUnread = false;
     }
 
-    /// <summary>Records the waits the store found due at its time when the run last read the inbox (D-35).</summary>
+    /// <summary>Records the waits the store found due at its time when the run last read the inbox.</summary>
     public void Due(IEnumerable<string> waitIds) => _due = waitIds.ToHashSet(StringComparer.Ordinal);
 
     /// <summary>True when the store found the wait due at the run's last read.</summary>

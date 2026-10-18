@@ -28,7 +28,7 @@ public interface IActivityContext
     string AttemptId { get; }
 
     /// <summary>
-    /// This attempt and the earlier attempts of the same invocation: their hosts, errors and notes (D-37). An attempt
+    /// This attempt and the earlier attempts of the same invocation: their hosts, errors and notes. An attempt
     /// may leave a <see cref="ActivityAttempt.Note"/> for the next one.
     /// </summary>
     ActivityAttempt Attempt { get; }

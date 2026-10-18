@@ -20,6 +20,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// </summary>
 [Trait("Feature", "timers")]
 [Trait("Spec", "C-03")]
+[Trait("Spec", "J-05")]
 public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreClockTests>>
 {
     private static readonly DateTimeOffset Start = new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);

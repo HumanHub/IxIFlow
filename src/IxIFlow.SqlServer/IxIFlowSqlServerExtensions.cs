@@ -5,7 +5,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace IxIFlow.Extensions;
 
-/// <summary>Chooses SQL Server as the store (D-21).</summary>
+/// <summary>Chooses SQL Server as the store.</summary>
 public static class IxIFlowSqlServerExtensions
 {
     /// <summary>

@@ -75,7 +75,7 @@ public class CancellationReason
     public DateTime RequestedAt { get; set; }
 
     /// <summary>
-    ///     Who requested the cancellation: a plain string the engine records and never checks (D-38). Empty takes
+    ///     Who requested the cancellation: a plain string the engine records and never checks. Empty takes
     ///     the client's default actor, <c>IxIFlowOptions.Actor</c>.
     /// </summary>
     public string RequestedBy { get; set; } = "";
@@ -226,8 +226,7 @@ public class WorkflowInstance
     public string? ParentInstanceId { get; set; }
 
     /// <summary>
-    /// The parent's wait for this child, which the child's terminal commit answers with its completion
-    /// (D-17).
+    /// The parent's wait for this child, which the child's terminal commit answers with its completion.
     /// </summary>
     public string? ParentWaitId { get; set; }
 
@@ -247,7 +246,7 @@ public class WorkflowInstance
     public DateTime? CompletedAt { get; set; }
 
     /// <summary>
-    /// The earliest time a host should claim and run the instance (C-01): the commit time while it
+    /// The earliest time a host should claim and run the instance: the commit time while it
     /// runs, its earliest deadline or check while it waits, now when a cancellation request or a
     /// finished child needs it. Null when only an outside event or an operator can move it.
     /// </summary>
@@ -304,12 +303,12 @@ public class WorkflowInstance
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
 
-    /// <summary>Whether trace entries are recorded (G-01).</summary>
+    /// <summary>Whether trace entries are recorded.</summary>
     public bool TracingEnabled { get; set; } = true;
 
     /// <summary>
     /// The parts the instance's state is stored in as of its last commit or read, by key, or null when that is not
-    /// known; a commit writes only the parts that differ, and deletes those that are gone (A-08).
+    /// known; a commit writes only the parts that differ, and deletes those that are gone.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     internal IReadOnlyDictionary<string, string>? SavedParts { get; private set; }
@@ -604,10 +603,10 @@ public enum TraceEntryType
     /// </summary>
     DebugEvent,
 
-    /// <summary>A cancellation request reached the run, with who made it (D-38).</summary>
+    /// <summary>A cancellation request reached the run, with who made it.</summary>
     CancellationRequested,
 
-    /// <summary>An operator released an instance stopped for them, with who did (D-38).</summary>
+    /// <summary>An operator released an instance stopped for them, with who did.</summary>
     Released,
 
     // Append kinds to preserve the stored numeric values of existing entries (G-01).
@@ -787,7 +786,7 @@ public class WorkflowStep
     /// </summary>
     public Type? WorkflowType { get; set; }
 
-    /// <summary>For a workflow invocation step, the child's data type its mappings name, checked when built (F-22).</summary>
+    /// <summary>For a workflow invocation step, the child's data type its mappings name, checked when built.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Type? InvokedDataType { get; set; }
 
@@ -879,7 +878,7 @@ public class WorkflowStep
 
     /// <summary>
     /// For a parallel step, combiners it chooses for properties of the workflow data, by JSON property
-    /// path; they take precedence over those declared on the data type (spec E-05).
+    /// path; they take precedence over those declared on the data type.
     /// </summary>
     public Dictionary<string, Type> ParallelCombiners { get; set; } = new(StringComparer.Ordinal);
 
@@ -912,7 +911,7 @@ public class WorkflowStep
     /// </summary>
     public LoopType LoopType { get; set; }
 
-    /// <summary>For a <c>ForEach</c> step, the body run once per item (D-34).</summary>
+    /// <summary>For a <c>ForEach</c> step, the body run once per item.</summary>
     public List<WorkflowStep> ForEachBodySteps { get; set; } = new();
 
     /// <summary>For a <c>ForEach</c> step, its body's handle on the current item.</summary>
@@ -931,7 +930,7 @@ public class WorkflowStep
     public Action<object, IReadOnlyList<(ItemStatus Status, object? Value)>>? ForEachInto { get; set; }
 
     /// <summary>
-    /// For a <c>ForEach</c> step, true when its items run as parallel branches (D-34); its join is
+    /// For a <c>ForEach</c> step, true when its items run as parallel branches; its join is
     /// <see cref="ParallelJoinMode"/>.
     /// </summary>
     public bool ForEachParallel { get; set; }
@@ -941,7 +940,7 @@ public class WorkflowStep
 
     /// <summary>
     /// For a parallel <c>ForEach</c> step joined conditionally, decides on the provisional merge of the
-    /// completed items' data and their results so far, by index (D-34, spec E-09).
+    /// completed items' data and their results so far, by index.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Func<object, IReadOnlyList<(int Index, object? Value)>, bool>? ForEachCompletionCondition { get; set; }
@@ -986,7 +985,7 @@ public class WorkflowStep
     /// <summary>A suggested event payload for discovery UIs only; excluded from the fingerprint.</summary>
     public object? DefaultPayload { get; set; }
 
-    /// <summary>For a request step, the name its <c>WaitFor</c> uses (D-33).</summary>
+    /// <summary>For a request step, the name its <c>WaitFor</c> uses.</summary>
     public string? RequestName { get; set; }
 
     /// <summary>For a request step, the answer type its activity declares with <c>IRequestActivity&lt;TReply&gt;</c>.</summary>
@@ -1004,7 +1003,7 @@ public class WorkflowStep
 
     /// <summary>
     /// For a child workflow invocation: whether cancelling the invoking branch, or failing the parent, cancels the
-    /// child and waits for it to end (the default), or leaves it running on its own (D-09).
+    /// child and waits for it to end (the default), or leaves it running on its own.
     /// </summary>
     public bool CancelWithParent { get; set; } = true;
 
@@ -1169,7 +1168,7 @@ public enum WorkflowStepType
     /// <summary>Park until a durable timer becomes due.</summary>
     Delay,
 
-    /// <summary>Run a body once per item of a list (D-34).</summary>
+    /// <summary>Run a body once per item of a list.</summary>
     ForEach,
 
     /// <summary>The last step of a <c>ForEach</c> body: the value it gives for its item.</summary>

@@ -12,7 +12,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
 
     /// <summary>
     /// True when a deadline may be due by the store's clock as the run last read it, or a child is due
-    /// for a check by the host's own: the run reads the inbox, and the store says which are due (D-35).
+    /// for a check by the host's own: the run reads the inbox, and the store says which are due.
     /// A deadline that passes after the root finishes has nothing left to interrupt.
     /// </summary>
     public bool MayBeDue(ExecutionCheckpoint checkpoint) => checkpoint.NextDeadlineLocal() <= Now;
@@ -54,7 +54,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
 
     /// <summary>
     /// Times out the waits the store found due when the run last read its inbox. That read covered every
-    /// event received before their deadlines, and the run decided those first (D-33, D-35).
+    /// event received before their deadlines, and the run decided those first.
     /// </summary>
     public bool ProcessDueWaits(ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes)
     {
@@ -398,7 +398,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     }
 
     /// <summary>
-    /// Waits for the child an invocation step starts (D-17): the step's invocation, whose ID is the
+    /// Waits for the child an invocation step starts: the step's invocation, whose ID is the
     /// child's, the child's start for the next commit, and a wait only the child's completion answers.
     /// </summary>
     public void AwaitChild(ExecutionCheckpoint checkpoint, ContinuationState continuation, string stepId,
@@ -459,7 +459,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
 
     /// <summary>
     /// Throws <see cref="BranchLimitExceededException"/> when starting <paramref name="starting"/> more
-    /// branches would make more than <paramref name="maxActiveBranches"/> live (D-30). Only branches count:
+    /// branches would make more than <paramref name="maxActiveBranches"/> live. Only branches count:
     /// not the root, not a parent waiting on its join, and not branches that finished or are cancelling, so
     /// whether a nested fork fits can depend on how far its siblings have got. <paramref name="leaving"/>,
     /// a branch about to fork or to complete in the same transition, does not count.
@@ -711,7 +711,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
 
     /// <summary>
     /// Completes joins whose branches have all finished; returns true when one completed. A join that
-    /// completes merges its completed branches into the parent's data (D-14). One whose branches are in
+    /// completes merges its completed branches into the parent's data. One whose branches are in
     /// conflict leaves the parent at the parallel step and is listed in <paramref name="conflicts"/>, to be
     /// raised there; one that ends through a failure or a cancellation merges nothing.
     /// </summary>

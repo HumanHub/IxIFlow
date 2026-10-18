@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace IxIFlow.Core;
 
 /// <summary>
-/// The opaque address of one wait (D-33): its instance, its engine-issued ID and, for a request that
+/// The opaque address of one wait: its instance, its engine-issued ID and, for a request that
 /// declared one, the digest of what it asks about. Holding a token is the right to answer that wait,
 /// so tokens travel only to whoever should answer, such as in an approval link.
 /// </summary>
@@ -51,7 +51,7 @@ public static class ReplyToken
     }
 }
 
-/// <summary>An open wait as discovery lists it (D-14): what it waits for, until when, and how to answer it.</summary>
+/// <summary>An open wait as discovery lists it: what it waits for, until when, and how to answer it.</summary>
 public sealed record OpenWait(
     string InstanceId,
     string WaitId,

@@ -11,7 +11,7 @@ namespace IxIFlow.Analyzers;
 
 /// <summary>
 /// Replaces <c>DateTime.UtcNow</c> or <c>DateTimeOffset.UtcNow</c> in workflow code with the workflow context's
-/// <c>UtcNow</c>, the run's clock (D-42). Offered where the analyzer found a context parameter in scope.
+/// <c>UtcNow</c>, the run's clock. Offered where the analyzer found a context parameter in scope.
 /// </summary>
 [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(ContextClockCodeFix)), Shared]
 public sealed class ContextClockCodeFix : CodeFixProvider
