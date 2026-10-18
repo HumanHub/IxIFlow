@@ -86,6 +86,7 @@ public sealed class LeaseIncarnationContractTests
         try
         {
             await VerifyAbsentDelete(store, id + "-absent", duration, open);
+            await VerifyFirstInsertReplay(store, id + "-retry", duration);
             var original = NewInstance(id);
             await Apply(store, CheckpointCommit.Create(original, 0, 0));
             original = (await store.GetWorkflowInstanceAsync(id))!;
@@ -129,8 +130,13 @@ public sealed class LeaseIncarnationContractTests
             var replacement = original.CopyForResume();
             replacement.Status = WorkflowStatus.Running;
             replacement.Revision = 0;
-            await Apply(store, CheckpointCommit.Create(replacement, 0, 0));
+            Assert.Equal(originalIncarnation, replacement.Incarnation);
+            var firstInsert = CheckpointCommit.Create(replacement, 0, 0);
+            Assert.NotEqual(originalIncarnation, firstInsert.Incarnation);
+            Assert.Equal(firstInsert.Incarnation, replacement.Incarnation);
+            await Apply(store, firstInsert);
             replacement = (await store.GetWorkflowInstanceAsync(id))!;
+            Assert.Equal(firstInsert.Incarnation, replacement.Incarnation);
             Assert.NotEqual(originalIncarnation, replacement.Incarnation);
             Assert.Equal(original.Revision, replacement.Revision);
             Assert.Equal(replacement.Incarnation, (await store.GetWorkflowInstanceSummaryAsync(id))!.Incarnation);
@@ -160,13 +166,13 @@ public sealed class LeaseIncarnationContractTests
             Assert.False(await store.ReleaseExecutionLeaseAsync(id, "old-owner"));
             Assert.False(await store.RenewExecutionLeaseAsync(id, "old-owner", duration));
 
-            // A receipt ID reused by the new incarnation must not admit an old terminal replay either.
+            // A present receipt belongs to the replacement. A reused ID with different transition
+            // content is rejected by receipt validation before the incarnation fence.
             replacement.Status = WorkflowStatus.Completed;
             var normal = CheckpointCommit.Create(replacement, current.Epoch, replacement.Revision, "completion");
             await Apply(store, normal);
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(normal)).Status);
-            Assert.Equal(WorkflowCommitStatus.StaleEpoch,
-                (await store.CommitWorkflowInstanceAsync(lateCompletion)).Status);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => store.CommitWorkflowInstanceAsync(lateCompletion));
             var finished = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.Equal(2, finished.Revision);
             Assert.Equal(WorkflowStatus.Completed, finished.Status);
@@ -210,8 +216,49 @@ public sealed class LeaseIncarnationContractTests
         Assert.DoesNotContain("\"Incarnation\"", commit.Payload);
         var result = await store.CommitWorkflowInstanceAsync(commit);
         Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
-        Assert.NotEqual(Guid.Empty, result.Incarnation);
-        Assert.Equal(result.Incarnation, (await store.GetWorkflowInstanceAsync(commit.InstanceId))!.Incarnation);
+        var row = (await store.GetWorkflowInstanceAsync(commit.InstanceId))!;
+        Assert.NotEqual(Guid.Empty, row.Incarnation);
+        if (commit.ExpectedRevision == 0)
+            Assert.Equal(commit.Incarnation, row.Incarnation);
+    }
+
+    private static async Task VerifyFirstInsertReplay(IWorkflowStateRepository store, string prefix, TimeSpan duration)
+    {
+        foreach (var kind in new[] { "running", "parking", "completed" })
+        {
+            var id = prefix + "-" + kind;
+            try
+            {
+                var instance = NewInstance(id);
+                var grant = (await store.TryAcquireExecutionLeaseAsync(id, "owner", duration))!;
+                if (kind == "completed")
+                    instance.Status = WorkflowStatus.Completed;
+                var commit = CheckpointCommit.Create(instance, grant.Epoch, 0,
+                    parks: kind == "parking", wakeAfter: kind == "parking" ? TimeSpan.FromHours(1) : null);
+                Assert.NotEqual(Guid.Empty, commit.Incarnation);
+                Assert.Equal(commit.Incarnation, instance.Incarnation);
+                var applied = await store.CommitWorkflowInstanceAsync(commit); // The acknowledgement is lost.
+                Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1,
+                    Parked: kind == "parking"), applied);
+                var receipt = await store.CommitWorkflowInstanceAsync(commit); // Resend the same immutable commit.
+                Assert.Equal(applied with { Status = WorkflowCommitStatus.AlreadyApplied }, receipt);
+                var row = (await store.GetWorkflowInstanceAsync(id))!;
+                Assert.Equal(1, row.Revision);
+                Assert.Equal(commit.Incarnation, row.Incarnation);
+                Assert.Equal(commit.Incarnation, instance.Incarnation);
+
+                // Even a newly created first-insert transition with identical content gets the
+                // existing receipt before its newly stamped incarnation is checked.
+                var recreated = CheckpointCommit.Create(instance, grant.Epoch, 0, commit.CommitId,
+                    parks: commit.Parks, wakeAfter: commit.WakeAfter);
+                Assert.NotEqual(commit.Incarnation, recreated.Incarnation);
+                Assert.Equal(recreated.Incarnation, instance.Incarnation);
+                Assert.Equal(commit.ContentHash, recreated.ContentHash);
+                Assert.Equal(receipt, await store.CommitWorkflowInstanceAsync(recreated));
+                Assert.Equal(commit.Incarnation, (await store.GetWorkflowInstanceAsync(id))!.Incarnation);
+            }
+            finally { await store.DeleteWorkflowInstanceAsync(id); }
+        }
     }
 
     private static async Task AssertLeaseRows(Func<DbConnection>? open, string id, int expected)
@@ -275,7 +322,8 @@ public sealed class LeaseIncarnationContractTests
             {
                 var result = await store.CommitWorkflowInstanceAsync(late);
                 Assert.Equal(WorkflowCommitStatus.StaleEpoch, result.Status);
-                Assert.Equal(replacement.Incarnation, result.Incarnation);
+                Assert.Equal(replacement.Incarnation,
+                    (await store.GetWorkflowInstanceAsync(replacement.InstanceId))!.Incarnation);
                 Assert.Empty(result.MadeRunnable);
                 Assert.Equal(replacementBefore, JsonSerializer.Serialize(await store.GetWorkflowInstanceAsync(replacement.InstanceId)));
                 Assert.Null(await store.GetWorkflowInstanceAsync(childId));
@@ -315,8 +363,7 @@ public sealed class LeaseIncarnationContractTests
                 await Apply(store, CheckpointCommit.Create(reused, 0, 0));
             var row = (await store.GetWorkflowInstanceAsync(saved.InstanceId))!;
             Assert.True(incarnations.Add(row.Incarnation));
-            if (save)
-                Assert.Equal(row.Incarnation, reused.Incarnation);
+            Assert.Equal(row.Incarnation, reused.Incarnation);
         }
 
         var parentId = saved.InstanceId + "-start";
