@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Security;
 using System.Text.Json;
-using System.Xml.Linq;
 
 namespace IxIFlow.Generators.Tests;
 
@@ -10,7 +9,7 @@ public sealed class WorkflowSchemaPackageTests
 {
     [Fact]
     [Trait("Category", "PackageIntegration")]
-    public async Task PackageContainsTheVersionedSchemaAndItsToolingProperty()
+    public async Task PackageShipsTheSchemaAndConsumersResolveItsPath()
     {
         var root = WorkflowSchemaFiles.RepositoryRoot();
         var temporary = Path.Combine(Path.GetTempPath(), "IxIFlow.SchemaPackage", Guid.NewGuid().ToString("N"));
@@ -30,31 +29,43 @@ public sealed class WorkflowSchemaPackageTests
                 "</packageSources></configuration>");
             var version = "1.0.0-schema." + Guid.NewGuid().ToString("N");
             foreach (var project in new[] { "IxIFlow.Abstractions", "IxIFlow" })
-                await Dotnet("pack", Path.Combine(root, "src", project), "--output", feed,
+                await Dotnet(root, "pack", Path.Combine(root, "src", project), "--output", feed,
                     "--artifacts-path", artifacts, "-p:PackageVersion=" + version,
                     "-p:RestoreConfigFile=" + config, "-p:NuGetAudit=false",
                     "-p:GeneratePackageOnBuild=false", "-p:UseSharedCompilation=false");
-            using var package = ZipFile.OpenRead(Path.Combine(feed, $"IxIFlow.{version}.nupkg"));
-            var schema = Assert.Single(package.Entries, entry => entry.FullName == "schemas/workflow.schema.json");
-            using var bytes = new MemoryStream();
-            await using (var content = schema.Open()) await content.CopyToAsync(bytes);
-            Assert.Equal(await File.ReadAllBytesAsync(WorkflowSchemaFiles.SchemaPath), bytes.ToArray());
-            var props = Assert.Single(package.Entries, entry => entry.FullName == "buildTransitive/IxIFlow.props");
-            await using var stream = props.Open();
-            var document = XDocument.Load(stream);
-            Assert.Equal("$([MSBuild]::NormalizePath('$(MSBuildThisFileDirectory)../schemas/workflow.schema.json'))",
-                Assert.Single(document.Descendants("IxIFlowWorkflowSchema")).Value);
+            using (var package = ZipFile.OpenRead(Path.Combine(feed, $"IxIFlow.{version}.nupkg")))
+            {
+                var schema = Assert.Single(package.Entries, entry => entry.FullName == "schemas/workflow.schema.json");
+                using var bytes = new MemoryStream();
+                await using (var content = schema.Open()) await content.CopyToAsync(bytes);
+                Assert.Equal(await File.ReadAllBytesAsync(WorkflowSchemaFiles.SchemaPath), bytes.ToArray());
+            }
 
-            var property = await Dotnet("msbuild", Path.Combine(root, "tests/IxIFlow.Generators.Tests"), "-getProperty:IxIFlowWorkflowSchema");
-            Assert.Equal(Path.GetFullPath(WorkflowSchemaFiles.SchemaPath), property.Trim());
+            // A consumer that only references the packed package resolves the property to the restored copy.
+            var consumer = Path.Combine(temporary, "consumer");
+            Directory.CreateDirectory(consumer);
+            await File.WriteAllTextAsync(Path.Combine(consumer, "Consumer.csproj"), $$"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net10.0</TargetFramework>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <PackageReference Include="IxIFlow" Version="{{version}}" />
+                  </ItemGroup>
+                </Project>
+                """);
+            await Dotnet(consumer, "restore", "--configfile", config, "-p:NuGetAudit=false");
+            var property = (await Dotnet(consumer, "msbuild", "-getProperty:IxIFlowWorkflowSchema")).Trim();
+            Assert.Equal(Path.Combine(temporary, "packages", "ixiflow", version, "schemas", "workflow.schema.json"), property);
+            Assert.Equal(await File.ReadAllBytesAsync(WorkflowSchemaFiles.SchemaPath), await File.ReadAllBytesAsync(property));
         }
         finally { Directory.Delete(temporary, recursive: true); }
 
-        async Task<string> Dotnet(params string[] arguments)
+        async Task<string> Dotnet(string workingDirectory, params string[] arguments)
         {
             var start = new ProcessStartInfo("dotnet")
             {
-                WorkingDirectory = root, RedirectStandardOutput = true, RedirectStandardError = true,
+                WorkingDirectory = workingDirectory, RedirectStandardOutput = true, RedirectStandardError = true,
                 UseShellExecute = false, CreateNoWindow = true
             };
             foreach (var argument in arguments) start.ArgumentList.Add(argument);

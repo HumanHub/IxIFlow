@@ -8,6 +8,10 @@ namespace IxIFlow.Dsl.Documents;
 /// <summary>Generates the editor schema from the shared workflow document contract.</summary>
 public static class WorkflowDocumentSchema
 {
+    /// <summary>The schema's URL in the tagged IxIFlow release that ships it.</summary>
+    public static string Id { get; } = "https://raw.githubusercontent.com/HumanHub/IxIFlow/v" +
+        typeof(IxIFlow.Core.WorkflowDefinition).Assembly.GetName().Version!.ToString(3) + "/src/IxIFlow/schemas/workflow.schema.json";
+
     public static string Write()
     {
         var definitions = new JsonObject();
@@ -15,7 +19,7 @@ public static class WorkflowDocumentSchema
         var root = new JsonObject
         {
             ["$schema"] = "http://json-schema.org/draft-07/schema#",
-            ["$id"] = "https://raw.githubusercontent.com/HumanHub/IxIFlow/main/src/IxIFlow/schemas/workflow.schema.json",
+            ["$id"] = Id,
             ["title"] = "IxIFlow workflow"
         };
         foreach (var property in ObjectSchema(typeof(WorkflowDocument))) root.Add(property.Key, property.Value?.DeepClone());
@@ -56,34 +60,40 @@ public static class WorkflowDocumentSchema
         {
             var properties = new JsonObject();
             var required = new JsonArray();
-            var kind = DocumentModel.GetKind(type);
             var instance = Activator.CreateInstance(type)!;
-            foreach (var member in DocumentModel.GetMembers(type))
+            foreach (var key in DocumentModel.GetKeys(type))
             {
-                var name = DocumentModel.GetName(member);
+                if (key.IsDiscriminator)
+                {
+                    var kind = DocumentModel.GetKind(type)!;
+                    properties[key.Name] = new JsonObject
+                    {
+                        ["type"] = "string", ["const"] = kind.Kind,
+                        ["description"] = key.Member is { } stored ? Describe(stored) : "The discriminator selecting this document variant."
+                    };
+                    if (kind.ImpliedBy == null) required.Add(key.Name);
+                    continue;
+                }
+                if (key.Member is not { } member)
+                {
+                    properties[key.Name] = new JsonObject
+                    {
+                        ["type"] = "string", ["description"] = "The editor schema this document binds to; readers ignore it."
+                    };
+                    continue;
+                }
                 var schema = ValueSchema(member.PropertyType, nullability.Create(member));
-                schema["description"] = member.GetCustomAttribute<DescriptionAttribute>()!.Description;
+                schema["description"] = Describe(member);
                 if (member.GetCustomAttribute<DocumentValuesAttribute>() is { } values) schema["enum"] = Strings(values.Values);
                 if (member.GetValue(instance) is { } value && (value is string text && text.Length > 0 || value is int or bool))
                     schema["default"] = JsonSerializer.SerializeToNode(value);
-                if (name == "kind" && kind != null) schema["const"] = kind.Kind;
-                properties[name] = schema;
-                if (member.IsDefined(typeof(DocumentRequiredAttribute))) required.Add(name);
-            }
-            if (kind != null)
-            {
-                if (!properties.ContainsKey("kind"))
-                    properties.Insert(0, "kind", new JsonObject
-                    {
-                        ["type"] = "string", ["const"] = kind.Kind,
-                        ["description"] = "The discriminator selecting this document variant."
-                    });
-                if (kind.ImpliedBy == null) required.Add("kind");
+                properties[key.Name] = schema;
+                if (member.IsDefined(typeof(DocumentRequiredAttribute))) required.Add(key.Name);
             }
             var result = new JsonObject
             {
                 ["type"] = "object",
-                ["description"] = type.GetCustomAttribute<DescriptionAttribute>()!.Description,
+                ["description"] = Describe(type),
                 ["additionalProperties"] = false,
                 ["properties"] = properties
             };
@@ -122,7 +132,7 @@ public static class WorkflowDocumentSchema
             var result = new JsonObject
             {
                 ["type"] = "object",
-                ["description"] = type.GetCustomAttribute<DescriptionAttribute>()!.Description,
+                ["description"] = Describe(type),
                 ["properties"] = new JsonObject
                 {
                     ["kind"] = new JsonObject
@@ -139,6 +149,9 @@ public static class WorkflowDocumentSchema
             return result;
         }
     }
+
+    private static string Describe(MemberInfo member) => member.GetCustomAttribute<DescriptionAttribute>()?.Description ??
+        throw new InvalidOperationException($"{(member is Type ? member.Name : member.DeclaringType!.Name + "." + member.Name)} needs a [Description] for the workflow schema");
 
     private static JsonArray Strings(IEnumerable<string> values) => new(values.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
 }

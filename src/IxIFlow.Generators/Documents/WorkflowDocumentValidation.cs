@@ -187,7 +187,7 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
                     {
                         if (parallel.MaxConcurrency is < 1)
                             diagnostics.Add(new("EACH004", "maxConcurrency must be positive", WorkflowDiagnosticSeverity.Error, $"{stepPath}.parallel.maxConcurrency"));
-                        if (parallel.Join is not ("all" or "any" or "conditionally"))
+                        if (!DocumentModel.GetValues(typeof(ForEachParallelDocument), nameof(ForEachParallelDocument.Join)).Contains(parallel.Join))
                             diagnostics.Add(new("EACH005", "Unknown parallel join", WorkflowDiagnosticSeverity.Error, $"{stepPath}.parallel.join"));
                         if (parallel.Join == "conditionally" && (string.IsNullOrWhiteSpace(parallel.ResultType) || parallel.Condition == null))
                             diagnostics.Add(new("EACH006", "Conditional join requires resultType and condition", WorkflowDiagnosticSeverity.Error, $"{stepPath}.parallel"));
@@ -312,7 +312,7 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
                 break;
 
             case BinaryExpressionDocument binaryExpression:
-                if (binaryExpression.Operator is not ("eq" or "ne" or "and" or "or" or "gt" or "ge" or "lt" or "le" or "add" or "subtract" or "multiply" or "divide"))
+                if (!DocumentModel.GetValues(typeof(BinaryExpressionDocument), nameof(BinaryExpressionDocument.Operator)).Contains(binaryExpression.Operator))
                 {
                     diagnostics.Add(new WorkflowDiagnostic("EXPR002", $"Unknown binary operator '{binaryExpression.Operator}'", WorkflowDiagnosticSeverity.Error, $"{path}.operator"));
                 }
