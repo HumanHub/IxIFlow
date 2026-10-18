@@ -585,6 +585,9 @@ public sealed partial class WorkflowHost
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null)
                 await RefuseRemovedAsync(instanceId);
+            // Recovery repeats a finished instance's saved result, as starting it again does.
+            if (!release && !forEvent && instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
+                return ReadResult(instance);
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
             var canRecover = instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
                 instance?.Status == WorkflowStatus.Suspended &&
