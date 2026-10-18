@@ -4,6 +4,7 @@ using IxIFlow.Core;
 using IxIFlow.Recipes;
 using IxIFlow.Samples;
 using IxIFlow.Samples.Generated;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
 
@@ -174,9 +175,16 @@ public sealed class YamlSampleTests
         async Task<(string Data, string Fingerprint)> Execute(WorkflowDefinition definition)
         {
             var gateway = new Gateway { FailStock = stockFails };
-            await using var services = Services(gateway, new FakeTimeProvider());
+            var time = new TimerRecordingClock();
+            await using var services = Services(gateway, time);
             var client = SampleTests.Client(services);
-            var start = await client.RunAsync(definition, new Payment { OrderId = "order-1", Amount = 40m });
+            var running = client.RunAsync(definition, new Payment { OrderId = "order-1", Amount = 40m });
+            if (stockFails)
+            {
+                await time.WaitForTimerDueAtAsync(time.GetUtcNow() + TimeSpan.FromSeconds(1));
+                time.Advance(TimeSpan.FromSeconds(1));
+            }
+            var start = await running.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Equal(WorkflowExecutionStatus.Suspended, start.Status);
             var tokens = gateway.Payments.ToArray();
             Assert.Equal(stockFails ? 2 : 1, tokens.Length);
