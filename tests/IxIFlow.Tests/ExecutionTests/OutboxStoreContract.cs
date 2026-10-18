@@ -209,20 +209,26 @@ internal static class OutboxStoreContract
         Assert.Equal(first.Event, other.Event);
         Assert.Equal(1, first.Attempts);
         Assert.True(await store.SettleDeliveryAsync(other.Event.Id, "secondary", "owner", OutboxPublishResult.Delivered()));
+        var beforeSettlement = (await store.GetDeliveryAsync(first.Event.Id, "primary"))!.StoreNowUtc;
         Assert.True(await store.SettleDeliveryAsync(first.Event.Id, "primary", "owner", OutboxPublishResult.RetryLater("offline")));
         var retry = (await store.GetDeliveryAsync(first.Event.Id, "primary"))!;
         Assert.Equal("offline", retry.LastError);
         Assert.Equal(OutboxDeliveryStatus.Pending, retry.Status);
-        Assert.InRange(retry.NextAttemptAtUtc, first.StoreNowUtc.AddSeconds(5), retry.StoreNowUtc.AddSeconds(5));
+        Assert.InRange(retry.NextAttemptAtUtc, beforeSettlement.AddSeconds(5), retry.StoreNowUtc.AddSeconds(5));
+        if (repository is InMemoryWorkflowStateRepository or SqliteWorkflowStateRepository)
+            Assert.Equal(beforeSettlement.AddSeconds(5), retry.NextAttemptAtUtc);
         Assert.Empty(await store.ClaimDeliveriesAsync("primary", "early", TimeSpan.FromSeconds(30), 10));
         Assert.Empty(await store.ClaimDeliveriesAsync("secondary", "again", TimeSpan.FromSeconds(30), 10));
         await advance(retry, TimeSpan.FromSeconds(5));
         var second = await Claim(store, "primary");
         Assert.Equal(first.Event.Id, second.Event.Id);
         Assert.Equal(2, second.Attempts);
+        beforeSettlement = (await store.GetDeliveryAsync(first.Event.Id, "primary"))!.StoreNowUtc;
         Assert.True(await store.SettleDeliveryAsync(first.Event.Id, "primary", "owner", OutboxPublishResult.RetryLater("still offline")));
         retry = (await store.GetDeliveryAsync(first.Event.Id, "primary"))!;
-        Assert.InRange(retry.NextAttemptAtUtc, second.StoreNowUtc.AddSeconds(10), retry.StoreNowUtc.AddSeconds(10));
+        Assert.InRange(retry.NextAttemptAtUtc, beforeSettlement.AddSeconds(10), retry.StoreNowUtc.AddSeconds(10));
+        if (repository is InMemoryWorkflowStateRepository or SqliteWorkflowStateRepository)
+            Assert.Equal(beforeSettlement.AddSeconds(10), retry.NextAttemptAtUtc);
         await advance(retry, TimeSpan.FromSeconds(10));
         var third = await Claim(store, "primary");
         Assert.Equal(3, third.Attempts);
@@ -258,7 +264,10 @@ internal static class OutboxStoreContract
         Assert.Equal(dead.FirstAttemptAtUtc, recovered.FirstAttemptAtUtc);
         Assert.Equal(dead.Event.DataJson, recovered.Event.DataJson);
         Assert.False(await store.RenewDeliveryLeaseAsync(dead.Event.Id, "primary", deadToken, TimeSpan.FromSeconds(30)));
-        Assert.False(await store.SettleDeliveryAsync(dead.Event.Id, "primary", "dead", OutboxPublishResult.Delivered()));
+        var beforeStaleSettlement = (await store.GetDeliveryAsync(dead.Event.Id, "primary"))!;
+        Assert.False(await store.SettleDeliveryAsync(dead.Event.Id, "primary", deadToken, OutboxPublishResult.Delivered()));
+        Assert.Equal(beforeStaleSettlement, (await store.GetDeliveryAsync(dead.Event.Id, "primary"))!
+            with { StoreNowUtc = beforeStaleSettlement.StoreNowUtc });
         Assert.True(await store.SettleDeliveryAsync(dead.Event.Id, "primary", "new", OutboxPublishResult.Delivered()));
         var other = await Claim(store, "secondary");
         Assert.True(await store.SettleDeliveryAsync(other.Event.Id, "secondary", "owner", OutboxPublishResult.Delivered()));
