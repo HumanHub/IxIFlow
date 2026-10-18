@@ -17,44 +17,44 @@ public static class WorkflowJsonSerializer
     private static JsonSerializerOptions CreateOptions() => new()
     {
         PropertyNameCaseInsensitive = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         TypeInfoResolver = new DefaultJsonTypeInfoResolver().WithAddedModifier(info =>
         {
-            if (typeof(DocumentNode).IsAssignableFrom(info.Type))
-                foreach (var property in info.Properties.Where(property => property.Name is "location" or "members" ||
-                             typeof(WorkflowStepDocument).IsAssignableFrom(info.Type) && property.Name == "kind").ToArray())
-                    info.Properties.Remove(property);
+            if (!typeof(DocumentNode).IsAssignableFrom(info.Type) || info.Kind != JsonTypeInfoKind.Object) return;
+            var properties = info.Properties.ToDictionary(property => property.Name);
+            info.Properties.Clear();
+            foreach (var member in DocumentModel.GetMembers(info.Type))
+            {
+                var name = DocumentModel.GetName(member);
+                if (name == "kind" && DocumentModel.GetKind(info.Type) != null) continue;
+                if (!properties.TryGetValue(member.Name, out var property)) continue;
+                property.Name = name;
+                info.Properties.Add(property);
+            }
         }),
         Converters =
         {
-            new DocumentKindConverter<WorkflowStepDocument>(
-                ("activity", typeof(ActivityStepDocument)), ("activityRef", typeof(ActivityReferenceStepDocument)),
-                ("stepRef", typeof(StepReferenceStepDocument)), ("if", typeof(ConditionalStepDocument)),
-                ("sequence", typeof(SequenceStepDocument)), ("forEach", typeof(ForEachStepDocument)),
-                ("suspend", typeof(SuspendStepDocument)), ("invokeWorkflow", typeof(InvokeWorkflowStepDocument))),
-            new DocumentKindConverter<ExpressionDocument>(
-                ("constant", typeof(ConstantExpressionDocument)), ("path", typeof(PathExpressionDocument)),
-                ("binary", typeof(BinaryExpressionDocument)), ("function", typeof(FunctionExpressionDocument))),
+            new DocumentKindConverter<WorkflowStepDocument>(),
+            new DocumentKindConverter<ExpressionDocument>(),
             new DocumentValueConverter()
         }
     };
 
-    private sealed class DocumentKindConverter<T>(params (string Kind, Type Type)[] types) : JsonConverter<T> where T : DocumentNode
+    private sealed class DocumentKindConverter<T> : JsonConverter<T> where T : DocumentNode
     {
         public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
             using var document = JsonDocument.ParseValue(ref reader);
             var root = document.RootElement;
             var kind = root.TryGetProperty("kind", out var discriminator) ? discriminator.GetString() : null;
-            var type = types.FirstOrDefault(entry => entry.Kind == kind).Type
+            var type = DocumentModel.ResolveVariant(typeof(T), kind, name => root.TryGetProperty(name, out _))
                 ?? throw new JsonException($"Unknown workflow document kind '{kind}'");
             return (T?)root.Deserialize(type, options);
         }
 
         public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
         {
-            var kind = types.FirstOrDefault(entry => entry.Type == value.GetType()).Kind
+            var kind = DocumentModel.GetKind(value.GetType())?.Kind
                 ?? throw new JsonException($"Unknown workflow document type '{value.GetType().Name}'");
             writer.WriteStartObject();
             writer.WriteString("kind", kind);

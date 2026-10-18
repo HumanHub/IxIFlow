@@ -268,7 +268,7 @@ These items are planned and not yet available. The [roadmap](docs/roadmap.md) de
 - **Debugging and observability**: step-level trace store, breakpoints and step-through, structured logging with instance correlation, and OpenTelemetry traces and metrics
 - **Coordinator dispatch**: routing queued execute, resume, and cancel commands to a selected host, an HTTP host endpoint, host affinity on resume, and live load accounting
 - **Management API**: instance inspection, dead-letter inspection and requeue, and start triggers
-- **Workflow documents**: JSON schema and full YAML parity with the fluent API (parallel, loops, `Try`, sagas, delays), reusable step templates, and publish and version flow
+- **Workflow documents**: full YAML parity with the fluent API (parallel, loops, `Try`, sagas, delays), reusable step templates, and publish and version flow
 - **Storage adapters**: PostgreSQL, SQLite, and message broker adapters; persisted definition and event registries
 - **Visual editor**: graph editor and debugger UI on top of the document model
 

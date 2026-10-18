@@ -49,11 +49,43 @@ Authoring target .NET 10.
 Its document overload accepts a `WorkflowDocument` directly. Both use the single model
 and direct YamlDotNet reader in `IxIFlow.Generators/Documents`, compiled once into
 the generator library and referenced by Authoring. Document values use ordinary
-CLR scalars, lists and string-keyed mappings. The model has no JSON serializer
-types or attributes. `WorkflowJsonSerializer.Read/Write` in Authoring supplies JSON
-support through document-kind and value converters.
+CLR scalars, lists and string-keyed mappings. The model declares its contract with
+serializer-neutral attributes: `DocumentKind`, `DocumentRequired`, `DocumentValues` and
+`Description`. `DocumentModel` reads them for the YAML reader and writer, for
+`WorkflowJsonSerializer.Read/Write` in Authoring, and for the editor schema.
 A publishing host supplies Roslyn, engine and activity references to compile the
 returned source. The generator reads symbols and metadata, without loading activity code.
+
+## Editor support
+
+The IxIFlow package includes `schemas/workflow.schema.json`, exposed to MSBuild tooling
+as `$(IxIFlowWorkflowSchema)`. Its canonical URL is
+`https://raw.githubusercontent.com/HumanHub/IxIFlow/main/src/IxIFlow/schemas/workflow.schema.json`.
+Use the packaged copy to match the referenced package version.
+
+With the Red Hat YAML extension or another yaml-language-server client, associate a file using:
+
+```yaml
+# yaml-language-server: $schema=<url or relative path>
+```
+
+Relative paths resolve from the YAML file. In VS Code, associate a workspace in `settings.json`:
+
+```json
+{
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/HumanHub/IxIFlow/main/src/IxIFlow/schemas/workflow.schema.json": ["*.workflow.yaml", "*.workflow.yml"]
+  }
+}
+```
+
+In JetBrains IDEs, use Settings → Languages & Frameworks → Schemas and DTDs →
+JSON Schema Mappings with the same filename patterns.
+
+The schema provides completion, hover descriptions and validation for the canonical
+document form: camelCase member names, with unknown members reported as errors.
+The YAML reader currently matches member names case-insensitively and ignores unknown members.
+The schema is generated from the document model by `WorkflowDocumentSchema.Write()` in Authoring.
 
 The supported catalog includes activities, activity and step references, sequences, conditions,
 suspend/resume, pinned child workflows and sequential or parallel `forEach`. Activity defaults
