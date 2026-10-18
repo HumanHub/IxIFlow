@@ -39,6 +39,13 @@ public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
         return new SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData>(_step, property);
     }
 
+    public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> DefaultPayload(TResumeEvent payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        _step.DefaultPayload = payload;
+        return this;
+    }
+
     public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> TimeoutAfter(
         TimeSpan duration)
     {
@@ -72,6 +79,10 @@ public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevio
 {
     private readonly Expression<Func<TResumeEvent, TProperty>> _propertyExpression;
     private readonly WorkflowStep _step;
+
+    public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> DefaultPayload(TResumeEvent payload) =>
+        new SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>(_step)
+            .DefaultPayload(payload);
 
     public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> TimeoutAfter(
         TimeSpan duration) =>
@@ -164,6 +175,10 @@ public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevi
 {
     private readonly Expression<Func<TResumeEvent, TProperty>> _propertyExpression;
     private readonly WorkflowStep _step;
+
+    public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> DefaultPayload(TResumeEvent payload) =>
+        new SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>(_step)
+            .DefaultPayload(payload);
 
     public ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> TimeoutAfter(
         TimeSpan duration) =>

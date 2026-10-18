@@ -120,7 +120,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
         return new(removed ? [] : waits
             .Select(wait => new OpenWait(wait.InstanceId, wait.WaitId, wait.Kind, wait.Key, wait.EventType,
                 EventSchema(wait.EventType), wait.DeadlineUtc, wait.OpenedAtUtc,
-                ReplyToken.Create(wait.InstanceId, wait.WaitId)))
+                ReplyToken.Create(wait.InstanceId, wait.WaitId), wait.DefaultPayloadJson))
             .ToArray(), removed);
     }
 

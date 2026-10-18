@@ -62,6 +62,22 @@ public sealed class ExpressionPurityTests
         Assert.Contains("Step '", error.Message);
     }
 
+    // A saga outcome selector is kept as an expression tree and read like a condition.
+    [Fact]
+    public void AnImpureSagaOutcomeSelectorFailsTheBuild()
+    {
+        var error = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<Data>("ImpureOutcome")
+            .Step<Takes>()
+            .Saga(saga => saga.Step<Takes>()
+                .OutcomeOn(_ => DateTime.UtcNow.Hour, outcomes => outcomes
+                    .Outcome(1, branch => branch.Step<Takes>())
+                    .DefaultOutcome(branch => branch.Step<Takes>())))
+            .Build());
+
+        Assert.Contains("uses DateTime.UtcNow", error.Message);
+        Assert.Contains("Step '", error.Message);
+    }
+
     // Pure members of the same namespaces build, as does reading the data, a stream in memory, or the run's clock.
     [Fact]
     public void APureExpressionBuilds()

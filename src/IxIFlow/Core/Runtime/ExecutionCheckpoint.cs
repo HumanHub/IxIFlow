@@ -931,6 +931,8 @@ internal sealed class WaitState
     public string StepId { get; set; } = "";
     public string Key { get; set; } = "";
     public string EventType { get; set; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DefaultPayloadJson { get; set; }
     public DateTime RegisteredAtUtc { get; set; }
 
     /// <summary>
