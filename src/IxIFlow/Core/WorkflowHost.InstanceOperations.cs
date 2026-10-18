@@ -167,7 +167,8 @@ public sealed partial class WorkflowHost
             if (owner == null)
                 return WorkflowExecutor.Busy(instanceId);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
-            if (current?.Revision != instance.Revision || current.Status != instance.Status)
+            if (current?.Incarnation != instance.Incarnation || current.Revision != instance.Revision ||
+                current.Status != instance.Status)
                 return current?.Status == WorkflowStatus.Running
                     ? WorkflowExecutor.Busy(instanceId)
                     : Rejected(instanceId, "The activity changed before resolution could be saved");
@@ -623,7 +624,8 @@ public sealed partial class WorkflowHost
             if (owner == null)
                 return WorkflowExecutor.Busy(instanceId);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
-            if (current?.Revision != instance.Revision || current.Status != instance.Status)
+            if (current?.Incarnation != instance.Incarnation || current.Revision != instance.Revision ||
+                current.Status != instance.Status)
                 return current?.Status == WorkflowStatus.Running
                     ? WorkflowExecutor.Busy(instanceId)
                     : Rejected(instanceId, "The workflow instance changed before recovery could start");
@@ -785,11 +787,11 @@ public sealed partial class WorkflowHost
             if (commit.InstanceId != instance.InstanceId)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"A commit for workflow instance '{commit.InstanceId}' reached the run of '{instance.InstanceId}'");
-            if (commit.Epoch != epoch)
+            if (commit.Epoch != epoch || commit.Incarnation != instance.Incarnation)
                 return new CheckpointReply(CheckpointReplyKind.Conflict, Error: new WorkflowEngineException(
                     WorkflowErrorKind.InvalidState,
-                    $"A commit from execution epoch {commit.Epoch} cannot change workflow instance " +
-                    $"'{commit.InstanceId}' owned at epoch {epoch}"));
+                    $"A commit from incarnation {commit.Incarnation} at execution epoch {commit.Epoch} cannot change " +
+                    $"workflow instance '{commit.InstanceId}' in incarnation {instance.Incarnation} owned at epoch {epoch}"));
             WorkflowCommitResult result;
             try
             {

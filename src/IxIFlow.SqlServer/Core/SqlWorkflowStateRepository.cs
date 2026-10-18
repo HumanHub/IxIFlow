@@ -45,7 +45,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     private const string ServerRowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation";
 
     // Lock and revalidate the instance before its lease and tombstone, including absent-key admission.
-    internal override DeletePlan Deletion => new(LeaseResetPoint.AfterInstanceLock, """
+    internal override DeletePlan Deletion => new("""
         SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
         WHERE InstanceId = @InstanceId
         """);
@@ -481,7 +481,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         // A first commit must exclude another insertion of this ID. Read the clock in the next
         // statement, after any lock wait, so the captured commit time cannot predate the lock (D-35).
         Statement.CommitState => """
-            SELECT Revision, CancellationJson, CancellationAcknowledged, InboxSequence
+            SELECT Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
             WHERE InstanceId = @InstanceId;
             SELECT SYSUTCDATETIME();
@@ -579,8 +579,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 CancellationAcknowledged = CASE WHEN @AcknowledgesCancellation = 1 AND
                     target.CancellationJson IS NOT NULL THEN 1 ELSE target.CancellationAcknowledged END
             WHEN NOT MATCHED THEN INSERT
-                (InstanceId, WorkflowName, Status, CorrelationId, ParentInstanceId, RunnableAtUtc, StateJson, Revision)
-                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson,
+                (InstanceId, Incarnation, WorkflowName, Status, CorrelationId, ParentInstanceId, RunnableAtUtc, StateJson, Revision)
+                VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson,
                         @Revision);
             INSERT INTO dbo.IxIFlowWorkflowCommits (InstanceId, CommitId, ExpectedRevision, Revision, PayloadHash)
             VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
@@ -610,8 +610,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 RunnableAtUtc = CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END,
                 StateJson = @StateJson
             WHEN NOT MATCHED THEN INSERT
-                (InstanceId, WorkflowName, Status, CorrelationId, ParentInstanceId, RunnableAtUtc, StateJson)
-                VALUES (@InstanceId, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
+                (InstanceId, Incarnation, WorkflowName, Status, CorrelationId, ParentInstanceId, RunnableAtUtc, StateJson)
+                VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
                         CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END, @StateJson);
             IF @@ROWCOUNT = 0
                 THROW 51000, 'Revisioned instances require an atomic commit', 1;
@@ -649,7 +649,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             WHERE InstanceId = @InstanceId AND Sequence > @AfterSequence
             ORDER BY Sequence
             """,
-        Statement.DeleteLease => "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = CAST('0001-01-01' AS DATETIME2), CrashCount = 0 WHERE InstanceId = @InstanceId",
+        Statement.DeleteLease => "DELETE FROM dbo.IxIFlowWorkflowLeases WHERE InstanceId = @InstanceId",
         Statement.ByName => "WorkflowName = @Value",
         Statement.ByStatus => "Status = @Value",
         Statement.ByCorrelation => "CorrelationId = @Value",

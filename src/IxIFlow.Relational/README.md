@@ -6,6 +6,8 @@ Internal design note for maintainers of the three first-party relational stores.
 
 RelationalWorkflowStateRepository owns revision and receipt checks, ownership fencing, inbox arrivals and gone-child sequences, waits, child starts and cancellations, parent notices, parts, trace dispatch, runnable calculation, outbox claims, recovery scans, deletion and instance assembly.
 
+Each creation has a GUID incarnation. Initial commits persist the new instance's incarnation; saves and child starts allocate a fresh one when inserting a row. Every instance read supplies the row's incarnation, which CheckpointCommit captures alongside the execution epoch. Under the instance lock, a leased commit must match both the current incarnation and the active lease epoch. An incarnation mismatch returns StaleEpoch before any receipt replay or write, including a terminal or parking commit that releases the lease. Epoch-zero commits retain their existing rule: no active lease, with revision checks ordering the write.
+
 The commit lock order is parent, then identity, then instance, then lease. A child completing into its parent's inbox must take locks in the same order as a parent cancelling its children. PostgreSQL's identity lock also protects an ID with no instance row. SQL Server takes range locks where creation must be serialized, but claims, inbox locks and keyed deletion use row locks to avoid blocking unrelated instances.
 
 CreateSchemaAsync creates tables and indexes on an open connection, including cross-host schema locking. See the [store schema rule](../../README.md#stores). One double-checked asynchronous schema guard lives in the base. Schema creation uses the provider's operation admission policy; SQLite queues it through its writer gate. Initialization errors stay outside commit retry mapping.
@@ -30,7 +32,7 @@ Optional fixed statements are LockIdentity, AdvanceInbox (when InsertEvent advan
 
 | Statement group | Results and ordering |
 | --- | --- |
-| QuerySql | InstanceId, StateJson, RunnableAtUtc, Revision; Incarnation when stamp checks are needed. |
+| QuerySql | InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation. |
 | ClaimDeliveries, DeliveryLock, DeliveryRead | EventId, EventJson, PublisherName, Attempts, NextAttemptAtUtc, Status, LastError, LeaseToken, LeaseUntilUtc. ClaimDeliveries locks up to Limit due records and skips locked rows on server stores; DeliveryLock locks one record. |
 | Publishers, PublisherRead | Name, TypesJson, DisabledAtUtc, LastError. |
 | OutboxClock | The store clock after delivery locks have been acquired. SQLite samples its injected clock instead. |
@@ -39,7 +41,7 @@ Optional fixed statements are LockIdentity, AdvanceInbox (when InsertEvent advan
 | LockInbox | Status, InboxSequence and TracingEnabled (projected from StateJson), followed by server time for server-clock stores. |
 | DeleteParentInbox | Status and InboxSequence, followed by server time for server-clock stores. |
 | ParentInbox | Status and InboxSequence, with no clock result. |
-| CommitState | Revision, CancellationJson, CancellationAcknowledged, InboxSequence, followed by server time when applicable. |
+| CommitState | Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence, followed by server time when applicable. |
 | Receipt, Lease | ExpectedRevision, Revision, PayloadHash; Epoch, CrashCount, IsActive respectively. |
 | Running, ClaimLease | Running always returns a count. ClaimLease returns Epoch and CrashCount, or no row when held. |
 | ReleaseLease, Save | Affected count, or nullable due flag when the corresponding ReturnsDue capability is enabled. No row means release/save did not apply. |
@@ -54,7 +56,7 @@ Writes that return rows (ClaimLease and Save with SaveReturnsDue) may use a mult
 
 ## Deletion and provider capabilities
 
-Deletion is one DeletePlan: the lease-reset position and an optional locked-state revalidation statement. DeleteLease is required. SQL Server resets the lease before the transaction, then locks the parent and deletes the instance and dependents by key. SQLite reads state and resets the lease inside its immediate transaction before reading the parent. PostgreSQL locks the parent, identity and instance, revalidates the parent, then resets the lease; a changed parent rolls back and retries, and an absent locked instance leaves any later insertion whole. Lease rows survive deletion so recreated instances never reuse an epoch.
+DeletePlan supplies an optional locked-state revalidation statement. SQL Server and PostgreSQL lock the parent, identity and instance, then revalidate the parent; a changed parent rolls back and retries, and an absent locked instance leaves any later insertion whole. SQLite's immediate transaction excludes concurrent writers. Explicit deletion and retention purge delete the lease row in the same transaction as the instance and its dependents. A reused ID starts again at lease epoch one and crash count zero. The incarnation check refuses executors from an earlier creation even when the epoch and revision repeat.
 
 The remaining policies describe database capabilities: stamp rechecks versus one WAL snapshot, timestamp normalization, parameter-limited batching, key-ordered bulk child insertion to avoid deadlocks, local versus server clocks, returned due flags for notifications, and retryable database concurrency errors. Their declarations document their meaning.
 
