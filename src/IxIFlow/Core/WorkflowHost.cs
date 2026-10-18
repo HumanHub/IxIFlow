@@ -397,14 +397,6 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         }
     }
 
-    internal void NotifyCompletion(string instanceId)
-    {
-        SettledSignal? signal;
-        lock (_lock)
-            _settled.Remove(instanceId, out signal);
-        signal?.Source.TrySetResult();
-    }
-
     private void Finish(WorkItem item)
     {
         WorkItem? next = null;

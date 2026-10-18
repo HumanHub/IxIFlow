@@ -36,7 +36,6 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
         services.AddScoped<WorkflowHost.InstanceOperations>();
         services.TryAddSingleton(new OutboxSettings());
-        services.AddSingleton<IOutboxPublisher, InProcessOutboxPublisher>();
         // Stops after the workflow host, so its final commits can be delivered during drain.
         services.AddHostedService<WorkflowOutboxService>();
         services.AddHostedService<WorkflowRecoveryService>();
