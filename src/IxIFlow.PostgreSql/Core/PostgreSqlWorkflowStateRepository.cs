@@ -577,6 +577,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
+                  incarnation = CASE WHEN @ExpectedRevision = 0 THEN @Incarnation ELSE incarnation END,
                   workflow_name = @WorkflowName, status = @Status,
                   correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
                   runnable_at_utc = @RunnableAtUtc,
