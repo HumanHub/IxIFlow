@@ -77,18 +77,17 @@ public static class WorkflowYamlSerializer
                 ?? throw new YamlException(discriminator?.Start ?? node.Start, discriminator?.End ?? node.End,
                     $"Unknown workflow document kind '{kind}'");
         }
-        var members = DocumentModel.GetMembers(type).Select(DocumentModel.GetName).ToArray();
-        var declared = DocumentModel.GetKind(type)?.Kind;
+        var keys = DocumentModel.GetKeys(type);
         foreach (var pair in mapping.Children)
         {
-            var key = ((YamlScalarNode)pair.Key).Value!;
-            if (key == "kind" && declared != null)
-            {
-                if ((pair.Value as YamlScalarNode)?.Value != declared)
-                    throw new YamlException(pair.Value.Start, pair.Value.End, $"Expected workflow document kind '{declared}'");
-            }
-            else if (!members.Contains(key, StringComparer.Ordinal))
-                throw new YamlException(pair.Key.Start, pair.Key.End, $"Unknown member '{key}'; {type.Name} accepts {string.Join(", ", members)}");
+            var name = ((YamlScalarNode)pair.Key).Value!;
+            var key = keys.FirstOrDefault(candidate => candidate.Name == name);
+            if (key.Name == null)
+                throw new YamlException(pair.Key.Start, pair.Key.End,
+                    $"Unknown member '{name}'; {type.Name} accepts {string.Join(", ", keys.Select(candidate => candidate.Name))}");
+            var declared = DocumentModel.GetKind(type)!;
+            if (key.IsDiscriminator && (pair.Value as YamlScalarNode)?.Value != declared.Kind)
+                throw new YamlException(pair.Value.Start, pair.Value.End, $"Expected workflow document kind '{declared.Kind}'");
         }
         var value = Activator.CreateInstance(type) ?? throw Invalid(type, node);
         foreach (var property in DocumentModel.GetMembers(type))
@@ -141,14 +140,9 @@ public static class WorkflowYamlSerializer
         if (value is DocumentNode)
         {
             var mapping = new YamlMappingNode();
-            var kind = DocumentModel.GetKind(value.GetType())?.Kind;
-            if (kind != null) mapping.Add("kind", kind);
-            foreach (var property in DocumentModel.GetMembers(value.GetType()))
-            {
-                if (value is WorkflowStepDocument && property.Name == nameof(WorkflowStepDocument.Kind)) continue;
-                var child = property.GetValue(value);
-                if (child != null) mapping.Add(DocumentModel.GetName(property), ToYaml(child));
-            }
+            foreach (var key in DocumentModel.GetKeys(value.GetType()))
+                if (key.IsDiscriminator) mapping.Add(key.Name, DocumentModel.GetKind(value.GetType())!.Kind);
+                else if (key.Member?.GetValue(value) is { } child) mapping.Add(key.Name, ToYaml(child));
             return mapping;
         }
         if (value is IDictionary dictionary)

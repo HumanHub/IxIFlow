@@ -93,9 +93,17 @@ JSON Schema Mappings with the same filename patterns.
 The schema provides completion, hover descriptions and validation for the document form
 that the YAML and JSON readers accept. Member names are camelCase and exact. An unknown
 member, or a `kind` that differs from the type a position requires, is an error at that
-member, including in the generator. Quote string values that look like numbers or Booleans,
-such as `activityVersion: "1.2"`: the reader takes them as text, but editors type them first.
-The schema is generated from the document model by `WorkflowDocumentSchema.Write()` in Authoring.
+member, including in the generator. Keys you name yourself stay open: activity, step and
+code names, `defaults`, `arguments` and `parameters`. The document root may carry
+`$schema` to bind an editor; readers ignore it. Quote string values that look like numbers
+or Booleans, such as `activityVersion: "1.2"`: the reader takes them as text, but editors
+type them first. The schema is generated from the document model by
+`WorkflowDocumentSchema.Write()` in Authoring.
+
+**Behaviour change.** Earlier builds matched member names case-insensitively and ignored
+unknown members, so `Output:` or `ouptut:` was silently dropped. Such files now fail the
+build with IXIYAML001 at the member. The JSON reader applies the same rules, and the JSON
+writer now writes `kind` on every typed node, including the fixed path in `to` and `into`.
 
 The supported catalog includes activities, activity and step references, sequences, conditions,
 suspend/resume, pinned child workflows and sequential or parallel `forEach`. Activity defaults
