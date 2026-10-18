@@ -589,7 +589,7 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task AKeptRequestWhoseAnswerTimedOutTakesItsTimeoutPathAgain()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         using var services = Services(time: time);
         var journal = services.GetRequiredService<Journal>();
         var engine = services.GetRequiredService<IWorkflowClient>();
@@ -605,10 +605,12 @@ public sealed class SagaHandlerTests
         var started = await engine.RunAsync(definition, new ShopData());
 
         time.Advance(TimeSpan.FromMinutes(2));
+        await time.WaitForTimerDueAtAsync(time.GetUtcNow() + TimeSpan.FromSeconds(1));
+        time.Advance(TimeSpan.FromSeconds(1));
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(10));
 
-        // The retry resumes at the WaitFor, whose answer has timed out: its timeout path runs again at once.
+        // Once the retry is due, it resumes at the WaitFor, whose timeout path runs again without another wait.
         Assert.Equal(WorkflowExecutionStatus.Faulted, finished.Status);
         Assert.Contains("retry exhausted", finished.ErrorMessage);
         Assert.Equal(["CreatePayment", "ShipOrder", "ShipOrder"], journal.Entries);
@@ -1050,7 +1052,7 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task AnApprovalTakenInATimeoutPathIsReplayedWhenTheRetryTakesThePathAgain()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         using var services = Services(time: time);
         var journal = services.GetRequiredService<Journal>();
         journal.ShippingFailures = 1;
@@ -1077,7 +1079,10 @@ public sealed class SagaHandlerTests
             timedOut = await engine.AwaitAsync(started.InstanceId);
         }
 
-        var result = await engine.ResumeAsync(started.InstanceId, "manual", new Approval());
+        var resuming = engine.ResumeAsync(started.InstanceId, "manual", new Approval());
+        await time.WaitForTimerDueAtAsync(time.GetUtcNow() + TimeSpan.FromSeconds(1));
+        time.Advance(TimeSpan.FromSeconds(1));
+        var result = await resuming.WaitAsync(TimeSpan.FromSeconds(10));
 
         // The retry takes the timeout path again and replays the manual approval instead of asking for it.
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -1088,7 +1093,7 @@ public sealed class SagaHandlerTests
     [Trait("Spec", "A-11")]
     public async Task AnApprovalTakenInAPlainWaitsTimeoutPathIsKeptWhileTheRetryWaitsAgain()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         using var services = Services(time: time);
         var journal = services.GetRequiredService<Journal>();
         journal.ShippingFailures = 1;
@@ -1108,7 +1113,10 @@ public sealed class SagaHandlerTests
 
         // Shipping fails; the retry waits for the pickup again, which times out again, and the manual approval
         // already given is replayed rather than asked for.
-        await engine.ResumeAsync(started.InstanceId, "manual", new Approval());
+        var resuming = engine.ResumeAsync(started.InstanceId, "manual", new Approval());
+        await time.WaitForTimerDueAtAsync(time.GetUtcNow() + TimeSpan.FromSeconds(1));
+        time.Advance(TimeSpan.FromSeconds(1));
+        await resuming.WaitAsync(TimeSpan.FromSeconds(10));
         await OpenWaitAsync(engine, started.InstanceId, "pickup");
         time.Advance(TimeSpan.FromMinutes(2));
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)

@@ -3,6 +3,7 @@ using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
 
@@ -52,7 +53,7 @@ public sealed class TraceReviewTests
     [Fact]
     public async Task AKeptRequestRecordsItsTimeoutAgainWhenARetryReentersTheScope()
     {
-        var time = new FakeTimeProvider(Start);
+        var time = new TimerRecordingClock(Start);
         using var services = Services(time);
         var client = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<Data>("ReplayedTimeoutTrace").Step<Noop>()
@@ -62,6 +63,8 @@ public sealed class TraceReviewTests
             .OnError<InvalidOperationException>(handler => handler.CompensateNone().ThenRetry(1)).Build();
         var started = await client.RunAsync(definition, new Data());
         time.Advance(TimeSpan.FromMinutes(2));
+        await time.WaitForTimerDueAtAsync(time.GetUtcNow() + TimeSpan.FromSeconds(1));
+        time.Advance(TimeSpan.FromSeconds(1));
         Assert.Equal(WorkflowExecutionStatus.Faulted, (await client.RecoverAsync(started.InstanceId)).Status);
         var trace = await client.GetTraceAsync(started.InstanceId);
         var timeouts = trace.Where(entry => entry.EntryType == TraceEntryType.WaitTimedOut)
@@ -78,14 +81,17 @@ public sealed class TraceReviewTests
     [InlineData(true)]
     public async Task SagaRestartsRecordFullAndKeptRestartPoints(bool keep)
     {
-        var time = new FakeTimeProvider(Start);
+        var time = new TimerRecordingClock(Start);
         using var services = Services(time);
         var client = services.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<Data>("SagaRetryTrace" + keep).Step<Noop>()
             .Saga(body => body.Step<Noop>().Step<Fail>())
             .OnError<InvalidOperationException>(handler =>
                 (keep ? handler.CompensateNone() : handler.Compensate()).ThenRetry(1)).Build();
-        var result = await client.RunAsync(definition, new Data());
+        var running = client.RunAsync(definition, new Data());
+        await time.WaitForTimerDueAtAsync(time.GetUtcNow() + TimeSpan.FromSeconds(1));
+        time.Advance(TimeSpan.FromSeconds(1));
+        var result = await running.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         var payload = Assert.IsType<RetryTrace>(Assert.Single(await client.GetTraceAsync(result.InstanceId),
             entry => entry.EntryType == TraceEntryType.SagaRetryStarted).Payload);

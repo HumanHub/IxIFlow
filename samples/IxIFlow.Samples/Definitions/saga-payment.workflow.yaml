@@ -40,6 +40,3 @@ definitions:
         then: retry
         retry:
           maximumAttempts: 1
-          initialInterval: '00:00:00'
-          maximumInterval: '00:00:00'
-          backoffCoefficient: 1

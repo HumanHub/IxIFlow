@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using IxIFlow.Core;
 using IxIFlow.Recipes;
 using IxIFlow.Samples;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
 
@@ -220,11 +221,13 @@ public sealed class RecipeTests
     [Fact]
     public async Task SagaRefundsBeforeRetryAndGivesTheNewPaymentANewToken()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         var gateway = new Gateway { StockFailures = 1 };
         await using var services = Services(gateway, time);
         var client = SampleTests.Client(services);
         var running = client.RunAsync(SagaPaymentRecipe.Definition(), new Payment { OrderId = "order", Amount = 40 });
+        await time.WaitForTimerDueAtAsync(time.GetUtcNow() + TimeSpan.FromSeconds(1));
+        time.Advance(TimeSpan.FromSeconds(1));
         var start = await running.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(WorkflowExecutionStatus.Suspended, start.Status);
         Assert.Equal(["pay-1"], gateway.Refunds.ToArray());
