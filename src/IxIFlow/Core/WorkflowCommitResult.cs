@@ -161,7 +161,7 @@ public sealed class CheckpointCommit
     public IReadOnlyList<ExecutionTraceEntry> ReadTraceEntries() =>
         TraceEntries.Select(entry => JsonSerializer.Deserialize<ExecutionTraceEntry>(entry)!).ToArray();
 
-    /// <summary>The execution epoch granted with the owner's lease; zero when the instance was never leased.</summary>
+    /// <summary>The execution epoch granted with the owner's lease; zero for an unleased commit.</summary>
     public long Epoch { get; }
 
     /// <summary>The incarnation chosen for a first insert, or read by the executor for a later commit.</summary>

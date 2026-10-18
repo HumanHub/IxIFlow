@@ -394,7 +394,10 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 SELECT COUNT(*) FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId AND status = 'Running'
                 """,
         Statement.ClaimLease => """
-                UPDATE ixiflow_execution_epoch SET epoch = epoch + 1 WHERE id = 1;
+                UPDATE ixiflow_execution_epoch SET epoch = epoch + 1
+                WHERE id = 1 AND NOT EXISTS (
+                    SELECT 1 FROM ixiflow_workflow_leases
+                    WHERE instance_id = @InstanceId AND expires_at_utc > @Now);
                 INSERT INTO ixiflow_workflow_leases (instance_id, token, expires_at_utc, epoch, crash_count)
                 VALUES (@InstanceId, @Token, @Until, (SELECT epoch FROM ixiflow_execution_epoch WHERE id = 1), 0)
                 ON CONFLICT (instance_id) DO UPDATE
