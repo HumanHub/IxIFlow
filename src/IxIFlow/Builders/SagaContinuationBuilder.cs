@@ -79,7 +79,7 @@ public class SagaContinuationBuilder<TWorkflowData, TPreviousStepData> : ISagaCo
 
     public void ThenRetry(int maxAttempts)
     {
-        ThenRetry(new RetryPolicy(maxAttempts));
+        ThenRetry(RetryPolicy.CreateDefault(maxAttempts));
     }
 
     public void ThenRetry(RetryPolicy retryPolicy)

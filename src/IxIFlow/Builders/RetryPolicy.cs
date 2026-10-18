@@ -17,6 +17,8 @@ public class RetryPolicy
         BackoffCoefficient = backoffCoefficient;
     }
 
+    internal static RetryPolicy CreateDefault(int maximumAttempts) => new() { MaximumAttempts = maximumAttempts };
+
     public TimeSpan InitialInterval { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan MaximumInterval { get; set; } = TimeSpan.FromSeconds(10);
     public int MaximumAttempts { get; set; } = 3;
