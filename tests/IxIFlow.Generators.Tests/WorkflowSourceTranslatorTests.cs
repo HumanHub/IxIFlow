@@ -43,7 +43,7 @@ public sealed class WorkflowSourceTranslatorTests
     public void LibraryAndIncrementalEntryPointsEmitTheSameSource()
     {
         var yaml = Header + Activity + "    input:\n      - target: Value\n        from: {kind: path, path: workflow.Value}\n";
-        var file = new YamlFile("test.yaml", yaml);
+        var file = new WorkflowText("test.yaml", yaml);
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()], [file], optionsProvider: new WorkflowFileOptionsProvider(file.Path));
         var compilation = Compilation();
         driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
@@ -59,11 +59,11 @@ public sealed class WorkflowSourceTranslatorTests
     [Fact]
     public void IncrementalEntryPointUsesUpdatedYaml()
     {
-        var first = new YamlFile("test.yaml", Header + Activity);
+        var first = new WorkflowText("test.yaml", Header + Activity);
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()], [first], optionsProvider: new WorkflowFileOptionsProvider(first.Path));
         driver = driver.RunGenerators(Compilation());
         var before = Assert.Single(driver.GetRunResult().GeneratedTrees).ToString();
-        driver = driver.ReplaceAdditionalText(first, new YamlFile(first.Path, first.Text.Replace("multiply", "updated")))
+        driver = driver.ReplaceAdditionalText(first, new WorkflowText(first.Path, first.Text.Replace("multiply", "updated")))
             .RunGenerators(Compilation());
         var after = Assert.Single(driver.GetRunResult().GeneratedTrees).ToString();
         Assert.NotEqual(before, after);
@@ -74,7 +74,7 @@ public sealed class WorkflowSourceTranslatorTests
     public void IncrementalEntryPointIgnoresOtherAdditionalFiles()
     {
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()],
-            [new YamlFile("notes.txt", "not a workflow"), new YamlFile("docker-compose.yaml", "services: {}")],
+            [new WorkflowText("notes.txt", "not a workflow"), new WorkflowText("docker-compose.yaml", "services: {}")],
             optionsProvider: new WorkflowFileOptionsProvider());
         var result = driver.RunGenerators(Compilation()).GetRunResult();
         Assert.Empty(result.Diagnostics);
@@ -91,7 +91,7 @@ public sealed class WorkflowSourceTranslatorTests
         Assert.Contains(expected, error.Message);
         Assert.True(error.Line > 0);
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()],
-            [new YamlFile("workflow.yaml", yaml)], optionsProvider: new WorkflowFileOptionsProvider("workflow.yaml"));
+            [new WorkflowText("workflow.yaml", yaml)], optionsProvider: new WorkflowFileOptionsProvider("workflow.yaml"));
         var diagnostics = driver.RunGenerators(Compilation()).GetRunResult().Diagnostics;
         Assert.NotEmpty(diagnostics);
         Assert.All(diagnostics, diagnostic =>
@@ -197,7 +197,7 @@ public sealed class WorkflowSourceTranslatorTests
     public void DuplicateGeneratedClassNamesAreReportedAsYamlDiagnostics()
     {
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new WorkflowSourceGenerator().AsSourceGenerator()],
-            [new YamlFile("one/flow.yaml", Header + Activity), new YamlFile("two/flow.yaml", Header.Replace("name: Test", "name: Other") + Activity)],
+            [new WorkflowText("one/flow.yaml", Header + Activity), new WorkflowText("two/flow.yaml", Header.Replace("name: Test", "name: Other") + Activity)],
             optionsProvider: new WorkflowFileOptionsProvider("one/flow.yaml", "two/flow.yaml"));
         var result = driver.RunGenerators(Compilation()).GetRunResult();
         Assert.All(result.Diagnostics, diagnostic => Assert.Equal("IXIYAML001", diagnostic.Id));
@@ -292,10 +292,4 @@ public sealed class WorkflowSourceTranslatorTests
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
     }
 
-    private sealed class YamlFile(string path, string text) : AdditionalText
-    {
-        public override string Path => path;
-        public string Text => text;
-        public override SourceText GetText(CancellationToken cancellationToken = default) => SourceText.From(text);
-    }
 }
