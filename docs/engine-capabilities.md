@@ -1,46 +1,28 @@
 ---
 title: Engine capabilities
-description: IxIFlow execution, persistence, recovery, and host behavior.
+description: Available execution, persistence and integration features.
 ---
 
-IxIFlow defines workflows with the [fluent C# API](/docs/fluent-api/) and executes them through `IWorkflowClient`. The core engine runs in one application process with `AddIxIFlow()`. SQL Server state and host services are optional.
+This page summarizes implemented behavior. The [roadmap](roadmap.md) identifies the remaining 1.0 work.
 
-## Workflow execution
+| Area | Available now |
+| --- | --- |
+| [Authoring](fluent-api.md) | Typed fluent definitions; YAML forms for every fluent construct; shared build rules, source locations, stable step IDs and contract/purity analyzers |
+| [Activities](activity-sdk.md) | Direction markers, required inputs, typed defaults, .NET display metadata, DI, saved invocation/attempt IDs and recovery contracts |
+| [Control flow](execution-model.md) | Sequences, conditions, loops, typed catch/finally, delays, independent child instances and durable cancellation |
+| [Parallel data](execution-model.md#parallel-data-and-joins) | Isolated branch copies, atomic joins, explicit combiners, sequential/parallel ForEach and ordered item results |
+| [Sagas](sagas.md) | Reverse and selective compensation, saved handler progress and faults, step and saga retries |
+| [Events](execution-model.md#inbox-waits-and-replies) | Durable inbox, event deduplication, activation-specific reply tokens, subjects, deadlines, timeout paths and discoverable waits with suggested payloads |
+| [Persistence](stores.md) | Memory, SQLite, SQL Server and PostgreSQL; fenced leases, revision-checked commits and recovery |
+| [Hosting](coordinator-and-hosts.md) | In-process host, scoped slots, local timers, recovery scanning, resource limits, crash quarantine and graceful drain |
+| [Integrations](outbox-and-publishers.md) | Completion outbox, per-publisher durable deliveries, custom publishers, outgoing signed webhooks and versioned Liquid messages |
+| [Operations](retention-and-tombstones.md) | Retained terminal results, bounded cleanup, tombstones and explicit pending-activity resolution |
+| [Observability](observability.md) | Separate committed trace history, typed transition/event/operator entries, snapshots, scoped logs and OpenTelemetry signals |
 
-- Activities implement `IAsyncActivity`. Typed input mappings set activity properties; output mappings write values to workflow data.
-- Definitions contain sequences, conditions, loops, parallel branches, `Try`/`Catch`/`Finally`, event waits, delays, sagas, and child workflow invocations.
-- Parallel branches can join with `WaitAll` behavior, `WaitAny`, or a condition. Branches share workflow data, so activities must coordinate conflicting writes.
-- Saved continuations preserve active branches, loop and exception frames, waits, saga progress, and `PreviousStep` values. A suspended instance resumes at its saved position, including waits inside nested handlers and child workflows.
-- Saga handlers resume with saved fault data and compensation results. Compensation activities run in reverse order when selected by the handler.
+## Deployment boundary
 
-## State and recovery
+All activity and compensation code currently executes inside the host process. Durable shared state supports recovery by a compatible host; it does not supply workflow artifact deployment or coordinator placement. Definition/version registries and the default template store are in memory.
 
-`AddIxIFlow()` registers in-memory workflow state and event storage. These singleton stores retain instances across dependency injection scopes in one process. The SQL Server host registers shared workflow instance state with revisioned checkpoints and renewable execution leases. Its definition registry and event store remain in memory; each resuming host registers the matching workflow definitions and activity code.
+Expressions and combiners must be pure, and external effects need application idempotency or explicit recovery. The engine cannot make a remote service participate in its checkpoint transaction.
 
-An interrupted activity or child workflow with an uncertain external outcome can stop at `NeedsResolution`. `IWorkflowClient.GetPendingActivitiesAsync` lists pending attempts. `ResolveAsync` records a decision to complete a step with explicit outputs or fail it with a typed exception. External effects require an idempotency or recovery policy in the application.
-
-A caller's `CancellationToken` stops the current engine call and leaves a saved instance recoverable. `CancelAsync` requests workflow cancellation and unwinds through saga compensation and `Finally`. Recovery scans claim eligible running instances after an owner's lease expires and apply cancellation requests to idle suspended instances.
-
-## Child workflows
-
-`Invoke<TWorkflow, TChildData>` selects a workflow class. `Invoke<TChildData>(name, version, ...)` selects a registered definition. Both forms use the registered definition for execution and resume, including when a new service provider uses the retained state repository. A child invocation has a stable child instance ID and a saved parent-child wait. A parent awaiting a child can resume after the child completes; an uncertain child activity is resolved before the parent finishes cancellation.
-
-## Coordinator and SQL hosts
-
-A host consumes queued execute, resume, and cancel commands addressed to it and runs the whole workflow in its process, including saga compensations. The coordinator selects a host using health, capacity, tags, and host preferences; it does not dispatch commands itself. The SQL host provides a workflow state repository, host registry, and acknowledged message bus.
-
-SQL message claims renew while handlers run. Queued execute commands carry a stable instance ID and workflow name and version; resume commands carry a delivery ID saved with the checkpoint. Redelivery does not satisfy a later wait with the same key. Failed deliveries retry and can enter dead letter state after the configured attempt limit. Completion events are emitted for terminal results through a checkpointed outbox, and consumers identify duplicates by instance ID.
-
-See [execution model](/docs/execution-model/), [sagas](/docs/sagas/), and [coordinator and hosts](/docs/coordinator-and-hosts/) for API and persistence details.
-
-## Current limits
-
-The [roadmap](/docs/roadmap/) lists the planned work for each limit.
-
-- Definitions, the version registry, and the event store are held in memory on each host, including SQL hosts. Every host must load the same code-defined workflow versions and activities.
-- Trace entries are stored in the instance checkpoint. History is not capped, so long-running instances write larger checkpoints. There is no separate trace store, step-through debugger, or OpenTelemetry instrumentation.
-- `IWorkflowTracer` is registered but not called by the runner.
-- The coordinator selects hosts but does not dispatch commands, and no HTTP host endpoint is included. See [coordinator and hosts](/docs/coordinator-and-hosts/).
-- Dead letters are retained without an inspection or requeue API.
-- Start triggers, a management API, and JSON and YAML authoring with parity to the fluent API are planned. YAML documents support activities, templates, sequences, conditions, sequential and parallel `forEach`, suspension, and child workflow invocation, with a packaged JSON Schema for editor support.
-- SQL Server is the only durable store. SQLite, PostgreSQL, and message broker adapters are not implemented.
+Outgoing webhooks are built. Incoming HTTP triggers, management endpoints, process executors, published workflow bundles and interactive debugger controls remain planned.

@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// The values a log scope carries (G-03). A run logs inside a scope with its instance, and an activity attempt inside
+/// The values a log scope carries. A run logs inside a scope with its instance, and an activity attempt inside
 /// one with its step and invocation, so every entry written meanwhile, by the engine or by the activity's own logger,
 /// carries them. Providers that keep structure read the pairs; others read the "Key:Value" text.
 /// </summary>

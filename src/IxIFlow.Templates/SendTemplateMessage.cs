@@ -7,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Templates;
 
 /// <summary>
-/// Sends a rendered template through the application's <see cref="ITemplateMessageSender"/> (H-02). The message ID is
+/// Sends a rendered template through the application's <see cref="ITemplateMessageSender"/>. The message ID is
 /// the step's invocation ID: the same for every attempt of the step, a retry or a recovery after a crash included, and
 /// different for every other step, loop iteration or branch. The sender uses it as its idempotency key, so a send that
 /// a crash interrupted is sent again on recovery and delivered once.

@@ -1,7 +1,7 @@
 namespace IxIFlow.Core;
 
 /// <summary>
-/// The attempt an activity runs in, and the attempts of its invocation before it (D-37). A step retry starts from the
+/// The attempt an activity runs in, and the attempts of its invocation before it. A step retry starts from the
 /// inputs the invocation saved, so an attempt that must do something different learns why the earlier ones failed
 /// from here: which host they ran on, the error they ended with, and the note they left.
 /// </summary>
@@ -31,7 +31,7 @@ public sealed class ActivityAttempt
     public object? Note { get; set; }
 }
 
-/// <summary>An earlier attempt of the same invocation (D-37).</summary>
+/// <summary>An earlier attempt of the same invocation.</summary>
 /// <param name="AttemptId">The attempt's ID, as <see cref="IActivityContext.AttemptId"/> gave it.</param>
 /// <param name="Host">The host the attempt ran on, as that host names itself.</param>
 /// <param name="StartedAtUtc">When the attempt started.</param>

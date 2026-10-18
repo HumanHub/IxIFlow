@@ -222,7 +222,7 @@ public sealed partial class WorkflowHost
             return pendingActivities;
         }
 
-        /// <summary>The instance's whole trace, in the order its commits stored it (G-01).</summary>
+        /// <summary>The instance's whole trace, in the order its commits stored it.</summary>
         public async Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
@@ -416,7 +416,7 @@ public sealed partial class WorkflowHost
 
         /// <summary>
         /// A new instance of <paramref name="definition"/> with <paramref name="workflowData"/>, as a start
-        /// saves it, and its initial checkpoint: a client's start, or a child a parent's commit starts (D-17).
+        /// saves it, and its initial checkpoint: a client's start, or a child a parent's commit starts.
         /// </summary>
         public static (WorkflowInstance Instance, ExecutionCheckpoint Checkpoint, WorkflowScopeCatalog Scopes)
             NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now)
@@ -461,7 +461,7 @@ public sealed partial class WorkflowHost
 
         /// <summary>
         /// Stores an event in the instance's inbox before acknowledging it, then runs the instance so its
-        /// owner decides the event at its next pass (D-32, D-33). The result is the instance's state and
+        /// owner decides the event at its next pass. The result is the instance's state and
         /// the event's receipt. The event stays pending while another host runs the instance or while it is
         /// stopped for an operator; that owner, or the release, decides it.
         /// </summary>
@@ -480,7 +480,7 @@ public sealed partial class WorkflowHost
         }
 
         /// <summary>
-        /// Stores an event without running the instance, bypassing its queue and slots (D-32). The caller
+        /// Stores an event without running the instance, bypassing its queue and slots. The caller
         /// runs or wakes the instance; its owner decides the event at its next pass.
         /// </summary>
         public Task<EventAppendResult> DeliverAsync<TEvent>(string instanceId, string? key, TEvent @event,
@@ -519,11 +519,11 @@ public sealed partial class WorkflowHost
         public async Task<EventReceipt?> ReadEventAsync(string instanceId, string eventId) =>
             await _store.GetEventAsync(instanceId, eventId) is { } stored ? EventReceipt.Of(stored) : null;
 
-        /// <summary>Open waits that match the query, across instances (D-13, D-14).</summary>
+        /// <summary>Open waits that match the query, across instances.</summary>
         public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) => _store.GetOpenWaitsAsync(query);
 
         /// <summary>
-        /// Stores a reply addressed to one wait by its token's wait ID, with the token's subject (D-33),
+        /// Stores a reply addressed to one wait by its token's wait ID, with the token's subject,
         /// without running the instance.
         /// </summary>
         public Task<EventAppendResult> DeliverReplyAsync<TReply>(string instanceId, string waitId, TReply reply,

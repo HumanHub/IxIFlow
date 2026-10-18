@@ -6,7 +6,7 @@ using IxIFlow.Builders;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// The purity rule for the expressions a workflow is built from (D-07, D-42). Conditions, mappings, wait predicates
+/// The purity rule for the expressions a workflow is built from. Conditions, mappings, wait predicates
 /// and selectors are evaluated again after a recovery, so they may not read the clock or the environment, make values
 /// that differ per run, wait, or do I/O. One that uses such a member fails the build, naming the step and the member.
 /// Expression trees are read as trees; lambdas given as delegates, such as wait predicates, are read from their IL,
@@ -67,7 +67,7 @@ internal static class ExpressionRules
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Step '{step.Name}' uses {member} in an expression. Expressions are evaluated again after a " +
                 "recovery, so they may not read the clock or the environment, make values that differ per run, " +
-                "wait, or do I/O (D-07); do that in an activity and map its output");
+                "wait, or do I/O; do that in an activity and map its output");
     }
 
     private sealed class ImpureMembers : ExpressionVisitor

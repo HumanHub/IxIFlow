@@ -12,8 +12,8 @@ internal static class ExecutionCheckpointWriter
     /// <summary>
     /// Commits the run's state. <paramref name="workflowData"/> may be null only with
     /// <paramref name="preserveSavedWorkflowData"/>. <paramref name="clearsCrashCount"/> is false for a
-    /// commit that records no progress, such as claiming an activity before it starts (B-08). With <paramref name="parkFor"/> the run stops that long and the
-    /// store releases its lease (C-03); returns true when it did. <paramref name="now"/> is the host's time.
+    /// commit that records no progress, such as claiming an activity before it starts. With <paramref name="parkFor"/> the run stops that long and the
+    /// store releases its lease; returns true when it did. <paramref name="now"/> is the host's time.
     /// </summary>
     public static async Task<bool> CommitAsync(IExecutionHost host, WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object? workflowData, WorkflowScopeCatalog scopes, DateTime now,
@@ -128,7 +128,7 @@ internal static class ExecutionCheckpointWriter
     }
 
     /// <summary>
-    /// Puts the instance in the form it is stored in (A-08): its data, and its state's trunk, with the parts both are
+    /// Puts the instance in the form it is stored in: its data, and its state's trunk, with the parts both are
     /// stored in as <see cref="WorkflowInstance.Stored"/>.
     /// </summary>
     public static StoredCheckpoint Prepare(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
@@ -156,7 +156,7 @@ internal static class ExecutionCheckpointWriter
         }
     }
 
-    /// <summary>The size a checkpoint limit applies to: the instance's state and data as they are stored (D-28).</summary>
+    /// <summary>The size a checkpoint limit applies to: the instance's state and data as they are stored.</summary>
     public static long CheckpointBytes(WorkflowInstance instance) => StoredCheckpoint.Of(instance).Bytes;
 
     public sealed class CheckpointDataException(Exception inner) : Exception(
@@ -176,6 +176,6 @@ internal static class ExecutionCheckpointWriter
     }
 }
 
-/// <summary>A checkpoint would exceed the configured size limit and was not committed (D-28).</summary>
+/// <summary>A checkpoint would exceed the configured size limit and was not committed.</summary>
 internal sealed class CheckpointLimitExceededException(long size, long limit) : ResourceLimitExceededException(
     $"The checkpoint is {size} bytes, over the configured limit of {limit} bytes");

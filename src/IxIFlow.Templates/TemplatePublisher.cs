@@ -1,8 +1,8 @@
 namespace IxIFlow.Templates;
 
 /// <summary>
-/// Publishes template versions (H-01): each variant is validated by the version's engine against its model type
-/// (H-03), and only a version whose every variant is valid reaches the store.
+/// Publishes template versions: each variant is validated by the version's engine against its model type,
+/// and only a version whose every variant is valid reaches the store.
 /// </summary>
 public sealed class TemplatePublisher(ITemplateStore store, TemplateEngines engines)
 {

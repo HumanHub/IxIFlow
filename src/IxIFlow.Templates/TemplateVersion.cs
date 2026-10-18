@@ -5,7 +5,7 @@ using System.Text;
 namespace IxIFlow.Templates;
 
 /// <summary>
-/// One published version of a template (H-01): its engine, output format and model type, and its text in one or more
+/// One published version of a template: its engine, output format and model type, and its text in one or more
 /// cultures. A version is immutable once published, and its cultures are published with it, so the variant a culture
 /// resolves to never changes either. Every version has a base variant, the one without a culture, which every culture
 /// falls back to.

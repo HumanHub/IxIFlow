@@ -7,7 +7,7 @@ using IxIFlow.Builders;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// The build rules of mappings (D-26, spec F-22). An activity that marks its properties with
+/// The build rules of mappings. An activity that marks its properties with
 /// <see cref="ActivityInputAttribute"/> or <see cref="ActivityOutputAttribute"/> takes inputs only into its marked
 /// inputs and gives outputs only from its marked outputs, and each input it requires is mapped unless it has a
 /// default. An activity without the attributes takes inputs into properties with a public setter and gives outputs

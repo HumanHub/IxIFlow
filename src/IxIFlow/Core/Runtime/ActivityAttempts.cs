@@ -282,7 +282,7 @@ internal sealed class ActivityAttempts(
     }
 
     /// <summary>
-    /// Runs a child invocation step (D-17). With nothing pending it starts the child: it resolves the
+    /// Runs a child invocation step. With nothing pending it starts the child: it resolves the
     /// child's definition, maps the inputs into new child data and waits for the child, whose start the
     /// next commit carries with the wait; nothing runs here. Once the child's completion has been taken,
     /// it gives the child's outcome to settle like an activity's. An operator's decision about the

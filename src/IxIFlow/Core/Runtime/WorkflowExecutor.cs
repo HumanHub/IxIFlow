@@ -619,10 +619,10 @@ internal sealed class WorkflowExecutor
     /// <summary>
     /// What a control-flow step can change that must be saved before anything outside the instance
     /// depends on it: the saved waits, which accept events, and their timeouts, from which the store
-    /// stamps deadlines that must not move (D-35);
+    /// stamps deadlines that must not move;
     /// branches stopped for resolution; scheduled retries, whose deadline must not move; and branches
     /// being cancelled, whose running activities are told to stop. Other control flow is not committed
-    /// and is re-derived from the last checkpoint after a crash (A-04).
+    /// and is re-derived from the last checkpoint after a crash.
     /// </summary>
     private readonly record struct EffectBoundary(string Key)
     {

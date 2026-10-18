@@ -73,7 +73,7 @@ public interface ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousSt
         where TPreviousChainActivity : class, IAsyncActivity;
 
     /// <summary>
-    /// Configures the compensation of a request step that reads the request's answer (D-36): its inputs map from
+    /// Configures the compensation of a request step that reads the request's answer: its inputs map from
     /// <see cref="RequestCompensationContext{TWorkflowData,TCurrentStepData,TReply}"/>, with <c>Reply</c> and
     /// <c>Answered</c>. <typeparamref name="TReply"/> must be the request's answer type; the build refuses
     /// another, and this overload on a step that is not a request.
