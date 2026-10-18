@@ -3,7 +3,7 @@ using System.Text;
 
 namespace IxIFlow.Core;
 
-/// <summary>Diagnostic correlation for a wait, without exposing its reply capability (D-33).</summary>
+/// <summary>Diagnostic correlation for a wait, without exposing its reply capability.</summary>
 public static class WaitReference
 {
     /// <summary>The first 16 lowercase hex characters of SHA-256 over UTF-8 instanceId + ":" + waitId.</summary>

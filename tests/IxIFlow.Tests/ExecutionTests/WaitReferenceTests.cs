@@ -3,7 +3,7 @@ using IxIFlow.Core;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "tracing")]
-[Trait("Spec", "D-33")]
+[Trait("Spec", "G-01")]
 public sealed class WaitReferenceTests
 {
     [Theory]

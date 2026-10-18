@@ -4,7 +4,7 @@ using System.Diagnostics.Metrics;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// The engine's OpenTelemetry signals (G-02, D-39), through <see cref="System.Diagnostics"/> only: an
+/// The engine's OpenTelemetry signals, through <see cref="System.Diagnostics"/> only: an
 /// <see cref="ActivitySource"/> and a <see cref="Meter"/> both named <c>IxIFlow</c>, which an application adds to its
 /// OpenTelemetry setup. Spans carry the instance, step, invocation and attempt; metrics carry only the workflow's name
 /// and version, since an ID would make a series per instance.

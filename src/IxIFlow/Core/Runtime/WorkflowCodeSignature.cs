@@ -11,7 +11,7 @@ internal static class WorkflowCodeSignature
 {
     /// <summary>
     /// The signature of <paramref name="behavior"/>. A <c>ForEach</c> handle it captures is named by its
-    /// step's place in <paramref name="handles"/>, never by its label (D-34).
+    /// step's place in <paramref name="handles"/>, never by its label.
     /// </summary>
     public static string Of(Delegate? behavior, IReadOnlyDictionary<ItemScope, string>? handles = null)
     {

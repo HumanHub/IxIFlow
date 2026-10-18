@@ -23,7 +23,7 @@ internal sealed class RunControl
 
     /// <summary>
     /// Called for each other instance a commit in this scope made runnable now, such as a child it started
-    /// or a parent its completion woke (D-17), so the host runs it without waiting for its poll.
+    /// or a parent its completion woke, so the host runs it without waiting for its poll.
     /// </summary>
     public void OnRunnable(Action<string> runnable) => _runnable = runnable;
 

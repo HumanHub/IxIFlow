@@ -308,15 +308,45 @@ public sealed partial class YamlParityTests
                     - exception: ParityFailure
                       then: {{{{action}}}}
             {{{{(action == "retry" ? "          retry: {maximumAttempts: 2, initialInterval: '00:00:00', maximumInterval: '00:00:00', backoffCoefficient: 1}" : "")}}}}
-              onError: [{compensate: all, then: continue, ignoreCompensationErrors: true}]
+                - kind: activity
+                  id: after-step
+                  activity: ParityPolicyPath
+                  input: [{target: Marker, from: {kind: constant, value: after-step}}]
+              onError:
+                - steps:
+                    - kind: activity
+                      id: handler
+                      activity: ParityPolicyPath
+                      input: [{target: Marker, from: {kind: constant, value: saga-handler}}]
+                  compensate: all
+                  then: continue
+                  ignoreCompensationErrors: true
+            - kind: activity
+              id: after-saga
+              activity: ParityPolicyPath
+              input: [{target: Marker, from: {kind: constant, value: after-saga}}]
             """);
         var fluent = Start().Saga(saga => saga.Step<ParityFlaky>(step => step.OnError<ParityFailure>(handler =>
         {
             if (action == "retry") handler.ThenRetry(new RetryPolicy(TimeSpan.Zero, TimeSpan.Zero, 2, 1));
             if (action == "terminate") handler.ThenTerminate();
             if (action == "ignore") handler.ThenIgnore();
-        })).WithId("flaky")).OnError(handler => handler.Compensate().ThenContinue(true)).WithId("saga").Build();
-        await Match(fluent, generated);
+        })).WithId("flaky")
+            .Step<ParityPolicyPath>(step => step.Input(activity => activity.Marker).From(ctx => "after-step")).WithId("after-step"))
+            .OnError(handler => handler
+                .Step<ParityPolicyPath>(step => step.Input(activity => activity.Marker).From(ctx => "saga-handler")).WithId("handler")
+                .Compensate().ThenContinue(true)).WithId("saga")
+            .Step<ParityPolicyPath>(step => step.Input(activity => activity.Marker).From(ctx => "after-saga")).WithId("after-saga").Build();
+        await Match(fluent, generated, verifyProbe: probe =>
+        {
+            Assert.Equal(action == "retry" ? 2 : 1, probe.Attempts);
+            Assert.Equal(action switch
+            {
+                "retry" => new[] { "flaky-succeeded", "after-step", "after-saga" },
+                "ignore" => new[] { "after-step", "after-saga" },
+                _ => new[] { "saga-handler", "after-saga" }
+            }, probe.Paths);
+        });
     }
 
     [Theory]
@@ -441,18 +471,19 @@ public sealed partial class YamlParityTests
 
     private static async Task<ParityData> Match(WorkflowDefinition fluent, WorkflowDefinition generated,
         Func<ServiceProvider, WorkflowExecutionResult, Task<WorkflowExecutionResult>>? idle = null,
-        Func<ParityData>? data = null)
+        Func<ParityData>? data = null, Action<ParityProbe>? verifyProbe = null)
     {
         Assert.Equal(Shape(fluent), Shape(generated));
-        var first = await Execute(fluent, idle, data);
-        var second = await Execute(generated, idle, data);
+        var first = await Execute(fluent, idle, data, verifyProbe);
+        var second = await Execute(generated, idle, data, verifyProbe);
         Assert.Equal(first.Fingerprint, second.Fingerprint);
         Assert.Equal(JsonSerializer.Serialize(first.Data), JsonSerializer.Serialize(second.Data));
         return second.Data;
     }
 
     private static async Task<(ParityData Data, string Fingerprint)> Execute(WorkflowDefinition definition,
-        Func<ServiceProvider, WorkflowExecutionResult, Task<WorkflowExecutionResult>>? idle, Func<ParityData>? data)
+        Func<ServiceProvider, WorkflowExecutionResult, Task<WorkflowExecutionResult>>? idle, Func<ParityData>? data,
+        Action<ParityProbe>? verifyProbe = null)
     {
         var collection = new ServiceCollection();
         collection.AddLogging();
@@ -460,6 +491,7 @@ public sealed partial class YamlParityTests
         collection.AddSingleton<ParityProbe>();
         collection.AddTransient<ParityRequest>();
         collection.AddTransient<ParityFlaky>();
+        collection.AddTransient<ParityPolicyPath>();
         collection.AddIxIFlow();
         await using var services = collection.BuildServiceProvider();
         await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Workflow_child.Build());
@@ -471,6 +503,7 @@ public sealed partial class YamlParityTests
         if (idle != null) result = await idle(services, result);
         if (result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
             result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
+        verifyProbe?.Invoke(services.GetRequiredService<ParityProbe>());
         Assert.True(result.IsSuccess, result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
@@ -576,11 +609,26 @@ public sealed class ParityProbe
 {
     public int Attempts;
     public List<string> Tokens { get; } = [];
+    public List<string> Paths { get; } = [];
 }
 public sealed class ParityFlaky(ParityProbe probe) : IAsyncActivity
 {
-    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
-        Interlocked.Increment(ref probe.Attempts) == 1 ? throw new ParityFailure() : Task.CompletedTask;
+    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+    {
+        if (Interlocked.Increment(ref probe.Attempts) == 1)
+            throw new ParityFailure();
+        probe.Paths.Add("flaky-succeeded");
+        return Task.CompletedTask;
+    }
+}
+public sealed class ParityPolicyPath(ParityProbe probe) : IAsyncActivity
+{
+    public string Marker { get; set; } = "";
+    public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+    {
+        probe.Paths.Add(Marker);
+        return Task.CompletedTask;
+    }
 }
 public sealed class ParityRequest(ParityProbe probe) : IRequestActivity<Answer>
 {

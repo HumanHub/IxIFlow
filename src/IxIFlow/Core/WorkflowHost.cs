@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace IxIFlow.Core;
 
 /// <summary>
-/// The host every workflow execution runs in (B-01 to B-03, D-02, D-16). <c>AddIxIFlow</c> registers it as a hosted
+/// The host every workflow execution runs in. <c>AddIxIFlow</c> registers it as a hosted
 /// service, and <see cref="IWorkflowClient"/> calls become its work. Work from the application and from recovery runs
 /// in at most <c>IxIFlowOptions.Slots</c> slots, each in its own scope. Work for one instance waits
 /// in that instance's queue without holding a slot. A call made from inside a slot, for example by

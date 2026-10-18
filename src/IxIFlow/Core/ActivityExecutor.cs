@@ -90,12 +90,12 @@ public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
     public CancellationToken CancellationToken { get; set; } = default;
     public object? CatchFault { get; set; }
 
-    /// <summary>The items of the <c>ForEach</c> bodies the activity runs in (D-34).</summary>
+    /// <summary>The items of the <c>ForEach</c> bodies the activity runs in.</summary>
     internal ItemValues Items { get; set; } = ItemValues.None;
     public object? CompensationPreviousStepData { get; set; }
     public object? CompensationPreviousChainData { get; set; }
 
-    /// <summary>For a request's compensation, the answer the request received, and whether one came (D-36).</summary>
+    /// <summary>For a request's compensation, the answer the request received, and whether one came.</summary>
     public object? CompensationReply { get; set; }
     public bool CompensationAnswered { get; set; }
     public IDictionary<string, object>? StepMetadata { get; set; } = null; // Step-level metadata from ExecutionState
@@ -143,7 +143,7 @@ public sealed class PreparedActivity
     public IAsyncActivity Activity { get; }
     public IActivityContext Context { get; }
 
-    /// <summary>The inputs as saved; the activity holds copies read back from them (A-09).</summary>
+    /// <summary>The inputs as saved; the activity holds copies read back from them.</summary>
     internal Runtime.ActivityInputSnapshot Inputs { get; }
 
     internal Task ApplyOutputsAsync() => _applyOutputs();

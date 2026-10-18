@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 namespace IxIFlow.Core;
 
 /// <summary>
-/// Merges the values parallel branches gave one property of the workflow data (D-14, spec E-05). It
+/// Merges the values parallel branches gave one property of the workflow data. It
 /// receives the value at the fork and the value of every branch that changed it, in branch declaration
 /// order, and must be pure: it may run again after a recovery. A combiner that cannot merge the values
 /// throws, and the join fails with <see cref="JoinConflictException"/> for the property.
@@ -15,7 +15,7 @@ public interface ICombiner<T>
     T Combine(T original, IReadOnlyList<T> branchValues);
 }
 
-/// <summary>Declares how parallel branches' changes to this property are merged (spec E-05).</summary>
+/// <summary>Declares how parallel branches' changes to this property are merged.</summary>
 [AttributeUsage(AttributeTargets.Property)]
 public abstract class CombineAttribute : Attribute
 {
@@ -34,33 +34,33 @@ public sealed class CombineAttribute<TCombiner> : CombineAttribute
     public override Type CombinerType => typeof(TCombiner);
 }
 
-/// <summary>Takes the value of the first branch, in declaration order, that changed it (spec E-06).</summary>
+/// <summary>Takes the value of the first branch, in declaration order, that changed it.</summary>
 public sealed class FirstWins<T> : ICombiner<T>
 {
     public T Combine(T original, IReadOnlyList<T> branchValues) => branchValues[0];
 }
 
-/// <summary>Takes the value of the last branch, in declaration order, that changed it (spec E-06).</summary>
+/// <summary>Takes the value of the last branch, in declaration order, that changed it.</summary>
 public sealed class LastWins<T> : ICombiner<T>
 {
     public T Combine(T original, IReadOnlyList<T> branchValues) => branchValues[^1];
 }
 
-/// <summary>Adds every branch's change to the value at the fork (spec E-06).</summary>
+/// <summary>Adds every branch's change to the value at the fork.</summary>
 public sealed class Sum<T> : ICombiner<T> where T : INumber<T>
 {
     public T Combine(T original, IReadOnlyList<T> branchValues) =>
         branchValues.Aggregate(original, (total, value) => total + (value - original));
 }
 
-/// <summary>Takes the largest branch value (spec E-06).</summary>
+/// <summary>Takes the largest branch value.</summary>
 public sealed class Max<T> : ICombiner<T> where T : IComparable<T>
 {
     public T Combine(T original, IReadOnlyList<T> branchValues) =>
         branchValues.Aggregate((best, value) => value.CompareTo(best) > 0 ? value : best);
 }
 
-/// <summary>Takes the smallest branch value (spec E-06).</summary>
+/// <summary>Takes the smallest branch value.</summary>
 public sealed class Min<T> : ICombiner<T> where T : IComparable<T>
 {
     public T Combine(T original, IReadOnlyList<T> branchValues) =>
@@ -68,8 +68,8 @@ public sealed class Min<T> : ICombiner<T> where T : IComparable<T>
 }
 
 /// <summary>
-/// Keeps the list at the fork and adds each branch's new items after it, in declaration order (spec
-/// E-06). Every branch must have kept the list at the fork as its beginning; items are compared as JSON.
+/// Keeps the list at the fork and adds each branch's new items after it, in declaration order.
+/// Every branch must have kept the list at the fork as its beginning; items are compared as JSON.
 /// </summary>
 public sealed class Append<T> : ICombiner<List<T>>
 {
@@ -90,7 +90,7 @@ public sealed class Append<T> : ICombiner<List<T>>
 }
 
 /// <summary>
-/// Merges dictionaries per key (spec E-06): a key one branch added, changed or removed takes that
+/// Merges dictionaries per key: a key one branch added, changed or removed takes that
 /// branch's change; two branches changing one key differently conflict. Values are compared as JSON.
 /// </summary>
 public sealed class Union<TKey, TValue> : ICombiner<Dictionary<TKey, TValue>> where TKey : notnull
@@ -126,7 +126,7 @@ public sealed class Union<TKey, TValue> : ICombiner<Dictionary<TKey, TValue>> wh
 }
 
 /// <summary>
-/// Merges sets (spec E-06): the set at the fork without what any branch removed, with what any branch
+/// Merges sets: the set at the fork without what any branch removed, with what any branch
 /// added. Items are compared as JSON, because each branch's set is its own copy: an item a branch kept is
 /// equal to the one at the fork, not the same object. The result uses the set's own comparer.
 /// </summary>
@@ -164,7 +164,7 @@ internal static class CombinerJson
 
 /// <summary>
 /// Parallel branches changed the same workflow data, or a property and one inside it, without a
-/// combiner that merges them (D-14, spec E-04). Raised at the parallel step; the data is left as it was
+/// combiner that merges them. Raised at the parallel step; the data is left as it was
 /// before the step.
 /// </summary>
 public sealed class JoinConflictException(string path, string message) : Exception(message)

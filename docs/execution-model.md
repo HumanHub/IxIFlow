@@ -1,102 +1,131 @@
 ---
 title: Execution model
-description: How IxIFlow definitions, instances, steps, and hosts work.
+description: Checkpoints, ownership, inboxes, parallel state and recovery.
 ---
 
-IxIFlow has a definition, an execution engine, and an instance record. A definition contains ordered steps and the workflow data type. `IWorkflowClient.RunAsync` runs that definition with a data object and returns a `WorkflowExecutionResult`.
+A definition is a validated graph and data contract. An instance adds saved data, continuations, scope frames, activity attempts and waits. `IWorkflowClient` submits execution to the core host; the current executor runs inside that host process.
 
-## Normal execution
+## Checkpoints and commits
 
-1. Your application builds or registers a workflow definition.
-2. The engine creates an instance and executes its steps.
-3. An activity runs in the current host process through `IActivityExecutor`.
-4. Input mappings populate activity properties. Output mappings copy values back to workflow data.
-5. The engine returns a status, data, and trace entries.
+Checkpoints save workflow data, branch state, loop/exception frames, saga and compensation progress, previous-step values, retries and waits. History is stored separately in the trace store.
 
-Conditions and parallel branches are represented as workflow steps with nested child steps. A saga step contains a sequence of activities and compensation information. The engine can also suspend an instance and resume it from an event.
+The runner commits at effect boundaries: instance start, activity start and outcome, child start/outcome, opening or closing waits, retry scheduling, completed joins, cancellation/unwinding boundaries and stopping. Ordinary control flow between boundaries can be re-derived after a crash. A condition or mapping may therefore execute more than once.
 
-## State and resume
+Each immutable commit includes an execution epoch, commit ID, expected revision and payload hash. Retrying identical content under the same commit ID returns the original receipt. The store protocol distinguishes a stale epoch, revision conflict, changed inbox state and a retryable failure that did not apply the commit. The host classifies an infrastructure exception as an unknown commit outcome; the executor resends the same immutable commit, with up to three attempts in total. Instance progress and its event settlements, wait changes, child starts, trace entries and terminal outbox event can commit atomically.
 
-The default `AddIxIFlow()` registration uses singleton `InMemoryWorkflowStateRepository` and `InMemoryEventStore`. They retain data across dependency injection scopes within one process. They are not shared or durable state stores: a process restart or another host loses access to those instances.
+Conditions, mappings, wait predicates, result/outcome selectors and combiners must be pure. Read workflow time through `ctx.UtcNow`. Memory and SQLite use the registered `TimeProvider`; SQL Server and PostgreSQL use database time for deadlines and event ordering. Purity validation and analyzers cover supported patterns, not arbitrary external code.
 
-`WorkflowOptions.PersistState = false` runs without saving an instance. Use it for workflows that finish in one execution call. The engine rejects waits, delays, and child workflow invocation in this mode because each can leave work that needs a saved parent position.
+`WorkflowOptions.PersistState = false` skips saved instances for single-call execution. Waits, delays and child invocations are rejected in that mode.
 
-At suspension, the engine saves workflow data, active continuations and scope frames, and each waiting step. Resume matches an event to one saved wait and advances that continuation. A loop finishes the interrupted iteration and checks its condition again. A saga restores completed activity results for compensation. Memory and SQL repositories use revisioned checkpoints and renewable execution leases so another host can recover a stopped worker after its lease expires. An interrupted ordinary activity may still need manual resolution; external effects are not automatically exactly once. See [sagas](/docs/sagas/) for the practical effect.
+## Leases and recovery
 
-`Try/Catch` uses saved frames for active nested handlers. A failure before a `Try` is not caught by that later block. Waits inside `Catch` and `Finally` resume without rerunning completed handler steps. Custom exception data is exposed through a declared durable fault projection.
+An instance has one executing owner, protected by an instance gate and a renewable store lease with a monotonically increasing epoch. Commits also compare revisions. The host stops work when ownership is lost; another host can claim expired work and continue from its checkpoint.
 
-Parallel branches have separate saved continuations and waits. They share mutable workflow data, so activities must synchronize conflicting updates. `WaitAll`, `WaitAny`, and conditional joins determine when the parent can continue. Completed branches do not rerun when another branch resumes.
+`RunnableAtUtc` on the instance is the backlog. Local scheduling and store polling recover due, unowned work. A long retry parks the instance and releases its slot and lease; foreground callers continue waiting across that park, while `RecoverAsync` can return `Scheduled`. Always read the returned data.
 
-## Host boundary
-
-A host runs a whole workflow execution through its local engine when it receives a queued command addressed to it. `WorkflowCoordinator` selects a host using health, tags, and capacity; your application publishes the command. Individual saga steps are not distributed across workers.
-
-The SQL host overload registers a SQL workflow state repository, host registry, and message bus. Queued commands use name and version references, and SQL deliveries require acknowledgement. The definition registry is still local memory; each host must register the same definition and activity code. SQL state uses revisioned checkpoints and renewable execution leases. See [coordinator and hosts](/docs/coordinator-and-hosts/).
-
-## Checkpoints
-
-The scheduler saves workflow data, active branches, loop and exception frames, waits, saga progress, and a checkpoint revision. An uncertain external activity outcome stops for an explicit resolution decision; inspect pending attempts and resolve them through `IWorkflowClient` before continuing.
-
-Each saved instance carries the time it may next run, `RunnableAtUtc`: the time of the save while it runs, its earliest deadline or retry while it waits, and now when a cancellation request or a finished child needs it. A host resumes the instances it saved at those times with its own timer, and every `IxIFlowOptions.PollInterval` (one second by default) it claims due instances that nobody owns, such as work left by a host that stopped, up to its free slots. A run with nothing else to do whose next retry is more than `IxIFlowOptions.ParkRetriesLongerThan` away (one second by default) saves itself, gives its slot back, and continues at the retry; a caller of `RunAsync`, `ResumeAsync`, `ResolveAsync` or `ReleaseAsync` keeps waiting, while `RecoverAsync` returns `Scheduled`. After such a pause the run continues from its saved data, so read the outcome from the result, not from the object passed in.
-
-A checkpoint is saved at effect boundaries: when the instance starts, before and after each activity or child workflow, when a wait is saved or a scheduled retry is set, when a branch is cancelled, and when the run stops. Control flow between them, such as `If`, loops and scope changes, is not saved; after an interruption it is evaluated again from the last checkpoint. Conditions, mappings, wait predicates and parallel completion conditions may therefore run more than once. Keep them pure: read the workflow data and the previous step, perform no I/O, and read time only through the injected `TimeProvider`.
-
-A checkpoint larger than `IxIFlowOptions.MaxCheckpointBytes` (4 MiB of workflow data and execution state by default) is never saved. The instance stops at `NeedsResolution` with its last checkpoint and the limit as its error; raise the limit and call `ReleaseAsync`, or cancel it. A start, event or resolution that would exceed the limit is refused with a `WorkflowEngineException` of kind `ResourceExhausted`.
-
-An owner that loses a running instance, because its process dies or its lease expires, counts one crash for the instance. Any saved progress resets the count; starting an activity or child workflow does not. When `IxIFlowOptions.MaxCrashes` owners in a row (3 by default) have lost the instance, the next host to claim it does not run it: the instance is quarantined at `NeedsResolution` with its last checkpoint, and no host claims it again. `RecoverAsync`, including a parent checking its child, leaves a stopped instance stopped. Call `ReleaseAsync` to run it again with a fresh count, or cancel it. A graceful shutdown releases its leases and never counts.
-
-Two more limits keep one instance from taking over a host. `IxIFlowOptions.MaxActiveBranches` (1,000 by default) caps the live continuations of an instance: the root, every parallel branch, and every parent waiting at its join; branches that are being cancelled do not count. A parallel step that would go over it does not fork: the run starts nothing new, lets its running activities finish and saves them, then stops at `NeedsResolution` like a checkpoint over the size limit. Raise the limit and call `ReleaseAsync`. `IxIFlowOptions.MaxActivitiesPerRun` (100 by default) caps the activities one run has in flight; further activities wait for one to finish while other branches keep advancing. Branches that wait on each other's activities need room to run together.
-
-The SQL store keeps a separate connection pool for leases and cancellation (16 connections by default, the `ownershipPoolSize` argument of `SqlWorkflowStateRepository`), so a host whose runs exhaust the main pool still renews its leases and delivers cancellation. A lease that cannot be renewed before it may have expired is given up at that moment, not when the store call finally returns. Enable `READ_COMMITTED_SNAPSHOT` on the database so that reads of cancellation requests do not wait behind commits of other instances.
+A completed activity does not rerun merely because another branch waited. An interrupted activity whose start was saved but whose outcome was not saved follows its recovery contract or stops for resolution. External services do not participate in the checkpoint transaction.
 
 ## Interrupted activities
 
-The runner saves an attempt before it invokes an activity and saves the observed result afterward. A process can stop after an external effect but before the result is saved. On recovery, the engine must decide whether to run that activity again.
+`IRecoverableActivity<TState>.CaptureRecoveryState` runs before the first effect and must not itself perform that effect. Its value is saved with the invocation. After interruption, `RecoverAsync` receives the saved state and chooses:
 
-An activity that implements `IRecoverableActivity<TState>` makes that decision itself. `CaptureRecoveryState` runs before the first invocation and must not perform an external effect; its value is saved with the attempt. After an interruption, `RecoverAsync` receives the saved value and returns one of these results:
-
-| Result | Effect |
+| Recovery result | Meaning |
 | --- | --- |
-| `Completed` | The effect happened. Restore the activity's output properties before returning. |
-| `Execute` | The effect did not happen. The engine runs the activity again. |
-| `Unresolved(reason)` | The outcome cannot be established. The instance stops at `NeedsResolution`. |
-| `Faulted(error)` | The effect failed. The error follows the normal `Catch` and saga rules. |
+| `Completed` | The outcome is known; restore output properties and continue |
+| `Execute` | It is safe to execute the effect |
+| `Unresolved(reason)` | Stop at `NeedsResolution` for an operator |
+| `Faulted(error)` | Apply ordinary exception/saga handling |
 
+[ReserveQuote](../samples/IxIFlow.Samples/Recovery.cs) uses the invocation ID to look up an external reservation. [RecoveryTests.cs](../tests/IxIFlow.Samples.Tests/RecoveryTests.cs) interrupts the outcome commit to prove recovery and operator resolution.
+
+Without a recovery contract, an uncertain start stops for resolution. `GetPendingActivitiesAsync` lists invocations awaiting resolution, with their reason and required output properties; it does not return attempt history. `ResolveAsync` saves explicit outputs or a failure, note and actor before continuing. [Recovery.ConfirmAsync](../samples/IxIFlow.Samples/Recovery.cs) compiles that operator call. Resolve the uncertain forward effect before compensating earlier work.
+
+## Inbox, waits and replies
+
+Events enter a durable per-instance inbox before acknowledgement. The executing owner settles them in arrival order, atomically with the progress that consumes or rejects them. Caller-supplied event IDs support deduplication: the same ID/content returns its original outcome; different content conflicts.
+
+`ResumeAsync` addresses an instance's open event wait by key or unambiguous event type. `PublishAsync(key, event, eventId)` fans out to instances with that open key. A keyed event can answer only a wait already open when it arrived; it cannot be saved for a future loop iteration. Request replies require `ReplyAsync`. A false or throwing predicate rejects the event as `NotMatched` and keeps the wait open. Examine `result.Event` for `Pending`, `Consumed`, `Rejected` or `Closed`, independently of the instance status.
+
+`Request<TActivity>(name)` opens an activation-specific reply slot before running an `IRequestActivity<TReply>`. The activity sends `context.Reply.Token` to its recipient. A later `WaitFor<TReply>(name)` consumes the answer, including one received while intervening activities ran. A request pairs with exactly one later wait of the same name and reply type in the same body; duplicate request names in that body fail build validation. Optional subjects bind the reply address to what was requested.
+
+`ReplyAsync(token, reply)` addresses that one activation. A closed token reports `WaitAnswered`, `WaitTimedOut`, `WaitCancelled`, `WaitReplaced` or `InstanceFinished`; an unknown address reports `UnknownWait`. It never answers a later request with the same name. Untargeted events for terminal instances return `Closed` / `InstanceFinished`; addressed events retain the closed wait's specific refusal. Client writes to an active tombstone throw `InstanceRemoved`; an unknown instance throws `InvalidRequest`.
+
+For a human task without a request, configure a discoverable wait. This method compiles in [DocumentationExamples.cs](../samples/IxIFlow.Samples/DocumentationExamples.cs), using `IxIFlow.Builders`, `IxIFlow.Core` and the sample data types:
+
+<!-- snippet: samples/IxIFlow.Samples/DocumentationExamples.cs#discoverable-wait -->
 ```csharp
-public sealed class ChargeCardActivity(IPaymentLedger ledger) : IRecoverableActivity<string>
-{
-    public string OrderId { get; set; } = "";
-    public string? ChargeId { get; private set; }
-
-    public string CaptureRecoveryState(IActivityContext context) => context.InvocationId;
-
-    public async Task<ActivityRecoveryResult<string>> RecoverAsync(
-        string invocationId, IActivityContext context, CancellationToken cancellationToken = default)
-    {
-        ChargeId = await ledger.FindChargeAsync(invocationId, cancellationToken);
-        return ChargeId != null
-            ? new ActivityRecoveryResult<string>.Completed()
-            : new ActivityRecoveryResult<string>.Execute();
-    }
-
-    public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
-        ChargeId = await ledger.ChargeAsync(OrderId, context.GetRecoveryState<string>(), cancellationToken);
-}
+public static WorkflowDefinition DiscoverableReview() =>
+    new WorkflowBuilder<QuoteData, object>([], "DiscoverableReview")
+        .WaitFor<ReviewAnswer>("review", configure: wait => wait
+            .DefaultPayload(new ReviewAnswer { Customer = "Ada" })
+            .Output(answer => answer.Customer).To(ctx => ctx.WorkflowData.Customer))
+        .Build();
 ```
 
-`IPaymentLedger` is an application service. Passing the saved invocation ID as an idempotency key lets the external system recognize a repeated request.
+`GetOpenWaitsAsync` returns request-free event waits with owner instance, `WaitId`, key, event type and optional schema, opening time, deadline, token and optional `DefaultPayloadJson`. `WaitQuery` filters by instance, key or event type and pages in wait-ID order with `AfterWaitId` and `Limit` (100 by default). Request replies, child-completion waits, delays and execution deadlines are excluded. The default is a UI suggestion; it never answers automatically. A child task belongs to the child instance. Only trusted callers should receive this listing: the token grants the ability to answer.
 
-An activity without this contract, or one that returns `Unresolved`, stops at `NeedsResolution`. An operator lists the pending attempts and records a decision. A completed decision supplies the activity's output properties; a failed decision supplies an error. The decision is saved before execution continues.
+Inside a method with `client`, `instanceId` and `customer` parameters:
 
+<!-- snippet: samples/IxIFlow.Samples/DocumentationExamples.cs#answer-review -->
 ```csharp
-var pending = await client.GetPendingActivitiesAsync(instanceId);
-var attempt = pending.Single();
-
-await client.ResolveAsync(instanceId, attempt.InvocationId,
-    ActivityResolution.Completed(
-        new Dictionary<string, object?> { ["ChargeId"] = "ch_123" },
-        note: "Confirmed in the payment dashboard",
-        decidedBy: "ops@example.com"));
+var waits = await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId));
+var wait = waits.Single();
+return await client.ReplyAsync(wait.Token, new ReviewAnswer { Customer = customer });
 ```
 
-Saga compensation uses the same rule. A forward step whose outcome is unknown stops for resolution, and earlier steps are not compensated until it is resolved. The engine does not promise exactly-once effects in an external system.
+Both examples execute in [DocumentationTests.cs](../tests/IxIFlow.Samples.Tests/DocumentationTests.cs). [Wait recipes](../samples/README.md#wait-and-reply-recipes) cover early replies, subjects, repeat clicks, children and list approvals.
+
+## Deadlines and cancellation
+
+`Delay` persists a positive-duration timer and preserves the previous-step value. A timed wait requires both a positive `TimeoutAfter` and a nonempty `OnTimeout` branch; public validation and start reject either one alone. After the timeout branch runs, execution leaves the body containing the wait, skipping its remaining steps. Wait deadlines are stamped by the opening commit; request reply slots are armed when their paired wait is reached. Event arrival must be strictly before the wait deadline on the store clock; an admissible answer can win even if processed later. A newly observed cancellation or a due execution deadline takes precedence over inbox processing. Delays and execution deadlines cannot be answered by events.
+
+A caller's cancellation token stops the current call/run and leaves durable state recoverable. `CancelAsync` records durable cancellation, cancels open scopes and unwinds compensation and `Finally`. The first cancellation request wins. A running instance can return `Running` before cleanup finishes; use `AwaitAsync(id, WorkflowAwaitCondition.Finished)` to wait for its terminal result. An uncertain activity may still need resolution during cleanup. Cancellation and timer handling also apply inside nested handlers and compensation.
+
+## Child workflows
+
+Both typed and name/version `Invoke` forms create an independent persisted child with a stable child instance ID and mapped inputs. The parent commits its wait and child start together. Child completion reaches the parent's durable inbox; the runner applies output mappings on the parent's thread.
+
+The default `CancelWithParent` behavior cancels the child and waits for it to settle when the invoking branch is cancelled. A child awaiting resolution can hold a cancelling parent. With `CancelWithParent(false)`, cancellation closes the parent's child wait and the invoking branch gives up the result and unwinds immediately; an already started child continues. A detached child whose start was never committed is not started; a default child is started and cancelled in the same commit. Child business failures follow the parent's error handling; infrastructure failures leave work recoverable. Cancellation, timeout or termination raises `ChildWorkflowEndedException` at the invocation. Deleting a child, or cancelling a missing child, atomically sends a terminated-child notice to a waiting parent. Missing child data cannot silently skip declared outputs.
+
+Named invocations resolve a pinned definition from the host's registry. Typed invocations can build an installed `IWorkflow<T>` class and register its definition; an existing name/version must have the same fingerprint. Deactivated definitions refuse new child starts. See [Review.cs](../samples/IxIFlow.Samples/Review.cs) for a pinned child. Child placement demands are planned.
+
+## Parallel data and joins
+
+Each branch starts from isolated serialization copies of workflow data and the preceding step value at the fork. Branch writes cannot race through shared workflow-data references. Changes are tracked against that baseline and saved with their continuation; nested joins first merge into their enclosing branch.
+
+At a successful join, independent property changes merge. Multiple branches changing the same property, even to identical values, or a property and one nested inside it, conflict without a combiner. Mutable dictionary classes merge per key; ordinary class objects merge per property. Lists, structs, polymorphic or extension-data objects, objects with constructor-bound getter-only state and custom-converted values merge as whole values. The merged representation is validated before applying it; a conflict raises `JoinConflictException` with a `Path` and leaves parent data unchanged. Branch-data setters must allow rollback of an assignment.
+
+Use `Combine<TProperty,TCombiner>` on a join or `[Combine<TCombiner>]` on data properties. A pure `ICombiner<T>` receives the baseline and changed branch values in declaration order. Join overrides take precedence on the same property. The outermost combiner on a path merges that whole value; an override inside an attribute-combined property is refused. Combiners need a public parameterless constructor and exactly one `ICombiner<T>` matching a settable serialized property.
+
+Build validation rejects statically overlapping output mappings under all/conditional joins without a combiner. A parallel ForEach body under either join requires a combiner even for a single output mapping to a workflow-data property: every item can make the same write. `WaitAny` is exempt from overlap checks because it merges one winner; nested joins are still checked. Unnamed output targets and writes the serializer cannot preserve are also restricted. Direct activity mutations and dictionary-key collisions are checked at runtime. An enclosing catch can handle a join conflict.
+
+| Built-in combiner | Behavior |
+| --- | --- |
+| `FirstWins<T>`, `LastWins<T>` | Choose by declaration order |
+| `Sum<T>` | Add each branch's delta to the baseline |
+| `Min<T>`, `Max<T>` | Choose among changed branch values |
+| `Append<T>` | Preserve the original list prefix and append each branch's additions |
+| `Union<TKey,TValue>` | Merge dictionary keys; conflicting changes to a key fail |
+| `Union<T>` | Combine set additions/removals |
+
+All parallel blocks wait for all branches by default. `WaitAny` uses the first completion and excludes losing branch outputs. A conditional join tests the merge of completed branches after each completion and also ends when all branches finish, even if its predicate stayed false. A provisional merge conflict or unhandled branch failure cancels the remaining branches and fails the construct. Losing branches unwind cleanup before continuation. A join that ends through a branch failure, or whose parent is being cancelled, publishes no branch changes at all. Joins inside Finally or compensation still merge during unwinding unless the join itself fails.
+
+[ParallelQuotes.cs](../samples/IxIFlow.Samples/ParallelQuotes.cs) and its YAML twins demonstrate all modes and sum merging.
+
+## ForEach
+
+`ForEach` snapshots a finite input list on entry, preserving its order through recovery. Sequential bodies share the evolving enclosing data. Parallel bodies start isolated copies and use the same merge rules. `maxConcurrency` must be positive; omitting it starts all items, subject to `MaxActiveBranches`. Queued items start in input order. Suspended and nested-joining items still occupy their item concurrency positions. Empty lists finish immediately. Conditional joins receive only completed `ItemResult<T>` values in input order.
+
+The typed item handle supplies a separate item copy per evaluation context and a zero-based index; changes to that copy are not saved. Output mappings through a handle are rejected, and handles cannot be read outside their body. Nested bodies can read outer handles. Result-producing bodies and timeout paths that leave them must end in `Result` of the stored type. Body mappings cannot overwrite the `Into` destination. `Into` receives one `ItemResult<T>` per input position with `Completed`, `Cancelled` or `NotStarted` status. Partial results are not installed when the construct fails. See [Batch.cs](../samples/IxIFlow.Samples/Batch.cs) and [list recipes](../samples/IxIFlow.Recipes/Lists.cs).
+
+## Resource stops
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `MaxCheckpointBytes` | 4 MiB | Stop before saving oversized workflow/execution state |
+| `MaxActiveBranches` | 1,000 | Limit live branches; excludes root, joining parents, completed and cancelling branches |
+| `MaxForEachItems` | 1,000 | Stop before executing an oversized list |
+| `MaxActivitiesPerRun` | 100 | Throttle in-flight activities within a run |
+| `MaxCrashes` | 3 | Quarantine after consecutive owner losses without progress |
+
+Limit stops preserve the last checkpoint at `NeedsResolution`. Raise the relevant limit and call `ReleaseAsync`, or cancel. Oversized start and resolution checkpoints are refused with `WorkflowErrorKind.ResourceExhausted`. Inbox payloads have no separate byte limit; consuming an event that makes a checkpoint too large can stop the instance. `RecoverAsync` does not release operator stops. Trace limits bound diagnostics separately; see [observability](observability.md).

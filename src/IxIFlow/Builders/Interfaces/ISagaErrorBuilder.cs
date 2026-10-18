@@ -11,11 +11,11 @@ public interface ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>
     /// <summary>Identifies the preceding step and its source.</summary>
     ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
-    /// <summary>Undoes every completed step of the saga, newest first (D-36).</summary>
+    /// <summary>Undoes every completed step of the saga, newest first.</summary>
     ISagaContinuationBuilder<TWorkflowData, TPreviousStepData> Compensate();
 
     /// <summary>
-    /// Undoes nothing: every completed step is kept. A retry starts again at the step that failed (D-36).
+    /// Undoes nothing: every completed step is kept. A retry starts again at the step that failed.
     /// </summary>
     ISagaContinuationBuilder<TWorkflowData, TPreviousStepData> CompensateNone();
 
@@ -23,7 +23,7 @@ public interface ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>
     /// Undoes completed steps from the newest back up to <typeparamref name="TActivity"/>, which is undone too,
     /// and keeps the steps before it; a retry starts again at <typeparamref name="TActivity"/>. Only completed steps are
     /// undone: when <typeparamref name="TActivity"/> had not completed, everything is undone. The activity
-    /// must be a step of the saga exactly once (D-36).
+    /// must be a step of the saga exactly once.
     /// </summary>
     ISagaContinuationBuilder<TWorkflowData, TPreviousStepData> CompensateUpTo<TActivity>()
         where TActivity : IAsyncActivity;

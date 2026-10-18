@@ -3,11 +3,11 @@ using System.Text.Json;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// Runs a <c>ForEach</c> (D-34). When the step starts, the list is read once and saved, in item order, on
+/// Runs a <c>ForEach</c>. When the step starts, the list is read once and saved, in item order, on
 /// the frame the step belongs to. Sequentially, each item runs the body in a frame of its own, a new scope
 /// activation, one after another. In parallel, each item runs as a branch of a join, from a copy of the
-/// data at the fork, at most <c>maxConcurrency</c> at a time; the join merges the completed items' data
-/// (D-14). The results are stored when the step completes, and the saved list is dropped with the step.
+/// data at the fork, at most <c>maxConcurrency</c> at a time; the join merges the completed items' data.
+/// The results are stored when the step completes, and the saved list is dropped with the step.
 /// </summary>
 internal static class ForEachTransitions
 {
@@ -113,7 +113,7 @@ internal static class ForEachTransitions
 
     /// <summary>
     /// Starts the next item of a parallel ForEach as a branch of its join, from a copy of the parent's
-    /// data, which is the data at the fork while the parent waits (D-34); <paramref name="snapshot"/> is
+    /// data, which is the data at the fork while the parent waits; <paramref name="snapshot"/> is
     /// that data as <see cref="BranchData.Snapshot"/> gives it.
     /// </summary>
     public static void StartItem(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
@@ -160,8 +160,8 @@ internal static class ForEachTransitions
     }
 
     /// <summary>
-    /// Starts queued items of every open parallel ForEach join with room under its cap, in item order
-    /// (D-34): admission is a transition of its own, after the completion that made room has been decided.
+    /// Starts queued items of every open parallel ForEach join with room under its cap, in item order:
+    /// admission is a transition of its own, after the completion that made room has been decided.
     /// Items are checked one at a time: when the next would exceed <paramref name="maxActiveBranches"/>,
     /// throws <see cref="BranchLimitExceededException"/>, keeping those already started, and that item
     /// starts after a release. Returns true when an item started.
@@ -367,7 +367,7 @@ internal static class ForEachTransitions
 
 /// <summary>
 /// An item a forked branch keeps from the <c>ForEach</c> bodies it was forked in: the step's id, the
-/// item's position and its saved JSON (D-34).
+/// item's position and its saved JSON.
 /// </summary>
 internal sealed class InheritedItem
 {
@@ -376,6 +376,6 @@ internal sealed class InheritedItem
     public string Item { get; set; } = "";
 }
 
-/// <summary>A <c>ForEach</c> list is longer than the configured limit; nothing was saved (D-34).</summary>
+/// <summary>A <c>ForEach</c> list is longer than the configured limit; nothing was saved.</summary>
 internal sealed class ForEachLimitExceededException(int limit) : ResourceLimitExceededException(
     $"A ForEach list has more than the configured limit of {limit} items");

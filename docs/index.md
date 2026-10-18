@@ -1,23 +1,31 @@
 ---
 title: IxIFlow documentation
-description: Start here for the IxIFlow workflow engine and fluent C# API.
+description: Author, run and operate durable .NET 10 workflows.
 ---
 
-IxIFlow is a code-first workflow engine for .NET. You define a workflow with a fluent C# builder, register its activities with dependency injection, and run it through `IWorkflowClient`.
+IxIFlow is a durable workflow engine for .NET 10 and C#. Author a typed definition with the fluent API or YAML, run it through `IWorkflowClient`, and choose a store for checkpoints, inboxes, waits, traces and completion deliveries.
 
-The engine supports activities, typed data mapping, conditions, loops, parallel branches, exception handling, waits, child workflows, and saga compensation. Hosts that share SQL state register the same workflow definitions and activity code before resuming an instance.
+These guides describe the engine as it is today. Features still planned for 1.0 are identified explicitly in the [roadmap](roadmap.md).
 
-## Choose a starting point
+## Guides
 
-- [Getting started](/docs/getting-started/) shows a small in-process workflow.
-- [Execution model](/docs/execution-model/) explains how definitions, instances, and activities fit together.
-- [Architecture](/docs/architecture/) shows the core and optional host infrastructure.
-- [Fluent API](/docs/fluent-api/) covers workflow authoring in C#.
-- [Custom activity SDK](/docs/activity-sdk/) covers activity metadata and assembly registration.
-- [Sagas](/docs/sagas/) explains compensation and saved saga progress.
-- [Coordinator and hosts](/docs/coordinator-and-hosts/) describes SQL state, queued commands, completion events, and host selection.
-- [Roadmap](/docs/roadmap/) records the target design and the remaining work.
+| Page | What it covers |
+| --- | --- |
+| [Getting started](getting-started.md) | Packages, a first workflow and client results |
+| [Fluent C# API](fluent-api.md) | Mappings and every control-flow family |
+| [YAML authoring](yaml-authoring.md) | Every document construct, expressions, strict reading and schema |
+| [Activity SDK](activity-sdk.md) | Activity contracts, .NET metadata, DI and installed catalogs |
+| [Execution model](execution-model.md) | Commits, recovery, leases, inboxes, waits, children and parallel data |
+| [Sagas](sagas.md) | Compensation, saved faults and retry scopes |
+| [Hosting](coordinator-and-hosts.md) | The core host, slots, store selection, recovery and shutdown |
+| [Stores](stores.md) | Memory, SQLite, SQL Server and PostgreSQL |
+| [Outbox and publishers](outbox-and-publishers.md) | Completion delivery, custom publishers, outgoing webhooks and templates |
+| [Retention and tombstones](retention-and-tombstones.md) | Retained results, cleanup and removed instance IDs |
+| [Tracing and observability](observability.md) | Committed history, snapshots, OpenTelemetry and logging |
+| [Architecture](architecture.md) | Runtime boundaries and packages |
+| [Engine capabilities](engine-capabilities.md) | A compact guide to available behavior |
+| [Roadmap](roadmap.md) | Remaining 1.0 work and later features |
 
-## Execution boundary
+## Examples
 
-Saga activities execute in the host process that runs the workflow. The default workflow state repository lives in process memory across dependency injection scopes; the SQL Server host registers shared workflow instance state. Each host registers definitions and activity code used by its instances.
+The [sample feature map](../samples/README.md) links runnable C# and YAML twins. Every C# or YAML block in these guides names its compiled source or equivalent. [DocumentationExamples.cs](../samples/IxIFlow.Samples/DocumentationExamples.cs), [DocumentationTests.cs](../tests/IxIFlow.Samples.Tests/DocumentationTests.cs) and the existing sample tests keep the examples checked by the solution build and sample test run.

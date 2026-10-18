@@ -4,7 +4,7 @@ namespace IxIFlow.Extensions;
 
 /// <summary>
 /// What <c>AddIxIFlow</c> returns: the place to choose the store, such as <c>.UseSqlServer(connectionString)</c>, and,
-/// later, the other choices that do not depend on it (D-21).
+/// later, the other choices that do not depend on it.
 /// </summary>
 public interface IIxIFlowBuilder
 {

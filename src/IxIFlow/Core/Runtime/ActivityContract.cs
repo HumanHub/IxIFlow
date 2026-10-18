@@ -6,7 +6,7 @@ using IxIFlow.ActivitySdk;
 
 namespace IxIFlow.Core.Runtime;
 
-/// <summary>The directions and typed defaults of an activity's properties (D-26).</summary>
+/// <summary>The directions and typed defaults of an activity's properties.</summary>
 internal static class ActivityContract
 {
     public static bool IsMarked(PropertyInfo property) =>

@@ -42,8 +42,8 @@ public static class WorkflowStoreRules
         or WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut;
 
     /// <summary>
-    /// True when a saved instance is runnable from the moment it is saved, whatever time it carries
-    /// (C-01): an idle save that leaves a cancellation request unacknowledged, so the request is
+    /// True when a saved instance is runnable from the moment it is saved, whatever time it carries:
+    /// an idle save that leaves a cancellation request unacknowledged, so the request is
     /// unwound, and a running instance saved without a time, so it can be claimed as soon as its
     /// owner's lease ends. Stores stamp these with their own clock.
     /// </summary>
@@ -62,13 +62,13 @@ public static class WorkflowStoreRules
 
     /// <summary>
     /// When an instance saved without a commit becomes runnable, with <paramref name="now"/> as the
-    /// store's clock. Such a save carries its own time; a commit never does (D-35).
+    /// store's clock. Such a save carries its own time; a commit never does.
     /// </summary>
     public static DateTime? RunnableAt(WorkflowInstance instance, bool unacknowledgedCancellation, DateTime now) =>
         IsRunnableNow(instance, unacknowledgedCancellation) ? now : instance.RunnableAtUtc;
 
     /// <summary>
-    /// When a committed instance becomes runnable, in the store's clock (D-31, D-35): now when
+    /// When a committed instance becomes runnable, in the store's clock: now when
     /// <paramref name="runnableNow"/>; never while stopped for an operator; at the end of a park, or now,
     /// while it runs; and while it is idle, at the earliest deadline of its open waits or after the
     /// commit's <see cref="CheckpointCommit.WakeAfter"/>, whichever comes first.
@@ -93,7 +93,7 @@ public static class WorkflowStoreRules
     /// The wait an untargeted event should be judged against among <paramref name="openWaits"/>, at the
     /// store's time <paramref name="now"/>: any that could still take it comes before one past its deadline.
     /// Only event waits take untargeted events; a child wait takes only its child's completion, addressed
-    /// to it (D-17).
+    /// to it.
     /// </summary>
     public static IEnumerable<StoredWait> Candidates(WorkflowEvent workflowEvent, IEnumerable<StoredWait> openWaits,
         DateTime now) =>
@@ -104,7 +104,7 @@ public static class WorkflowStoreRules
     /// <summary>
     /// The completion a store appends to a parent's wait when the child it waits for is gone: deleted by an
     /// operator before it ended, or missing when the parent asks it to cancel. The parent's invocation then
-    /// ends as the child's termination (D-17).
+    /// ends as the child's termination.
     /// </summary>
     public static ParentNotice ChildGone(string childInstanceId, string parentInstanceId, string parentWaitId) =>
         new(parentInstanceId, parentWaitId, $"child-completed-{childInstanceId}", ChildCompleted.EventType,
@@ -114,7 +114,7 @@ public static class WorkflowStoreRules
                 Status = WorkflowStatus.Terminated
             }));
 
-    /// <summary>Why the waits still open when an instance finishes are closed (D-33).</summary>
+    /// <summary>Why the waits still open when an instance finishes are closed.</summary>
     public static WaitCloseReason FinalWaitCloseReason(WorkflowStatus status) =>
         status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut
             ? WaitCloseReason.Cancelled
@@ -122,7 +122,7 @@ public static class WorkflowStoreRules
 
     /// <summary>
     /// An arrival refusal has no executor pass to carry its trace. Append this one entry in the inbox's
-    /// transaction when tracing is enabled: once per stored refusal, or per Closed API response (G-01).
+    /// transaction when tracing is enabled: once per stored refusal, or per Closed API response.
     /// </summary>
     public static ExecutionTraceEntry RefusedEventTrace(WorkflowEvent workflowEvent, EventRejection rejection,
         DateTime now) => new()
@@ -137,7 +137,7 @@ public static class WorkflowStoreRules
 
     /// <summary>
     /// Why an event that arrives at the store's time <paramref name="now"/> is refused before anyone reads
-    /// it, or null when it is kept for the owner (D-33, D-35). <paramref name="target"/> is the wait the
+    /// it, or null when it is kept for the owner. <paramref name="target"/> is the wait the
     /// event names, if it names one; otherwise <paramref name="candidates"/> are the open waits it could
     /// reach, as <see cref="Candidates"/> orders them. Any other event needs an open event wait with its
     /// key (any key when it has none). An event that arrives when its deadline, or every candidate's, has
@@ -218,7 +218,7 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 
     /// <summary>
     /// Lists up to <paramref name="limit"/> instances a host may claim now: their runnable time has
-    /// passed and nobody holds their lease. The earliest come first (C-01, C-05).
+    /// passed and nobody holds their lease. The earliest come first.
     /// </summary>
     Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit);
 
@@ -263,14 +263,14 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     Task SaveWorkflowInstanceAsync(WorkflowInstance instance);
 
     /// <summary>
-    /// The whole instance: its trunk and every part of its state, read at one revision (A-08).
+    /// The whole instance: its trunk and every part of its state, read at one revision.
     /// Every instance read, including summaries, queries and child lists, must round-trip the row's
     /// Incarnation separately from serialized state.
     /// </summary>
     Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId);
 
     /// <summary>
-    /// The instance without its branches (A-08): its fields, its workflow data and the trunk of its execution state.
+    /// The instance without its branches: its fields, its workflow data and the trunk of its execution state.
     /// Enough for a status, a result or a stop check, never to run it. This fallback reads the whole instance; a
     /// store that keeps parts reads only the trunk and the data.
     /// </summary>
@@ -293,12 +293,12 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 
     /// <summary>
     /// The instance's trace entries after <paramref name="afterSequence"/>, in order, at most
-    /// <paramref name="limit"/> (G-01). Commits append them; deleting the instance deletes them.
+    /// <paramref name="limit"/>. Commits append them; deleting the instance deletes them.
     /// </summary>
     Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000);
 
     /// <summary>
-    /// The child workflows a parent started (D-17), for operators. This fallback reads the instances that
+    /// The child workflows a parent started, for operators. This fallback reads the instances that
     /// share the parent's correlation ID; stores should override it with one query.
     /// </summary>
     async Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
@@ -309,7 +309,7 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 
     /// <summary>
     /// Deletes an instance and its inbox, waits and receipts. A child whose parent still waits for it ends
-    /// that wait as terminated, in the same step (D-17). Leaves a tombstone for the supplied retention
+    /// that wait as terminated, in the same step. Leaves a tombstone for the supplied retention
     /// period, or 90 days by default. Pass the same TombstoneRetention used for automatic retention.
     /// Deleting an unknown or already removed ID still removes its lease but does not create or extend a tombstone.
     /// </summary>

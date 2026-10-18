@@ -9,7 +9,7 @@ namespace IxIFlow.Core;
 
 /// <summary>
 /// Stores workflow instances in PostgreSQL so host processes share the same state, and wakes hosts through
-/// <c>LISTEN</c>/<c>NOTIFY</c> when an instance becomes claimable (C-13). Needs PostgreSQL 13 or later.
+/// <c>LISTEN</c>/<c>NOTIFY</c> when an instance becomes claimable. Needs PostgreSQL 13 or later.
 /// </summary>
 public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkflowStateRepository, IRunnableWakeSource
 {
@@ -19,14 +19,14 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
 
     public const int DefaultOwnershipPoolSize = 16;
 
-    /// <summary>The channel a transaction notifies when it makes an instance claimable (C-13).</summary>
+    /// <summary>The channel a transaction notifies when it makes an instance claimable.</summary>
     public const string RunnableChannel = "ixiflow_runnable";
 
     /// <summary>
     /// Creates a store on <paramref name="connectionString"/>. Lease and cancellation traffic uses a
     /// second connection pool of at most <paramref name="ownershipPoolSize"/> connections, so a host
     /// whose runs and the application's own work exhaust the main pool still renews its leases and
-    /// delivers cancellation (B-09). With pooling turned off the reservation has no effect.
+    /// delivers cancellation. With pooling turned off the reservation has no effect.
     /// </summary>
     public PostgreSqlWorkflowStateRepository(string connectionString,
         int ownershipPoolSize = DefaultOwnershipPoolSize, OutboxSettings? outboxSettings = null) : base(outboxSettings)

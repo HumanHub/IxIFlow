@@ -1,6 +1,6 @@
 namespace IxIFlow.Core.Runtime;
 
-/// <summary>Limits the host applies to every instance it runs (A-08, B-08, B-09).</summary>
+/// <summary>Limits the host applies to every instance it runs.</summary>
 internal sealed record ExecutionLimits
 {
     public const long DefaultMaxCheckpointBytes = 4 * 1024 * 1024;
@@ -16,7 +16,7 @@ internal sealed record ExecutionLimits
     /// <summary>The largest checkpoint, in bytes of workflow data and execution state.</summary>
     public long MaxCheckpointBytes { get; init; } = DefaultMaxCheckpointBytes;
 
-    /// <summary>The maximum trace entries per commit, including a truncation marker when needed (G-01).</summary>
+    /// <summary>The maximum trace entries per commit, including a truncation marker when needed.</summary>
     public int MaxTraceEntriesPerCommit { get; init; } = DefaultMaxTraceEntriesPerCommit;
     public TraceDetail TraceDetail { get; init; } = TraceDetail.Full;
     public long? MaxTraceEntriesPerInstance { get; init; }
@@ -25,28 +25,28 @@ internal sealed record ExecutionLimits
     public int MaxCrashes { get; init; } = DefaultMaxCrashes;
 
     /// <summary>
-    /// How many continuations of one instance may be live at once: the root, every branch, and
-    /// every parent waiting at its join. Branches that are cancelling do not count.
+    /// Maximum live branches of one instance, excluding the root, parents waiting at joins, and
+    /// completed, cancelled or cancelling branches.
     /// </summary>
     public int MaxActiveBranches { get; init; } = DefaultMaxActiveBranches;
 
     /// <summary>How many activities one run has in flight at once; further activities wait.</summary>
     public int MaxActivitiesPerRun { get; init; } = DefaultMaxActivitiesPerRun;
 
-    /// <summary>The longest list a <c>ForEach</c> takes; a longer one stops the instance for an operator (D-34).</summary>
+    /// <summary>The longest list a <c>ForEach</c> takes; a longer one stops the instance for an operator.</summary>
     public int MaxForEachItems { get; init; } = DefaultMaxForEachItems;
 
     /// <summary>
     /// A run with nothing in flight whose next retry is further away than this gives its slot and
-    /// lease back and is resumed on time (C-03); a shorter backoff is slept through in the slot.
+    /// lease back and is resumed on time; a shorter backoff is slept through in the slot.
     /// </summary>
     public TimeSpan ParkRetriesLongerThan { get; init; } = DefaultParkRetriesLongerThan;
 
-    /// <summary>Serialize every part at each commit and fail it when one changed without being marked (A-08).</summary>
+    /// <summary>Serialize every part at each commit and fail it when one changed without being marked.</summary>
     public bool VerifyCheckpointParts { get; init; }
 }
 
-/// <summary>A configured limit would be exceeded; nothing over it was committed (D-28).</summary>
+/// <summary>A configured limit would be exceeded; nothing over it was committed.</summary>
 internal abstract class ResourceLimitExceededException(string message) : Exception(message);
 
 /// <summary>A parallel step would make more branches live than the limit allows. Nothing was forked.</summary>

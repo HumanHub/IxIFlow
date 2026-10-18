@@ -1,7 +1,7 @@
 namespace IxIFlow.Templates;
 
 /// <summary>
-/// A template a step renders: its key and the exact version the workflow definition pins (H-01). A definition names
+/// A template a step renders: its key and the exact version the workflow definition pins. A definition names
 /// the version, so a newer version of the template never changes what an instance of that definition renders, and a
 /// recovered step renders the version its first attempt saved with its inputs.
 /// </summary>

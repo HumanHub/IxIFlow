@@ -44,7 +44,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
 
     /// <summary>
     /// Writers queue through the repository gate. A one-second driver timeout bounds unexpected
-    /// external contention, which single-host ownership (C-18) forbids; zero would wait forever.
+    /// external contention, which single-host ownership forbids; zero would wait forever.
     /// </summary>
     internal static string FileConnectionString(string connectionString)
     {

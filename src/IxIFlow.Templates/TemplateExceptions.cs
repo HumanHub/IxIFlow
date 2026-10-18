@@ -9,7 +9,7 @@ public abstract class TemplateException : Exception
     }
 }
 
-/// <summary>A template version failed its engine's validation when it was published (H-03).</summary>
+/// <summary>A template version failed its engine's validation when it was published.</summary>
 public sealed class TemplateValidationException : TemplateException
 {
     public TemplateValidationException(TemplateSource template, IReadOnlyList<TemplateDiagnostic> diagnostics)
@@ -30,7 +30,7 @@ public sealed class TemplateValidationException : TemplateException
 /// </summary>
 public sealed class TemplateNotFoundException(string message) : TemplateException(message);
 
-/// <summary>A version was published again with different content: published versions are immutable (H-01).</summary>
+/// <summary>A version was published again with different content: published versions are immutable.</summary>
 public sealed class TemplateVersionConflictException(TemplateReference template)
     : TemplateException($"Template {template} is already published with different content; publish a new version")
 {
