@@ -6,6 +6,10 @@
   "description": "A workflow document with reusable templates, code assets and executable steps.",
   "additionalProperties": false,
   "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "The editor schema this document binds to; readers ignore it."
+    },
     "schemaVersion": {
       "type": "string",
       "description": "The document contract version.",
@@ -357,10 +361,10 @@
         }
       },
       "required": [
+        "kind",
         "operator",
         "left",
-        "right",
-        "kind"
+        "right"
       ]
     },
     "functionExpression": {
@@ -386,8 +390,8 @@
         }
       },
       "required": [
-        "function",
-        "kind"
+        "kind",
+        "function"
       ]
     },
     "outputMapping": {
@@ -613,14 +617,14 @@
       "description": "An activity invocation with defaults and input and output mappings.",
       "additionalProperties": false,
       "properties": {
+        "kind": {
+          "type": "string",
+          "const": "activity",
+          "description": "The discriminator selecting the concrete step type."
+        },
         "id": {
           "type": "string",
           "description": "The stable step identifier, generated from its structural path when omitted."
-        },
-        "kind": {
-          "type": "string",
-          "description": "The discriminator selecting the concrete step type.",
-          "const": "activity"
         },
         "name": {
           "type": [
@@ -665,8 +669,8 @@
         }
       },
       "required": [
-        "activity",
-        "kind"
+        "kind",
+        "activity"
       ]
     },
     "activityReferenceStep": {
@@ -674,14 +678,14 @@
       "description": "An invocation of a reusable activity template.",
       "additionalProperties": false,
       "properties": {
+        "kind": {
+          "type": "string",
+          "const": "activityRef",
+          "description": "The discriminator selecting the concrete step type."
+        },
         "id": {
           "type": "string",
           "description": "The stable step identifier, generated from its structural path when omitted."
-        },
-        "kind": {
-          "type": "string",
-          "description": "The discriminator selecting the concrete step type.",
-          "const": "activityRef"
         },
         "name": {
           "type": [
@@ -703,8 +707,8 @@
         }
       },
       "required": [
-        "ref",
-        "kind"
+        "kind",
+        "ref"
       ]
     },
     "stepReferenceStep": {
@@ -712,14 +716,14 @@
       "description": "An expansion of a reusable step template with bound arguments.",
       "additionalProperties": false,
       "properties": {
+        "kind": {
+          "type": "string",
+          "const": "stepRef",
+          "description": "The discriminator selecting the concrete step type."
+        },
         "id": {
           "type": "string",
           "description": "The stable step identifier, generated from its structural path when omitted."
-        },
-        "kind": {
-          "type": "string",
-          "description": "The discriminator selecting the concrete step type.",
-          "const": "stepRef"
         },
         "name": {
           "type": [
@@ -748,8 +752,8 @@
         }
       },
       "required": [
-        "ref",
-        "kind"
+        "kind",
+        "ref"
       ]
     },
     "conditionalStep": {
@@ -757,14 +761,14 @@
       "description": "A branch selected by a Boolean expression.",
       "additionalProperties": false,
       "properties": {
+        "kind": {
+          "type": "string",
+          "const": "if",
+          "description": "The discriminator selecting the concrete step type."
+        },
         "id": {
           "type": "string",
           "description": "The stable step identifier, generated from its structural path when omitted."
-        },
-        "kind": {
-          "type": "string",
-          "description": "The discriminator selecting the concrete step type.",
-          "const": "if"
         },
         "name": {
           "type": [
@@ -800,8 +804,8 @@
         }
       },
       "required": [
-        "condition",
-        "kind"
+        "kind",
+        "condition"
       ]
     },
     "sequenceStep": {
@@ -809,14 +813,14 @@
       "description": "A nested sequence of workflow steps.",
       "additionalProperties": false,
       "properties": {
+        "kind": {
+          "type": "string",
+          "const": "sequence",
+          "description": "The discriminator selecting the concrete step type."
+        },
         "id": {
           "type": "string",
           "description": "The stable step identifier, generated from its structural path when omitted."
-        },
-        "kind": {
-          "type": "string",
-          "description": "The discriminator selecting the concrete step type.",
-          "const": "sequence"
         },
         "name": {
           "type": [
@@ -849,14 +853,14 @@
       "description": "An iteration over items with an optional parallel join and collected results.",
       "additionalProperties": false,
       "properties": {
+        "kind": {
+          "type": "string",
+          "const": "forEach",
+          "description": "The discriminator selecting the concrete step type."
+        },
         "id": {
           "type": "string",
           "description": "The stable step identifier, generated from its structural path when omitted."
-        },
-        "kind": {
-          "type": "string",
-          "description": "The discriminator selecting the concrete step type.",
-          "const": "forEach"
         },
         "name": {
           "type": [
@@ -902,8 +906,8 @@
         }
       },
       "required": [
-        "items",
-        "kind"
+        "kind",
+        "items"
       ]
     },
     "forEachParallel": {
@@ -946,14 +950,14 @@
       "description": "A suspension awaiting a typed resume event.",
       "additionalProperties": false,
       "properties": {
+        "kind": {
+          "type": "string",
+          "const": "suspend",
+          "description": "The discriminator selecting the concrete step type."
+        },
         "id": {
           "type": "string",
           "description": "The stable step identifier, generated from its structural path when omitted."
-        },
-        "kind": {
-          "type": "string",
-          "description": "The discriminator selecting the concrete step type.",
-          "const": "suspend"
         },
         "name": {
           "type": [
@@ -997,8 +1001,8 @@
         }
       },
       "required": [
-        "event",
-        "kind"
+        "kind",
+        "event"
       ]
     },
     "invokeWorkflowStep": {
@@ -1006,14 +1010,14 @@
       "description": "An invocation of a child workflow with a resolved data contract and version.",
       "additionalProperties": false,
       "properties": {
+        "kind": {
+          "type": "string",
+          "const": "invokeWorkflow",
+          "description": "The discriminator selecting the concrete step type."
+        },
         "id": {
           "type": "string",
           "description": "The stable step identifier, generated from its structural path when omitted."
-        },
-        "kind": {
-          "type": "string",
-          "description": "The discriminator selecting the concrete step type.",
-          "const": "invokeWorkflow"
         },
         "name": {
           "type": [
@@ -1049,8 +1053,8 @@
         }
       },
       "required": [
-        "workflow",
-        "kind"
+        "kind",
+        "workflow"
       ]
     },
     "workflowReference": {

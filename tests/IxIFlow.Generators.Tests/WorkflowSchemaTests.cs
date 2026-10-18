@@ -98,6 +98,8 @@ public sealed class WorkflowSchemaTests
     [InlineData("schemaVersion: '2.0'", false)]
     [InlineData("workflow: {name: Schema, dataType: FlowData, displayName: null}", true)]
     [InlineData("definitions: [{kind: suspend, event: Answer}]", true)]
+    [InlineData("$schema: ./workflow.schema.json", true)]
+    [InlineData("definitions: [{kind: suspend, event: Answer, $schema: x}]", false)]
     public void SchemaAcceptsCanonicalDocumentsAndRejectsInvalidDocuments(string body, bool valid)
     {
         var result = Evaluate(body.StartsWith("workflow:", StringComparison.Ordinal) ? body : Header + body);

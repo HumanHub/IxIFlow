@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
@@ -22,29 +23,36 @@ public static class WorkflowJsonSerializer
         {
             if (!typeof(DocumentNode).IsAssignableFrom(info.Type) || info.Kind != JsonTypeInfoKind.Object) return;
             var properties = info.Properties.ToDictionary(property => property.Name);
-            var members = DocumentModel.GetMembers(info.Type);
             info.Properties.Clear();
-            // A variant always writes its declared kind and accepts no other, including where its type is fixed.
-            var kind = DocumentModel.GetKind(info.Type)?.Kind;
-            if (kind != null)
+            foreach (var key in DocumentModel.GetKeys(info.Type))
             {
-                var stored = members.FirstOrDefault(member => DocumentModel.GetName(member) == "kind");
-                var discriminator = info.CreateJsonPropertyInfo(typeof(string), "kind");
-                discriminator.Get = _ => kind;
-                discriminator.Set = (target, value) =>
+                if (key.IsDiscriminator)
                 {
-                    if ((string?)value != kind) throw new JsonException($"Expected workflow document kind '{kind}'");
-                    stored?.SetValue(target, value);
-                };
-                info.Properties.Add(discriminator);
-            }
-            foreach (var member in members)
-            {
-                var name = DocumentModel.GetName(member);
-                if (name == "kind" && kind != null) continue;
-                var property = properties[member.Name];
-                property.Name = name;
-                info.Properties.Add(property);
+                    // A variant always writes its declared kind and accepts no other, including where its type is fixed.
+                    var kind = DocumentModel.GetKind(info.Type)!.Kind;
+                    var discriminator = info.CreateJsonPropertyInfo(typeof(string), key.Name);
+                    discriminator.Get = _ => kind;
+                    discriminator.Set = (target, value) =>
+                    {
+                        if ((string?)value != kind) throw new JsonException($"Expected workflow document kind '{kind}'");
+                        key.Member?.SetValue(target, value);
+                    };
+                    info.Properties.Add(discriminator);
+                }
+                else if (key.Member is { } member)
+                {
+                    var property = properties[member.Name];
+                    property.Name = key.Name;
+                    info.Properties.Add(property);
+                }
+                else
+                {
+                    // The root's editor schema binding is accepted and not part of the model.
+                    var binding = info.CreateJsonPropertyInfo(typeof(string), key.Name);
+                    binding.Get = _ => null;
+                    binding.Set = (_, _) => { };
+                    info.Properties.Add(binding);
+                }
             }
         }),
         Converters =
@@ -55,16 +63,43 @@ public static class WorkflowJsonSerializer
         }
     };
 
+    private abstract class VariantReader
+    {
+        public abstract DocumentNode? Read(ref Utf8JsonReader reader, JsonSerializerOptions options);
+    }
+
+    // Reads with the variant's own converter on the caller's reader; JsonSerializer.Deserialize would scope
+    // a new reader to the value and restart its line numbers.
+    private sealed class VariantReader<TVariant> : VariantReader where TVariant : DocumentNode
+    {
+        public override DocumentNode? Read(ref Utf8JsonReader reader, JsonSerializerOptions options) =>
+            ((JsonConverter<TVariant>)options.GetConverter(typeof(TVariant))).Read(ref reader, typeof(TVariant), options);
+    }
+
     private sealed class DocumentKindConverter<T> : JsonConverter<T> where T : DocumentNode
     {
+        private static readonly ConcurrentDictionary<Type, VariantReader> Variants = new();
+
         public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
-            using var document = JsonDocument.ParseValue(ref reader);
-            var root = document.RootElement;
-            var kind = root.TryGetProperty("kind", out var discriminator) ? discriminator.GetString() : null;
-            var type = DocumentModel.ResolveVariant(typeof(T), kind, name => root.TryGetProperty(name, out _))
+            // Scan a copy for the discriminator, then read the variant with the original reader so that
+            // error positions refer to the whole document.
+            if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException($"A workflow {typeof(T).Name} must be an object");
+            var scan = reader;
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            string? kind = null;
+            while (scan.Read() && scan.TokenType == JsonTokenType.PropertyName)
+            {
+                var name = scan.GetString()!;
+                names.Add(name);
+                scan.Read();
+                if (name == "kind" && scan.TokenType == JsonTokenType.String) kind = scan.GetString();
+                scan.Skip();
+            }
+            var type = DocumentModel.ResolveVariant(typeof(T), kind, names.Contains)
                 ?? throw new JsonException($"Unknown workflow document kind '{kind}'");
-            return (T?)root.Deserialize(type, options);
+            return (T?)Variants.GetOrAdd(type, static type => (VariantReader)Activator.CreateInstance(typeof(VariantReader<>).MakeGenericType(type))!)
+                .Read(ref reader, options);
         }
 
         public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)

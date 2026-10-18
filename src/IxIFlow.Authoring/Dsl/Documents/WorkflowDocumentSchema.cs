@@ -60,29 +60,35 @@ public static class WorkflowDocumentSchema
         {
             var properties = new JsonObject();
             var required = new JsonArray();
-            var kind = DocumentModel.GetKind(type);
             var instance = Activator.CreateInstance(type)!;
-            foreach (var member in DocumentModel.GetMembers(type))
+            foreach (var key in DocumentModel.GetKeys(type))
             {
-                var name = DocumentModel.GetName(member);
+                if (key.IsDiscriminator)
+                {
+                    var kind = DocumentModel.GetKind(type)!;
+                    properties[key.Name] = new JsonObject
+                    {
+                        ["type"] = "string", ["const"] = kind.Kind,
+                        ["description"] = key.Member is { } stored ? Describe(stored) : "The discriminator selecting this document variant."
+                    };
+                    if (kind.ImpliedBy == null) required.Add(key.Name);
+                    continue;
+                }
+                if (key.Member is not { } member)
+                {
+                    properties[key.Name] = new JsonObject
+                    {
+                        ["type"] = "string", ["description"] = "The editor schema this document binds to; readers ignore it."
+                    };
+                    continue;
+                }
                 var schema = ValueSchema(member.PropertyType, nullability.Create(member));
                 schema["description"] = Describe(member);
                 if (member.GetCustomAttribute<DocumentValuesAttribute>() is { } values) schema["enum"] = Strings(values.Values);
                 if (member.GetValue(instance) is { } value && (value is string text && text.Length > 0 || value is int or bool))
                     schema["default"] = JsonSerializer.SerializeToNode(value);
-                if (name == "kind" && kind != null) schema["const"] = kind.Kind;
-                properties[name] = schema;
-                if (member.IsDefined(typeof(DocumentRequiredAttribute))) required.Add(name);
-            }
-            if (kind != null)
-            {
-                if (!properties.ContainsKey("kind"))
-                    properties.Insert(0, "kind", new JsonObject
-                    {
-                        ["type"] = "string", ["const"] = kind.Kind,
-                        ["description"] = "The discriminator selecting this document variant."
-                    });
-                if (kind.ImpliedBy == null) required.Add("kind");
+                properties[key.Name] = schema;
+                if (member.IsDefined(typeof(DocumentRequiredAttribute))) required.Add(key.Name);
             }
             var result = new JsonObject
             {
