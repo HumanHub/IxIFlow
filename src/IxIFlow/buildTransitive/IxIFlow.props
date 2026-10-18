@@ -1,5 +1,6 @@
 <Project>
   <PropertyGroup>
+    <IxIFlowWorkflowSchema>$([MSBuild]::NormalizePath('$(MSBuildThisFileDirectory)../schemas/workflow.schema.json'))</IxIFlowWorkflowSchema>
     <IxIFlowWorkflowPropsImported>true</IxIFlowWorkflowPropsImported>
     <IxIFlowIncludeWorkflowFiles Condition="'$(IxIFlowIncludeWorkflowFiles)' == ''">true</IxIFlowIncludeWorkflowFiles>
   </PropertyGroup>
