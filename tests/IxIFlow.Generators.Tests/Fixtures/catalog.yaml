@@ -1,0 +1,100 @@
+schemaVersion: "1.0"
+workflow:
+  name: Catalog
+  displayName: Catalog workflow
+  description: Exercises reusable authoring features.
+  tags: [catalog, schema]
+  dataType: FlowData
+activities:
+  multiply:
+    activity: test.multiply
+    defaults: {Factor: 3}
+    input:
+      - target: Value
+        from: {kind: function, function: increment}
+    output:
+      - source: Result
+        to: {path: workflow.Result}
+steps:
+  scale:
+    parameters:
+      amount: {type: int, required: true}
+      factor: {type: int, default: 2}
+    steps:
+      - kind: activity
+        name: Scale the supplied value
+        description: Binds typed template arguments.
+        activity: test.multiply
+        input:
+          - target: Value
+            from: {path: amount}
+          - target: Factor
+            from: {path: factor}
+        output:
+          - source: Result
+            to: {kind: path, path: workflow.Result}
+code:
+  increment:
+    language: csharp-expression
+    returns: int
+    source: workflow.Value + 1
+definitions:
+  - kind: activityRef
+    ref: multiply
+    name: Use the activity template
+    description: Applies defaults and mappings from the template.
+  - kind: stepRef
+    ref: scale
+    arguments:
+      amount: {path: workflow.Result}
+  - kind: if
+    condition:
+      kind: binary
+      operator: gt
+      left: {path: workflow.Result}
+      right: {kind: constant, value: 10}
+    then:
+      - kind: activity
+        activity: test.multiply
+        defaults: {Factor: 1}
+        input:
+          - target: Value
+            from: {path: workflow.Result}
+        output:
+          - source: Result
+            to: {path: workflow.Result}
+    else:
+      - kind: activity
+        activity: test.multiply
+        defaults: {Value: 0}
+        output:
+          - source: Result
+            to: {path: workflow.Result}
+  - kind: forEach
+    name: Sequential results
+    description: Collects a result for each item in order.
+    items: {path: workflow.Values}
+    as: number
+    steps:
+      - kind: activity
+        activity: test.multiply
+        input:
+          - target: Value
+            from: {path: number}
+    result: {path: previousStep.Result}
+    into: {path: workflow.Results}
+  - kind: forEach
+    name: Parallel results
+    description: Collects results with bounded concurrency.
+    items: {path: workflow.Values}
+    as: number
+    parallel: {maxConcurrency: 2, join: all}
+    steps:
+      - kind: activity
+        activity: test.multiply
+        defaults: {Factor: 3}
+        input:
+          - target: Value
+            from: {path: number}
+    result: {path: previousStep.Result}
+    into: {kind: path, path: workflow.Results}
