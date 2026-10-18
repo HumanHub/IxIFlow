@@ -16,16 +16,8 @@ internal static class WorkflowValueBinding
         // without a previous step of the declared type, which exists only once the WaitFor is reached.
         var typedPrevious = step.StepMetadata.ContainsKey("IsSagaStep") &&
             step.PreviousStepDataType?.IsInstanceOfType(previous) == true;
-        var contextType = typedPrevious
-            ? typeof(ResumeEventContext<,,>).MakeGenericType(workflowData.GetType(),
-                step.ResumeEventType!, step.PreviousStepDataType!)
-            : typeof(ResumeEventContext<,>).MakeGenericType(workflowData.GetType(), step.ResumeEventType!);
-        var context = Activator.CreateInstance(contextType)!;
-        contextType.GetProperty(nameof(WorkflowContext<object>.WorkflowData))!.SetValue(context, workflowData);
-        contextType.GetProperty(nameof(ResumeEventContext<object, object>.ResumeEvent))!.SetValue(context, @event);
-        if (typedPrevious)
-            contextType.GetProperty(nameof(WorkflowContext<object, object>.PreviousStep))!
-                .SetValue(context, previous);
+        var factory = typedPrevious ? step.Runtime.PreviousEventContext! : step.Runtime.EventContext!;
+        var context = factory(new MappingContextValues(workflowData, previous, Event: @event));
         return step.CompiledCondition((items ?? ItemValues.None).On(context));
     }
 
@@ -33,7 +25,7 @@ internal static class WorkflowValueBinding
         ItemValues? items = null)
         where TEvent : class
     {
-        var context = EvaluationContext(workflowData, null, null, items);
+        var context = (items ?? ItemValues.None).On(step.Runtime.OutputContext(new MappingContextValues(workflowData)));
         foreach (var mapping in step.OutputMappings)
         {
             var property = @event.GetType().GetProperty(mapping.TargetProperty)
@@ -56,7 +48,7 @@ internal static class WorkflowValueBinding
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Step '{step.Id}' has outputs, but its child workflow ended without data");
 
-        var context = EvaluationContext(workflowData, null, null, items);
+        var context = (items ?? ItemValues.None).On(step.Runtime.OutputContext(new MappingContextValues(workflowData)));
         foreach (var mapping in step.OutputMappings)
         {
             var property = output.GetType().GetProperty(mapping.TargetProperty)
@@ -69,16 +61,7 @@ internal static class WorkflowValueBinding
         }
     }
 
-    public static object EvaluationContext(object workflowData, Type? previousType, object? previous,
-        ItemValues? items = null)
-    {
-        var type = previousType == null
-            ? typeof(WorkflowContext<>).MakeGenericType(workflowData.GetType())
-            : typeof(WorkflowContext<,>).MakeGenericType(workflowData.GetType(), previousType);
-        var context = Activator.CreateInstance(type)!;
-        type.GetProperty(nameof(WorkflowContext<object>.WorkflowData))!.SetValue(context, workflowData);
-        if (previousType != null && previous != null)
-            type.GetProperty(nameof(WorkflowContext<object, object>.PreviousStep))!.SetValue(context, previous);
-        return (items ?? ItemValues.None).On(context);
-    }
+    public static object EvaluationContext(WorkflowStep step, object workflowData, object? previous, ItemValues? items = null) =>
+        (items ?? ItemValues.None).On(step.Runtime.Context
+            (new MappingContextValues(workflowData, previous)));
 }

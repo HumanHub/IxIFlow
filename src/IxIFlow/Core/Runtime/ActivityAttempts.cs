@@ -251,8 +251,8 @@ internal sealed class ActivityAttempts(
         var waitFor = scopes.Steps(position.ScopeId).Skip(position.NextStepIndex + 1)
             .First(candidate => candidate.ReplyToRequest == step.RequestName);
         var subject = step.RequestSubject is { } describe
-            ? ReplyToken.Digest(describe(WorkflowValueBinding.EvaluationContext(checkpoint.DataOf(continuation),
-                step.PreviousStepDataType, continuation.GetPrevious(services),
+            ? ReplyToken.Digest(describe(WorkflowValueBinding.EvaluationContext(step, checkpoint.DataOf(continuation),
+                continuation.GetPrevious(services),
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation))))
             : null;
         var wait = new WaitState
@@ -341,8 +341,8 @@ internal sealed class ActivityAttempts(
         ChildStart start;
         try
         {
-            var context = WorkflowValueBinding.EvaluationContext(checkpoint.DataOf(continuation),
-                step.PreviousStepDataType, continuation.GetPrevious(services),
+            var context = WorkflowValueBinding.EvaluationContext(step, checkpoint.DataOf(continuation),
+                continuation.GetPrevious(services),
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
             var data = ChildInputs.NewData(childDefinition, step, context);
             start = host.StartChild(childDefinition, data, instance, pending.Id, Guid.NewGuid().ToString("N"));

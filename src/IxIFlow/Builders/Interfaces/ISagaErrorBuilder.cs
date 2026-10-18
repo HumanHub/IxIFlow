@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using IxIFlow.Core;
 
 namespace IxIFlow.Builders.Interfaces;
@@ -6,6 +7,9 @@ namespace IxIFlow.Builders.Interfaces;
 public interface ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>
     where TPreviousStepData : class
 {
+    /// <summary>Identifies the preceding step and its source.</summary>
+    ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>Undoes every completed step of the saga, newest first (D-36).</summary>
     ISagaContinuationBuilder<TWorkflowData, TPreviousStepData> Compensate();
 

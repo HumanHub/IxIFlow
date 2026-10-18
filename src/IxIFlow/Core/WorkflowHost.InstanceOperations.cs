@@ -116,7 +116,7 @@ public sealed partial class WorkflowHost
             var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     "The registered workflow definition is unavailable");
-            var scopes = new WorkflowScopeCatalog(definition);
+            var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
                 return Rejected(instanceId, "The registered workflow definition differs from the saved version");
@@ -178,7 +178,7 @@ public sealed partial class WorkflowHost
             var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     "The registered workflow definition is unavailable");
-            var scopes = new WorkflowScopeCatalog(definition);
+            var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
@@ -231,7 +231,7 @@ public sealed partial class WorkflowHost
             var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     "The registered workflow definition is unavailable");
-            var scopes = new WorkflowScopeCatalog(definition);
+            var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
@@ -400,6 +400,7 @@ public sealed partial class WorkflowHost
         public static (WorkflowInstance Instance, ExecutionCheckpoint Checkpoint, WorkflowScopeCatalog Scopes)
             NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now)
         {
+            WorkflowDefinitionValidator.Validate(definition);
             WorkflowDefinitionIdentity.AssignImplicitName(definition);
             var instance = new WorkflowInstance
             {
@@ -417,7 +418,7 @@ public sealed partial class WorkflowHost
                 TracingEnabled = options.EnableTracing,
                 Properties = new Dictionary<string, object>(options.Properties)
             };
-            var scopes = new WorkflowScopeCatalog(definition);
+            var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = new ExecutionCheckpoint
             {
                 DefinitionFingerprint = scopes.Fingerprint,
@@ -581,7 +582,7 @@ public sealed partial class WorkflowHost
             var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
             if (definition == null)
                 return Rejected(instanceId, "The registered workflow definition is unavailable");
-            var scopes = new WorkflowScopeCatalog(definition);
+            var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
                 return Rejected(instanceId, "The registered workflow definition differs from the saved version");
             // Ownership comes before the workflow data is read, so an instance whose data or code kills

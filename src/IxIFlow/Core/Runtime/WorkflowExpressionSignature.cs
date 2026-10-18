@@ -14,6 +14,7 @@ internal static class WorkflowExpressionSignature
     public static string Of(LambdaExpression expression, IReadOnlyDictionary<ItemScope, string>? handles = null)
     {
         ArgumentNullException.ThrowIfNull(expression);
+        expression = (LambdaExpression)new ItemReferences(handles).Visit(expression);
         var captures = new CapturedFields(handles);
         captures.Visit(expression.Body);
         return expression + "|" + string.Join(";", captures.Values
@@ -32,6 +33,16 @@ internal static class WorkflowExpressionSignature
         return expression;
     }
 
+    private sealed class ItemReferences(IReadOnlyDictionary<ItemScope, string>? handles) : ExpressionVisitor
+    {
+        protected override Expression VisitMember(MemberExpression node)
+        {
+            if (CapturedFields.TryReadCapturedField(node, out var value) && value is ItemScope item)
+                return Expression.Parameter(node.Type, WorkflowCodeSignature.OfCapturedValue(item, handles));
+            return base.VisitMember(node);
+        }
+    }
+
     private sealed class CapturedFields(IReadOnlyDictionary<ItemScope, string>? handles) : ExpressionVisitor
     {
         public List<string> Values { get; } = [];
@@ -43,7 +54,7 @@ internal static class WorkflowExpressionSignature
             return base.VisitMember(node);
         }
 
-        private static bool TryReadCapturedField(MemberExpression node, out object? value)
+        public static bool TryReadCapturedField(MemberExpression node, out object? value)
         {
             value = null;
             if (node.Member is not FieldInfo field || node.Expression == null ||

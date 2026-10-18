@@ -1,4 +1,3 @@
-using System.Text.Json;
 using IxIFlow.Dsl.Documents;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -6,12 +5,6 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Feature", "documents")]
 public class DslDocumentTests
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = false
-    };
-
     [Fact]
     public void WorkflowDocument_Should_Serialize_And_Deserialize_Polymorphic_Steps()
     {
@@ -55,8 +48,8 @@ public class DslDocumentTests
             ]
         };
 
-        var json = JsonSerializer.Serialize(document, SerializerOptions);
-        var roundTripped = JsonSerializer.Deserialize<WorkflowDocument>(json, SerializerOptions);
+        var json = WorkflowJsonSerializer.Write(document);
+        var roundTripped = WorkflowJsonSerializer.Read(json);
 
         Assert.NotNull(roundTripped);
         Assert.Equal("OrderProcessing", roundTripped.Workflow.Name);
@@ -107,8 +100,8 @@ public class DslDocumentTests
             }
         };
 
-        var json = JsonSerializer.Serialize(document, SerializerOptions);
-        var roundTripped = JsonSerializer.Deserialize<WorkflowDocument>(json, SerializerOptions);
+        var json = WorkflowJsonSerializer.Write(document);
+        var roundTripped = WorkflowJsonSerializer.Read(json);
 
         Assert.NotNull(roundTripped);
         Assert.True(roundTripped.Activities.ContainsKey("SendOrderEmail"));

@@ -1,9 +1,6 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
-
 namespace IxIFlow.Dsl.Documents;
 
-public sealed record WorkflowDocument
+public sealed record WorkflowDocument : DocumentNode
 {
     public string SchemaVersion { get; init; } = "1.0";
     public WorkflowDefinitionDocument Workflow { get; init; } = new();
@@ -14,7 +11,7 @@ public sealed record WorkflowDocument
     public List<WorkflowStepDocument> Definitions { get; init; } = new();
 }
 
-public sealed record WorkflowDefinitionDocument
+public sealed record WorkflowDefinitionDocument : DocumentNode
 {
     public string Name { get; init; } = string.Empty;
     public int Version { get; init; } = 1;
@@ -24,54 +21,45 @@ public sealed record WorkflowDefinitionDocument
     public string[] Tags { get; init; } = [];
 }
 
-public sealed record WorkflowImportsDocument
+public sealed record WorkflowImportsDocument : DocumentNode
 {
     public List<string> Catalogs { get; init; } = [];
     public List<string> Workflows { get; init; } = [];
 }
 
-public sealed record ActivityTemplateDocument
+public sealed record ActivityTemplateDocument : DocumentNode
 {
     public string Activity { get; init; } = string.Empty;
     public string ActivityVersion { get; init; } = string.Empty;
-    public Dictionary<string, JsonElement> Defaults { get; init; } = new();
+    public Dictionary<string, object?> Defaults { get; init; } = new();
     public List<InputMappingDocument> Input { get; init; } = [];
     public List<OutputMappingDocument> Output { get; init; } = [];
 }
 
-public sealed record StepTemplateDocument
+public sealed record StepTemplateDocument : DocumentNode
 {
     public string Kind { get; init; } = string.Empty;
     public Dictionary<string, TemplateParameterDocument> Parameters { get; init; } = new();
     public List<WorkflowStepDocument> Steps { get; init; } = [];
 }
 
-public sealed record TemplateParameterDocument
+public sealed record TemplateParameterDocument : DocumentNode
 {
     public string Type { get; init; } = string.Empty;
     public bool Required { get; init; }
+    public object? Default { get; init; }
 }
 
-public sealed record CodeAssetDocument
+public sealed record CodeAssetDocument : DocumentNode
 {
     public string Language { get; init; } = string.Empty;
     public string? Returns { get; init; }
     public string? EntryPoint { get; init; }
     public string Source { get; init; } = string.Empty;
 }
-
-[JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
-[JsonDerivedType(typeof(ActivityStepDocument), typeDiscriminator: "activity")]
-[JsonDerivedType(typeof(ActivityReferenceStepDocument), typeDiscriminator: "activityRef")]
-[JsonDerivedType(typeof(StepReferenceStepDocument), typeDiscriminator: "stepRef")]
-[JsonDerivedType(typeof(ConditionalStepDocument), typeDiscriminator: "if")]
-[JsonDerivedType(typeof(SequenceStepDocument), typeDiscriminator: "sequence")]
-[JsonDerivedType(typeof(SuspendStepDocument), typeDiscriminator: "suspend")]
-[JsonDerivedType(typeof(InvokeWorkflowStepDocument), typeDiscriminator: "invokeWorkflow")]
-public abstract record WorkflowStepDocument
+public abstract record WorkflowStepDocument : DocumentNode
 {
     public string Id { get; init; } = string.Empty;
-    [JsonIgnore]
     public string Kind { get; init; } = string.Empty;
     public string? Name { get; init; }
     public string? Description { get; init; }
@@ -81,6 +69,7 @@ public sealed record ActivityStepDocument : WorkflowStepDocument
 {
     public string Activity { get; init; } = string.Empty;
     public string ActivityVersion { get; init; } = string.Empty;
+    public Dictionary<string, object?> Defaults { get; init; } = new();
     public List<InputMappingDocument> Input { get; init; } = [];
     public List<OutputMappingDocument> Output { get; init; } = [];
 }
@@ -108,6 +97,24 @@ public sealed record SequenceStepDocument : WorkflowStepDocument
     public List<WorkflowStepDocument> Steps { get; init; } = [];
 }
 
+public sealed record ForEachStepDocument : WorkflowStepDocument
+{
+    public ExpressionDocument Items { get; init; } = new PathExpressionDocument();
+    public string As { get; init; } = "item";
+    public ForEachParallelDocument? Parallel { get; init; }
+    public List<WorkflowStepDocument> Steps { get; init; } = [];
+    public ExpressionDocument? Result { get; init; }
+    public PathExpressionDocument? Into { get; init; }
+}
+
+public sealed record ForEachParallelDocument : DocumentNode
+{
+    public int? MaxConcurrency { get; init; }
+    public string Join { get; init; } = "all";
+    public string? ResultType { get; init; }
+    public ExpressionDocument? Condition { get; init; }
+}
+
 public sealed record SuspendStepDocument : WorkflowStepDocument
 {
     public string Event { get; init; } = string.Empty;
@@ -124,35 +131,30 @@ public sealed record InvokeWorkflowStepDocument : WorkflowStepDocument
     public List<OutputMappingDocument> Output { get; init; } = [];
 }
 
-public sealed record WorkflowReferenceDocument
+public sealed record WorkflowReferenceDocument : DocumentNode
 {
     public string Name { get; init; } = string.Empty;
     public int? Version { get; init; }
 }
 
-public sealed record InputMappingDocument
+public sealed record InputMappingDocument : DocumentNode
 {
     public string Target { get; init; } = string.Empty;
     public ExpressionDocument From { get; init; } = new ConstantExpressionDocument();
 }
 
-public sealed record OutputMappingDocument
+public sealed record OutputMappingDocument : DocumentNode
 {
     public string Source { get; init; } = string.Empty;
     public string SourceContext { get; init; } = "activity";
     public PathExpressionDocument To { get; init; } = new();
 }
-
-[JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
-[JsonDerivedType(typeof(ConstantExpressionDocument), typeDiscriminator: "constant")]
-[JsonDerivedType(typeof(PathExpressionDocument), typeDiscriminator: "path")]
-[JsonDerivedType(typeof(BinaryExpressionDocument), typeDiscriminator: "binary")]
-[JsonDerivedType(typeof(FunctionExpressionDocument), typeDiscriminator: "function")]
-public abstract record ExpressionDocument;
+public abstract record ExpressionDocument : DocumentNode;
 
 public sealed record ConstantExpressionDocument : ExpressionDocument
 {
-    public JsonElement Value { get; init; }
+    /// <summary>A null, string, Boolean, number, list or string-keyed mapping; translation requires a scalar.</summary>
+    public object? Value { get; init; }
 }
 
 public sealed record PathExpressionDocument : ExpressionDocument
