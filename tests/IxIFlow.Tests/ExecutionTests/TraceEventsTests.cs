@@ -100,6 +100,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         var definition = Workflow.Create<Data>("InboxTrace" + sqlite).Step<Noop>().WaitFor<Go>("go")
             .Delay(TimeSpan.FromMinutes(5)).Build();
         var started = await client.RunAsync(definition, new Data());
+        var wait = Assert.Single(await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
         EventAssert.Rejected(await client.ResumeAsync(started.InstanceId, "other", new Go(), "wrong-key"),
             EventRejection.NoOpenWait);
         EventAssert.Rejected(await client.ResumeAsync(started.InstanceId, "go", new Wrong(), "wrong-type"),
@@ -128,7 +129,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         Assert.Equal("go", ((ReceivedEventTrace)taken.Payload!)!.Key);
         Assert.Equal(typeof(Go).AssemblyQualifiedName, ((ReceivedEventTrace)taken.Payload!).EventType);
         Assert.Equal("root/1", ((ReceivedEventTrace)taken.Payload!).StepId);
-        Assert.False(string.IsNullOrEmpty(((ReceivedEventTrace)taken.Payload!).WaitId));
+        Assert.Equal(WaitReference.Of(started.InstanceId, wait.WaitId), ((ReceivedEventTrace)taken.Payload!).WaitRef);
         Assert.All(decisions, entry => Assert.Equal(Start.UtcDateTime, entry.Timestamp));
         Assert.DoesNotContain("secret", JsonSerializer.Serialize(decisions));
         Assert.Equal([4L, 5], (await store.GetTraceAsync(started.InstanceId, 3, 2)).Select(entry => entry.Sequence));
@@ -137,6 +138,95 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         var saved = JsonSerializer.Serialize(await store.GetWorkflowInstanceAsync(started.InstanceId));
         Assert.DoesNotContain("ControlFlow", saved);
         Assert.DoesNotContain("RefusalReason", saved);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Spec", "D-33")]
+    public async Task TraceJsonNeverContainsAnyInstanceWaitId(bool sqlite)
+    {
+        var time = new FakeTimeProvider(Start);
+        await using var relational = sqlite
+            ? new SqliteWorkflowStateRepository(SqliteTestDatabase<TraceEventsTests>.ConnectionString, time) : null;
+        IWorkflowStateRepository store = relational ?? (IWorkflowStateRepository)new InMemoryWorkflowStateRepository(time);
+        using var services = Services(store, time);
+        var client = services.GetRequiredService<IWorkflowClient>();
+        var definition = Workflow.Create<Data>("WaitReferenceTrace" + sqlite).Step<Noop>()
+            .WaitFor<Go>("taken", (reply, ctx) => reply.Index == 1)
+            .Sequence(sequence => sequence.WaitFor<Go>("timeout", configure: wait =>
+                wait.TimeoutAfter(TimeSpan.FromMinutes(1)).OnTimeout(body => body.Step<Noop>())))
+            .Delay(TimeSpan.FromMinutes(1)).Build();
+        var started = await client.RunAsync(definition, new Data());
+        var takenWait = Assert.Single(await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
+
+        // This refusal is decided by the executor, after the store accepts the targeted reply.
+        var refused = await client.ReplyAsync(takenWait.Token, new Go(), "refused");
+        EventAssert.Rejected(refused, EventRejection.NotMatched);
+        var taken = await client.ReplyAsync(takenWait.Token, new Go { Index = 1 }, "taken");
+        EventAssert.Consumed(taken);
+        var timeoutWait = Assert.Single(await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
+        // A closed target is refused by the store, without an executor pass.
+        var closed = await client.ReplyAsync(takenWait.Token, new Go { Index = 1 }, "closed");
+        EventAssert.Rejected(closed, EventRejection.WaitAnswered);
+        var waitingSnapshot = await client.GetSnapshotAsync(started.InstanceId);
+
+        time.Advance(TimeSpan.FromMinutes(2));
+        using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var timedOut = await client.RecoverAsync(started.InstanceId, patience.Token);
+        await client.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Idle, patience.Token);
+        // Delays are not discoverable reply waits; their IDs are only in the internal checkpoint.
+        var delayed = (await store.GetWorkflowInstanceAsync(started.InstanceId))!;
+        Assert.True(delayed.Status == WorkflowStatus.Suspended,
+            $"{delayed.Status}; recovery: {timedOut.Status}: {timedOut.ErrorMessage}");
+        var delayWait = Assert.Single(ExecutionCheckpoint.Read(delayed.ExecutionStateJson).Waits);
+        Assert.Equal(WaitKind.Delay, delayWait.TableKind);
+        var expired = await client.ReplyAsync(timeoutWait.Token, new Go(), "expired");
+        EventAssert.Rejected(expired, EventRejection.WaitTimedOut);
+
+        time.Advance(TimeSpan.FromMinutes(2));
+        var recovered = await client.RecoverAsync(started.InstanceId, patience.Token);
+        var finished = await client.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished, patience.Token);
+        Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+        var trace = await client.GetTraceAsync(started.InstanceId);
+        var takenRef = WaitReference.Of(started.InstanceId, takenWait.WaitId);
+        var timeoutRef = WaitReference.Of(started.InstanceId, timeoutWait.WaitId);
+        Assert.Equal(takenRef, Assert.IsType<ReceivedEventTrace>(Assert.Single(trace,
+            entry => entry.EntryType == TraceEntryType.EventReceived).Payload).WaitRef);
+        var refusals = trace.Where(entry => entry.EntryType == TraceEntryType.EventRefused).ToArray();
+        Assert.Equal(3, refusals.Length);
+        Assert.Equal(["refused", "closed", "expired"],
+            refusals.Select(entry => Assert.IsType<ReceivedEventTrace>(entry.Payload).EventId));
+        Assert.Equal([takenRef, takenRef, timeoutRef],
+            refusals.Select(entry => Assert.IsType<ReceivedEventTrace>(entry.Payload).WaitRef));
+        Assert.Equal([TraceClock.Host, TraceClock.Store, TraceClock.Store], refusals.Select(entry => entry.Clock));
+        Assert.Equal(timeoutRef, Assert.IsType<TimeoutTrace>(Assert.Single(trace,
+            entry => entry.EntryType == TraceEntryType.WaitTimedOut).Payload).WaitRef);
+        Assert.Equal(WaitReference.Of(started.InstanceId, delayWait.Id),
+            Assert.IsType<TimeoutTrace>(Assert.Single(trace,
+                entry => entry.EntryType == TraceEntryType.DelayFired).Payload).WaitRef);
+
+        var stored = await store.GetTraceAsync(started.InstanceId);
+        var commit = CheckpointCommit.Create(new WorkflowInstance { InstanceId = started.InstanceId }, 0, 0,
+            traceEntries: trace);
+        var results = new[] { started, refused, taken, closed, timedOut, expired, recovered, finished };
+        var copies = trace.Concat(stored.Select(entry => entry.Entry)).Concat(commit.ReadTraceEntries())
+            .Concat(results.SelectMany(result => result.TraceEntries)).ToArray();
+        Assert.Equal(trace.Count, stored.Count);
+        var jsonCopies = copies.Select(entry => JsonSerializer.Serialize(entry)).Concat(commit.TraceEntries)
+            .Append(JsonSerializer.Serialize(waitingSnapshot))
+            .Append(JsonSerializer.Serialize(await client.GetSnapshotAsync(started.InstanceId))).ToArray();
+        foreach (var waitId in new[] { takenWait.WaitId, timeoutWait.WaitId, delayWait.Id })
+            Assert.All(jsonCopies, json => Assert.DoesNotContain(waitId, json));
+        Assert.All(copies, entry =>
+        {
+            var json = JsonSerializer.SerializeToElement(entry);
+            Assert.False(json.TryGetProperty("WaitId", out _));
+            if (json.TryGetProperty("Payload", out var payload))
+                Assert.False(payload.TryGetProperty("WaitId", out _));
+            Assert.False(entry.Metadata.ContainsKey("WaitId"));
+            Assert.False(entry.Metadata.ContainsKey("TargetWaitId"));
+        });
     }
 
     [Theory]
@@ -216,6 +306,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
             .Invoke<Data>("TraceChild", 1, step => step.CancelWithParent(cancelWithParent)).Build();
         var started = await client.RunAsync(definition, new Data());
         var child = Assert.Single(await store.GetWorkflowInstancesByNameAsync("TraceChild"));
+        var parentWaitId = child.ParentWaitId!;
         await client.AwaitAsync(child.InstanceId, WorkflowAwaitCondition.Idle).WaitAsync(TimeSpan.FromSeconds(10));
         var requestedAt = time.GetUtcNow().UtcDateTime;
         time.Advance(TimeSpan.FromMinutes(1));
@@ -230,6 +321,8 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         {
             var command = Assert.Single(trace, entry => entry.EntryType == TraceEntryType.ChildCancellationRequested);
             Assert.Equal(child.InstanceId, ((CancellationTrace)command.Payload!).ChildInstanceId);
+            Assert.Equal(WaitReference.Of(started.InstanceId, parentWaitId), ((CancellationTrace)command.Payload!).WaitRef);
+            Assert.DoesNotContain(parentWaitId, JsonSerializer.Serialize(trace));
             Assert.Equal("joe@ops", ((CancellationTrace)command.Payload!).Actor);
             Assert.Equal(requestedAt, ((CancellationTrace)command.Payload!).RequestedAt);
             Assert.Equal(requestedAt.AddMinutes(1), command.Timestamp);

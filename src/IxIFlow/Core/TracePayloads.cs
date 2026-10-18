@@ -34,13 +34,13 @@ public sealed record ItemEndTrace(string StepId, WorkflowStepType StepKind, stri
     int Index, string ScopeId, string? JoinId, ItemEndCause Cause) : TracePayload;
 
 public sealed record TimeoutTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,
-    string WaitId, string? ScopeId, bool Replayed = false) : TracePayload;
+    string WaitRef, string? ScopeId, bool Replayed = false) : TracePayload;
 
 public sealed record RetryTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,
     int Attempt, string? RestartStepId, string? ScopeId, DateTime? RetryAfterUtc) : TracePayload;
 
 /// <summary>An inbox decision, without the event payload.</summary>
-public sealed record ReceivedEventTrace(string EventId, string? Key, string EventType, string? WaitId,
+public sealed record ReceivedEventTrace(string EventId, string? Key, string EventType, string? WaitRef,
     string? StepId, EventRejection? RefusalReason = null) : TracePayload;
 
 /// <summary>An operator decision, without outputs, notes or error contents (D-38).</summary>
@@ -49,7 +49,7 @@ public sealed record ActivityResolutionTrace(string InvocationId, string StepId,
 
 /// <summary>The entry timestamp is when the cancellation was observed or completed.</summary>
 public sealed record CancellationTrace(string? Actor, DateTime RequestedAt, string ReasonCode,
-    string? ChildInstanceId = null, string? WaitId = null) : TracePayload;
+    string? ChildInstanceId = null, string? WaitRef = null) : TracePayload;
 
 public sealed record ReleaseTrace(string? Actor) : TracePayload;
 

@@ -41,7 +41,8 @@ internal sealed partial class TraceBuffer
         var now = _time.GetUtcNow().UtcDateTime;
         if (Accepts(kind, now))
             Add(new ExecutionTraceEntry { Timestamp = now, EntryType = kind,
-                Payload = new TimeoutTrace(_scopes!.Id(step), step.StepType, continuation.Id, waitId, scopeId, replayed) });
+                Payload = new TimeoutTrace(_scopes!.Id(step), step.StepType, continuation.Id,
+                    WaitReference.Of(_instanceId, waitId), scopeId, replayed) });
     }
 
     public void Retry(TraceEntryType kind, WorkflowStep step, ContinuationState continuation, int attempt,
