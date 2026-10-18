@@ -32,7 +32,7 @@ A removed application publisher can leave a durable subscription behind. Explici
 
 ## Atomic removal
 
-Cleanup removes instance state, checkpoint parts, commit receipts, trace history, inbox, waits and settled outbox events/deliveries together with creation of the tombstone. Compact released lease epoch fences remain so that old owners cannot become valid after an ID is reused. Publisher registrations remain until explicitly retired.
+Cleanup removes instance state, checkpoint parts, commit receipts, trace history, inbox, waits and settled outbox events/deliveries together with creation of the tombstone. Explicit deletion preserves pending outbox deliveries and their immutable events; automatic retention skips such instances. Compact released lease epoch fences remain so that old owners cannot become valid after an ID is reused. Publisher registrations remain until explicitly retired.
 
 `IWorkflowStateRepository.PurgeAsync` exposes a bounded pass and returns removed counts plus never-attempted publisher diagnostics. The hosted retention service uses this same operation. Every provider implements it.
 

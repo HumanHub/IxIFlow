@@ -44,11 +44,11 @@ Without a recovery contract, an uncertain start stops for resolution. `GetPendin
 
 Events enter a durable per-instance inbox before acknowledgement. The executing owner settles them in arrival order, atomically with the progress that consumes or rejects them. Caller-supplied event IDs support deduplication: the same ID/content returns its original outcome; different content conflicts.
 
-`ResumeAsync` addresses an instance's open wait by key or unambiguous event type. `PublishAsync(key, event, eventId)` fans out to instances with that open key. A keyed event can answer only a wait already open when it arrived; it cannot be saved for a future loop iteration. Predicates can reject an event while leaving the wait open. Examine `result.Event` for the decision or refusal.
+`ResumeAsync` addresses an instance's open event wait by key or unambiguous event type. `PublishAsync(key, event, eventId)` fans out to instances with that open key. A keyed event can answer only a wait already open when it arrived; it cannot be saved for a future loop iteration. Request replies require `ReplyAsync`. A false or throwing predicate rejects the event as `NotMatched` and keeps the wait open. Examine `result.Event` for `Pending`, `Consumed`, `Rejected` or `Closed`, independently of the instance status.
 
-`Request<TActivity>(name)` opens an activation-specific reply slot before running an `IRequestActivity<TReply>`. The activity sends `context.Reply.Token` to its recipient. A later `WaitFor<TReply>(name)` consumes the answer, including one received while intervening activities ran. A request pairs with exactly one wait in the same body. Optional subjects bind the reply address to what was requested.
+`Request<TActivity>(name)` opens an activation-specific reply slot before running an `IRequestActivity<TReply>`. The activity sends `context.Reply.Token` to its recipient. A later `WaitFor<TReply>(name)` consumes the answer, including one received while intervening activities ran. A request pairs with exactly one later wait of the same name and reply type in the same body; duplicate request names in that body fail build validation. Optional subjects bind the reply address to what was requested.
 
-`ReplyAsync(token, reply)` addresses that one activation. A reply to a closed token reports answered, timed out, cancelled, replaced or finished as appropriate; it never answers a later request with the same name.
+`ReplyAsync(token, reply)` addresses that one activation. A closed token reports `WaitAnswered`, `WaitTimedOut`, `WaitCancelled`, `WaitReplaced` or `InstanceFinished`; an unknown address reports `UnknownWait`. It never answers a later request with the same name. Untargeted events for terminal instances return `Closed` / `InstanceFinished`; addressed events retain the closed wait's specific refusal. Client writes to an active tombstone throw `InstanceRemoved`; an unknown instance throws `InvalidRequest`.
 
 For a human task without a request, configure a discoverable wait. This method compiles in [DocumentationExamples.cs](../samples/IxIFlow.Samples/DocumentationExamples.cs), using `IxIFlow.Builders`, `IxIFlow.Core` and the sample data types:
 
@@ -62,7 +62,7 @@ public static WorkflowDefinition DiscoverableReview() =>
         .Build();
 ```
 
-`GetOpenWaitsAsync` returns request-free tasks with owner instance, activation ID, event type/schema, deadline, token and optional `DefaultPayloadJson`. The default is a UI suggestion; it never answers automatically. A child task belongs to the child instance. Only trusted callers should receive this listing: the token grants the ability to answer.
+`GetOpenWaitsAsync` returns request-free event waits with owner instance, `WaitId`, key, event type and optional schema, opening time, deadline, token and optional `DefaultPayloadJson`. `WaitQuery` filters by instance, key or event type and pages in wait-ID order with `AfterWaitId` and `Limit` (100 by default). Request replies, child-completion waits, delays and execution deadlines are excluded. The default is a UI suggestion; it never answers automatically. A child task belongs to the child instance. Only trusted callers should receive this listing: the token grants the ability to answer.
 
 Inside a method with `client`, `instanceId` and `customer` parameters:
 
@@ -77,25 +77,27 @@ Both examples execute in [DocumentationTests.cs](../tests/IxIFlow.Samples.Tests/
 
 ## Deadlines and cancellation
 
-`Delay` persists a timer. Wait setup supports `TimeoutAfter` and `OnTimeout`; without a timeout handler, the timeout follows failure handling. Wait deadlines are stamped by the opening commit; request reply slots are armed when their paired wait is reached. Event arrival and deadlines use the same store clock, so an admissible answer received before the deadline can win even if processed later. Delays and execution deadlines cannot be answered by events.
+`Delay` persists a positive-duration timer and preserves the previous-step value. A timed wait requires both a positive `TimeoutAfter` and a nonempty `OnTimeout` branch; public validation and start reject either one alone. After the timeout branch runs, execution leaves the body containing the wait, skipping its remaining steps. Wait deadlines are stamped by the opening commit; request reply slots are armed when their paired wait is reached. Event arrival must be strictly before the wait deadline on the store clock; an admissible answer can win even if processed later. A newly observed cancellation or a due execution deadline takes precedence over inbox processing. Delays and execution deadlines cannot be answered by events.
 
-A caller's cancellation token stops the current call/run and leaves durable state recoverable. `CancelAsync` records durable cancellation, cancels open scopes and unwinds compensation and `Finally`. An uncertain activity may still need resolution during cleanup. Cancellation and timer handling also apply inside nested handlers and compensation.
+A caller's cancellation token stops the current call/run and leaves durable state recoverable. `CancelAsync` records durable cancellation, cancels open scopes and unwinds compensation and `Finally`. The first cancellation request wins. A running instance can return `Running` before cleanup finishes; use `AwaitAsync(id, WorkflowAwaitCondition.Finished)` to wait for its terminal result. An uncertain activity may still need resolution during cleanup. Cancellation and timer handling also apply inside nested handlers and compensation.
 
 ## Child workflows
 
 Both typed and name/version `Invoke` forms create an independent persisted child with a stable child instance ID and mapped inputs. The parent commits its wait and child start together. Child completion reaches the parent's durable inbox; the runner applies output mappings on the parent's thread.
 
-The default `CancelWithParent` behavior cancels the child and waits for it to settle when the invoking branch is cancelled. Detached children can continue. Child business failures follow the parent's error handling; infrastructure failures leave work recoverable. Missing child data cannot silently skip declared outputs.
+The default `CancelWithParent` behavior cancels the child and waits for it to settle when the invoking branch is cancelled. A child awaiting resolution can hold a cancelling parent. `CancelWithParent(false)` lets an already started child continue when the invoking branch unwinds; the parent normally still waits for its result. An uncommitted child start is discarded on cancellation. Child business failures follow the parent's error handling; infrastructure failures leave work recoverable. Cancellation, timeout or termination raises `ChildWorkflowEndedException` at the invocation. Deleting a child, or cancelling a missing child, atomically sends a terminated-child notice to a waiting parent. Missing child data cannot silently skip declared outputs.
 
-Definitions are resolved from the host's registry and checked for compatibility. See [Review.cs](../samples/IxIFlow.Samples/Review.cs) for a pinned child. Child placement demands are planned.
+Named invocations resolve a pinned definition from the host's registry. Typed invocations can build an installed `IWorkflow<T>` class and register its definition; an existing name/version must have the same fingerprint. Deactivated definitions refuse new child starts. See [Review.cs](../samples/IxIFlow.Samples/Review.cs) for a pinned child. Child placement demands are planned.
 
 ## Parallel data and joins
 
-Each branch starts from an isolated serialization copy of data at the fork. Branch writes cannot race through shared workflow-data references. Changes are tracked against that baseline and saved with their continuation; nested joins first merge into their enclosing branch.
+Each branch starts from isolated serialization copies of workflow data and the preceding step value at the fork. Branch writes cannot race through shared workflow-data references. Changes are tracked against that baseline and saved with their continuation; nested joins first merge into their enclosing branch.
 
-At a successful join, independent property changes merge. Multiple branches changing the same property, or a property and one nested inside it, conflict without a combiner. Lists and other atomic serialized values count as one value. The merged representation is validated before applying it; a conflict raises `JoinConflictException` and leaves parent data unchanged.
+At a successful join, independent property changes merge. Multiple branches changing the same property, even to identical values, or a property and one nested inside it, conflict without a combiner. Mutable dictionary classes merge per key; ordinary class objects merge per property. Lists, structs, polymorphic or extension-data objects, objects with constructor-bound getter-only state and custom-converted values merge as whole values. The merged representation is validated before applying it; a conflict raises `JoinConflictException` with a `Path` and leaves parent data unchanged. Branch-data setters must allow rollback of an assignment.
 
-Use `Combine<TProperty,TCombiner>` on a join or `[Combine<TCombiner>]` on data properties. A pure `ICombiner<T>` receives the baseline and changed branch values in declaration order. Join overrides take precedence.
+Use `Combine<TProperty,TCombiner>` on a join or `[Combine<TCombiner>]` on data properties. A pure `ICombiner<T>` receives the baseline and changed branch values in declaration order. Join overrides take precedence on the same property. The outermost combiner on a path merges that whole value; an override inside an attribute-combined property is refused. Combiners need a public parameterless constructor and exactly one `ICombiner<T>` matching a settable serialized property.
+
+Build validation rejects statically overlapping output mappings under all/conditional joins without a combiner, including writes made by a parallel ForEach body. `WaitAny` is exempt from overlap checks because it merges one winner; nested joins are still checked. Unnamed output targets and writes the serializer cannot preserve are also restricted. Direct activity mutations and dictionary-key collisions are checked at runtime. An enclosing catch can handle a join conflict.
 
 | Built-in combiner | Behavior |
 | --- | --- |
@@ -106,24 +108,24 @@ Use `Combine<TProperty,TCombiner>` on a join or `[Combine<TCombiner>]` on data p
 | `Union<TKey,TValue>` | Merge dictionary keys; conflicting changes to a key fail |
 | `Union<T>` | Combine set additions/removals |
 
-All joins wait for all branches by default. `WaitAny` uses the first completion and excludes losing branch outputs. A conditional join tests provisional merged data after completions and also ends when all branches finish. Losing branches unwind cleanup before continuation. Failed/unwound outer joins do not publish losing branch changes.
+All parallel blocks wait for all branches by default. `WaitAny` uses the first completion and excludes losing branch outputs. A conditional join tests the merge of completed branches after each completion and also ends when all branches finish, even if its predicate stayed false. A provisional merge conflict or unhandled branch failure cancels the remaining branches and fails the construct. Losing branches unwind cleanup before continuation. Failed/unwound outer joins do not publish losing branch changes.
 
 [ParallelQuotes.cs](../samples/IxIFlow.Samples/ParallelQuotes.cs) and its YAML twins demonstrate all modes and sum merging.
 
 ## ForEach
 
-`ForEach` snapshots a finite input list on entry, preserving its order through recovery. Sequential bodies share the evolving enclosing data. Parallel bodies start isolated copies, use the same merge rules, and can cap active items. A suspended item still occupies its item concurrency position.
+`ForEach` snapshots a finite input list on entry, preserving its order through recovery. Sequential bodies share the evolving enclosing data. Parallel bodies start isolated copies and use the same merge rules. `maxConcurrency` must be positive; omitting it starts all items, subject to `MaxActiveBranches`. Queued items start in input order. Suspended and nested-joining items still occupy their item concurrency positions. Empty lists finish immediately. Conditional joins receive only completed `ItemResult<T>` values in input order.
 
-The typed item handle supplies a read-only item copy and index; nested bodies can read outer handles. Result-producing paths end in `Result`, and `Into` receives one `ItemResult<T>` per input position with `Completed`, `Cancelled` or `NotStarted` status. Partial results are not installed when the construct fails. See [Batch.cs](../samples/IxIFlow.Samples/Batch.cs) and [list recipes](../samples/IxIFlow.Recipes/Lists.cs).
+The typed item handle supplies a separate item copy per evaluation context and a zero-based index; changes to that copy are not saved. Output mappings through a handle are rejected, and handles cannot be read outside their body. Nested bodies can read outer handles. Result-producing bodies and timeout paths that leave them must end in `Result` of the stored type. Body mappings cannot overwrite the `Into` destination. `Into` receives one `ItemResult<T>` per input position with `Completed`, `Cancelled` or `NotStarted` status. Partial results are not installed when the construct fails. See [Batch.cs](../samples/IxIFlow.Samples/Batch.cs) and [list recipes](../samples/IxIFlow.Recipes/Lists.cs).
 
 ## Resource stops
 
 | Option | Default | Effect |
 | --- | --- | --- |
 | `MaxCheckpointBytes` | 4 MiB | Stop before saving oversized workflow/execution state |
-| `MaxActiveBranches` | 1,000 | Stop before an excessive fork; includes root and waiting parents |
+| `MaxActiveBranches` | 1,000 | Limit live branches; excludes root, joining parents, completed and cancelling branches |
 | `MaxForEachItems` | 1,000 | Stop before executing an oversized list |
 | `MaxActivitiesPerRun` | 100 | Throttle in-flight activities within a run |
 | `MaxCrashes` | 3 | Quarantine after consecutive owner losses without progress |
 
-Limit stops preserve the last checkpoint at `NeedsResolution`. Raise the relevant limit and call `ReleaseAsync`, or cancel. Oversized starts, event submissions or resolutions can be refused with `ResourceExhausted`. `RecoverAsync` does not release operator stops. Trace limits bound diagnostics separately; see [observability](observability.md).
+Limit stops preserve the last checkpoint at `NeedsResolution`. Raise the relevant limit and call `ReleaseAsync`, or cancel. Oversized start and resolution checkpoints are refused with `WorkflowErrorKind.ResourceExhausted`. Inbox payloads have no separate byte limit; consuming an event that makes a checkpoint too large can stop the instance. `RecoverAsync` does not release operator stops. Trace limits bound diagnostics separately; see [observability](observability.md).

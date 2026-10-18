@@ -9,7 +9,7 @@ A terminal checkpoint writes an immutable completion event in the same transacti
 
 `OutboxEvent.WorkflowCompleted` is `io.ixiflow.workflow.completed`. Its envelope includes event ID/type, instance ID, workflow name/version, correlation ID, store-stamped occurrence time and `DataJson`.
 
-The completion summary contains instance/workflow identity, correlation, terminal status, revision and a bounded error kind. It excludes workflow data, checkpoint internals and exception text. Retrieve a retained result through the client when application data is needed.
+The completion summary contains instance/workflow identity, correlation, terminal status, revision and a bounded error kind. Its `status` uses store values (`Completed`, `Failed`, `Cancelled`, `Terminated`, `TimedOut`), rather than client result names such as `Success` or `Faulted`; `errorKind` is respectively null, `WorkflowFailure`, `Cancelled`, `Terminated` or `TimedOut`. It excludes workflow data, checkpoint internals and exception text. Retrieve a retained result through the client when application data is needed.
 
 The event ID and body stay stable across retries. Delivery is at least once: a publish can succeed before settlement is saved. Consumers must deduplicate by event ID. Each publisher can independently deliver, retry or give up.
 
@@ -55,13 +55,13 @@ Names are unique per host and identify durable subscriptions across restarts/hos
 
 Removing a publisher from DI does not retire its durable subscription. Use `UnregisterOutboxPublisher(name)` at startup, or the store's `IWorkflowOutbox.UnregisterPublisherAsync`, to remove it and give up pending deliveries. An absent worker can otherwise leave pending deliveries that block retention.
 
-Workers claim deliveries with renewable leases. Attempt counts include claims lost with their host. Default outbox concurrency is eight, independent of workflow slots; default lease duration is 30 seconds. A 30-day retry horizon runs from the first claim. A delivery no worker ever claims is given up once the horizon has passed since the event occurred, so a publisher missing from every host cannot keep instances from retention forever.
+Workers claim deliveries with renewable leases. Attempt counts include claims lost with their host. Default outbox concurrency is eight, independent of workflow slots; default lease duration is 30 seconds. A 30-day retry horizon runs from the first claim. Retention maintenance gives up never-claimed deliveries whose event age reaches that horizon, up to the retention batch size per pass, including publishers missing from every host. A previously claimed delivery requires a worker to enforce its first-claim horizon; removing that worker can leave it pending until the publisher returns or is unregistered.
 
 There is no in-process publisher: the host that commits an instance's end completes the awaits on that host itself, without a delivery record. Awaits on other hosts poll the store. The store also exposes publisher/delivery inspection. There is no management HTTP API yet.
 
 ## Outgoing webhooks
 
-Install `IxIFlow.Webhooks` and import `IxIFlow.Webhooks`. Call `AddWebhook` on the engine builder with a `WebhookEndpoint` containing a stable endpoint name, absolute HTTP(S) URL, secret and event types such as `OutboxEvent.WorkflowCompleted`. This adds a named `IHttpClientFactory` client and an outbox publisher named `webhook:<endpoint-name>`.
+Install `IxIFlow.Webhooks` and import `IxIFlow.Webhooks`. Call `AddWebhook` on the engine builder with a `WebhookEndpoint` containing a stable endpoint name (at most 92 characters), absolute HTTP(S) URL without embedded credentials, secret and at least one event type such as `OutboxEvent.WorkflowCompleted`. This adds a named `IHttpClientFactory` client and an outbox publisher named `webhook:<endpoint-name>`.
 
 Configure endpoints in trusted application configuration. A signing secret is `whsec_` followed by base64 for 24–64 random bytes. Endpoint string representations redact it. For replay or retirement, use the full publisher name, for example `webhook:orders`.
 

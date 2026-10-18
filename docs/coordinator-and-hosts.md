@@ -43,11 +43,13 @@ A host schedules its own saved runnable times locally. The recovery service poll
 
 An execution lease has an increasing epoch, with a 30-second duration and renewal every 10 seconds in the current implementation. Commits require that epoch and the expected revision. Losing ownership stops the run; an expired owner's writes cannot overwrite a new owner's progress.
 
-A lease lost during running work contributes to crash accounting. After three consecutive losses without saved progress by default, the instance is quarantined at `NeedsResolution`. Investigate and use `ReleaseAsync` to reset the count and continue, or `CancelAsync`. `RecoverAsync` leaves operator stops in place.
+A lease lost during running work contributes to crash accounting. After three consecutive losses without saved progress by default, the instance is quarantined at `NeedsResolution`. The quarantine commit resets the crash count; activity-start commits alone do not count as progress. Investigate and use `ReleaseAsync` to clear the operator stop and continue, or `CancelAsync`. `RecoverAsync` leaves operator stops in place.
+
+`RecoverAsync` repeats a terminal result, returns `NeedsResolution` for an operator stop (without loading workflow data), and can return `Scheduled` when a retry parks or `Running` when another owner holds the lease. Unknown/nonrecoverable work or unavailable/incompatible definitions return `Faulted` with a reason. `ReleaseAsync` requires an operator-stop marker; otherwise it returns `Faulted`. It does not supply an uncertain activity's outputs: use `ResolveAsync` or let its recovery contract establish them. Release waits through a parked retry until idle.
 
 ## Shutdown
 
-The host stops admitting new steps, lets running activities reach commits, and drains for `DrainTimeout` (20 seconds by default). Keep that timeout below the application's shutdown budget. Remaining work is cancelled; activities that ignore cancellation can outlive the drain and depend on lease expiry for recovery. Gracefully released leases do not count as crashes.
+The host stops admitting new steps, lets running activities reach commits, and drains for `DrainTimeout` (20 seconds by default). After that budget, it cancels the run tokens and waits up to ten more seconds for runs to stop. The executor allows five seconds for activity cancellation before abandoning unfinished attempts and releasing ownership. Allow for this in the application's shutdown budget. Activities that ignore cancellation can outlive the run; recovery treats their saved starts as uncertain. Gracefully released leases do not count as crashes.
 
 Outbox workers stop claiming new deliveries and drain those already in flight. Interrupted deliveries can be claimed again after their lease expires.
 

@@ -54,15 +54,15 @@ Once any property uses a marker, only marked properties belong to the contract. 
 | `[Display(Name = ..., Description = ...)]` | Labels and help for inputs and outputs; absent labels fall back to property names. |
 | `[UIHint(...)]` | Input-control hint; the catalog accepts `text`, `code`, `binding` and `connection`, defaulting to `text`. |
 
-Attribute defaults are applied before saving the input snapshot. A retry receives the saved values even if a prior attempt mutated its inputs. A property initializer alone does not satisfy a required mapping/default contract.
+Attribute defaults are applied before saving the input snapshot. A retry receives the saved values even if a prior attempt mutated its inputs. A property initializer alone does not satisfy a required mapping/default contract. `[Required]` checks null and empty strings; whitespace and empty collections pass this engine check, regardless of `AllowEmptyStrings`. Public getter-only activity state needs a setter (which may be private) for checkpoint restoration, or exclusion with `[JsonIgnore]`.
 
 The bundled analyzers check mapping direction, required mappings, accessors and convertible defaults when the activity type is used. Full validation also runs through fluent `Build()` and `WorkflowDefinitionValidator.Validate`; custom conversion code is checked at build time rather than executed by an analyzer.
 
 ## Register installed activities
 
-`[WorkflowActivity]` supplies the key plus optional `Version`, `Name`, `Category`, `Icon` and `DesignerId`. In `IxIFlow.Authoring`, `ActivityPackageRegistry.AddAssembly(assembly, packageName, packageVersion)` scans exported attributed types. `RegisterActivities(services)` registers resolved implementations with DI.
+`[WorkflowActivity]` supplies the key plus optional `Version`, `Name`, `Category`, `Icon` and `Designer`. In `IxIFlow.Authoring`, `ActivityPackageRegistry.AddAssembly(assembly, packageName, packageVersion)` scans exported attributed types. `RegisterActivities(services)` registers resolved implementations with DI.
 
-[Contracts.Catalog](../samples/IxIFlow.Samples/Contracts.cs) compiles installed-assembly catalog registration. Its manifest's `Fields` describe inputs and typed defaults; `Outputs` describe output labels/help. In-out properties appear on both sides. `AddPackage(manifestYaml, assembly)` and `AddEmbeddedPackage` accept installed package manifests too. This registry does not fetch or isolate assemblies; the application installs dependencies.
+[Contracts.Catalog](../samples/IxIFlow.Samples/Contracts.cs) compiles installed-assembly catalog registration. Its manifest's `Fields` describe input controls, labels, help and required flags; `Defaults` holds declared attribute values, and `Outputs` describes output labels/help. In-out properties appear on both sides. `AddPackage(manifestYaml, assembly)` and `AddEmbeddedPackage` accept installed package manifests too. This registry does not fetch or isolate assemblies; the application installs dependencies.
 
 Parameterless activities can be constructed automatically. Register activities with constructor dependencies in DI. [Demo activities](../samples/IxIFlow.DemoActivities) include a database activity that consumes a host-provided connection factory and a connection reference instead of embedding credentials.
 
