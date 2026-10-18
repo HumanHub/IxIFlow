@@ -30,6 +30,10 @@ internal static class MappingRules
         {
             try
             {
+                if (step.DefaultPayload is { } payload &&
+                    (step.ResumeEventType == null || !step.ResumeEventType.IsInstanceOfType(payload)))
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"Wait default payload has type {payload.GetType().Name}, expected {step.ResumeEventType?.Name ?? "an event type"}");
                 if (step.ActivityType != null)
                     CheckActivity(step.ActivityType, step.InputMappings, step.OutputMappings);
                 if (step.StepType == WorkflowStepType.WorkflowInvocation && step.InvokedDataType != null)

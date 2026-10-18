@@ -207,7 +207,8 @@ public enum WaitCloseReason
 /// when it has a <paramref name="Timeout"/>, with a deadline: the store's time at that commit plus the
 /// timeout (D-35).
 /// </summary>
-public sealed record OpenedWait(string WaitId, WaitKind Kind, string Key, string EventType, TimeSpan? Timeout);
+public sealed record OpenedWait(string WaitId, WaitKind Kind, string Key, string EventType, TimeSpan? Timeout,
+    string? DefaultPayloadJson = null);
 
 /// <summary>
 /// An open wait a commit gives its deadline: a request's reply wait, when its <c>WaitFor</c> is reached.
@@ -274,7 +275,8 @@ public sealed record StoredWait(
     long OpenedSequence,
     DateTime OpenedAtUtc,
     WaitCloseReason? CloseReason = null,
-    DateTime? ClosedAtUtc = null)
+    DateTime? ClosedAtUtc = null,
+    string? DefaultPayloadJson = null)
 {
     public bool IsOpen => CloseReason == null;
 

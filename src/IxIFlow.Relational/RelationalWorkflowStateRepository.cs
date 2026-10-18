@@ -841,7 +841,7 @@ public abstract class RelationalWorkflowStateRepository :
     internal const string WaitColumns =
         "instance_id AS InstanceId, wait_id AS WaitId, kind AS Kind, wait_key AS WaitKey, event_type AS EventType, " +
         "deadline_utc AS DeadlineUtc, opened_sequence AS OpenedSequence, opened_at_utc AS OpenedAtUtc, " +
-        "close_reason AS CloseReason, closed_at_utc AS ClosedAtUtc";
+        "close_reason AS CloseReason, closed_at_utc AS ClosedAtUtc, default_payload_json AS DefaultPayloadJson";
     internal const string RowColumns =
         "instance_id AS InstanceId, state_json AS StateJson, runnable_at_utc AS RunnableAtUtc, revision AS Revision";
 
@@ -1034,6 +1034,7 @@ public abstract class RelationalWorkflowStateRepository :
         public short Kind { get; set; }
         public string WaitKey { get; set; } = "";
         public string EventType { get; set; } = "";
+        public string? DefaultPayloadJson { get; set; }
         public DateTime? DeadlineUtc { get; set; }
         public long OpenedSequence { get; set; }
         public DateTime OpenedAtUtc { get; set; }
@@ -1042,7 +1043,7 @@ public abstract class RelationalWorkflowStateRepository :
 
         public StoredWait Read(Func<DateTime, DateTime> readTime) => new(InstanceId, WaitId, (WaitKind)Kind, WaitKey, EventType,
             DeadlineUtc is { } deadline ? readTime(deadline) : null, OpenedSequence, readTime(OpenedAtUtc),
-            (WaitCloseReason?)CloseReason, ClosedAtUtc is { } closed ? readTime(closed) : null);
+            (WaitCloseReason?)CloseReason, ClosedAtUtc is { } closed ? readTime(closed) : null, DefaultPayloadJson);
     }
 
     private sealed class RunnableRow

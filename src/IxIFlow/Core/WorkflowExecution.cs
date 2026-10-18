@@ -943,6 +943,9 @@ public class WorkflowStep
     /// </summary>
     public Type? ResumeEventType { get; set; }
 
+    /// <summary>A suggested event payload for discovery UIs only; excluded from the fingerprint.</summary>
+    public object? DefaultPayload { get; set; }
+
     /// <summary>For a request step, the name its <c>WaitFor</c> uses (D-33).</summary>
     public string? RequestName { get; set; }
 
@@ -1049,6 +1052,7 @@ public class WorkflowStep
             ExceptionType = ExceptionType,
             FaultType = FaultType,
             ResumeEventType = ResumeEventType,
+            DefaultPayload = DefaultPayload,
             RequestName = RequestName,
             ReplyType = ReplyType,
             RequestSubject = RequestSubject,

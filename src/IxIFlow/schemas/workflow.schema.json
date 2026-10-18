@@ -1316,6 +1316,9 @@
           "$ref": "#/definitions/expression",
           "description": "The optional expression deciding whether an event is accepted."
         },
+        "defaultPayload": {
+          "description": "A suggested event payload for discovery UIs, never applied automatically."
+        },
         "input": {
           "type": "array",
           "items": {
@@ -2040,6 +2043,9 @@
         "resumeCondition": {
           "$ref": "#/definitions/expression",
           "description": "The optional expression deciding whether an event is accepted."
+        },
+        "defaultPayload": {
+          "description": "A suggested event payload for discovery UIs, never applied automatically."
         },
         "input": {
           "type": "array",

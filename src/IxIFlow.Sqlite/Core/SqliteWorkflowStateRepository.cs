@@ -111,8 +111,8 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_waits
-                    (instance_id, wait_id, kind, wait_key, event_type, deadline_utc, opened_sequence, opened_at_utc)
-                VALUES (@InstanceId, @WaitId, @Kind, @Key, @EventType, @Deadline, @Sequence, @Now)
+                    (instance_id, wait_id, kind, wait_key, event_type, deadline_utc, opened_sequence, opened_at_utc, default_payload_json)
+                VALUES (@InstanceId, @WaitId, @Kind, @Key, @EventType, @Deadline, @Sequence, @Now, @DefaultPayloadJson)
                 ON CONFLICT (instance_id, wait_id) DO NOTHING
                 """, waits.Select(wait => new
         {
@@ -121,6 +121,7 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
             Kind = (short)wait.Kind,
             wait.Key,
             wait.EventType,
+            wait.DefaultPayloadJson,
             Deadline = Timestamp(now + wait.Timeout),
             Sequence = inboxSequence,
             Now = Timestamp(now)
@@ -557,6 +558,7 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
             kind INTEGER NOT NULL,
             wait_key TEXT COLLATE BINARY NOT NULL,
             event_type TEXT COLLATE BINARY NOT NULL,
+            default_payload_json TEXT NULL,
             deadline_utc TEXT NULL,
             opened_sequence INTEGER NOT NULL,
             opened_at_utc TEXT NOT NULL,
@@ -584,6 +586,11 @@ public sealed class SqliteWorkflowStateRepository : RelationalWorkflowStateRepos
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_leases_expires_at
             ON ixiflow_workflow_leases (expires_at_utc);
         """, transaction: transaction);
+    if (await connection.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM pragma_table_info('ixiflow_workflow_waits') WHERE name = 'default_payload_json'",
+            transaction: transaction) == 0)
+        await connection.ExecuteAsync("ALTER TABLE ixiflow_workflow_waits ADD COLUMN default_payload_json TEXT NULL",
+            transaction: transaction);
     await transaction.CommitAsync();
     }
 

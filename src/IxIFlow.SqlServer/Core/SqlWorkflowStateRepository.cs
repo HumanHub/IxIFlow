@@ -40,7 +40,7 @@ public sealed class SqlWorkflowStateRepository : RelationalWorkflowStateReposito
 
     private const string ServerWaitColumns =
         "InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, CloseReason, " +
-        "ClosedAtUtc";
+        "ClosedAtUtc, DefaultPayloadJson";
     private const string ServerRowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation";
 
     private const string ServerUnpublishedCompletion =
@@ -106,7 +106,8 @@ public sealed class SqlWorkflowStateRepository : RelationalWorkflowStateReposito
         };
     }
 
-    private const int StatementBatch = 400;
+    // Six parameters per opened wait, plus shared values, stay below SQL Server's 2,100 limit.
+    private const int StatementBatch = 300;
 
     internal override async Task InsertWaitsAsync(DbConnection connection, DbTransaction transaction,
         string instanceId, IReadOnlyList<OpenedWait> waits, long inboxSequence, DateTime now)
@@ -116,19 +117,20 @@ public sealed class SqlWorkflowStateRepository : RelationalWorkflowStateReposito
         for (var index = 0; index < waits.Count; index++)
         {
             var wait = waits[index];
-            rows.Add($"(@OW{index}, @OK{index}, @OY{index}, @OT{index}, @OD{index})");
+            rows.Add($"(@OW{index}, @OK{index}, @OY{index}, @OT{index}, @OD{index}, @OP{index})");
             parameters.Add($"OW{index}", wait.WaitId);
             parameters.Add($"OK{index}", (byte)wait.Kind);
             parameters.Add($"OY{index}", wait.Key);
             parameters.Add($"OT{index}", wait.EventType);
+            parameters.Add($"OP{index}", wait.DefaultPayloadJson, DbType.String, size: -1);
             parameters.Add($"OD{index}", now + wait.Timeout, DbType.DateTime2);
         }
         await connection.ExecuteAsync($"""
                 INSERT INTO dbo.IxIFlowWorkflowWaits
-                    (InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc)
+                    (InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, DefaultPayloadJson)
                 SELECT @InstanceId, opened.WaitId, opened.Kind, opened.WaitKey, opened.EventType, opened.DeadlineUtc,
-                    @Sequence, @Now
-                FROM (VALUES {string.Join(", ", rows)}) AS opened (WaitId, Kind, WaitKey, EventType, DeadlineUtc)
+                    @Sequence, @Now, opened.DefaultPayloadJson
+                FROM (VALUES {string.Join(", ", rows)}) AS opened (WaitId, Kind, WaitKey, EventType, DeadlineUtc, DefaultPayloadJson)
                 WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowWaits AS stored
                     WHERE stored.InstanceId = @InstanceId AND stored.WaitId = opened.WaitId);
 
@@ -664,6 +666,7 @@ public sealed class SqlWorkflowStateRepository : RelationalWorkflowStateReposito
                 Kind TINYINT NOT NULL,
                 WaitKey NVARCHAR(400) NOT NULL,
                 EventType NVARCHAR(400) NOT NULL,
+                DefaultPayloadJson NVARCHAR(MAX) NULL,
                 DeadlineUtc DATETIME2 NULL,
                 OpenedSequence BIGINT NOT NULL,
                 OpenedAtUtc DATETIME2 NOT NULL,
@@ -674,6 +677,8 @@ public sealed class SqlWorkflowStateRepository : RelationalWorkflowStateReposito
             EXEC(N'CREATE INDEX IX_IxIFlowWorkflowWaits_Open
                 ON dbo.IxIFlowWorkflowWaits (WaitKey, EventType, WaitId) WHERE CloseReason IS NULL');
         END
+        IF COL_LENGTH(N'dbo.IxIFlowWorkflowWaits', N'DefaultPayloadJson') IS NULL
+            ALTER TABLE dbo.IxIFlowWorkflowWaits ADD DefaultPayloadJson NVARCHAR(MAX) NULL;
         IF COL_LENGTH(N'dbo.IxIFlowWorkflowInstances', N'RunnableAtUtc') IS NULL
         BEGIN
             ALTER TABLE dbo.IxIFlowWorkflowInstances ADD RunnableAtUtc DATETIME2 NULL;

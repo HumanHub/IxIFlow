@@ -141,11 +141,12 @@ public sealed class PostgreSqlWorkflowStateRepository : RelationalWorkflowStateR
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_waits
-                    (instance_id, wait_id, kind, wait_key, event_type, deadline_utc, opened_sequence, opened_at_utc)
+                    (instance_id, wait_id, kind, wait_key, event_type, deadline_utc, opened_sequence, opened_at_utc, default_payload_json)
                 SELECT @InstanceId, opened.wait_id, opened.kind, opened.wait_key, opened.event_type,
-                    opened.deadline_utc, @Sequence, @Now
+                    opened.deadline_utc, @Sequence, @Now, opened.default_payload_json
                 FROM unnest(@WaitIds::text[], @Kinds::smallint[], @Keys::text[], @EventTypes::text[],
-                    @Deadlines::timestamptz[]) AS opened (wait_id, kind, wait_key, event_type, deadline_utc)
+                    @Deadlines::timestamptz[], @DefaultPayloads::text[])
+                    AS opened (wait_id, kind, wait_key, event_type, deadline_utc, default_payload_json)
                 ON CONFLICT (instance_id, wait_id) DO NOTHING
                 """, new
         {
@@ -156,6 +157,7 @@ public sealed class PostgreSqlWorkflowStateRepository : RelationalWorkflowStateR
             Kinds = waits.Select(wait => (short)wait.Kind).ToArray(),
             Keys = waits.Select(wait => wait.Key).ToArray(),
             EventTypes = waits.Select(wait => wait.EventType).ToArray(),
+            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson).ToArray(),
             Deadlines = waits.Select(wait => Timestamp(now + wait.Timeout)).ToArray()
         }, transaction);
     }
@@ -580,6 +582,11 @@ public sealed class PostgreSqlWorkflowStateRepository : RelationalWorkflowStateR
             "SELECT to_regclass('ix_ixiflow_workflow_leases_expires_at') IS NOT NULL",
             transaction: transaction))
     {
+        if (!await connection.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'ixiflow_workflow_waits'::regclass " +
+                "AND attname = 'default_payload_json' AND NOT attisdropped)", transaction: transaction))
+            await connection.ExecuteAsync("ALTER TABLE ixiflow_workflow_waits ADD COLUMN default_payload_json text NULL",
+                transaction: transaction);
         await transaction.CommitAsync();
         return;
     }
@@ -653,6 +660,7 @@ public sealed class PostgreSqlWorkflowStateRepository : RelationalWorkflowStateR
             kind smallint NOT NULL,
             wait_key varchar(400) COLLATE "C" NOT NULL,
             event_type varchar(400) COLLATE "C" NOT NULL,
+            default_payload_json text NULL,
             deadline_utc timestamptz NULL,
             opened_sequence bigint NOT NULL,
             opened_at_utc timestamptz NOT NULL,
