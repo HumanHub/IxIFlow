@@ -55,9 +55,9 @@ Names are unique per host and identify durable subscriptions across restarts/hos
 
 Removing a publisher from DI does not retire its durable subscription. Use `UnregisterOutboxPublisher(name)` at startup, or the store's `IWorkflowOutbox.UnregisterPublisherAsync`, to remove it and give up pending deliveries. An absent worker can otherwise leave pending deliveries that block retention.
 
-Workers claim deliveries with renewable leases. Attempt counts include claims lost with their host. Default outbox concurrency is eight, independent of workflow slots; default lease duration is 30 seconds. A 30-day retry horizon runs from the first claim, not event creation. A never-attempted delivery remains pending until a worker attempts it or the subscription is retired.
+Workers claim deliveries with renewable leases. Attempt counts include claims lost with their host. Default outbox concurrency is eight, independent of workflow slots; default lease duration is 30 seconds. A 30-day retry horizon runs from the first claim. A delivery no worker ever claims is given up once the horizon has passed since the event occurred, so a publisher missing from every host cannot keep instances from retention forever.
 
-The built-in in-process publisher wakes local client awaiters. It is not a durable external notification channel. The store also exposes publisher/delivery inspection. There is no management HTTP API yet.
+There is no in-process publisher: the host that commits an instance's end completes the awaits on that host itself, without a delivery record. Awaits on other hosts poll the store. The store also exposes publisher/delivery inspection. There is no management HTTP API yet.
 
 ## Outgoing webhooks
 
