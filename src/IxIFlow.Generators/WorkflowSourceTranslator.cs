@@ -81,7 +81,8 @@ public static class WorkflowSourceTranslator
 
         public string Run()
         {
-            if (document.SchemaVersion != "1.0") throw Error(document, $"Unsupported schema version '{document.SchemaVersion}'");
+            if (!DocumentModel.GetValues(typeof(WorkflowDocument), nameof(WorkflowDocument.SchemaVersion)).Contains(document.SchemaVersion))
+                throw Error(document, $"Unsupported schema version '{document.SchemaVersion}'");
             foreach (var import in document.Imports.Catalogs.Concat(document.Imports.Workflows))
                 if (!options.ResolvedImports.Contains(import))
                     throw Error(document.Imports, $"Import '{import}' requires publishing to resolve and pin its package or workflow");
@@ -280,6 +281,8 @@ public static class WorkflowSourceTranslator
             {
                 if (parallel.MaxConcurrency is < 1) throw Error(parallel, "maxConcurrency must be a positive integer", "maxConcurrency");
                 Line($"setup.Parallel({parallel.MaxConcurrency?.ToString(CultureInfo.InvariantCulture)});");
+                var joins = DocumentModel.GetValues(typeof(ForEachParallelDocument), nameof(ForEachParallelDocument.Join));
+                if (!joins.Contains(parallel.Join)) throw Error(parallel, $"Unknown parallel join; use {Alternatives(joins)}", "join");
                 switch (parallel.Join)
                 {
                     case "all": break;
@@ -291,7 +294,7 @@ public static class WorkflowSourceTranslator
                         _workflowRoot = "ctx.WorkflowData";
                         Line($"setup.WaitConditionally<{resultType}>(completeWhenExpression: (data, results) => {condition});");
                         break;
-                    default: throw Error(parallel, "Unknown parallel join; use all, any or conditionally", "join");
+                    default: throw new InvalidOperationException($"Declared parallel join '{parallel.Join}' has no translation");
                 }
             }
             if (step.Into is { } into)
@@ -324,7 +327,7 @@ public static class WorkflowSourceTranslator
             foreach (var output in outputs)
             {
                 Locate(output);
-                if (output.SourceContext is not ("activity" or "event" or "workflow"))
+                if (!DocumentModel.GetValues(typeof(OutputMappingDocument), nameof(OutputMappingDocument.SourceContext)).Contains(output.SourceContext))
                     throw Error(output, $"Unknown output source context '{output.SourceContext}'");
                 Line($"setup.Output(act => act.{Member(Required(output.Source, output, "source"), output)}).To(ctx => {Expression(output.To)});");
             }
@@ -337,12 +340,14 @@ public static class WorkflowSourceTranslator
                 case ConstantExpressionDocument constant: return Literal(constant.Value, node);
                 case PathExpressionDocument expression: return Rewrite(expression.Path, node, eventName);
                 case BinaryExpressionDocument binary:
+                    if (!DocumentModel.GetValues(typeof(BinaryExpressionDocument), nameof(BinaryExpressionDocument.Operator)).Contains(binary.Operator))
+                        throw Error(node, $"Unknown binary operator '{binary.Operator}'");
                     var symbol = binary.Operator switch
                     {
                         "eq" => "==", "ne" => "!=", "and" => "&&", "or" => "||",
                         "gt" => ">", "ge" => ">=", "lt" => "<", "le" => "<=",
                         "add" => "+", "subtract" => "-", "multiply" => "*", "divide" => "/",
-                        _ => throw Error(node, $"Unknown binary operator '{binary.Operator}'")
+                        _ => throw new InvalidOperationException($"Declared binary operator '{binary.Operator}' has no translation")
                     };
                     return "(" + Expression(binary.Left, eventName) + " " + symbol + " " + Expression(binary.Right, eventName) + ")";
                 case FunctionExpressionDocument function:
@@ -431,6 +436,9 @@ public static class WorkflowSourceTranslator
             return replacement == null ? node : SyntaxFactory.ParseExpression(replacement).WithTriviaFrom(node);
         }
     }
+
+    private static string Alternatives(IReadOnlyList<string> values) =>
+        string.Join(", ", values.Take(values.Count - 1)) + " or " + values[values.Count - 1];
 
     private static string Quote(string value) => SymbolDisplay.FormatLiteral(value, quote: true);
 }

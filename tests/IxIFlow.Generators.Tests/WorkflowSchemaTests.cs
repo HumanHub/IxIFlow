@@ -1,3 +1,4 @@
+using IxIFlow.Dsl.Documents;
 using Json.Schema;
 
 namespace IxIFlow.Generators.Tests;
@@ -7,19 +8,67 @@ public sealed class WorkflowSchemaTests
     private static readonly Lazy<JsonSchema> Schema = new(() => JsonSchema.FromFile(WorkflowSchemaFiles.SchemaPath));
     private const string Header = "workflow: {name: Schema, dataType: FlowData}\n";
 
+    private static readonly string Root = WorkflowSchemaFiles.RepositoryRoot();
+
+    // Fixtures are compiled by the generator; Documents holds valid documents that need publishing, such as imports.
+    private static IEnumerable<string> TestDocuments() =>
+        new[] { "tests/IxIFlow.Generators.Tests/Fixtures", "tests/IxIFlow.Generators.Tests/Documents" }
+            .SelectMany(folder => Directory.EnumerateFiles(Path.Combine(Root, folder), "*.yaml"));
+
+    private static IEnumerable<string> Samples() =>
+        Directory.EnumerateFiles(Path.Combine(Root, "samples"), "*", SearchOption.AllDirectories)
+            .Where(file => file.EndsWith(".workflow.yaml", StringComparison.OrdinalIgnoreCase) ||
+                           file.EndsWith(".workflow.yml", StringComparison.OrdinalIgnoreCase));
+
     public static IEnumerable<object[]> WorkflowFiles() =>
-        Directory.EnumerateFiles(Path.Combine(WorkflowSchemaFiles.RepositoryRoot(), "tests/IxIFlow.Generators.Tests/Fixtures"), "*.yaml")
-            .Concat(Directory.EnumerateFiles(Path.Combine(WorkflowSchemaFiles.RepositoryRoot(), "samples"), "*", SearchOption.AllDirectories)
-                .Where(file => file.EndsWith(".workflow.yaml", StringComparison.OrdinalIgnoreCase) ||
-                               file.EndsWith(".workflow.yml", StringComparison.OrdinalIgnoreCase)))
-            .Order(StringComparer.Ordinal).Select(file => new object[] { file });
+        TestDocuments().Order(StringComparer.Ordinal).Select(file => new object[] { file });
 
     [Theory]
     [MemberData(nameof(WorkflowFiles))]
     public void AuthoringFilesValidate(string file)
     {
         var result = Evaluate(File.ReadAllText(file));
-        Assert.True(result.IsValid, file + "\n" + Errors(result));
+        Assert.True(result.IsValid, file + Environment.NewLine + Errors(result));
+    }
+
+    [Fact]
+    public void EverySampleValidates()
+    {
+        var samples = Samples().Order(StringComparer.Ordinal).ToArray();
+        Assert.True(samples.Length > 0, "No samples/**/*.workflow.yaml or *.workflow.yml files were found");
+        Assert.All(samples, file =>
+        {
+            var result = Evaluate(File.ReadAllText(file));
+            Assert.True(result.IsValid, file + Environment.NewLine + Errors(result));
+        });
+    }
+
+    [Fact]
+    public void ValidatedDocumentsUseEveryMember()
+    {
+        var used = new HashSet<(Type, string)>();
+        foreach (var file in TestDocuments().Concat(Samples()))
+            Collect(WorkflowYamlSerializer.Read(File.ReadAllText(file)));
+        // Inherited members such as a step's name count once, on the type that declares them.
+        var missing = typeof(WorkflowDocument).Assembly.GetTypes().Where(type => typeof(DocumentNode).IsAssignableFrom(type))
+            .SelectMany(type => DocumentModel.GetMembers(type).Where(member => member.DeclaringType == type)
+                .Select(member => (type, DocumentModel.GetName(member))))
+            .Where(member => !used.Contains(member)).Select(member => member.type.Name + "." + member.Item2).ToArray();
+        Assert.True(missing.Length == 0, "Add these members to a schema-validated document: " + string.Join(", ", missing));
+
+        void Collect(object? value)
+        {
+            if (value is DocumentNode node)
+            {
+                foreach (var member in DocumentModel.GetMembers(node.GetType()).Where(member => node.Members.ContainsKey(DocumentModel.GetName(member))))
+                    used.Add((member.DeclaringType!, DocumentModel.GetName(member)));
+                foreach (var member in DocumentModel.GetMembers(node.GetType())) Collect(member.GetValue(node));
+            }
+            else if (value is System.Collections.IDictionary dictionary)
+                foreach (var item in dictionary.Values) Collect(item);
+            else if (value is System.Collections.IEnumerable items and not string)
+                foreach (var item in items) Collect(item);
+        }
     }
 
     [Theory]
