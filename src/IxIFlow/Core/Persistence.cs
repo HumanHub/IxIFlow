@@ -522,7 +522,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             foreach (var opened in commit.OpenedWaits)
                 waits.TryAdd(opened.WaitId, new StoredWait(commit.InstanceId, opened.WaitId,
                     opened.Kind, opened.Key, opened.EventType, now + opened.Timeout,
-                    _inboxSequence.GetValueOrDefault(commit.InstanceId), now));
+                    _inboxSequence.GetValueOrDefault(commit.InstanceId), now,
+                    DefaultPayloadJson: opened.DefaultPayloadJson));
             foreach (var armed in commit.ArmedWaits)
                 if (waits.TryGetValue(armed.WaitId, out var wait) && wait is { IsOpen: true, DeadlineUtc: null })
                     waits[armed.WaitId] = wait with { DeadlineUtc = now + armed.Timeout };

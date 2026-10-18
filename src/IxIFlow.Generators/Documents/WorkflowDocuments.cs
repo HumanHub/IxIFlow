@@ -222,6 +222,8 @@ public abstract record WaitStepDocument : WorkflowStepDocument
     public string Event { get; init; } = string.Empty;
     [Description("The optional expression deciding whether an event is accepted.")]
     public ExpressionDocument? ResumeCondition { get; init; }
+    [Description("A suggested event payload for discovery UIs, never applied automatically.")]
+    public object? DefaultPayload { get; init; }
     [Description("Input mappings configured for the wait.")]
     public List<InputMappingDocument> Input { get; init; } = [];
     [Description("Mappings from the event or reply to workflow data.")]

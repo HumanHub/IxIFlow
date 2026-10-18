@@ -149,6 +149,7 @@ internal sealed class WorkflowScopeCatalog
             .Select(pair =>
             {
                 var step = pair.Value;
+                // DefaultPayload is discovery metadata, not execution behavior (D-14).
                 var waitKey = step.StepMetadata.TryGetValue("WaitKey", out var key) ? key?.ToString() : "";
                 return WorkflowBuildError.Check(step, () => string.Join('|', pair.Key, step.StepType,
                     step.Name, WorkflowTypeIdentity.StableName(step.WorkflowDataType),

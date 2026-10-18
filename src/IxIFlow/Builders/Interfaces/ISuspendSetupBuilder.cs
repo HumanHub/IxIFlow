@@ -26,6 +26,9 @@ public interface ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStep
     ISuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData> Output<TProperty>(
         Expression<Func<TResumeEvent, TProperty>> property);
 
+    /// <summary>Declares a suggested answer for UIs. The engine never applies it automatically.</summary>
+    ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> DefaultPayload(TResumeEvent payload);
+
     ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> TimeoutAfter(
         TimeSpan duration);
 
