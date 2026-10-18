@@ -1,3 +1,4 @@
+using IxIFlow.Core.Runtime;
 using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
 using IxIFlow.Builders.Interfaces;
@@ -86,6 +87,20 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
         return new WorkflowBuilder<TWorkflowData, TActivity>(_steps, workflowName, workflowVersion);
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
+        string name,
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null,
+        Expression<Func<WorkflowContext<TWorkflowData>, string>>? subjectExpression = null)
+        where TActivity : class, IAsyncActivity
+    {
+        var expression = subjectExpression == null ? null : WorkflowExpressionSignature.Checked(subjectExpression);
+        var result = Request<TActivity>(name, configure, subjectExpression?.Compile());
+        _steps[^1].RequestSubjectExpression = expression;
+        return result;
+    }
+
     public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(string name,
         Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null,
         Func<WorkflowContext<TWorkflowData>, string>? subject = null)
@@ -102,6 +117,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
             step.RequestSubject = context => subject((WorkflowContext<TWorkflowData>)context);
         return next;
     }
+
 }
 
 /// <summary>
@@ -172,6 +188,20 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         // Return continuation builder with TActivity as new previous step type
         return new WorkflowBuilder<TWorkflowData, TActivity>(_steps, name, workflowVersion);
+    }
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
+        string name,
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null)
+        where TActivity : class, IAsyncActivity
+    {
+        var expression = subjectExpression == null ? null : WorkflowExpressionSignature.Checked(subjectExpression);
+        var result = Request<TActivity>(name, configure, subjectExpression?.Compile());
+        _steps[^1].RequestSubjectExpression = expression;
+        return result;
     }
 
     public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(string requestName,
@@ -408,6 +438,20 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         return new SagaContainerBuilder<TWorkflowData, TPreviousStepData>(_steps, name, workflowVersion);
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(
+        string key,
+        Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        where TEvent : class
+    {
+        var expression = matchesExpression == null ? null : WorkflowExpressionSignature.Checked(matchesExpression);
+        var result = WaitFor<TEvent>(key, matchesExpression?.Compile(), configure);
+        _steps[^1].ConditionExpression = expression;
+        return result;
+    }
+
     /// <summary>
     ///     Creates a suspend/resume block
     /// </summary>
@@ -423,6 +467,20 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         waitStep.Name = "WaitFor";
         waitStep.StepMetadata["WaitKey"] = key;
         return next;
+    }
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
+        string suspendReason,
+        Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>>? resumeExpression = null,
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        where TResumeEvent : class
+    {
+        var expression = resumeExpression == null ? null : WorkflowExpressionSignature.Checked(resumeExpression);
+        var result = Suspend<TResumeEvent>(suspendReason, resumeExpression?.Compile(), configure);
+        _steps[^1].ConditionExpression = expression;
+        return result;
     }
 
     public IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
@@ -486,6 +544,18 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         return new WorkflowBuilder<TWorkflowData, TResumeEvent>(_steps, name, workflowVersion);
     }
 
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> DoWhile(
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression)
+    {
+        var expression = WorkflowExpressionSignature.Checked(conditionExpression);
+        var result = DoWhile(configure, conditionExpression.Compile());
+        _steps[^1].ConditionExpression = expression;
+        return result;
+    }
+
     /// <summary>
     ///     Creates a do-while loop
     /// </summary>
@@ -520,6 +590,18 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         _steps.Add(loopStep);
 
         return this;
+    }
+
+    /// <summary>Retains the author expression for validation and definition identity.</summary>
+    [OverloadResolutionPriority(-1)]
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> WhileDo(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
+    {
+        var expression = WorkflowExpressionSignature.Checked(conditionExpression);
+        var result = WhileDo(conditionExpression.Compile(), configure);
+        _steps[^1].ConditionExpression = expression;
+        return result;
     }
 
     /// <summary>
@@ -652,12 +734,14 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
     /// <summary>Adds a saga error handler without exception properties.</summary>
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException>(
-        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
-        where TException : Exception => OnError<TException, EmptyFault>(configure);
+        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TException : Exception => OnError<TException, EmptyFault>(configure, id, sourcePath, sourceLine);
 
     /// <summary>Adds a saga error handler with a checkpointable fault value.</summary>
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException, TFault>(
-        Action<ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>> configure)
+        Action<ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TException : Exception
     {
         ArgumentNullException.ThrowIfNull(configure);
@@ -674,6 +758,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             PreviousStepDataType = typeof(TPreviousStepData),
             ExceptionType = typeof(TException),
             FaultType = typeof(TFault),
+            Id = id ?? Guid.NewGuid().ToString(),
+            SourceLocation = sourcePath + ":" + sourceLine,
             Order = sagaStep.CatchBlocks.Count
         };
         if (!sagaStep.StepMetadata.TryGetValue("SagaSteps", out var sagaStepsValue))
@@ -714,8 +800,10 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Adds saga error handling for any exception
     /// </summary>
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError(
-        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure)
+        Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,
+        string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
-        return OnError<Exception>(configure);
+        return OnError<Exception>(configure, id, sourcePath, sourceLine);
     }
+
 }

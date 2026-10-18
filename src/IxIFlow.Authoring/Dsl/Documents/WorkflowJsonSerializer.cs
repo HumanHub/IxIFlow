@@ -1,4 +1,6 @@
+using System.Collections;
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
@@ -10,8 +12,60 @@ public static class WorkflowJsonSerializer
 {
     private static readonly JsonSerializerOptions Options = CreateOptions();
 
-    public static WorkflowDocument Read(string json) => JsonSerializer.Deserialize<WorkflowDocument>(json, Options)
-        ?? throw new JsonException("Workflow JSON did not contain a document");
+    public static WorkflowDocument Read(string json)
+    {
+        var document = JsonSerializer.Deserialize<WorkflowDocument>(json, Options)
+            ?? throw new JsonException("Workflow JSON did not contain a document");
+        var bytes = Encoding.UTF8.GetBytes(json);
+        var lines = new List<long> { 0 };
+        for (var index = 0; index < bytes.Length; index++)
+            if (bytes[index] == (byte)'\n') lines.Add(index + 1);
+        var reader = new Utf8JsonReader(bytes);
+        reader.Read();
+        RecordLocations(ref reader, document, lines);
+        return document;
+    }
+
+    private static void RecordLocations(ref Utf8JsonReader reader, object? value, List<long> lines)
+    {
+        if (value is DocumentNode node && reader.TokenType == JsonTokenType.StartObject)
+        {
+            node.Location = Position(reader.TokenStartIndex, lines);
+            var members = new Dictionary<string, DocumentLocation>(StringComparer.Ordinal);
+            while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+            {
+                var name = reader.GetString()!;
+                reader.Read();
+                members[name] = Position(reader.TokenStartIndex, lines);
+                var member = DocumentModel.GetKeys(node.GetType()).FirstOrDefault(key => key.Name == name).Member;
+                RecordLocations(ref reader, member?.GetValue(node), lines);
+            }
+            node.Members = members;
+        }
+        else if (value is IDictionary dictionary && reader.TokenType == JsonTokenType.StartObject)
+        {
+            while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+            {
+                var name = reader.GetString()!;
+                reader.Read();
+                RecordLocations(ref reader, dictionary[name], lines);
+            }
+        }
+        else if (value is IList list && reader.TokenType == JsonTokenType.StartArray)
+        {
+            var index = 0;
+            while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+                RecordLocations(ref reader, list[index++], lines);
+        }
+        else reader.Skip();
+    }
+
+    private static DocumentLocation Position(long offset, List<long> lines)
+    {
+        var line = lines.BinarySearch(offset);
+        if (line < 0) line = ~line - 1;
+        return new DocumentLocation(line + 1, (int)(offset - lines[line]) + 1);
+    }
 
     public static string Write(WorkflowDocument document) => JsonSerializer.Serialize(document, Options);
 
@@ -43,6 +97,14 @@ public static class WorkflowJsonSerializer
                 {
                     var property = properties[member.Name];
                     property.Name = key.Name;
+                    var set = property.Set;
+                    var values = DocumentModel.GetValues(info.Type, member.Name);
+                    property.Set = (target, value) =>
+                    {
+                        if (value is string choice && values.Count > 0 && !values.Contains(choice))
+                            throw new JsonException($"Unknown {key.Name} '{choice}'; use {string.Join(", ", values)}");
+                        set?.Invoke(target, value);
+                    };
                     info.Properties.Add(property);
                 }
                 else
