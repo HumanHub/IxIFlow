@@ -5,6 +5,84 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>The same delivery protocol is exercised against memory and every relational provider.</summary>
 internal static class OutboxStoreContract
 {
+    internal static async Task VerifyUnclaimedHorizonAsync(IWorkflowStateRepository store, TimeSpan horizon,
+        Func<IReadOnlyCollection<string>, TimeSpan, Task> advance, TimeSpan boundaryStep)
+    {
+        var absent = "unhosted-" + Guid.NewGuid().ToString("N");
+        var observer = "observer-" + Guid.NewGuid().ToString("N");
+        await store.RegisterPublisherAsync(absent, [OutboxEvent.WorkflowCompleted]);
+        await store.RegisterPublisherAsync(observer, [OutboxEvent.WorkflowCompleted]);
+        async Task<OutboxDelivery> CompleteAndObserve()
+        {
+            var instance = await CompleteAsync(store);
+            var observed = await Claim(store, observer);
+            Assert.Equal(instance.InstanceId, observed.Event.InstanceId);
+            Assert.True(await store.SettleDeliveryAsync(observed.Event.Id, observer, "owner", OutboxPublishResult.Delivered()));
+            return (await store.GetDeliveryAsync(observed.Event.Id, absent))!;
+        }
+        var old = new[] { await CompleteAndObserve(), await CompleteAndObserve() };
+        var ids = old.Select(d => d.Event.InstanceId).ToArray();
+        var tombstones = TimeSpan.FromDays(90);
+        await advance(ids, horizon - boundaryStep);
+        var skipped = await store.PurgeAsync(TimeSpan.FromMinutes(1), tombstones, 1);
+        Assert.Equal(0, skipped.InstancesRemoved);
+        Assert.Equal(2, skipped.SkippedUnattemptedByPublisher[absent]);
+        foreach (var delivery in old)
+        {
+            var pending = (await store.GetDeliveryAsync(delivery.Event.Id, absent))!;
+            Assert.Equal(OutboxDeliveryStatus.Pending, pending.Status);
+            Assert.Equal(0, pending.Attempts);
+            Assert.Null(pending.FirstAttemptAtUtc);
+        }
+
+        // No host ever claims these deliveries. New events still get their own full horizon.
+        var fresh = await CompleteAndObserve();
+        await advance(ids, boundaryStep);
+        var keepInstances = horizon + TimeSpan.FromDays(1);
+        Assert.Equal(0, (await store.PurgeAsync(keepInstances, tombstones, 1)).InstancesRemoved);
+        var swept = await Task.WhenAll(old.Select(d => store.GetDeliveryAsync(d.Event.Id, absent)));
+        Assert.Single(swept, d => d!.Status == OutboxDeliveryStatus.GivenUp);
+        Assert.Single(swept, d => d!.Status == OutboxDeliveryStatus.Pending);
+        await store.PurgeAsync(keepInstances, tombstones, 1);
+        foreach (var delivery in old)
+        {
+            var givenUp = (await store.GetDeliveryAsync(delivery.Event.Id, absent))!;
+            Assert.Equal(OutboxDeliveryStatus.GivenUp, givenUp.Status);
+            Assert.Equal("Never claimed within the horizon", givenUp.LastError);
+            Assert.Equal(0, givenUp.Attempts);
+            Assert.Null(givenUp.FirstAttemptAtUtc);
+            Assert.Null(givenUp.LeaseToken);
+            Assert.Null(givenUp.LeaseUntilUtc);
+        }
+        Assert.Null((await store.GetPublisherAsync(absent))!.DisabledAtUtc);
+        Assert.Equal(OutboxDeliveryStatus.Pending, (await store.GetDeliveryAsync(fresh.Event.Id, absent))!.Status);
+        Assert.Equal(1, (await store.PurgeAsync(TimeSpan.FromMinutes(1), tombstones, 1)).InstancesRemoved);
+        Assert.Equal(1, (await store.PurgeAsync(TimeSpan.FromMinutes(1), tombstones, 1)).InstancesRemoved);
+        foreach (var delivery in old)
+        {
+            Assert.Null(await store.GetWorkflowInstanceAsync(delivery.Event.InstanceId));
+            Assert.NotNull(await store.GetTombstoneAsync(delivery.Event.InstanceId));
+            Assert.Null(await store.GetDeliveryAsync(delivery.Event.Id, absent));
+        }
+
+        // A host returning later may claim the fresh event. Once attempted, event age alone must
+        // not end retries or replace the publisher's error with the never-claimed reason.
+        var attempted = await Claim(store, absent);
+        Assert.Equal(fresh.Event.Id, attempted.Event.Id);
+        Assert.True(await store.SettleDeliveryAsync(attempted.Event.Id, absent, "owner", OutboxPublishResult.RetryLater("offline")));
+        await advance([fresh.Event.InstanceId], horizon + boundaryStep);
+        await store.PurgeAsync(keepInstances + horizon, tombstones, 1);
+        var retrying = (await store.GetDeliveryAsync(attempted.Event.Id, absent))!;
+        Assert.Equal(OutboxDeliveryStatus.Pending, retrying.Status);
+        Assert.Equal(1, retrying.Attempts);
+        Assert.Equal(attempted.FirstAttemptAtUtc, retrying.FirstAttemptAtUtc);
+        Assert.Equal("offline", retrying.LastError);
+        Assert.Equal(OutboxDeliveryStatus.Delivered, (await store.GetDeliveryAsync(fresh.Event.Id, observer))!.Status);
+        await store.UnregisterPublisherAsync(absent);
+        await store.UnregisterPublisherAsync(observer);
+        await store.DeleteWorkflowInstanceAsync(fresh.Event.InstanceId);
+    }
+
     internal static async Task VerifyAsync(IWorkflowStateRepository repository,
         Func<OutboxDelivery, TimeSpan, Task> advance, Func<string, Task> expireTombstone)
     {

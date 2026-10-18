@@ -162,7 +162,10 @@ public static class WorkflowStoreRules
 
 public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 {
-    /// <summary>Runs one bounded retention pass; pending deliveries and unfinished children keep their instance.</summary>
+    /// <summary>
+    /// Runs one bounded retention pass, giving up never-attempted deliveries whose event age reaches
+    /// the store's retry horizon. Remaining pending deliveries and unfinished children keep their instance.
+    /// </summary>
     Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
         CancellationToken cancellationToken = default);
 
@@ -306,14 +309,18 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 {
     private readonly TimeProvider _time;
+    private readonly TimeSpan _retryHorizon;
 
     public InMemoryWorkflowStateRepository() : this(TimeProvider.System)
     {
     }
 
-    public InMemoryWorkflowStateRepository(TimeProvider time)
+    public InMemoryWorkflowStateRepository(TimeProvider time, OutboxSettings? outboxSettings = null)
     {
         _time = time ?? throw new ArgumentNullException(nameof(time));
+        var options = outboxSettings ?? new OutboxSettings();
+        options.Validate();
+        _retryHorizon = options.RetryHorizon;
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;

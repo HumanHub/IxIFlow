@@ -19,7 +19,8 @@ public static class IxIFlowSqliteExtensions
         builder.ChooseStore("SQLite");
         connectionString = SqliteWorkflowStateRepository.FileConnectionString(connectionString);
         builder.Services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(provider =>
-            new SqliteWorkflowStateRepository(connectionString, provider.GetRequiredService<TimeProvider>())));
+            new SqliteWorkflowStateRepository(connectionString, provider.GetRequiredService<TimeProvider>(),
+                provider.GetRequiredService<OutboxSettings>())));
         return builder;
     }
 }

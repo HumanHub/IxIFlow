@@ -29,7 +29,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     /// delivers cancellation (B-09). With pooling turned off the reservation has no effect.
     /// </summary>
     public PostgreSqlWorkflowStateRepository(string connectionString,
-        int ownershipPoolSize = DefaultOwnershipPoolSize)
+        int ownershipPoolSize = DefaultOwnershipPoolSize, OutboxSettings? outboxSettings = null) : base(outboxSettings)
     {
         _connectionString = string.IsNullOrWhiteSpace(connectionString)
             ? throw new ArgumentException("A PostgreSQL connection string is required", nameof(connectionString))
