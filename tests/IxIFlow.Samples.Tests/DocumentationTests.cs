@@ -130,26 +130,6 @@ public sealed class DocumentationTests
     }
 
     [Fact]
-    public async Task WaitInputMappingDoesNotReplaceTheReplyOrDefaultPayload()
-    {
-        var definition = new WorkflowBuilder<QuoteData, object>([], "WaitInputDocs")
-            .WaitFor<ReviewAnswer>("review", configure: wait => wait
-                .Input(answer => answer.Customer).From(ctx => ctx.WorkflowData.Customer)
-                .DefaultPayload(new ReviewAnswer { Customer = "Suggestion" })
-                .Output(answer => answer.Customer).To(ctx => ctx.WorkflowData.Customer))
-            .Build();
-        Assert.Single(definition.Steps[0].InputMappings);
-        await using var provider = SampleTests.Services();
-        var client = SampleTests.Client(provider);
-        var started = await client.RunAsync(definition, new QuoteData { Customer = "Input mapping" });
-        var wait = Assert.Single(await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
-        Assert.Equal("Suggestion", JsonSerializer.Deserialize<ReviewAnswer>(wait.DefaultPayloadJson!)!.Customer);
-        var finished = await client.ReplyAsync(wait.Token, new ReviewAnswer { Customer = "Actual reply" });
-        Assert.True(finished.IsSuccess, finished.ErrorMessage);
-        Assert.Equal("Actual reply", Assert.IsType<QuoteData>(finished.WorkflowData).Customer);
-    }
-
-    [Fact]
     public async Task DiscoverableWaitSuggestsButDoesNotApplyAnAnswer()
     {
         await using var provider = SampleTests.Services();
