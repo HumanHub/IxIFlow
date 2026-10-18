@@ -81,6 +81,8 @@ public interface IWorkflowOutbox
 /// <summary>One bounded retry policy for custom publishers. Webhooks return their standard schedule explicitly.</summary>
 internal static class OutboxRetry
 {
+    internal const string NeverClaimedError = "Never claimed within the horizon";
+
     public static TimeSpan Delay(int attempts) => TimeSpan.FromSeconds(
         Math.Min(3600, 5 * Math.Pow(2, Math.Clamp(attempts - 1, 0, 10))));
 

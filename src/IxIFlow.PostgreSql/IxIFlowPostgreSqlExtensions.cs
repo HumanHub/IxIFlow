@@ -17,9 +17,11 @@ public static class IxIFlowPostgreSqlExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         builder.ChooseStore("PostgreSQL");
-        var store = new PostgreSqlWorkflowStateRepository(connectionString);
-        builder.Services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(store));
-        builder.Services.Replace(ServiceDescriptor.Singleton<IRunnableWakeSource>(store));
+        builder.Services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(provider =>
+            new PostgreSqlWorkflowStateRepository(connectionString,
+                outboxSettings: provider.GetRequiredService<OutboxSettings>())));
+        builder.Services.Replace(ServiceDescriptor.Singleton<IRunnableWakeSource>(provider =>
+            (PostgreSqlWorkflowStateRepository)provider.GetRequiredService<IWorkflowStateRepository>()));
         return builder;
     }
 }

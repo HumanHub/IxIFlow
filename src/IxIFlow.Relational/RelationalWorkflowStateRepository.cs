@@ -11,7 +11,14 @@ public abstract partial class RelationalWorkflowStateRepository :
     IWorkflowStateRepository
 {
     // Only first-party friend assemblies can construct or derive from this protocol.
-    internal RelationalWorkflowStateRepository() { }
+    internal RelationalWorkflowStateRepository(OutboxSettings? outboxSettings = null)
+    {
+        var options = outboxSettings ?? new OutboxSettings();
+        options.Validate();
+        _retryHorizon = options.RetryHorizon;
+    }
+
+    private readonly TimeSpan _retryHorizon;
 
     /// <summary>The connection, transaction and admission policy for a store operation.</summary>
     internal enum Operation
@@ -26,7 +33,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     {
         RetentionLock, RetentionCandidates, RetentionBlockedPublishers, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
-        InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher,
+        InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
         Cancellation, Cancellations, Runnable, Running, ClaimLease, RenewLease, ReleaseLease,
         LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, PendingEvents, Event, InboxSequences,

@@ -407,7 +407,9 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var delivery = Assert.Single(await Outbox.ClaimDeliveriesAsync(publisher, "owner", TimeSpan.FromHours(1), 100));
         Assert.True(await Outbox.SettleDeliveryAsync(delivery.Event.Id, publisher, "owner", OutboxPublishResult.Delivered()));
         await Advance(TimeSpan.FromDays(31));
-        Assert.Equal(0, (await Purge()).InstancesRemoved); // Another publisher still needs this event.
+        var skipped = await Purge(); // Another publisher still needs this event.
+        Assert.Equal(0, skipped.InstancesRemoved);
+        Assert.Equal(1, skipped.SkippedUnattemptedByPublisher[pendingPublisher]);
         var pending = Assert.Single(await Outbox.ClaimDeliveriesAsync(pendingPublisher, "other", TimeSpan.FromHours(1), 100));
         Assert.True(await Outbox.SettleDeliveryAsync(pending.Event.Id, pendingPublisher, "other", OutboxPublishResult.Delivered()));
         Assert.Equal(1, (await Purge()).InstancesRemoved);

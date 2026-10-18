@@ -21,7 +21,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     private readonly SqliteHostOwnership _ownership;
     private volatile bool _disposed;
 
-    public SqliteWorkflowStateRepository(string connectionString, TimeProvider? timeProvider = null)
+    public SqliteWorkflowStateRepository(string connectionString, TimeProvider? timeProvider = null,
+        OutboxSettings? outboxSettings = null) : base(outboxSettings)
     {
         _connectionString = FileConnectionString(connectionString);
         _time = timeProvider ?? TimeProvider.System;
