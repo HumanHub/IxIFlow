@@ -58,15 +58,23 @@ returned source. The generator reads symbols and metadata, without loading activ
 
 ## Editor support
 
-The IxIFlow package includes `schemas/workflow.schema.json`, exposed to MSBuild tooling
-as `$(IxIFlowWorkflowSchema)`. Its canonical URL is
-`https://raw.githubusercontent.com/HumanHub/IxIFlow/main/src/IxIFlow/schemas/workflow.schema.json`.
-Use the packaged copy to match the referenced package version.
+The IxIFlow package includes `schemas/workflow.schema.json`, the schema for the generator
+in that package version. The props expose its path as `$(IxIFlowWorkflowSchema)`; print it
+from the consuming project's folder:
 
-With the Red Hat YAML extension or another yaml-language-server client, associate a file using:
+```bash
+dotnet msbuild -getProperty:IxIFlowWorkflowSchema
+```
+
+The same file is published with each release at
+`https://raw.githubusercontent.com/HumanHub/IxIFlow/v<version>/src/IxIFlow/schemas/workflow.schema.json`,
+which is also the schema's `$id`. Use the version of the IxIFlow package you reference.
+
+With the Red Hat YAML extension or another yaml-language-server client, associate a file using
+the URL or the path printed above:
 
 ```yaml
-# yaml-language-server: $schema=<url or relative path>
+# yaml-language-server: $schema=<url or path>
 ```
 
 Relative paths resolve from the YAML file. In VS Code, associate a workspace in `settings.json`:
@@ -74,7 +82,7 @@ Relative paths resolve from the YAML file. In VS Code, associate a workspace in 
 ```json
 {
   "yaml.schemas": {
-    "https://raw.githubusercontent.com/HumanHub/IxIFlow/main/src/IxIFlow/schemas/workflow.schema.json": ["*.workflow.yaml", "*.workflow.yml"]
+    "https://raw.githubusercontent.com/HumanHub/IxIFlow/v1.0.0/src/IxIFlow/schemas/workflow.schema.json": ["*.workflow.yaml", "*.workflow.yml"]
   }
 }
 ```
@@ -82,10 +90,20 @@ Relative paths resolve from the YAML file. In VS Code, associate a workspace in 
 In JetBrains IDEs, use Settings → Languages & Frameworks → Schemas and DTDs →
 JSON Schema Mappings with the same filename patterns.
 
-The schema provides completion, hover descriptions and validation for the canonical
-document form: camelCase member names, with unknown members reported as errors.
-The YAML reader currently matches member names case-insensitively and ignores unknown members.
-The schema is generated from the document model by `WorkflowDocumentSchema.Write()` in Authoring.
+The schema provides completion, hover descriptions and validation for the document form
+that the YAML and JSON readers accept. Member names are camelCase and exact. An unknown
+member, or a `kind` that differs from the type a position requires, is an error at that
+member, including in the generator. Keys you name yourself stay open: activity, step and
+code names, `defaults`, `arguments` and `parameters`. The document root may carry
+`$schema` to bind an editor; readers ignore it. Quote string values that look like numbers
+or Booleans, such as `activityVersion: "1.2"`: the reader takes them as text, but editors
+type them first. The schema is generated from the document model by
+`WorkflowDocumentSchema.Write()` in Authoring.
+
+**Behaviour change.** Earlier builds matched member names case-insensitively and ignored
+unknown members, so `Output:` or `ouptut:` was silently dropped. Such files now fail the
+build with IXIYAML001 at the member. The JSON reader applies the same rules, and the JSON
+writer now writes `kind` on every typed node, including the fixed path in `to` and `into`.
 
 The supported catalog includes activities, activity and step references, sequences, conditions,
 suspend/resume, pinned child workflows and sequential or parallel `forEach`. Activity defaults

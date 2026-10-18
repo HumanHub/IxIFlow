@@ -22,12 +22,21 @@ public sealed class DocumentValuesAttribute(params string[] values) : Attribute
     public IReadOnlyList<string> Values { get; } = values;
 }
 
+/// <summary>A key a document node accepts, with the member it reads into when there is one.</summary>
+/// <param name="IsDiscriminator">The key is the variant's <c>kind</c>, written as the declared kind and checked against it.</param>
+public readonly record struct DocumentKey(string Name, PropertyInfo? Member, bool IsDiscriminator);
+
 /// <summary>Provides the shared member ordering, names and variant resolution of the document contract.</summary>
 public static class DocumentModel
 {
+    /// <summary>The root key that binds a document to its editor schema; readers accept and ignore it.</summary>
+    public const string SchemaKey = "$schema";
+
     private static readonly ConcurrentDictionary<Type, IReadOnlyList<PropertyInfo>> Members = new();
     private static readonly ConcurrentDictionary<Type, IReadOnlyList<Type>> Variants = new();
     private static readonly ConcurrentDictionary<Type, DocumentKindAttribute?> Kinds = new();
+    private static readonly ConcurrentDictionary<(Type, string), IReadOnlyList<string>> Values = new();
+    private static readonly ConcurrentDictionary<Type, IReadOnlyList<DocumentKey>> Keys = new();
 
     /// <summary>The serialized members of a document type, base members first, then in declaration order.</summary>
     public static IReadOnlyList<PropertyInfo> GetMembers(Type type) => Members.GetOrAdd(type, static type =>
@@ -35,9 +44,26 @@ public static class DocumentModel
         [.. type.BaseType is { } parent ? GetMembers(parent) : [],
          .. type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly).OrderBy(member => member.MetadataToken)]);
 
+    /// <summary>The keys a node of this type accepts, in document order: a variant's kind, the root's schema binding, then the members.</summary>
+    public static IReadOnlyList<DocumentKey> GetKeys(Type type) => Keys.GetOrAdd(type, static type =>
+    {
+        var members = GetMembers(type);
+        var discriminator = GetKind(type) == null ? null : (DocumentKey?)new DocumentKey("kind", members.FirstOrDefault(member => GetName(member) == "kind"), true);
+        return
+        [
+            .. discriminator is { } kind ? [kind] : Array.Empty<DocumentKey>(),
+            .. type == typeof(WorkflowDocument) ? [new DocumentKey(SchemaKey, null, false)] : Array.Empty<DocumentKey>(),
+            .. members.Where(member => member != discriminator?.Member).Select(member => new DocumentKey(GetName(member), member, false))
+        ];
+    });
+
     public static string GetName(MemberInfo member) => CamelCase(member.Name);
     public static string CamelCase(string name) => char.ToLowerInvariant(name[0]) + name.Substring(1);
     public static DocumentKindAttribute? GetKind(Type type) => Kinds.GetOrAdd(type, static type => type.GetCustomAttribute<DocumentKindAttribute>());
+
+    /// <summary>The closed set of values a member accepts, or an empty list when the member is open.</summary>
+    public static IReadOnlyList<string> GetValues(Type type, string property) => Values.GetOrAdd((type, property), static key =>
+        GetMembers(key.Item1).First(member => member.Name == key.Item2).GetCustomAttribute<DocumentValuesAttribute>()?.Values ?? []);
 
     /// <summary>The concrete kinds of an abstract document type, in declaration order.</summary>
     public static IReadOnlyList<Type> GetVariants(Type type) => Variants.GetOrAdd(type, static type => type.Assembly.GetTypes()

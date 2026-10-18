@@ -1,0 +1,128 @@
+schemaVersion: "1.0"
+workflow:
+  name: Complete
+  version: 2
+  dataType: Orders.OrderData
+  displayName: Complete document
+  description: Uses every member of the workflow document, including those that need publishing.
+  tags: [schema, reference]
+imports:
+  catalogs: [Orders.Activities@1.0.0]
+  workflows: [Shipping@3]
+activities:
+  charge:
+    activity: Orders.Charge
+    activityVersion: "1.2"
+    defaults: {Currency: EUR, Retries: 2}
+    input:
+      - target: Amount
+        from: {kind: path, path: workflow.Total}
+    output:
+      - source: Receipt
+        sourceContext: activity
+        to: {path: workflow.Receipt}
+steps:
+  notify:
+    kind: block
+    parameters:
+      channel: {type: string, required: true, default: email}
+    steps:
+      - kind: activity
+        id: send
+        activity: Orders.Notify
+        defaults: {Template: order}
+        input:
+          - target: Channel
+            from: {path: channel}
+        output:
+          - source: MessageId
+            to: {path: workflow.MessageId}
+code:
+  isLarge:
+    language: csharp-expression
+    returns: bool
+    entryPoint: Evaluate
+    source: workflow.Total > 1000
+definitions:
+  - kind: activityRef
+    id: charge
+    name: Charge
+    description: Charges the order through the activity template.
+    ref: charge
+  - kind: stepRef
+    id: notify
+    ref: notify
+    arguments:
+      channel: {kind: constant, value: sms}
+  - kind: if
+    id: large
+    condition: {kind: function, function: isLarge}
+    then:
+      - kind: sequence
+        id: review
+        steps:
+          - kind: activity
+            id: score
+            activity: Orders.Score
+            activityVersion: "2.0"
+            input:
+              - target: Rounded
+                from: {kind: function, function: System.Math.Round, arguments: [{path: workflow.Total}]}
+    else: []
+  - kind: forEach
+    id: lines
+    items: {path: workflow.Lines}
+    as: line
+    parallel: {maxConcurrency: 4, join: any}
+    steps:
+      - kind: activity
+        activity: Orders.Reserve
+        input:
+          - target: Sku
+            from: {path: line.Sku}
+  - kind: forEach
+    id: quotes
+    items: {path: workflow.Carriers}
+    as: carrier
+    parallel:
+      join: conditionally
+      resultType: decimal
+      condition:
+        kind: binary
+        operator: ge
+        left: {kind: function, function: System.Linq.Enumerable.Count, arguments: [{path: results}]}
+        right: {kind: constant, value: 2}
+    steps:
+      - kind: activity
+        activity: Orders.Quote
+        input:
+          - target: Carrier
+            from: {path: carrier}
+    result: {path: previousStep.Price}
+    into: {kind: path, path: workflow.Quotes}
+  - kind: suspend
+    id: approval
+    event: Orders.Approval
+    reason: approval
+    resumeCondition:
+      kind: binary
+      operator: eq
+      left: {path: event.OrderId}
+      right: {path: workflow.Id}
+    input:
+      - target: OrderId
+        from: {path: workflow.Id}
+    output:
+      - source: Approved
+        sourceContext: event
+        to: {path: workflow.Approved}
+  - kind: invokeWorkflow
+    id: ship
+    workflow: {name: Shipping, version: 3}
+    input:
+      - target: OrderId
+        from: {path: workflow.Id}
+    output:
+      - source: TrackingNumber
+        sourceContext: workflow
+        to: {path: workflow.Tracking}
