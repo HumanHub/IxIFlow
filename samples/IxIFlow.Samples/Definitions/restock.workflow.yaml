@@ -1,0 +1,27 @@
+# Restock until two units are available, then inspect at least once.
+workflow:
+  name: Restock
+  dataType: IxIFlow.Samples.StockData
+definitions:
+  - kind: whileDo
+    condition: { path: workflow.Count < 2 }
+    steps:
+      - kind: activity
+        activity: IxIFlow.Samples.AddStock
+        input:
+          - target: Count
+            from: { path: workflow.Count }
+        output:
+          - source: Count
+            to: { path: workflow.Count }
+  - kind: doWhile
+    condition: { path: workflow.Count < 3 }
+    steps:
+      - kind: activity
+        activity: IxIFlow.Samples.AddStock
+        input:
+          - target: Count
+            from: { path: workflow.Count }
+        output:
+          - source: Count
+            to: { path: workflow.Count }

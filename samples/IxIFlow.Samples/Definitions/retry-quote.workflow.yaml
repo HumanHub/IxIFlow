@@ -1,0 +1,30 @@
+# Retry the failed quote immediately; the activity reads its earlier error and note.
+workflow:
+  name: RetryQuote
+  dataType: IxIFlow.Samples.RetryData
+definitions:
+  - kind: saga
+    steps:
+      - kind: activity
+        activity: IxIFlow.Samples.FetchQuote
+        output:
+          - source: Attempt
+            to: { path: workflow.Attempt }
+          - source: EarlierError
+            to: { path: workflow.EarlierError }
+          - source: EarlierNote
+            to: { path: workflow.EarlierNote }
+          - source: EarlierAttemptId
+            to: { path: workflow.EarlierAttemptId }
+          - source: InvocationId
+            to: { path: workflow.InvocationId }
+          - source: AttemptId
+            to: { path: workflow.AttemptId }
+        onError:
+          - exception: System.Net.Http.HttpRequestException
+            then: retry
+            retry:
+              maximumAttempts: 1
+              initialInterval: '00:00:00'
+              maximumInterval: '00:00:00'
+              backoffCoefficient: 1

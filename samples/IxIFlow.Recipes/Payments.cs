@@ -140,7 +140,7 @@ public static class SagaPaymentRecipe
                         .Input(activity => activity.Reference).From(ctx => ctx.CurrentStep.Reference)))
                 .Step<ReserveStock>(step => step
                     .Input(activity => activity.OrderId).From(ctx => ctx.WorkflowData.OrderId))
-                .WaitFor<PaymentReceived>("payment", (received, _) => received.Status != "pending", wait => wait
+                .WaitFor<PaymentReceived>("payment", matchesExpression: (evt, ctx) => evt.Status != "pending", configure: wait => wait
                     .Output(received => received.Status).To(ctx => ctx.WorkflowData.PaymentStatus)))
             .OnError<StockUnavailable>(error => error.Compensate().ThenRetry(1))
             .Build();
