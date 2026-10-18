@@ -171,7 +171,7 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
     public Task SqlCommitIdCannotNameDifferentPayload() =>
         VerifyDifferentPayload(new SqlWorkflowStateRepository(SqlTestDatabase<WorkflowCommitTests>.ConnectionString));
 
-    [SqlServerFact(Skip = "Known defect: SQL Server legacy Save throws SqlException instead of InvalidOperationException for revisioned state")]
+    [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlLegacySaveCannotOverwriteRevisionedState() =>
         VerifyLegacySave(new SqlWorkflowStateRepository(SqlTestDatabase<WorkflowCommitTests>.ConnectionString));

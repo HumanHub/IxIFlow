@@ -56,7 +56,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     internal override object? SmallInt(short? value) => value is { } number ? (byte)number : null;
     internal override bool NormalizeRunnableTime => false;
     internal override DateTime ReadTime(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
-    internal override bool SaveReturnsDue => false;
     internal override int StatementBatchSize => StatementBatch;
     internal override int OwnershipReadBatchSize => 1000;
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 };
@@ -616,9 +615,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             WHEN NOT MATCHED THEN INSERT
                 (InstanceId, Incarnation, WorkflowName, Status, CorrelationId, ParentInstanceId, RunnableAtUtc, StateJson)
                 VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
-                        CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END, @StateJson);
-            IF @@ROWCOUNT = 0
-                THROW 51000, 'Revisioned instances require an atomic commit', 1;
+                        CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END, @StateJson)
+            OUTPUT CAST(CASE WHEN inserted.RunnableAtUtc <= SYSUTCDATETIME() THEN 1 ELSE 0 END AS BIT);
             """,
         Statement.ReadParts => """
                 SELECT InstanceId, PartKey, Json FROM dbo.IxIFlowWorkflowParts WHERE InstanceId IN @Ids;
