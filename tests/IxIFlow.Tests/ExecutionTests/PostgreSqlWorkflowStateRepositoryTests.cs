@@ -17,13 +17,13 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
     [Trait("Spec", "A-08")]
     public Task ACommitIsStoredAsItCameAndReadsTakeTheRevisionAndRunnableTimeFromTheirColumns() => StateRepositoryContract.VerifyCommitPayloadAndColumns(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString), () => new Npgsql.NpgsqlConnection(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString));
 
-    // Rows are deleted by key in every table; the lease row stays, released, so a later owner gets a higher epoch.
+    // Rows are deleted by key in every table, including the lease, so the next lease starts at epoch one.
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "C-11")]
     public Task DeletingAnInstanceDeletesItsRowsInEveryTable() => VerifyDeletingInstanceRows(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString), () => new Npgsql.NpgsqlConnection(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString));
 
-    // One row in each of the instance, parts, traces, waits, events and commits tables while the instance exists.
+    // One row in each of the instance, parts, traces, waits, events, commits and leases tables while the instance exists.
     private static async Task<long> CountRowsAsync(Func<System.Data.Common.DbConnection> newConnection, string instanceId)
     {
         await using var connection = newConnection();
@@ -36,6 +36,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
                 + (SELECT count(*) FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId)
                 + (SELECT count(*) FROM ixiflow_workflow_events WHERE instance_id = @InstanceId)
                 + (SELECT count(*) FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId)
+                + (SELECT count(*) FROM ixiflow_workflow_leases WHERE instance_id = @InstanceId)
             """;
         var parameter = count.CreateParameter();
         parameter.ParameterName = connection is Npgsql.NpgsqlConnection ? "InstanceId" : "@InstanceId";
@@ -170,13 +171,22 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
                 traceEntries: [new ExecutionTraceEntry { ActivityName = "first" }]))).Status);
         Assert.Equal(EventAppendStatus.Stored, (await repository.AppendEventAsync(
             new WorkflowEvent(instanceId, "event-1", "Approval", "{}", Key: "approval"))).Status);
-        Assert.Equal(6, await CountRowsAsync(newConnection, instanceId));
+        Assert.Equal(7, await CountRowsAsync(newConnection, instanceId));
 
-        await repository.DeleteWorkflowInstanceAsync(instanceId);
+        await repository.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention: TimeSpan.FromSeconds(1));
+        Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1)));
 
         Assert.Equal(0, await CountRowsAsync(newConnection, instanceId));
-        Assert.Equal(2, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1)))!
-            .Epoch);
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        ExecutionLeaseGrant? next = null;
+        while (next == null && elapsed.Elapsed < TimeSpan.FromSeconds(3))
+        {
+            next = await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1));
+            if (next == null)
+                await Task.Delay(50);
+        }
+        Assert.NotNull(next);
+        Assert.Equal(1, next.Epoch);
         await repository.ReleaseExecutionLeaseAsync(instanceId, "next");
     }
 
@@ -274,6 +284,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
                 childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child")])));
             var grant = (await repository.TryAcquireExecutionLeaseAsync(child.InstanceId, "child-owner",
                 TimeSpan.FromMinutes(1)))!;
+            child = (await repository.GetWorkflowInstanceAsync(child.InstanceId))!;
             child.Status = WorkflowStatus.Completed;
             await notifications.ExpectAsync(() => repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
                 child, grant.Epoch, 1, parentNotice: new ParentNotice(parent.InstanceId, "child",

@@ -15,7 +15,7 @@ public enum WorkflowCommitStatus
     /// <summary>The stored revision is not the expected one.</summary>
     Conflict,
 
-    /// <summary>The commit's execution epoch is no longer the instance's current owner.</summary>
+    /// <summary>The commit's incarnation or execution epoch is no longer the instance's current owner.</summary>
     StaleEpoch,
 
     /// <summary>The store did not apply the commit and it can be sent again unchanged.</summary>
@@ -66,13 +66,13 @@ public sealed record ExecutionLeaseGrant(long Epoch, int CrashCount);
 
 /// <summary>
 /// One checkpoint write: the instance's trunk and the parts of its state that changed, fenced by the owner's
-/// execution epoch and the revision it was based on. A commit is immutable, so sending the same commit again is safe.
+/// incarnation, execution epoch and the revision it was based on. A commit is immutable, so sending the same commit again is safe.
 /// </summary>
 public sealed class CheckpointCommit
 {
     private CheckpointCommit(CommittedInstance instance, string payload, IReadOnlyList<CheckpointPart> parts,
         IReadOnlyList<string> deletedParts, bool replacesParts, IReadOnlyDictionary<string, string> storedParts,
-        long epoch, string commitId,
+        Guid incarnation, long epoch, string commitId,
         long expectedRevision, bool clearsCrashCount, bool parks, IReadOnlyList<EventSettlement> settlements,
         long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
@@ -86,6 +86,7 @@ public sealed class CheckpointCommit
         DeletedParts = deletedParts;
         ReplacesParts = replacesParts;
         StoredParts = storedParts;
+        Incarnation = incarnation;
         Epoch = epoch;
         CommitId = commitId;
         ExpectedRevision = expectedRevision;
@@ -162,6 +163,9 @@ public sealed class CheckpointCommit
 
     /// <summary>The execution epoch granted with the owner's lease; zero when the instance was never leased.</summary>
     public long Epoch { get; }
+
+    /// <summary>The incarnation chosen for a first insert, or read by the executor for a later commit.</summary>
+    public Guid Incarnation { get; }
 
     public string CommitId { get; }
 
@@ -354,8 +358,11 @@ public sealed class CheckpointCommit
             .Select(part => new CheckpointPart(part.Key, part.Value)).ToArray();
         var deleted = saved == null ? [] : saved.Keys.Where(key => !stored.Parts.ContainsKey(key))
             .Order(StringComparer.Ordinal).ToArray();
+        // Stamp the caller too, so later checkpoints use the same incarnation as this immutable first commit.
+        if (expectedRevision == 0)
+            instance.Incarnation = Guid.NewGuid();
         return new CheckpointCommit(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(stored.Trunk)),
-            Array.AsReadOnly(written), Array.AsReadOnly(deleted), saved == null, stored.Parts.AsReadOnly(), epoch, commitId,
+            Array.AsReadOnly(written), Array.AsReadOnly(deleted), saved == null, stored.Parts.AsReadOnly(), instance.Incarnation, epoch, commitId,
             expectedRevision, clearsCrashCount, parks, Array.AsReadOnly(settled), inboxReadThrough,
             Array.AsReadOnly(opened), Array.AsReadOnly(armed), Array.AsReadOnly(closed), wakeAfter, stopped,
             Array.AsReadOnly(started), Array.AsReadOnly(cancelled), parentNotice,

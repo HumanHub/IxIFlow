@@ -99,9 +99,22 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
             await CommitAsync(repository, instance, seventh, clearsCrashCount: false);
             var lost = await ReclaimAfterExpiryAsync(repository, instanceId, "lost", lease, time);
             Assert.Equal(1, lost.CrashCount);
-            await repository.DeleteWorkflowInstanceAsync(instanceId);
-            Assert.Equal(0, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "recreated", lease))!
-                .CrashCount);
+            var tombstoneRetention = TimeSpan.FromSeconds(1);
+            await repository.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention: tombstoneRetention);
+            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "recreated", lease));
+            time?.Advance(tombstoneRetention);
+
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            ExecutionLeaseGrant? recreated = null;
+            while (recreated == null && elapsed.Elapsed < TimeSpan.FromSeconds(3))
+            {
+                recreated = await repository.TryAcquireExecutionLeaseAsync(instanceId, "recreated", lease);
+                if (recreated == null)
+                    await Task.Delay(50);
+            }
+            Assert.NotNull(recreated);
+            Assert.Equal(1, recreated.Epoch);
+            Assert.Equal(0, recreated.CrashCount);
         }
         finally
         {
