@@ -1,5 +1,7 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Runtime.Loader;
 using System.Text;
 using System.Text.Json;
 using IxIFlow.Authoring;
@@ -8,6 +10,7 @@ using IxIFlow.Dsl.Compilation;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Generators;
 using IxIFlow.Tests.Infrastructure;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -187,27 +190,81 @@ public sealed class WorkflowPublishingTests
     }
 
     [Fact]
-    public async Task NonCooperativeBuildIsKilledAtTheDeadline()
+    public async Task HangingBuildFailsPublicationAtTheDeadlineAndLeavesItsThreadAndContextBehind()
     {
-        var compilation = WorkflowCompilation.Compile("""
-            public static class Hanging
-            {
-                public static IxIFlow.Core.WorkflowDefinition Build()
-                {
-                    while (true) System.Threading.Thread.Sleep(10);
-                }
-            }
-            """);
-        Assert.True(compilation.Success);
-        var timer = Stopwatch.StartNew();
-        var result = await WorkflowBuildWorker.RunAsync(compilation, WorkflowCompilation.ReferencePaths(), TimeSpan.FromSeconds(2), CancellationToken.None);
-        Assert.Contains("timeout", result.Error);
-        Assert.True(timer.Elapsed < TimeSpan.FromSeconds(15));
-        // The terminated worker cannot poison subsequent publication.
         var store = new InMemoryWorkflowStateRepository();
         var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), 0);
+        var upload = new ObservedArtifacts(store);
+        var timeout = TimeSpan.FromSeconds(1);
+        var options = new WorkflowPublisherOptions
+        {
+            BuildTimeout = timeout,
+            SourceOptions = YamlTestContracts.Create(("Data", typeof(Data)), ("Echo", typeof(HangingBuildActivity)))
+        };
+        var logger = new BuildLogger();
+        var timer = Stopwatch.StartNew();
+        var publication = new WorkflowPublisher(store, upload, options, logger).PublishAsync(draft.Id);
+        var (thread, context) = await HangingDefaultAttribute.Entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        var result = await publication.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.False(result.Success);
+        Assert.Null(result.Version);
+        var error = Assert.Single(result.Diagnostics);
+        Assert.Equal(WorkflowPublishStage.Test, error.Stage);
+        Assert.Equal(WorkflowDiagnosticSeverity.Error, error.Severity);
+        Assert.Equal("PUB004", error.Code);
+        Assert.Equal($"Build() exceeded the publish timeout of {timeout}", error.Message);
+        Assert.Equal("workflow.yaml", error.Path);
+        Assert.Equal(WorkflowYamlSerializer.Read(Yaml).Workflow.Location.Line, error.Line);
+        Assert.True(timer.Elapsed >= timeout);
+        Assert.True(timer.Elapsed < TimeSpan.FromSeconds(15));
+        Assert.True(thread.IsAlive);
+        Assert.True(thread.IsBackground);
+        Assert.False(thread.IsThreadPoolThread);
+        Assert.True(context.IsCollectible);
+        Assert.False(HangingDefaultAttribute.Unloading);
+        var warning = Assert.Single(logger.Messages);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.Contains("thread", warning.Message);
+        Assert.Contains("load context are abandoned until the process restarts", warning.Message);
+        Assert.Equal(draft, await store.GetDefinitionAsync(draft.Name, draft.Version));
+        Assert.Empty(await store.GetWorkflowVersionsAsync());
+        Assert.Equal(0, upload.Uploads);
+
+        // The abandoned build does not prevent a normal publication in the same process.
         var published = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
+    }
+
+    public sealed class HangingBuildActivity : IAsyncActivity
+    {
+        [HangingDefault] public int Value { get; set; }
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    public sealed class HangingDefaultAttribute : DefaultValueAttribute
+    {
+        public static readonly TaskCompletionSource<(Thread Thread, AssemblyLoadContext Context)> Entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public static bool Unloading;
+
+        public HangingDefaultAttribute() : base(0)
+        {
+            var assembly = new StackTrace().GetFrames().Select(frame => frame.GetMethod()?.DeclaringType?.Assembly)
+                .First(assembly => assembly?.IsCollectible == true)!;
+            var context = AssemblyLoadContext.GetLoadContext(assembly)!;
+            context.Unloading += _ => Unloading = true;
+            Entered.TrySetResult((Thread.CurrentThread, context));
+            Thread.Sleep(Timeout.Infinite);
+        }
+    }
+
+    private sealed class BuildLogger : ILogger<WorkflowPublisher>
+    {
+        public List<(LogLevel Level, string Message)> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add((logLevel, formatter(state, exception)));
     }
 
     [Fact]
