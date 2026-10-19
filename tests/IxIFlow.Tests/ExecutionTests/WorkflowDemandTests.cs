@@ -23,7 +23,7 @@ public sealed class WorkflowDemandTests
     public async Task DefinitionRegistrationAndStartMergeOnce(bool explicitDataType)
     {
         var store = new InMemoryWorkflowStateRepository();
-        var services = Services(store);
+        var services = Services(store, capabilities: new() { ["gpu"] = "cuda", ["region"] = "eu" });
         if (explicitDataType)
             services.RegisterWorkflow<Declared, Data>(r => r.Demand("region", inherit: true).Demand("gpu"));
         else services.RegisterWorkflow<Declared>(r => r.Demand("region", inherit: true).Demand("gpu"));
@@ -42,7 +42,7 @@ public sealed class WorkflowDemandTests
     public async Task EquivalentCallerDefinitionStillIncludesRegistrationPolicy()
     {
         var store = new InMemoryWorkflowStateRepository();
-        var services = Services(store);
+        var services = Services(store, capabilities: new() { ["zone"] = "eu", ["region"] = "eu" });
         services.RegisterWorkflow<Declared>(r => r.Demand("zone", "eu", inherit: true));
         await using var provider = services.BuildServiceProvider();
         var standalone = ServiceCollectionExtensions.BuildWorkflowDefinition<Declared, Data>(new Declared());
@@ -98,14 +98,14 @@ public sealed class WorkflowDemandTests
         var store = new InMemoryWorkflowStateRepository();
         var first = Definition("eu");
         string id;
-        await using (var provider = Services(store).BuildServiceProvider())
+        await using (var provider = Services(store, capabilities: new() { ["region"] = "eu" }).BuildServiceProvider())
             id = (await provider.GetRequiredService<IWorkflowClient>().RunAsync(first, new Data { Region = "eu" })).InstanceId;
         var before = await store.GetWorkflowDemandsAsync(id);
         // A repeated start must not evaluate its dynamic declaration against the replacement data.
         var changed = Workflow.Create<Data>("DemandFlow").Demand("region", "us")
             .DemandFrom("explode", ctx => ctx.WorkflowData.StartOnly)
             .Step<Noop>().WithId("first").WaitFor<Go>("go").WithId("wait").Build();
-        var services = Services(store);
+        var services = Services(store, capabilities: new() { ["region"] = "eu" });
         services.AddSingleton(changed);
         await using var second = services.BuildServiceProvider();
         var client = second.GetRequiredService<IWorkflowClient>();
@@ -127,7 +127,8 @@ public sealed class WorkflowDemandTests
         var grandchild = Workflow.Create<Data>("Grandchild").Step<Noop>().WaitFor<Go>("go").Build();
         var parent = Workflow.Create<Data>("Parent").Demand("region", inherit: true).Demand("region", "eu")
             .Demand("parent-only").Step<Noop>().Invoke<Data>("Child", 1).WithId("invoke").Build();
-        var services = Services(store);
+        var services = Services(store, capabilities: new()
+            { ["region"] = "eu", ["parent-only"] = "present", ["child-only"] = "present" });
         services.AddSingleton(child);
         services.AddSingleton(grandchild);
         await using var provider = services.BuildServiceProvider();
@@ -162,7 +163,7 @@ public sealed class WorkflowDemandTests
             .Demand("parent-only").Step<Noop>()
             .ForEach(ctx => new[] { 1, 2, 3 }, (body, item) => body.Invoke<Data>("ParallelChild", 1),
                 setup => setup.Parallel()).Build();
-        var services = Services(store);
+        var services = Services(store, capabilities: new() { ["region"] = "eu", ["parent-only"] = "present" });
         services.AddSingleton(child);
         await using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(parent, new Data { Region = "eu" });
@@ -199,17 +200,32 @@ public sealed class WorkflowDemandTests
         await using var provider = Services(store).BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
         var options = new WorkflowOptions { InstanceId = "fail-" + scenario, WhenUnschedulable = WhenUnschedulable.Fail };
+        using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         if (scenario == "matching")
-            Assert.Equal(WorkflowExecutionStatus.Success, (await client.RunAsync(definition, new Data(), options)).Status);
+        {
+            Assert.Equal(options.InstanceId, await client.StartAsync(definition, new Data(), options, patience.Token));
+            await using var matching = Services(store, capabilities: new() { ["gpu"] = "present", ["region"] = "eu" })
+                .BuildServiceProvider();
+            await matching.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            Assert.Equal(WorkflowExecutionStatus.Success,
+                (await matching.GetRequiredService<IWorkflowClient>().RecoverAsync(options.InstanceId, patience.Token)).Status);
+        }
         else
         {
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(definition, new Data(), options));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.StartAsync(definition, new Data(), options, patience.Token));
             Assert.Equal(WorkflowErrorKind.Unschedulable, error.Kind);
             Assert.Null(await store.GetWorkflowInstanceAsync(options.InstanceId));
             Assert.Empty(await store.GetWorkflowDemandsAsync(options.InstanceId));
         }
         Assert.Equal(WhenUnschedulable.Wait, new WorkflowOptions().WhenUnschedulable);
-        Assert.Equal(WorkflowExecutionStatus.Success, (await client.RunAsync(definition, new Data())).Status);
+        var waitingId = "wait-" + scenario;
+        Assert.Equal(waitingId, await client.StartAsync(definition, new Data(), new() { InstanceId = waitingId }, patience.Token));
+        var waiting = (await store.GetWorkflowInstanceAsync(waitingId))!;
+        Assert.Equal(WorkflowStatus.Running, waiting.Status);
+        Assert.Equal(demands, await store.GetWorkflowDemandsAsync(waitingId));
+        Assert.True(waiting.RunnableAtUtc <= time.GetUtcNow().UtcDateTime);
+        Assert.Contains(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.NewGuid(),
+            demands.ToDictionary(d => d.Key, d => d.Value ?? "present"))), row => row.InstanceId == waitingId);
     }
 
     [Fact]
@@ -217,7 +233,9 @@ public sealed class WorkflowDemandTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var definition = Workflow.Create<Data>("Pinned").Demand("gpu", "cuda").Step<Noop>().Build();
-        var pinned = Guid.NewGuid();
+        await using var matching = Services(store, capabilities: new() { ["gpu"] = "cuda" }).BuildServiceProvider();
+        await matching.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        var pinned = matching.GetRequiredService<HostSettings>().Id;
         Dictionary<string, string> Capabilities(Guid id, bool gpu)
         {
             var result = new Dictionary<string, string>
@@ -235,11 +253,20 @@ public sealed class WorkflowDemandTests
             TimeSpan.FromSeconds(5), Capabilities(other, true)));
         await using var provider = Services(store).BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
-        var options = new WorkflowOptions { RequiredHostId = pinned, WhenUnschedulable = WhenUnschedulable.Fail };
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(definition, new Data(), options));
+        var options = new WorkflowOptions { InstanceId = "pinned", RequiredHostId = pinned, WhenUnschedulable = WhenUnschedulable.Fail };
+        using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.StartAsync(definition, new Data(), options, patience.Token));
         Assert.Equal(WorkflowErrorKind.Unschedulable, error.Kind);
+        Assert.Null(await store.GetWorkflowInstanceAsync(options.InstanceId));
+        Assert.Empty(await store.GetWorkflowDemandsAsync(options.InstanceId));
         await store.HeartbeatAsync(pinned, Capabilities(pinned, true));
-        Assert.Equal(WorkflowExecutionStatus.Success, (await client.RunAsync(definition, new Data(), options)).Status);
+        Assert.Equal(options.InstanceId, await client.StartAsync(definition, new Data(), options, patience.Token));
+        var savedDemands = await store.GetWorkflowDemandsAsync(options.InstanceId);
+        Assert.Contains(savedDemands, d => d.Key == "host" && d.Value == pinned.ToString("D"));
+        Assert.Contains(new WorkflowDemand("gpu", "cuda"), savedDemands);
+        Assert.NotNull(await store.GetWorkflowInstanceAsync(options.InstanceId));
+        Assert.Equal(WorkflowExecutionStatus.Success,
+            (await matching.GetRequiredService<IWorkflowClient>().RecoverAsync(options.InstanceId, patience.Token)).Status);
     }
 
     [Fact]
@@ -322,12 +349,14 @@ public sealed class WorkflowDemandTests
         var services = Services(store, TimeSpan.FromSeconds(seconds));
         await using var provider = services.BuildServiceProvider();
         var host = Guid.NewGuid();
-        var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(Definition(), new Data(),
-            new() { RequiredHostId = host });
-        var pin = Assert.Single(await store.GetWorkflowDemandsAsync(result.InstanceId), d => d.Key == "host");
+        using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var id = "pin-" + seconds;
+        Assert.Equal(id, await provider.GetRequiredService<IWorkflowClient>().StartAsync(Definition(), new Data(),
+            new() { InstanceId = id, RequiredHostId = host }, patience.Token));
+        var pin = Assert.Single(await store.GetWorkflowDemandsAsync(id), d => d.Key == "host");
         Assert.Equal(host.ToString("D"), pin.Value);
         Assert.Equal(time.GetUtcNow().UtcDateTime.AddSeconds(seconds), pin.ExpiresAtUtc);
-        Assert.Equal(pin, Assert.Single(WorkflowDemands.Saved((await store.GetWorkflowInstanceAsync(result.InstanceId))!), d => d.Key == "host"));
+        Assert.Equal(pin, Assert.Single(WorkflowDemands.Saved((await store.GetWorkflowInstanceAsync(id))!), d => d.Key == "host"));
     }
 
     [Fact]
@@ -355,12 +384,17 @@ public sealed class WorkflowDemandTests
         finally { await connection.ExecuteAsync("DROP TRIGGER refuse_demands"); }
     }
 
-    private static ServiceCollection Services(IWorkflowStateRepository store, TimeSpan? pinLifetime = null)
+    private static ServiceCollection Services(IWorkflowStateRepository store, TimeSpan? pinLifetime = null,
+        Dictionary<string, string>? capabilities = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(store);
-        services.AddIxIFlow(options => options.HostPinLifetime = pinLifetime ?? TimeSpan.FromMinutes(5));
+        services.AddIxIFlow(options =>
+        {
+            options.HostPinLifetime = pinLifetime ?? TimeSpan.FromMinutes(5);
+            if (capabilities != null) options.Capabilities = capabilities;
+        });
         return services;
     }
 
