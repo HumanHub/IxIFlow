@@ -84,7 +84,7 @@ public sealed class OutboxAdministrationTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         await using var provider = services.BuildServiceProvider();
         var store = provider.GetRequiredService<IWorkflowStateRepository>();
         var operations = provider.GetRequiredService<IWorkflowOperations>();

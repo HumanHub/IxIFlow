@@ -62,7 +62,7 @@ public sealed class AuthoringRegressionTests
         var registry = new WorkflowVersionRegistry();
         await registry.RegisterWorkflowAsync(Workflow.Create<RegistrationData>("Customer approval", 3)
             .Step<RegistrationActivity>().Build());
-        var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
+        var services = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services;
         services.RegisterWorkflow<NamedWorkflow>();
         services.AddSingleton<IWorkflowVersionRegistry>(registry);
         using var provider = services.BuildServiceProvider();
@@ -86,7 +86,7 @@ public sealed class AuthoringRegressionTests
             builder.Input(activity => activity.Value).From((RegistrationActivity _) => "value");
         else
             builder.Input(activity => activity.Value).From((MarkChildActivity previous) => previous.Value);
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
         var request = new TypedActivityExecutionRequest<RegressionData, object>
         {
             ActivityType = typeof(YamlMappingActivity),
@@ -289,7 +289,7 @@ public sealed class AuthoringRegressionTests
                 .If(_ => true, then => then.Step<CompleteActivity>(setup => setup
                     .Output(activity => activity.Completed).To(ctx => ctx.WorkflowData.Completed))))
             .Build();
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, new RegistrationData());
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.True(Assert.IsType<RegistrationData>(result.WorkflowData).Completed);

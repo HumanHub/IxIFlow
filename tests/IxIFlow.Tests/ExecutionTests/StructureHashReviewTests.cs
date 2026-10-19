@@ -171,7 +171,7 @@ public sealed class StructureHashReviewTests
     [Fact]
     public async Task TypedChildUsesTheStoredRegistrationHashAfterPublishedDefinitionMutation()
     {
-        var collection = new ServiceCollection().AddLogging().AddIxIFlow().Services;
+        var collection = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services;
         collection.RegisterWorkflow<ReviewChild>();
         using var services = collection.BuildServiceProvider();
         var registry = new WorkflowVersionRegistry();
@@ -199,7 +199,7 @@ public sealed class StructureHashReviewTests
     [Fact]
     public async Task ExecutorMismatchStopsForVerificationAndKeepsTheSavedCheckpoint()
     {
-        using var services = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
+        using var services = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
         var original = Workflow.Create<StructureHashData>("Stopped")
             .Step<StructureHashMultiply>().If(ctx => ctx.WorkflowData.Value > 0,
                 body => body.Step<StructureHashMultiply>()).Build();

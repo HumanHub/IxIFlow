@@ -17,7 +17,7 @@ public class ExpressionTests
         // Setup DI container
         var services = new ServiceCollection();
         services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
 
         _serviceProvider = services.BuildServiceProvider();
         _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();

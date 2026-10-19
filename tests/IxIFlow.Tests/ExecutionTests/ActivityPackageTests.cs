@@ -46,7 +46,7 @@ public class ActivityPackageTests
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         registry.RegisterActivities(services);
         using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>()
@@ -120,7 +120,7 @@ public class ActivityPackageTests
         var definition = await YamlTestCompilation.BuildAsync(rewritten, await ResolvedContracts(registry));
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         registry.RegisterActivities(services);
         using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>()

@@ -352,7 +352,7 @@ public sealed class ActivityInputCopyTests
         services.AddTransient<TakesIgnoring>();
         services.AddTransient<IgnoresAConvertedProperty>();
         services.AddTransient<TakesActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 

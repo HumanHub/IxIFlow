@@ -175,7 +175,7 @@ public sealed class DeclaredStructureHashTests
         Assert.Equal("Pinned child", parent.Steps[1].WorkflowName);
         Assert.Equal(3, parent.Steps[1].WorkflowVersion);
         var services = new ServiceCollection().AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.RegisterWorkflow<TypedChild>();
         using var provider = services.BuildServiceProvider();
         var registered = provider.GetRequiredService<IWorkflowVersionRegistry>();
@@ -298,7 +298,7 @@ public sealed class DeclaredStructureHashTests
     {
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(store);
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 

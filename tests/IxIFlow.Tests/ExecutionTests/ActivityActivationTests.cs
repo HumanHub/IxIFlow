@@ -42,7 +42,7 @@ public sealed class ActivityActivationTests
         Assert.All(secondProbe.Constructed, activity => Assert.Same(secondProbe, activity.Dependency));
         Assert.DoesNotContain(secondProbe.Constructed, activity => firstProbe.Constructed.Contains(activity));
 
-        ServiceProvider Services(Probe probe) => new ServiceCollection().AddLogging().AddIxIFlow().Services
+        ServiceProvider Services(Probe probe) => new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services
             .AddSingleton<IWorkflowStateRepository>(store)
             .AddSingleton<IWorkflowVersionRegistry>(registry)
             .AddSingleton(probe).BuildServiceProvider();

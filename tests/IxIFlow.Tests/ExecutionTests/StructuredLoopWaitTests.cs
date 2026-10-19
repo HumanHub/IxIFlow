@@ -125,7 +125,7 @@ public class StructuredLoopWaitTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         if (repository != null)
             services.AddSingleton(repository);
         return services.BuildServiceProvider();

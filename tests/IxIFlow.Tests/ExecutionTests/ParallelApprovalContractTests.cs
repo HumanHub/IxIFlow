@@ -258,7 +258,7 @@ public class ParallelApprovalContractTests
         services.AddLogging();
         services.AddSingleton<ResumeGateProbe>();
         services.AddTransient<BlockApprovalActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var probe = provider.GetRequiredService<ResumeGateProbe>();
@@ -836,7 +836,7 @@ public class ParallelApprovalContractTests
         services.AddLogging();
         services.AddSingleton(new InjectedMarker("injected-output"));
         services.AddTransient<InjectedOutputActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("InjectedPrevious")
@@ -902,7 +902,7 @@ public class ParallelApprovalContractTests
         services.AddSingleton<BranchSignal>();
         services.AddTransient<AwaitSiblingActivity>();
         services.AddTransient<SignalSiblingActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("ConcurrentBranches")
@@ -931,7 +931,7 @@ public class ParallelApprovalContractTests
         services.AddSingleton<CancellationProbe>();
         services.AddTransient<SlowCancellableActivity>();
         services.AddTransient<CheckCleanupActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<ApprovalData>("CancelLosingBranch")
@@ -967,7 +967,7 @@ public class ParallelApprovalContractTests
         services.AddTransient<GateWinnerActivity>();
         services.AddTransient<GateTriggerActivity>();
         services.AddTransient<GateOtherActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         using var provider = services.BuildServiceProvider();
         var probe = provider.GetRequiredService<BlockedCancellationProbe>();
         var repository = provider.GetRequiredService<IWorkflowStateRepository>();
@@ -1043,7 +1043,7 @@ public class ParallelApprovalContractTests
         services.AddTransient<GateWinnerActivity>();
         services.AddTransient<GateTriggerActivity>();
         services.AddTransient<GateOtherActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         using var provider = services.BuildServiceProvider();
         var probe = provider.GetRequiredService<BlockedCancellationProbe>();
         var definition = Workflow.Create<ApprovalData>("IndependentIfAfterWaitAny")
@@ -1093,7 +1093,7 @@ public class ParallelApprovalContractTests
         services.AddTransient<GateWinnerActivity>();
         services.AddTransient<GateTriggerActivity>();
         services.AddTransient<GateOtherActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         using var provider = services.BuildServiceProvider();
         var probe = provider.GetRequiredService<BlockedCancellationProbe>();
         var definition = Workflow.Create<ApprovalData>("NestedJoinBeforeUnrelatedActivity")
@@ -1347,7 +1347,7 @@ public class ParallelApprovalContractTests
         services.AddLogging();
         if (repository != null)
             services.AddSingleton(repository);
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 

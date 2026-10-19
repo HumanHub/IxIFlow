@@ -165,7 +165,7 @@ public sealed class WorkflowDeadlineTests
             .AddLogging()
             .AddSingleton<TimeProvider>(time)
             .AddTransient<SeedActivity>()
-            .AddIxIFlow().Services
+            .AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services
             .AddSingleton<IWorkflowStateRepository>(repository)
             .BuildServiceProvider();
         var engine = services.GetRequiredService<IWorkflowClient>();
@@ -382,7 +382,7 @@ public sealed class WorkflowDeadlineTests
         registrations.AddSingleton<BlockingProbe>();
         registrations.AddTransient<BlockingActivity>();
         registrations.AddTransient<AfterActivity>();
-        registrations.AddIxIFlow();
+        registrations.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return registrations.BuildServiceProvider();
     }
 

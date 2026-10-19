@@ -21,4 +21,7 @@
     <IxIFlowWorkflow Include="Fixtures/*.yaml" />
   </ItemGroup>
   <Import Project="../../src/IxIFlow/buildTransitive/IxIFlow.props" />
+  <ItemGroup>
+    <Compile Include="../TestReplyKeys.cs" Link="TestReplyKeys.cs" />
+  </ItemGroup>
 </Project>

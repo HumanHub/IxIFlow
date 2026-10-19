@@ -28,8 +28,7 @@ public sealed class RetentionHostTests
         Assert.Equal(100, defaults.RetentionBatchSize);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options =>
-        {
+        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring;
             options.FinishedInstanceRetention = TimeSpan.FromDays(2);
             options.TombstoneRetention = TimeSpan.FromDays(7);
             options.RetentionScanInterval = TimeSpan.FromMinutes(5);
@@ -45,8 +44,7 @@ public sealed class RetentionHostTests
     [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(3)]
     public void InvalidRetentionSettingsAreRefused(int invalid)
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(options =>
-        {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring;
             if (invalid == 0) options.FinishedInstanceRetention = TimeSpan.FromTicks(-1);
             if (invalid == 1) options.TombstoneRetention = TimeSpan.Zero;
             if (invalid == 2) options.RetentionScanInterval = TimeSpan.Zero;
@@ -85,15 +83,14 @@ public sealed class RetentionHostTests
     [InlineData(599999999)]
     public void FinishedRetentionBelowOneMinuteIsRefusedAtConfiguration(long ticks)
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(options =>
-            options.FinishedInstanceRetention = TimeSpan.FromTicks(ticks)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.FinishedInstanceRetention = TimeSpan.FromTicks(ticks); }));
     }
 
     [Fact]
     public void OneMinuteFinishedRetentionIsAcceptedAtConfiguration()
     {
         var services = new ServiceCollection();
-        services.AddIxIFlow(options => options.FinishedInstanceRetention = TimeSpan.FromMinutes(1));
+        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.FinishedInstanceRetention = TimeSpan.FromMinutes(1); });
         using var provider = services.BuildServiceProvider();
         Assert.Equal(TimeSpan.FromMinutes(1), provider.GetRequiredService<RetentionSettings>().FinishedRetention);
     }
@@ -101,8 +98,7 @@ public sealed class RetentionHostTests
     [Fact]
     public void InvalidScanIntervalNamesTheSetting()
     {
-        var error = Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(options =>
-            options.RetentionScanInterval = TimeSpan.Zero));
+        var error = Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.RetentionScanInterval = TimeSpan.Zero; }));
         Assert.Equal(nameof(IxIFlowOptions.RetentionScanInterval), error.ParamName);
     }
 
@@ -131,7 +127,7 @@ public sealed class RetentionHostTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(probe.Store);
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         await using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<RetentionStoreContract.ResultData>("GeneratedRetentionId")
@@ -187,7 +183,7 @@ public sealed class RetentionHostTests
         services.AddLogging();
         services.AddSingleton(time);
         services.AddSingleton(store);
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         await using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(
             Workflow.Create<RetentionStoreContract.ResultData>("HostRetention")

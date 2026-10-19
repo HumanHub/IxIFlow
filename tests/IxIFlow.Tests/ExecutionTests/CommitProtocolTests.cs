@@ -197,7 +197,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(store);
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.AddTransient<MarkActivity>();
         return services.BuildServiceProvider();
     }

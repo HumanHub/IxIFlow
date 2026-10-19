@@ -98,7 +98,7 @@ public sealed class InjectedTimeTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(time);
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.AddTransient<NoopActivity>();
         services.AddTransient<MarkActivity>();
         return services.BuildServiceProvider();

@@ -123,7 +123,7 @@ public sealed class FailureClassificationTests
         services.AddLogging();
         services.AddSingleton(time);
         services.AddSingleton(repository);
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.AddTransient<NoopActivity>();
         services.AddTransient<MarkActivity>();
         return services.BuildServiceProvider();

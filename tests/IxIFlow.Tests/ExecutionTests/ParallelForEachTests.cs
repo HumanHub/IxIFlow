@@ -491,7 +491,7 @@ public sealed class ParallelForEachTests
             services.AddSingleton(store);
         services.AddSingleton(outbox ?? new Outbox());
         services.AddTransient<Ask>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 

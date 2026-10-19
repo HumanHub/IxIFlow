@@ -15,7 +15,7 @@ public sealed class WorkflowRegistrationTests
     [InlineData(true)]
     public async Task CustomNameIsPreservedWhenLookingUpRegisteredWorkflow(bool explicitDataType)
     {
-        var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
+        var services = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services;
         if (explicitDataType)
             services.RegisterWorkflow<NamedWorkflow, RegistrationData>();
         else
@@ -39,7 +39,7 @@ public sealed class WorkflowRegistrationTests
         {
             var services = new ServiceCollection().AddLogging();
             services.AddSingleton<IWorkflowStateRepository>(repository);
-            services.AddIxIFlow();
+            services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
             services.RegisterWorkflow<NamedWorkflow>();
             return services.BuildServiceProvider();
         }
@@ -65,7 +65,7 @@ public sealed class WorkflowRegistrationTests
     [Fact]
     public async Task DeactivatingAWorkflowVersionKeepsExistingWaitsResumable()
     {
-        var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
+        var services = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services;
         services.RegisterWorkflow<NamedWorkflow>();
         using var provider = services.BuildServiceProvider();
         var definition = Assert.IsType<WorkflowDefinition>(await provider.GetRequiredService<IWorkflowVersionRegistry>()
@@ -111,7 +111,7 @@ public sealed class WorkflowRegistrationTests
         {
             var services = new ServiceCollection().AddLogging();
             services.AddSingleton<IWorkflowStateRepository>(repository);
-            services.AddIxIFlow();
+            services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
             if (explicitDataType)
                 services.RegisterWorkflow<NamedWorkflow, RegistrationData>();
             else
@@ -181,7 +181,7 @@ public sealed class WorkflowRegistrationTests
     [Fact]
     public async Task RegisteredClassInvocationUsesTheWorkflowClassVersion()
     {
-        var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
+        var services = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services;
         services.RegisterWorkflow<NamedWorkflow>();
         using var provider = services.BuildServiceProvider();
         var parent = IxIFlow.Builders.Workflow.Create<ParentData>("Registered class parent")
@@ -205,7 +205,7 @@ public sealed class WorkflowRegistrationTests
     public async Task UnregisteredClassInvocationIsRefusedWithoutConstructingTheWorkflow()
     {
         var constructions = 0;
-        var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
+        var services = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services;
         services.AddTransient<NamedWorkflow>(_ =>
         {
             constructions++;
@@ -226,7 +226,7 @@ public sealed class WorkflowRegistrationTests
     [Fact]
     public async Task RegisteredClassMissingFromTheRegistryIsRefused()
     {
-        var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
+        var services = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services;
         services.RegisterWorkflow<NamedWorkflow>();
         services.AddSingleton<IWorkflowVersionRegistry>(new WorkflowVersionRegistry());
         using var provider = services.BuildServiceProvider();
@@ -245,7 +245,7 @@ public sealed class WorkflowRegistrationTests
     [InlineData(true)]
     public async Task RetiredChildAllowsExistingWaitsAndRefusesNewInvocations(bool invokeByName)
     {
-        var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
+        var services = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services;
         services.RegisterWorkflow<NamedWorkflow>();
         using var provider = services.BuildServiceProvider();
         var builder = IxIFlow.Builders.Workflow.Create<ParentData>("Retired child parent")

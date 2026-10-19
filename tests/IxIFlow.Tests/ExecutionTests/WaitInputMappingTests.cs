@@ -119,7 +119,7 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         Assert.Equal(timeout, wait.DeadlineUtc != null);
         Assert.Equal(wait.DefaultPayloadJson, (await inbox.GetWaitAsync(started.InstanceId, wait.WaitId))!.DefaultPayloadJson);
         Assert.Equal(WorkflowExecutionStatus.Success,
-            (await client.ReplyAsync(ReplyToken.Create(started.InstanceId, wait.WaitId), new Answer { Value = 99 })).Status);
+            (await client.ReplyAsync(ReplyToken.Sign(TestReplyKeys.Ring, started.InstanceId, wait.WaitId), new Answer { Value = 99 })).Status);
     }
 
     [Fact]
@@ -200,7 +200,7 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     private static ServiceProvider Services(bool sqlite = false, WorkflowVersionRegistry? registry = null)
     {
         var services = new ServiceCollection().AddLogging();
-        var builder = services.AddIxIFlow();
+        var builder = services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         if (sqlite) builder.UseSqlite(SqliteTestDatabase<WaitInputMappingTests>.ConnectionString);
         if (registry != null) services.AddSingleton<IWorkflowVersionRegistry>(registry);
         return services.BuildServiceProvider();

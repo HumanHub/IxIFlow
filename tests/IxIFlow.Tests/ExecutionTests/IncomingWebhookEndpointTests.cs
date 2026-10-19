@@ -18,7 +18,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>Invokes the real endpoint delegates, filters, policies, host and store without a network socket.</summary>
 [Trait("Spec", "D-10")]
 [Trait("Feature", "durability")]
-public sealed class IncomingWebhookEndpointTests
+public sealed partial class IncomingWebhookEndpointTests
 {
     public const string OldSecret = "whsec_AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
     public const string NewSecret = "whsec_AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
@@ -57,7 +57,7 @@ public sealed class IncomingWebhookEndpointTests
             Store = store ?? new InMemoryWorkflowStateRepository(Time);
             var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
             builder.Logging.ClearProviders();
-            builder.Services.AddIxIFlow();
+            builder.Services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
             builder.Services.AddTransient<Noop>();
             builder.Services.AddTransient<Failing>();
             builder.Services.Replace(ServiceDescriptor.Singleton(Store));

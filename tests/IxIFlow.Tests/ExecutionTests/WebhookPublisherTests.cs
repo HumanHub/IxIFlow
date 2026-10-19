@@ -193,7 +193,7 @@ public sealed class WebhookPublisherTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow().AddWebhook(Endpoint);
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).AddWebhook(Endpoint);
         await using var provider = services.BuildServiceProvider();
         var handler = provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler("IxIFlow.Webhooks.orders");
         while (handler is DelegatingHandler delegating) handler = delegating.InnerHandler!;

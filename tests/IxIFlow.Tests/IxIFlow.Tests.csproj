@@ -40,4 +40,7 @@
     <None Include="..\feature-baseline.json" Link="feature-baseline.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="../TestReplyKeys.cs" Link="TestReplyKeys.cs" />
+  </ItemGroup>
 </Project>

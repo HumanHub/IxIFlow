@@ -951,7 +951,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.Replace(ServiceDescriptor.Singleton(repository));
         if (time != null)
             services.Replace(ServiceDescriptor.Singleton(time));

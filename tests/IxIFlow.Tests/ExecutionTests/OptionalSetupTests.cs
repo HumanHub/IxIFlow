@@ -120,7 +120,7 @@ public sealed class OptionalSetupTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.RegisterWorkflow<ChildWorkflow>();
         services.AddSingleton<SetupProbe>();
         services.AddTransient<RecordActivity>();

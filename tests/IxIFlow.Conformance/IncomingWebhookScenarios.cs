@@ -250,7 +250,7 @@ public sealed class IncomingWebhookScenarios
         protected override IHostBuilder CreateHostBuilder() => Host.CreateDefaultBuilder()
             .ConfigureWebHostDefaults(web => web.ConfigureServices(services =>
             {
-                services.AddIxIFlow(options => options.PollInterval = TimeSpan.FromMilliseconds(50));
+                services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.PollInterval = TimeSpan.FromMilliseconds(50); });
                 services.Replace(ServiceDescriptor.Singleton(repository));
                 services.Replace(ServiceDescriptor.Singleton(registry ?? new WorkflowVersionRegistry()));
                 services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));

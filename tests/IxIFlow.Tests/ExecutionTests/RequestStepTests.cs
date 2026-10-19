@@ -118,11 +118,11 @@ public sealed class RequestStepTests
             .Build();
         var started = await engine.RunAsync(definition, new OrderData { Amount = 1000 });
         var token = Assert.Single(outbox.Sent).Token;
-        Assert.True(ReplyToken.TryRead(token, out _, out var waitId, out var subject));
+        Assert.True(ReplyToken.TryVerify(TestReplyKeys.Ring, token, out _, out var waitId, out var subject));
         Assert.Equal(ReplyToken.Digest("order-1:1000"), subject);
 
         // An answer that claims to confirm another amount does not satisfy the wait.
-        var other = ReplyToken.Create(started.InstanceId, waitId, ReplyToken.Digest("order-1:10"));
+        var other = ReplyToken.Sign(TestReplyKeys.Ring, started.InstanceId, waitId, ReplyToken.Digest("order-1:10"));
         EventAssert.Rejected(await engine.ReplyAsync(other, new ApprovalDecision { Approved = true }),
             EventRejection.SubjectMismatch);
 
@@ -200,7 +200,7 @@ public sealed class RequestStepTests
             .Build();
         var started = await engine.RunAsync(definition, new OrderData());
         var token = Assert.Single(outbox.Sent).Token;
-        Assert.True(ReplyToken.TryRead(token, out _, out var waitId, out _));
+        Assert.True(ReplyToken.TryVerify(TestReplyKeys.Ring, token, out _, out var waitId, out _));
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         // The deadline passes while the instance is idle; the host's timer runs the timeout.
         time.Advance(TimeSpan.FromMinutes(2));
@@ -482,7 +482,7 @@ public sealed class RequestStepTests
         services.AddSingleton(gate ?? new StepGate());
         services.AddTransient<RequestApproval>();
         services.AddTransient<GatedActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 
@@ -548,7 +548,7 @@ public sealed class RequestStepTests
         services.AddSingleton<Attempts>();
         services.AddTransient<FailOnceActivity>();
         services.AddTransient<FailTwiceActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 

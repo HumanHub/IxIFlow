@@ -361,7 +361,7 @@ public sealed class ParallelDataTests
             services.AddSingleton(time);
         services.AddSingleton<Seen>();
         services.AddTransient<Record>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 

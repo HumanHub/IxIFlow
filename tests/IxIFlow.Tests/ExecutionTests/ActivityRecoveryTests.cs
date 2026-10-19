@@ -595,7 +595,7 @@ public sealed class ActivityRecoveryTests
         var probe = new CancelledRecoveryProbe { Disposition = disposition };
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
         services.AddSingleton(probe);
         services.AddTransient<CancelledRecoveryActivity>();
@@ -693,8 +693,7 @@ public sealed class ActivityRecoveryTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options =>
-        {
+        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring;
             if (maxCheckpointBytes is { } limit)
                 options.MaxCheckpointBytes = limit;
         });

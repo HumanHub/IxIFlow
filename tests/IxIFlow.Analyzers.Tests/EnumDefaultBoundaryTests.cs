@@ -97,7 +97,7 @@ public sealed class EnumDefaultBoundaryTests
         Assert.Empty(invalidDefaults);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         await using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition!, Activator.CreateInstance(assembly.GetType("Data")!)!);
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
