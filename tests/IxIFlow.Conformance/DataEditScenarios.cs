@@ -47,7 +47,7 @@ public sealed class DataEditScenarios
         var audit = Assert.IsType<DataEditedTrace>(Assert.Single(await secondStore.GetTraceAsync(id),
             e => e.Entry.EntryType == TraceEntryType.DataEdited).Entry.Payload);
         Assert.Equal("editor", audit.Actor); Assert.Equal("edit", audit.EditId); Assert.Equal(receipt.Revision, audit.Revision);
-        Assert.Equal(["Number"], Assert.Single(audit.Changes).Path);
+        Assert.Equal(["Number"], Assert.Single(audit.Paths));
         await operations2.ContinueAsync(id, "continuer");
         var done = await second.GetRequiredService<IWorkflowClient>().ResumeAsync(id, "go", new Go());
         Assert.Equal(WorkflowExecutionStatus.Success, done.Status); Assert.Equal(7, Assert.IsType<Data>(done.WorkflowData).Number);
@@ -57,7 +57,7 @@ public sealed class DataEditScenarios
     private static ServiceProvider Services(IWorkflowStateRepository repository, WorkflowVersionRegistry registry)
     {
         var services = new ServiceCollection().AddLogging();
-        services.AddIxIFlow(o => { o.Debugging = true; o.DataEditAuditKey = Enumerable.Repeat((byte)73, 32).ToArray(); });
+        services.AddIxIFlow(o => o.Debugging = true);
         services.AddSingleton(repository); services.AddSingleton<IWorkflowVersionRegistry>(registry);
         return services.BuildServiceProvider();
     }

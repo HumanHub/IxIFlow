@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using IxIFlow.ActivitySdk;
@@ -16,7 +14,6 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Spec", "G-08")]
 public sealed class DataEditTests
 {
-    private static readonly byte[] Key = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(15);
 
     [Fact]
@@ -257,22 +254,20 @@ public sealed class DataEditTests
     }
 
     [Fact]
-    public async Task MissingAuditKeyHoldsRecoveryAndCheckpointLimitRefusesBeforeCommandAcceptance()
+    public async Task CheckpointLimitRefusesBeforeCommandAcceptanceAndRecoveryAppliesAcceptedEdit()
     {
         var store = new Store(); var registry = new WorkflowVersionRegistry();
         await using var first = Services(store, registry);
         var id = await Paused(first, Waiting("EditLimits")); var before = (await store.GetWorkflowInstanceAsync(id))!;
         await using var small = Services(store, registry, maxCheckpointBytes: 4096);
         await Refused(small, store, before, before.Revision, Target(before), [Patch(["Name"], new string('a', 8192))]);
-        await using var noKey = Services(store, registry, auditKey: false);
-        await Refused(noKey, store, before, before.Revision, Target(before), [Patch(["Number"], 9)]);
+        await using var second = Services(store, registry);
         store.FailEdit = true;
-        await Assert.ThrowsAsync<WorkflowEngineException>(() => Ops(first).EditDataAsync(id, "recover-with-key", before.Revision,
+        await Assert.ThrowsAsync<WorkflowEngineException>(() => Ops(first).EditDataAsync(id, "recover", before.Revision,
             Target(before), [Patch(["Number"], 9)], "editor"));
         store.FailEdit = false;
-        Assert.Equal(WorkflowExecutionStatus.Paused, (await Client(noKey).RecoverAsync(id)).Status);
         Assert.Equal(before.Revision, (await store.GetWorkflowInstanceAsync(id))!.Revision);
-        Assert.Equal(WorkflowExecutionStatus.Paused, (await Client(first).RecoverAsync(id)).Status);
+        Assert.Equal(WorkflowExecutionStatus.Paused, (await Client(second).RecoverAsync(id)).Status);
         Assert.Equal(9, DataOf((await store.GetWorkflowInstanceAsync(id))!).Number);
     }
 
@@ -298,28 +293,24 @@ public sealed class DataEditTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task AuditIsMandatoryAndBooleanDigestsRequireTheHostKey(bool tracing)
+    public async Task AuditIsMandatoryAndRecordsOnlyActorTimeRevisionEditTargetAndPaths(bool tracing)
     {
         var store = new Store(); await using var services = Services(store, new(), tracing: tracing);
         var id = await Paused(services, Waiting("Audit" + tracing)); var before = (await store.GetWorkflowInstanceAsync(id))!;
+        var started = DateTime.UtcNow;
         await Ops(services).EditDataAsync(id, "audit", before.Revision, Target(before),
             [Patch(["Flag"], true), Patch(["Name"], "edited-secret")], "auditor");
         var entry = Assert.Single(await store.GetTraceAsync(id), e => e.Entry.EntryType == TraceEntryType.DataEdited).Entry;
         var audit = Assert.IsType<DataEditedTrace>(entry.Payload);
         Assert.Equal("auditor", audit.Actor); Assert.Equal("audit", audit.EditId);
         Assert.Equal(Target(before), audit.Target); Assert.Equal(before.Revision + 1, audit.Revision);
+        Assert.InRange(entry.Timestamp, started, DateTime.UtcNow);
+        Assert.Collection(audit.Paths, path => Assert.Equal(["Flag"], path), path => Assert.Equal(["Name"], path));
+        Assert.Equal(["Actor", "EditId", "Target", "Revision", "Paths"],
+            JsonSerializer.SerializeToElement(audit).EnumerateObject().Select(p => p.Name));
         var json = JsonSerializer.Serialize(entry);
         Assert.DoesNotContain("edited-secret", json); Assert.DoesNotContain("secret-key", json);
         Assert.DoesNotContain("keep", json); Assert.DoesNotContain("Value", json);
-        var digest = audit.Changes[0].AfterDigest;
-        var input = JsonSerializer.Serialize(new { Domain = "IxIFlow.DataEdit.v1", instanceId = id, editId = "audit",
-            path = new[] { "Flag" }, side = "after", exists = true, value = true });
-        Assert.Equal(Convert.ToHexString(HMACSHA256.HashData(Key, Encoding.UTF8.GetBytes(input))), digest);
-        foreach (var candidate in new[] { "true", "false", input })
-        {
-            Assert.NotEqual(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(candidate))), digest);
-            Assert.NotEqual(Convert.ToHexString(HMACSHA256.HashData(new byte[32], Encoding.UTF8.GetBytes(candidate))), digest);
-        }
     }
 
     [Fact]
@@ -375,10 +366,10 @@ public sealed class DataEditTests
         Assert.Equal(WorkflowExecutionStatus.Paused, (await Ops(services).PauseAsync(idle.InstanceId, "pause")).Status);
         return idle.InstanceId;
     }
-    private static ServiceProvider Services(IWorkflowStateRepository store, WorkflowVersionRegistry registry, bool tracing = true, bool independentGate = false, bool auditKey = true, long? maxCheckpointBytes = null)
+    private static ServiceProvider Services(IWorkflowStateRepository store, WorkflowVersionRegistry registry, bool tracing = true, bool independentGate = false, long? maxCheckpointBytes = null)
     {
         var services = new ServiceCollection().AddLogging();
-        services.AddIxIFlow(o => { o.Debugging = true; o.DataEditAuditKey = auditKey ? Key : null;
+        services.AddIxIFlow(o => { o.Debugging = true;
             if (maxCheckpointBytes != null) o.MaxCheckpointBytes = maxCheckpointBytes.Value;
             o.MaxTraceEntriesPerCommit = 1; o.MaxTraceEntriesPerInstance = 1; });
         if (independentGate) services.AddSingleton(new InProcessInstanceGate());

@@ -1,7 +1,4 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
@@ -34,8 +31,6 @@ public sealed partial class WorkflowHost
             cancellationToken.ThrowIfCancellationRequested();
             var state = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);
             if (EditReceipt(state, editId, request, actor) is { } receipt) return receipt;
-            var key = (hostSettings ?? HostSettings.Default).DataEditAuditKey;
-            if (key is not { Length: >= 32 }) throw EditRefused("Data edits require a configured audit key of at least 32 bytes");
             var instance = await _store.GetWorkflowInstanceAsync(instanceId)
                 ?? throw EditRefused("Workflow instance does not exist");
             using var signals = Executor.PrepareAssignment(Guid.NewGuid());
@@ -68,7 +63,6 @@ public sealed partial class WorkflowHost
             var order = checked((latest.Commands.LastOrDefault()?.Order ?? 0) + 1);
             if (first != null) order = first.Order; // Recovery of an accepted, unacknowledged edit.
             checkpoint.Debug = checkpoint.Debug with { AppliedOrder = order };
-            IReadOnlyList<DataEditDigest> digests;
             StoredCheckpoint prepared;
             try
             {
@@ -80,7 +74,6 @@ public sealed partial class WorkflowHost
                     throw EditRefused("The selected continuation is not live");
                 var data = branch == null ? checkpoint.RootData : checkpoint.DataOf(branch);
                 var patched = BranchData.Patch(data, request.Patches);
-                digests = EditDigests(instanceId, editId, data, patched, request.Patches, key);
                 if (branch?.ParentJoinId != null)
                 {
                     branch.DataChanges = BranchData.Changes(checkpoint.DataOf(checkpoint.ForkParent(branch)), patched);
@@ -114,7 +107,8 @@ public sealed partial class WorkflowHost
             if (accepted.Command!.EditResult is { } original) return original;
             if (accepted.Command.Order != order) throw new InvalidOperationException("Edit command order changed under its lease");
             var result = new DataEditResult(instanceId, editId, checked(current.Revision + 1), request.Target);
-            checkpoint.Trace.AddAudit(new(actor, editId, request.Target, result.Revision, digests), Now);
+            checkpoint.Trace.AddAudit(new(actor, editId, request.Target, result.Revision,
+                request.Patches.Select(p => (IReadOnlyList<string>)p.Path.ToArray()).ToArray()), Now);
             try
             {
                 await ExecutionCheckpointWriter.CommitPreparedAsync(assignment.Session, current, checkpoint, prepared, Now);
@@ -137,24 +131,5 @@ public sealed partial class WorkflowHost
         }
 
         private static WorkflowEngineException EditRefused(string reason) => new(WorkflowErrorKind.InvalidRequest, reason);
-
-        private static IReadOnlyList<DataEditDigest> EditDigests(string instanceId, string editId, object before,
-            object after, IReadOnlyList<DataPatch> patches, byte[] key)
-        {
-            var oldNode = BranchData.Node(before); var newNode = BranchData.Node(after);
-            string Digest(JsonNode root, IReadOnlyList<string> path, string side)
-            {
-                JsonNode? value = root;
-                var exists = true;
-                foreach (var segment in path)
-                {
-                    if (value is not JsonObject obj || !obj.TryGetPropertyValue(segment, out value)) { exists = false; break; }
-                }
-                var input = JsonSerializer.Serialize(new { Domain = "IxIFlow.DataEdit.v1", instanceId, editId, path, side, exists, value });
-                return Convert.ToHexString(HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(input)));
-            }
-            return patches.Select(p => new DataEditDigest(p.Path.ToArray(),
-                Digest(oldNode, p.Path, "before"), Digest(newNode, p.Path, "after"))).ToArray();
-        }
     }
 }

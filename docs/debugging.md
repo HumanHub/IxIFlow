@@ -150,14 +150,13 @@ If an owning host encounters a stored condition it cannot handle, it pauses at t
 
 ## Data edits
 
-The application authorizes each edit and supplies the actor. Editing hosts need a secret audit key of at least 32 bytes, obtained from application secret configuration. Use the same key across hosts that apply edits; keep it out of workflow data and debugger responses. A host without a key refuses edits and leaves pending edits paused.
+The application authorizes each edit and supplies the actor. Enable debugging on hosts that apply edits:
 
 <!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#edit-host -->
 ```csharp
 services.AddIxIFlow(options =>
 {
     options.Debugging = true;
-    options.DataEditAuditKey = auditKey;
 });
 ```
 
@@ -181,7 +180,7 @@ Success returns a receipt with the edit ID, committed revision and target. The i
 
 If a response is lost, retry with exactly the same instance ID, edit ID, expected revision, target, patches and actor. The store returns the original receipt, even if another host has since continued or completed the instance. Reusing an ID with different fields is refused. Receipts last with the retained instance and are removed with it.
 
-Each edit atomically records a `DataEdited` trace entry with its actor, edit ID, target, committed revision and paths. Before and after values are represented only by HMAC-SHA-256 digests using the configured key, bound to the instance, edit, path and before/after position. Values and dictionary key values are absent from the audit. This audit is mandatory even with tracing disabled, activity-only tracing, or exhausted trace limits. A digest cannot be checked by hashing guesses without the secret key.
+Each edit atomically records a `DataEdited` trace entry with the caller-supplied actor, the entry's timestamp, edit ID, target, committed revision and edited paths. The audit contains no values or value digests. It is mandatory even with tracing disabled, activity-only tracing, or exhausted trace limits. An application that needs value-level audit records it in its own code.
 
 ## Inspection and replay
 

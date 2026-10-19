@@ -336,7 +336,7 @@ public sealed class DebugAdapterTests
     private static ServiceProvider Services(InMemoryWorkflowStateRepository store, IWorkflowDebugSourceProvider? sources = null)
     {
         var services = new ServiceCollection().AddLogging();
-        services.AddIxIFlow(o => { o.Debugging = true; o.DataEditAuditKey = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray(); });
+        services.AddIxIFlow(o => o.Debugging = true);
         services.AddBreakpointConditions();
         services.AddSingleton<IWorkflowStateRepository>(store); services.AddSingleton<Probe>(); services.AddTransient<Noop>();
         if (sources != null) services.AddSingleton(sources);

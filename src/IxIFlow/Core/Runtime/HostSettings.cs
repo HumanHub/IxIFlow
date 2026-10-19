@@ -5,7 +5,6 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
 {
     public const int DefaultMaxCrashes = 3;
     public bool Debugging { get; init; }
-    public byte[]? DataEditAuditKey { get; init; }
     public int MaxCrashes { get; init; } = DefaultMaxCrashes;
 
     public Guid Id { get; } = Guid.NewGuid();

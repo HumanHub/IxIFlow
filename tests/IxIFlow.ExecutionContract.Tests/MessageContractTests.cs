@@ -22,7 +22,7 @@ public sealed class MessageContractTests
         typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
         typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome),
         typeof(BreakpointSource), typeof(BreakpointStop), typeof(BreakpointHitTrace),
-        typeof(DataEditTarget), typeof(DataPatch), typeof(DataEditRequest), typeof(DataEditResult), typeof(DataEditDigest), typeof(DataEditedTrace),
+        typeof(DataEditTarget), typeof(DataPatch), typeof(DataEditRequest), typeof(DataEditResult), typeof(DataEditedTrace),
             typeof(DebugStepPosition), typeof(DebugStepping), typeof(BreakpointEvaluation), typeof(BreakpointConditionDiagnostic)
     ];
     public static TheoryData<Type> MessageTypes => new(MessageTypeList);
@@ -80,8 +80,7 @@ public sealed class MessageContractTests
             new DataPatch(["Number"], JsonSerializer.SerializeToElement(true)),
             new DataEditRequest(5, new(3), [new(["Number"], JsonSerializer.SerializeToElement(7))]),
             new DataEditResult("instance", "edit", 6, new(3)),
-            new DataEditDigest(["Number"], new string('A', 64), new string('B', 64)),
-            new DataEditedTrace("editor", "edit", new(3), 6, [new(["Number"], new string('A', 64), new string('B', 64))]),
+            new DataEditedTrace("editor", "edit", new(3), 6, [["Number"]]),
             new DebugStepPosition("activation", 2, 3, 4, true),
             new DebugStepping("root", DebugStepKind.Over, new("activation", 2, 3, 4, true),
                 ["outer", "activation"], ["root", "forked"], "step", "actor", true),

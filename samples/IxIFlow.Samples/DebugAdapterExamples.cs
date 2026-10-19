@@ -11,13 +11,12 @@ public static class DebugAdapterExamples
         ValueTask<bool> CanDebugAsync(string actor, string instanceId, DebugOperation operation, CancellationToken cancellationToken);
     }
 
-    public static void Register(IServiceCollection services, byte[] auditKey, IApplicationDebugPolicy policy)
+    public static void Register(IServiceCollection services, IApplicationDebugPolicy policy)
     {
         // snippet: register
         services.AddIxIFlow(o =>
         {
             o.Debugging = true;
-            o.DataEditAuditKey = auditKey;
         }).AddDebugging(o =>
         {
             o.NamedPipe("ixiflow-debug");

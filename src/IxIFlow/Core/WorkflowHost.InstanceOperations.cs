@@ -638,7 +638,7 @@ public sealed partial class WorkflowHost
             if (instance?.Status == WorkflowStatus.Paused && cancellationReason == null &&
                 debugState?.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null) is { Kind: DebugCommandKind.EditData, Edit: { } edit } pendingEdit)
             {
-                if (!(hostSettings ?? HostSettings.Default).Debugging || (hostSettings ?? HostSettings.Default).DataEditAuditKey == null)
+                if (!(hostSettings ?? HostSettings.Default).Debugging)
                     return await ExistingResult(instance);
                 await EditUnderGateAsync(instanceId, pendingEdit.Id, edit, pendingEdit.Actor, cancellationToken);
                 return await ExistingResult((await _store.GetWorkflowInstanceAsync(instanceId))!);

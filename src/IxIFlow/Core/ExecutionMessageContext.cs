@@ -40,7 +40,6 @@ namespace IxIFlow.Core;
 [JsonSerializable(typeof(DataPatch))]
 [JsonSerializable(typeof(DataEditRequest))]
 [JsonSerializable(typeof(DataEditResult))]
-[JsonSerializable(typeof(DataEditDigest))]
 [JsonSerializable(typeof(DataEditedTrace))]
 [JsonSerializable(typeof(DebugStepPosition))]
 [JsonSerializable(typeof(DebugStepping))]
