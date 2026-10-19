@@ -23,4 +23,4 @@ public enum CheckpointReplyKind { Ack, Conflict, Retry, Unknown }
 public enum ConflictReason { Revision, StaleEpoch, EventsChanged, NotAssigned }
 public sealed record CheckpointReply(Guid AssignmentId, CheckpointReplyKind Kind, long Revision = 0,
     string? Error = null, CancellationReason? PendingCancellation = null, bool Parked = false,
-    bool UnreadEvents = false, ConflictReason? Conflict = null);
+    bool UnreadEvents = false, ConflictReason? Conflict = null, TimerCommitResult? Timers = null);

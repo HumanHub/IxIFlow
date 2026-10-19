@@ -47,6 +47,8 @@ public sealed record WorkflowCommitResult(
     /// <summary>The winning admission, also returned to a losing duplicate for fingerprint comparison.</summary>
     public WorkflowAdmissionRecord? Admission { get; init; }
 
+    public TimerCommitResult? Timers { get; init; }
+
     /// <summary>
     /// Other instances the commit made runnable: the children it started, and a parent whose inbox took
     /// the child's completion. A host may run them at once; the poll finds them otherwise.
@@ -56,7 +58,7 @@ public sealed record WorkflowCommitResult(
     /// <summary>Receipts are equal when every field is, the instances made runnable compared in order.</summary>
     public bool Equals(WorkflowCommitResult? other) =>
         other is not null && Status == other.Status && Revision == other.Revision &&
-        Equals(Admission, other.Admission) && Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
+        Equals(Timers, other.Timers) && Equals(Admission, other.Admission) && Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
         RunnableAtUtc == other.RunnableAtUtc && StoreTimeUtc == other.StoreTimeUtc &&
         UnreadEvents == other.UnreadEvents && MadeRunnable.SequenceEqual(other.MadeRunnable, StringComparer.Ordinal);
 

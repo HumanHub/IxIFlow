@@ -31,6 +31,16 @@ Events for existing waits are appended while paused and remain pending until con
 
 `WorkflowDefinition.StepTable` lists each executable step's catalog ID, author ID, name, kind, scope path and source location. Builder calls capture their file and line automatically. Source locations do not affect the workflow structure hash. Snapshot pointers expose the catalog address as `StepId` and the author identity as `AuthorStepId`; frames include loop iteration and ForEach item index. Activity trace entries expose the catalog address as `StepId`.
 
+## Freezing timers
+
+Timers keep running during a pause unless you call `IWorkflowOperations.FreezeTimersAsync(instanceId, actor)`. The freeze belongs to that instance's debug session and survives host or repository recreation. Both freeze and unfreeze use the same ordered, acknowledged commands and pause-generation checks as other debugger operations. The store records when the freeze command actually commits, using its own clock.
+
+While frozen, wait timeouts, delays, retry backoffs and the execution timeout do not become due. An event for an open wait can still be appended after its original deadline; normal matching and closed-wait checks apply. A pause keeps events queued, while an isolated step can take events for its selected continuation. Stepping leaves the timer freeze in place.
+
+`ContinueAsync` clears a freeze automatically. `UnfreezeTimersAsync(instanceId, actor)` clears it explicitly while retaining a pause. The clearing transaction shifts each open deadline by the store time spent frozen, before computing when the instance can run again. A wait opened or armed during the freeze gets only the duration after it opened or armed. A retry scheduled during the freeze follows the same rule. A deadline already due when freezing began stays due after unfreezing. Repeating a commit after a lost acknowledgement cannot shift it again.
+
+The execution timeout still takes precedence over queued events when execution continues. Freezing a parent leaves every child's timers running independently. A child's completion remains queued while its parent is paused. The trace records `TimersFrozen` and `TimersShifted` with the actor, store timestamp and frozen duration.
+
 ## Stepping
 
 Choose a live continuation from `IWorkflowClient.GetSnapshotAsync`: its `ExecutionPointer.PointerId` is the continuation ID. A committed pause is required. The application authorizes the instance and operation before issuing the command.

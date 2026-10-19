@@ -63,11 +63,11 @@ public sealed record InboxPage(
     long ReadThrough,
     IReadOnlyDictionary<string, long> OpenWaits,
     IReadOnlyDictionary<string, DateTime>? Deadlines = null,
-    DateTime? StoreTimeUtc = null)
+    DateTime? StoreTimeUtc = null, bool TimersFrozen = false)
 {
     /// <summary>True when the open wait's deadline had passed by the store's time when the page was read.</summary>
     public bool IsDue(string waitId) =>
-        Deadlines != null && Deadlines.TryGetValue(waitId, out var deadline) && deadline <= StoreTimeUtc;
+        !TimersFrozen && Deadlines != null && Deadlines.TryGetValue(waitId, out var deadline) && deadline <= StoreTimeUtc;
 
     /// <summary>
     /// A page of up to <paramref name="limit"/> events read after <paramref name="afterSequence"/> from

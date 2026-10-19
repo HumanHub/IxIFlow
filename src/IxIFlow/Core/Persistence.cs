@@ -123,17 +123,17 @@ public static class WorkflowStoreRules
     /// passed is refused as timed out.
     /// </summary>
     public static EventRejection? RejectOnArrival(WorkflowEvent workflowEvent, StoredWait? target,
-        IEnumerable<StoredWait> candidates, DateTime now)
+        IEnumerable<StoredWait> candidates, DateTime now, bool timersFrozen = false)
     {
         if (workflowEvent.TargetWaitId != null)
             return target is null or { Kind: WaitKind.Delay or WaitKind.Execution } ? EventRejection.UnknownWait
                 : !target.IsOpen ? target.Rejection
-                : target.DeadlineUtc <= now ? EventRejection.WaitTimedOut
+                : !timersFrozen && target.DeadlineUtc <= now ? EventRejection.WaitTimedOut
                 : null;
         return candidates.FirstOrDefault() switch
         {
             null => EventRejection.NoOpenWait,
-            { DeadlineUtc: { } deadline } when deadline <= now => EventRejection.WaitTimedOut,
+            { DeadlineUtc: { } deadline } when !timersFrozen && deadline <= now => EventRejection.WaitTimedOut,
             _ => null
         };
     }
@@ -423,10 +423,11 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     {
         ArgumentNullException.ThrowIfNull(commit);
         var snapshot = commit.ReadTrunk();
+        TimerCommitResult? timerResult = null;
         WorkflowCommitResult Result(WorkflowCommitStatus status, long revision,
             CancellationReason? cancellation = null, bool parked = false, bool unread = false,
             IReadOnlyList<string>? runnable = null) => new(status, revision, cancellation, parked, unread, runnable,
-                _instances.TryGetValue(commit.InstanceId, out var current) ? current.RunnableAtUtc : null, Now);
+                _instances.TryGetValue(commit.InstanceId, out var current) ? current.RunnableAtUtc : null, Now) { Timers = timerResult };
         lock (_claimLock)
         {
             WorkflowAdmissionRecord? admitted = null;
@@ -454,6 +455,11 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 // A terminal or parking commit released the lease; only a running owner must still hold it.
                 if (snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks)
                     return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
+                if (stored != null && (WorkflowTimerRules.Frozen(stored) || WorkflowTimerRules.Frozen(snapshot) ||
+                    CommandsOf(commit.InstanceId).Any(c => c.AcknowledgedRevision == receipt.Revision &&
+                        c.Kind is DebugCommandKind.FreezeTimers or DebugCommandKind.UnfreezeTimers)))
+                    timerResult = WorkflowTimerRules.Read(stored,
+                        _parts.GetValueOrDefault(commit.InstanceId) ?? new(), OpenWaits(commit.InstanceId));
                 // The same commit gets the same answer, including arrivals it has not read.
                 return Task.FromResult(Result(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
                     PendingCancellation(commit.InstanceId), commit.Parks && !owns, Unread(commit)));
@@ -518,10 +524,19 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     };
             foreach (var closed in commit.ClosedWaits)
                 CloseWait(commit.InstanceId, closed.WaitId, closed.Reason, now);
+            Dictionary<string, StoredJson>? timerParts = null;
+            IReadOnlyList<string> traces = commit.TraceEntries;
+            if (WorkflowTimerRules.Changes(stored, snapshot, CommandsOf(commit.InstanceId)))
+            {
+                timerParts = new(commit.ApplyParts(_parts.GetValueOrDefault(commit.InstanceId) ?? new Dictionary<string, StoredJson>()));
+                var timerTraces = commit.TraceEntries.ToList();
+                timerResult = WorkflowTimerRules.Apply(stored, snapshot, timerParts, waits, CommandsOf(commit.InstanceId), now, timerTraces);
+                traces = timerTraces;
+            }
             snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit,
                 debugWake || (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
                 WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.CancellationReason != null, unacknowledged),
-                now, OpenWaits(commit.InstanceId).Min(open => open.DeadlineUtc));
+                now, WorkflowTimerRules.Frozen(snapshot) ? null : OpenWaits(commit.InstanceId).Min(open => open.DeadlineUtc));
             // A finished instance takes no more events; those still pending are closed, and so are its waits.
             if (WorkflowStoreRules.IsTerminal(snapshot.Status))
             {
@@ -536,22 +551,25 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             // An idle owner that has not read every arrival keeps the lease and reads them.
             var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
             // A commit changes only the parts it names, in place.
-            if (commit.ReplacesParts || !_parts.TryGetValue(commit.InstanceId, out var parts))
-                _parts[commit.InstanceId] = parts = new Dictionary<string, StoredJson>(StringComparer.Ordinal);
-            foreach (var deleted in commit.DeletedParts)
-                parts.Remove(deleted);
-            foreach (var part in commit.Parts)
-                parts[part.Key] = part.Json;
+            if (timerParts != null)
+                _parts[commit.InstanceId] = timerParts;
+            else
+            {
+                if (commit.ReplacesParts || !_parts.TryGetValue(commit.InstanceId, out var parts))
+                    _parts[commit.InstanceId] = parts = new Dictionary<string, StoredJson>(StringComparer.Ordinal);
+                foreach (var deleted in commit.DeletedParts) parts.Remove(deleted);
+                foreach (var part in commit.Parts) parts[part.Key] = part.Json;
+            }
             snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
             _instances[commit.InstanceId] = snapshot;
             if (debugCommands.Count > 0) _debugCommands[commit.InstanceId] = debugCommands.ToList();
             RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
-            if (commit.TraceEntries.Count > 0)
+            if (traces.Count > 0)
             {
                 if (!_traces.TryGetValue(commit.InstanceId, out var trace))
                     _traces[commit.InstanceId] = trace = [];
-                trace.AddRange(commit.TraceEntries);
+                trace.AddRange(traces);
             }
             if (snapshot.CancellationReason != null && _cancellations.ContainsKey(commit.InstanceId))
                 _acknowledgedCancellations.Add(commit.InstanceId);
@@ -649,7 +667,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent,
             workflowEvent.TargetWaitId == null ? null
                 : WaitsOf(workflowEvent.InstanceId).GetValueOrDefault(workflowEvent.TargetWaitId),
-            WorkflowStoreRules.Candidates(workflowEvent, OpenWaits(workflowEvent.InstanceId), now), now)
+            WorkflowStoreRules.Candidates(workflowEvent, OpenWaits(workflowEvent.InstanceId), now), now, WorkflowTimerRules.Frozen(instance))
             ?? (finished ? EventRejection.InstanceFinished : null);
         // A refused event is recorded so a resend is recognized, but takes no place in the inbox.
         if (rejection != null)
@@ -725,7 +743,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 open.ToDictionary(wait => wait.WaitId, wait => wait.OpenedSequence, StringComparer.Ordinal),
                 open.Where(wait => wait.DeadlineUtc != null)
                     .ToDictionary(wait => wait.WaitId, wait => wait.DeadlineUtc!.Value, StringComparer.Ordinal),
-                Now));
+                Now) with { TimersFrozen = _instances.TryGetValue(instanceId, out var instance) && WorkflowTimerRules.Frozen(instance) });
         }
     }
 

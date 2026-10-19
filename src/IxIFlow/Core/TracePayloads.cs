@@ -15,6 +15,7 @@ namespace IxIFlow.Core;
 [JsonDerivedType(typeof(ReleaseTrace), "release")]
 [JsonDerivedType(typeof(TraceTruncation), "truncation")]
 [JsonDerivedType(typeof(TraceBudget), "budget")]
+[JsonDerivedType(typeof(TimersTrace), "timers")]
 [JsonDerivedType(typeof(DataEditedTrace), "dataEdited")]
 [JsonDerivedType(typeof(DebugCommandTrace), "debugCommand")]
 [JsonDerivedType(typeof(BreakpointHitTrace), "breakpointHit")]
