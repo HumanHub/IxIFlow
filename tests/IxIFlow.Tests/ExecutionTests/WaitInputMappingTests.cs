@@ -53,7 +53,7 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         var definition = new WorkflowBuilder<Data, object>([], "SavedWaitInputs")
             .WaitFor<Answer>("review", configure: wait => wait.Input(answer => answer.Customer)
                 .From(ctx => Observe(ctx.WorkflowData.Customer))).Build();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         string instanceId;
         string? json;
         await using (var services = Services(true, registry))
@@ -197,12 +197,12 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         return value;
     }
 
-    private static ServiceProvider Services(bool sqlite = false, WorkflowVersionRegistry? registry = null)
+    private static ServiceProvider Services(bool sqlite = false, WorkflowCatalog? registry = null)
     {
         var services = new ServiceCollection().AddLogging();
         var builder = services.AddIxIFlow();
         if (sqlite) builder.UseSqlite(SqliteTestDatabase<WaitInputMappingTests>.ConnectionString);
-        if (registry != null) services.AddSingleton<IWorkflowVersionRegistry>(registry);
+        if (registry != null) services.AddSingleton<IWorkflowCatalog>(registry);
         return services.BuildServiceProvider();
     }
 

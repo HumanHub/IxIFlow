@@ -7,6 +7,29 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
+    public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
+        Guard(() => _store.GetDefinitionAsync(name, version), "Accessing workflow catalog or artifacts");
+    public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
+        Guard(() => _store.SaveDefinitionAsync(definition, expectedRevision), "Accessing workflow catalog or artifacts");
+    public Task RegisterWorkflowVersionAsync(WorkflowVersion version) =>
+        Guard(() => _store.RegisterWorkflowVersionAsync(version), "Accessing workflow catalog or artifacts");
+    public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
+        Guard(() => _store.GetWorkflowVersionAsync(name, version), "Accessing workflow catalog or artifacts");
+    public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
+        Guard(() => _store.GetWorkflowVersionsAsync(name), "Accessing workflow catalog or artifacts");
+    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>
+        Guard(() => _store.SetWorkflowVersionStateAsync(name, version, state), "Accessing workflow catalog or artifacts");
+    public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+        Guard(() => _store.PurgeArtifactsAsync(ReferenceEquals(artifacts, this) ? _store : artifacts, retention, batchSize, cancellationToken), "Accessing workflow catalog or artifacts");
+    public async ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
+        await Guard(() => _store.PutAsync(kind, content, cancellationToken).AsTask(), "Accessing workflow catalog or artifacts");
+    public async ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+        await Guard(() => _store.OpenAsync(digest, cancellationToken).AsTask(), "Accessing workflow catalog or artifacts");
+    public async ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+        await Guard(() => _store.ExistsAsync(digest, cancellationToken).AsTask(), "Accessing workflow catalog or artifacts");
+    public async ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+        await Guard(() => _store.DeleteAsync(digest, cancellationToken).AsTask(), "Accessing workflow catalog or artifacts");
+
     public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
         Guard(() => _store.RegisterMemberAsync(member, cancellationToken), "Registering store member");
     public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
@@ -87,11 +110,11 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
 
     public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit) =>
         Guard(() => _store.CommitWorkflowInstanceAsync(commit),
-            $"Saving workflow instance '{commit.InstanceId}'");
+            $"Saving workflow instance '{commit.InstanceId}'", preserveArtifactUnavailable: true);
 
     public Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission) =>
         Guard(() => _store.AdmitWorkflowInstanceAsync(commit, admission),
-            $"Admitting workflow instance '{commit.InstanceId}'");
+            $"Admitting workflow instance '{commit.InstanceId}'", preserveArtifactUnavailable: true);
 
     public Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId) =>
         Guard(() => _store.GetWorkflowOwnershipAsync(instanceId), $"Reading ownership of '{instanceId}'");
@@ -145,14 +168,15 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention),
             $"Deleting workflow instance '{instanceId}'");
 
-    private static async Task<T> Guard<T>(Func<Task<T>> call, string operation)
+    private static async Task<T> Guard<T>(Func<Task<T>> call, string operation, bool preserveArtifactUnavailable = false)
     {
         try
         {
             return await call();
         }
         catch (Exception error) when (error is not OperationCanceledException &&
-            error is not WorkflowEngineException { Kind: WorkflowErrorKind.InstanceRemoved })
+            error is not WorkflowEngineException { Kind: WorkflowErrorKind.InstanceRemoved } &&
+            !(preserveArtifactUnavailable && error is WorkflowEngineException { Kind: WorkflowErrorKind.ArtifactUnavailable }))
         {
             throw Failure(operation, error);
         }

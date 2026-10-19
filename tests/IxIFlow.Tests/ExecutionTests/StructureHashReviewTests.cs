@@ -174,7 +174,7 @@ public sealed class StructureHashReviewTests
         var collection = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         collection.RegisterWorkflow<ReviewChild>();
         using var services = collection.BuildServiceProvider();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var published = Workflow.Create<StructureHashData>("Review child")
             .Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => 1)).Build();
         await registry.RegisterWorkflowAsync(published);

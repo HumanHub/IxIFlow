@@ -23,7 +23,7 @@ public sealed class ExecutorBoundaryGuardTests
     [
         typeof(IWorkflowStateRepository), typeof(IWorkflowOutbox), typeof(GuardedStateRepository),
         typeof(WorkflowExecutionLease), typeof(InProcessInstanceGate), typeof(IWorkflowClient),
-        typeof(IWorkflowVersionRegistry), typeof(ChildWorkflows), typeof(WorkflowHost.InstanceOperations), typeof(WorkflowHost.SlotClient),
+        typeof(IWorkflowCatalog), typeof(ChildWorkflows), typeof(WorkflowHost.InstanceOperations), typeof(WorkflowHost.SlotClient),
         typeof(WorkflowHost), typeof(HostedWorkflowClient)
     ];
 

@@ -848,7 +848,7 @@ public class EngineContractRegressionTests
     [Fact]
     public async Task PublishedWorkflowVersion_CannotBeSilentlyReplaced()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var original = new WorkflowDefinition { Name = "Order", Version = 1, Description = "published" };
         await registry.RegisterWorkflowAsync(original);
 
@@ -1011,7 +1011,7 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var registry = scope.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = scope.ServiceProvider.GetRequiredService<IWorkflowCatalog>();
         var child = Workflow.Create<ChildData>("Child")
             .Step<MarkChildActivity>(setup => setup
                 .Input(a => a.Value).From(ctx => ctx.WorkflowData.Value)
@@ -1055,7 +1055,7 @@ public class EngineContractRegressionTests
         var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("MissingChildParent"));
         Assert.NotEqual(WorkflowStatus.Failed, saved.Status);
 
-        await scope.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await scope.ServiceProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("MissingChild")
                 .Step<MarkChildActivity>(setup => setup
                     .Output(a => a.Executed).To(ctx => ctx.WorkflowData.Executed))

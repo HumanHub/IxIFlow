@@ -48,7 +48,7 @@ internal sealed class ChildCompleted
 /// Starts child workflows as instances of their own: resolves the child's definition, registered
 /// so any host can run it, and builds its initial instance the way a client start does.
 /// </summary>
-internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersionRegistry registry, TimeProvider time)
+internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowCatalog registry, TimeProvider time)
 {
     /// <summary>
     /// The definition an invocation step invokes. To start a child it must be active, as for a client's start,
@@ -77,9 +77,9 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
         if (definition.WorkflowDataType == null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Workflow {definition.Name} has no data type");
-        if (starting && definition.Metadata.TryGetValue("IsActive", out var isActive) && isActive is false)
-            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                $"Workflow {definition.Name} v{definition.Version} is deactivated");
+        if (starting)
+            WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(definition.Name, definition.Version),
+                definition.Name, definition.Version);
         _ = WorkflowDefinitionValidator.ForExecution(definition);
         return definition;
     }

@@ -233,7 +233,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task SuspendedInstanceCanResumeOnAnotherHost()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(repository, registry, probe);
@@ -258,7 +258,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task CancellingSuspendedWaitPersistsCancellationAndPreventsResume()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(repository, registry, probe);
@@ -291,7 +291,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task OtherHostCanCancelRunningActivityThroughDurableRequest()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe, shortLease: true);
         using var secondHost = CreateHost(repository, registry, probe, shortLease: true);
@@ -324,7 +324,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var inner = new InMemoryWorkflowStateRepository();
         var instanceId = Guid.NewGuid().ToString("N");
-        using (var setup = CreateHost(inner, new WorkflowVersionRegistry(), new ActivityProbe()))
+        using (var setup = CreateHost(inner, new WorkflowCatalog(), new ActivityProbe()))
         {
             var started = await setup.GetRequiredService<IWorkflowClient>().RunAsync(
                 Workflow.Create<LeaseData>("CompletionRace").Step<NoopActivity>()
@@ -337,7 +337,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             PauseFirstRead = false,
             CompleteOnCancellationRequest = true
         };
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
+        using var host = CreateHost(repository, new WorkflowCatalog(), new ActivityProbe());
 
         var result = await host.GetRequiredService<IWorkflowClient>()
             .CancelAsync(instanceId, new CancellationReason { ReasonCode = "late" });
@@ -354,7 +354,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         CurrentCancellation.Value = cancellation;
         var repository = new InMemoryWorkflowStateRepository();
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
+        using var host = CreateHost(repository, new WorkflowCatalog(), probe);
         var definition = Workflow.Create<LeaseData>("CancelDuringBranch")
             .Step<RecordActivity>()
             .If(_ => CancelAndTrue(),
@@ -395,7 +395,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var repository = new InMemoryWorkflowStateRepository();
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
+        using var host = CreateHost(repository, new WorkflowCatalog(), probe);
         var definition = Workflow.Create<LeaseData>("CancelBeforeResume")
             .Step<NoopActivity>()
             .WaitFor<LeaseEvent>("approval")
@@ -510,7 +510,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             PauseFirstRead = false,
             CancelBeforeTerminalCommit = 1
         };
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
+        using var host = CreateHost(repository, new WorkflowCatalog(), new ActivityProbe());
         var definition = Workflow.Create<LeaseData>("CancelAtTerminalCommit")
             .Step<NoopActivity>()
             .Build();
@@ -534,7 +534,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             PauseFirstRead = false,
             CancelBeforeFailedCommit = 1
         };
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
+        using var host = CreateHost(repository, new WorkflowCatalog(), new ActivityProbe());
         var definition = Workflow.Create<LeaseData>("CancelAtFailureCommit")
             .Step<FailingActivity>()
             .Build();
@@ -556,7 +556,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             PauseFirstRead = false,
             CancelWhenRootCompletedOnRead = 1
         };
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
+        using var host = CreateHost(repository, new WorkflowCatalog(), new ActivityProbe());
         var definition = Workflow.Create<LeaseData>("CancelAfterRootFinished")
             .Step<NoopActivity>()
             .Build();
@@ -577,7 +577,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             PauseFirstRead = false,
             FailAllCancellationReads = true
         };
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
+        using var host = CreateHost(repository, new WorkflowCatalog(), new ActivityProbe());
         var definition = Workflow.Create<LeaseData>("CancellationReadFailure")
             .Step<NoopActivity>()
             .Build();
@@ -600,7 +600,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             PauseFirstRead = false
         };
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
+        using var host = CreateHost(repository, new WorkflowCatalog(), probe);
         var definition = Workflow.Create<LeaseData>("CancellationReadDuringActivity")
             .Step<BlockingActivity>()
             .Step<RecordActivity>()
@@ -653,7 +653,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task LiveOwnerCannotBeRecoveredByAnotherHost()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(repository, registry, probe);
@@ -690,7 +690,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var time = new TimerRecordingClock();
         var repository = new InMemoryWorkflowStateRepository(time);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe, shortLease: true, time);
         using var secondHost = CreateHost(repository, registry, probe, shortLease: true, time);
@@ -729,7 +729,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             PauseFirstRead = false
         };
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true, time);
+        using var host = CreateHost(repository, new WorkflowCatalog(), probe, shortLease: true, time);
         var definition = Workflow.Create<LeaseData>("TransientCancellationRead")
             .Step<BlockingActivity>()
             .Build();
@@ -753,7 +753,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             FailAfterObservedCancellation = true
         };
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe,
+        using var host = CreateHost(repository, new WorkflowCatalog(), probe,
             shortLease: true);
         var definition = Workflow.Create<LeaseData>("ObservedCancellationWithStoreOutage")
             .Step<CancellableBlockingActivity>().Build();
@@ -787,7 +787,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             PauseFirstRead = false
         };
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true, time);
+        using var host = CreateHost(repository, new WorkflowCatalog(), probe, shortLease: true, time);
         var definition = Workflow.Create<LeaseData>("TransientRenewal")
             .Step<BlockingActivity>()
             .Build();
@@ -811,7 +811,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             PauseFirstRead = false
         };
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe, shortLease: true, time);
+        using var host = CreateHost(repository, new WorkflowCatalog(), probe, shortLease: true, time);
         var definition = Workflow.Create<LeaseData>("LostLeaseActivity")
             .Step<BlockingActivity>()
             .Build();
@@ -839,7 +839,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var repository = new InMemoryWorkflowStateRepository();
         var staleReader = new PausedReadRepository(repository);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(staleReader, registry, probe);
@@ -876,7 +876,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var repository = new InMemoryWorkflowStateRepository();
         var staleReader = new PausedReadRepository(repository);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(staleReader, registry, probe);
@@ -910,7 +910,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var repository = new InMemoryWorkflowStateRepository();
         var releaseFault = new PausedReadRepository(repository) { FailRelease = true };
         var probe = new ActivityProbe();
-        using var host = CreateHost(releaseFault, new WorkflowVersionRegistry(), probe);
+        using var host = CreateHost(releaseFault, new WorkflowCatalog(), probe);
         var definition = Workflow.Create<LeaseData>("ReleaseFault")
             .Step<RecordActivity>()
             .Build();
@@ -948,7 +948,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public Task PostgreSqlRecoveryScannerReclaimsAnExpiredWorker() => VerifyRecoveryScannerReclaimsAnExpiredWorker(PostgreSqlRepository, () => new NpgsqlConnection(PostgreSqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString));
 
     private static ServiceProvider CreateHost(IWorkflowStateRepository repository,
-        IWorkflowVersionRegistry registry, ActivityProbe probe, bool shortLease = false, TimeProvider? time = null)
+        IWorkflowCatalog registry, ActivityProbe probe, bool shortLease = false, TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -1175,7 +1175,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var instanceId = Guid.NewGuid().ToString("N");
         var probe = new ActivityProbe();
-        using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
+        using var host = CreateHost(repository, new WorkflowCatalog(), probe);
         var definition = Workflow.Create<LeaseData>("IdempotentStart")
             .Step<RecordActivity>()
             .Build();
@@ -1295,6 +1295,29 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     private sealed class PausedReadRepository(InMemoryWorkflowStateRepository inner) : IWorkflowStateRepository
     {
+        public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
+            inner.GetDefinitionAsync(name, version);
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
+            inner.SaveDefinitionAsync(definition, expectedRevision);
+        public Task RegisterWorkflowVersionAsync(WorkflowVersion version) =>
+            inner.RegisterWorkflowVersionAsync(version);
+        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
+            inner.GetWorkflowVersionAsync(name, version);
+        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
+            inner.GetWorkflowVersionsAsync(name);
+        public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>
+            inner.SetWorkflowVersionStateAsync(name, version, state);
+        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+            inner.PurgeArtifactsAsync(ReferenceEquals(artifacts, this) ? inner : artifacts, retention, batchSize, cancellationToken);
+        public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
+            inner.PutAsync(kind, content, cancellationToken);
+        public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            inner.OpenAsync(digest, cancellationToken);
+        public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            inner.ExistsAsync(digest, cancellationToken);
+        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            inner.DeleteAsync(digest, cancellationToken);
+
         public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
             inner.RegisterMemberAsync(member, cancellationToken);
         public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
@@ -1514,7 +1537,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var firstRepository = newRepository();
         var secondRepository = newRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(firstRepository, registry, probe);
         using var secondHost = CreateHost(secondRepository, registry, probe);
@@ -1555,7 +1578,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var firstRepository = newRepository();
         var secondRepository = newRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(firstRepository, registry, probe);
         using var secondHost = CreateHost(secondRepository, registry, probe);
@@ -1589,8 +1612,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     private static async Task VerifyScannerCompletesCancellationAfterRequestingHostStops(Func<IWorkflowStateRepository> newRepository)
     {
         var firstRepository = newRepository();
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
+        var firstRegistry = new WorkflowCatalog();
+        var secondRegistry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         var definition = Workflow.Create<LeaseData>("SqlCancelAfterHostStop")
             .Step<RecordActivity>()
@@ -1645,8 +1668,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var firstRepository = newRepository();
         var secondRepository = newRepository();
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
+        var firstRegistry = new WorkflowCatalog();
+        var secondRegistry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
         using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
@@ -1677,8 +1700,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var firstRepository = newRepository();
         var secondRepository = newRepository();
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
+        var firstRegistry = new WorkflowCatalog();
+        var secondRegistry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
         using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
@@ -1736,7 +1759,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     private static async Task VerifyScannerDoesNotRepeatCancellationWhileFinallyWaits(IWorkflowStateRepository repository)
     {
         var probe = new ActivityProbe();
-        await using var host = CreateHost(repository, new WorkflowVersionRegistry(), probe);
+        await using var host = CreateHost(repository, new WorkflowCatalog(), probe);
         var definition = Workflow.Create<LeaseData>("SqlCancelFinallyWait")
             .Step<RecordActivity>()
             .Try(body => body.WaitFor<LeaseEvent>("approval"))
@@ -1774,8 +1797,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var firstRepository = newRepository();
         var secondRepository = newRepository();
-        var firstRegistry = new WorkflowVersionRegistry();
-        var secondRegistry = new WorkflowVersionRegistry();
+        var firstRegistry = new WorkflowCatalog();
+        var secondRegistry = new WorkflowCatalog();
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
         using var secondHost = CreateHost(secondRepository, secondRegistry, probe);

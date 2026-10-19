@@ -94,7 +94,7 @@ public class StructuredLoopWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(WhileWorkflow());
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "approval", new LoopApproval());

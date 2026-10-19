@@ -243,6 +243,12 @@ public sealed class WorkflowRecoveryServiceTests
 
     private sealed class RecordingEngine : IWorkflowClient
     {
+        public Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
+        public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
         public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
@@ -309,6 +315,12 @@ public sealed class WorkflowRecoveryServiceTests
 
     private sealed class BlockingRecoveryEngine : IWorkflowClient
     {
+        public Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
+        public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
         public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();

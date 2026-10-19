@@ -202,7 +202,7 @@ public sealed class ParallelForEachTests
         Source.Approvers = ["ann", "bob", "cid", "zed"];
 
         using var second = Services(store, outbox);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         foreach (var name in new[] { "ann", "bob" })
             await Engine(second).ReplyAsync(outbox.TokenOf(name), new Answer { Approved = true });
         var finished = await Engine(second).ReplyAsync(outbox.TokenOf("cid"), new Answer { Approved = false });
@@ -238,7 +238,7 @@ public sealed class ParallelForEachTests
         store.FailCommit = _ => false;
 
         using var second = Services(store, outbox);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         Assert.Equal(WorkflowExecutionStatus.Suspended, (await Engine(second).RecoverAsync(instanceId)).Status);
         await Engine(second).ReplyAsync(outbox.TokenOf("ann"), new Answer { Approved = true });
         var finished = await Engine(second).ReplyAsync(outbox.TokenOf("cid"), new Answer { Approved = false });
@@ -294,7 +294,7 @@ public sealed class ParallelForEachTests
         Source.Needed = 3;
 
         using var second = Services(store, outbox);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var finished = await Engine(second).RecoverAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);

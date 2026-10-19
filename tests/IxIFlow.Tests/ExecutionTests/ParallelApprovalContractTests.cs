@@ -437,7 +437,7 @@ public class ParallelApprovalContractTests
         var rebuilt = CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false);
         Assert.NotEqual(original.Steps[0].Id, rebuilt.Steps[0].Id);
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(rebuilt);
+        await secondProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(rebuilt);
         var resumedEngine = secondProvider.GetRequiredService<IWorkflowClient>();
 
         await resumedEngine.ResumeAsync(instanceId, "finance", Reply("finance", approved: true));
@@ -474,7 +474,7 @@ public class ParallelApprovalContractTests
         await StoreTestSupport.ReleaseAsync(recoveredRepository, saved.InstanceId);
         using var secondProvider = CreateServices(recoveredRepository);
         var rebuilt = CreateRecoverWorkflow();
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(rebuilt);
+        await secondProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(rebuilt);
         var engine = secondProvider.GetRequiredService<IWorkflowClient>();
 
         var idle = await engine.RecoverAsync(saved.InstanceId);
@@ -528,7 +528,7 @@ public class ParallelApprovalContractTests
                 .Step<StartActivity>()
                 .WaitFor<ApprovalReply>("finance")
                 .Build();
-            await wrongProvider.GetRequiredService<IWorkflowVersionRegistry>()
+            await wrongProvider.GetRequiredService<IWorkflowCatalog>()
                 .RegisterWorkflowAsync(changed);
             var rejected = await wrongProvider.GetRequiredService<IWorkflowClient>()
                 .RecoverAsync(saved.InstanceId);
@@ -538,7 +538,7 @@ public class ParallelApprovalContractTests
         var stillSaved = await repository.GetWorkflowInstanceAsync(saved.InstanceId);
         Assert.Equal(WorkflowStatus.Running, stillSaved!.Status);
         using var correctProvider = CreateServices(repository);
-        await correctProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await correctProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(CreateRecoverWorkflow());
         var recovered = await correctProvider.GetRequiredService<IWorkflowClient>()
             .RecoverAsync(saved.InstanceId);
@@ -1639,6 +1639,29 @@ public class ParallelApprovalContractTests
 
     private sealed class RecordingRepository : IWorkflowStateRepository
     {
+        public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
+            _inner.GetDefinitionAsync(name, version);
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
+            _inner.SaveDefinitionAsync(definition, expectedRevision);
+        public Task RegisterWorkflowVersionAsync(WorkflowVersion version) =>
+            _inner.RegisterWorkflowVersionAsync(version);
+        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
+            _inner.GetWorkflowVersionAsync(name, version);
+        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
+            _inner.GetWorkflowVersionsAsync(name);
+        public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>
+            _inner.SetWorkflowVersionStateAsync(name, version, state);
+        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+            _inner.PurgeArtifactsAsync(ReferenceEquals(artifacts, this) ? _inner : artifacts, retention, batchSize, cancellationToken);
+        public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
+            _inner.PutAsync(kind, content, cancellationToken);
+        public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            _inner.OpenAsync(digest, cancellationToken);
+        public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            _inner.ExistsAsync(digest, cancellationToken);
+        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            _inner.DeleteAsync(digest, cancellationToken);
+
         public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
             _inner.RegisterMemberAsync(member, cancellationToken);
         public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,

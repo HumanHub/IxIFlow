@@ -51,7 +51,7 @@ public sealed class IncomingWebhookEndpointTests
         public int Mappings;
         public TimeProvider Time { get; }
         public Harness(IWorkflowStateRepository? store = null, TimeProvider? time = null,
-            IWorkflowVersionRegistry? registry = null, Action<WorkflowTriggerBuilder>? registrations = null)
+            IWorkflowCatalog? registry = null, Action<WorkflowTriggerBuilder>? registrations = null)
         {
             Time = time ?? TimeProvider.System;
             Store = store ?? new InMemoryWorkflowStateRepository(Time);
@@ -374,7 +374,7 @@ public sealed class IncomingWebhookEndpointTests
     public async Task StartRepeatLostResponseAndConflictAreDurableAndScoped()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await using var firstHost = new Harness(repository, registry: registry);
         var first = await firstHost.Send("/orders/{orderId}", "{\"value\":2}", key: "once");
         Assert.Equal(202, first.Status);
@@ -410,7 +410,7 @@ public sealed class IncomingWebhookEndpointTests
     public async Task RenamingARouteAndDeployingANewVersionKeepsTheOriginalAdmissionPinned()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await using var firstHost = new Harness(repository, registry: registry);
         var first = await firstHost.Send("/orders/{orderId}", key: "deployment");
         var nextVersion = Workflow.Create<Data>("IncomingWait", 2).Step<Noop>().WaitFor<Approval>("approval").Build();
@@ -431,10 +431,10 @@ public sealed class IncomingWebhookEndpointTests
     [Fact]
     public async Task DeactivationRefusesNewStartsButStillAnswersAnAlreadyAdmittedRetry()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await using var host = new Harness(registry: registry);
         var first = await host.Send("/orders/{orderId}", key: "deactivate");
-        await registry.DeactivateWorkflowVersionAsync("IncomingWait", 1);
+        await registry.RetireWorkflowVersionAsync("IncomingWait", 1);
         var retry = await host.Send("/orders/{orderId}", key: "deactivate");
         Assert.Equal(202, retry.Status);
         Assert.Equal(first.Id, retry.Id);

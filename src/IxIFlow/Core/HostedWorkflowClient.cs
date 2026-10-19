@@ -6,7 +6,7 @@ namespace IxIFlow.Core;
 /// The client every application uses: calls become work for the <see cref="WorkflowHost"/>, which runs
 /// them in slots. Reads and cancellation requests take no slot.
 /// </summary>
-internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time) : IWorkflowClient
+internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time, IWorkflowCatalog catalog) : IWorkflowClient
 {
     // AwaitAsync also notices work finished on another host; until the store can notify (D-05,
     // D-12), it checks the saved state at this interval.
@@ -22,6 +22,24 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
             (client, _, token) => client.RunAsync(definition, workflowData, options, token), cancellationToken),
             cancellationToken);
     }
+
+    public async Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
+        WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var row = version is { } number ? await catalog.GetWorkflowVersionAsync(name, number)
+            : await catalog.GetLatestWorkflowVersionAsync(name);
+        if (row == null)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Workflow version not found: {name}");
+        var definition = await catalog.GetWorkflowDefinitionAsync(name, row.Version)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Workflow definition not found: {name} v{row.Version}");
+        return await StartAsync(definition, workflowData, options, cancellationToken);
+    }
+
+    public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
+        WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class =>
+        StartAsync(name, null, workflowData, options, cancellationToken);
 
     public async Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition,
         TWorkflowData workflowData, WorkflowOptions? options = null, CancellationToken cancellationToken = default)

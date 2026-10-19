@@ -164,7 +164,7 @@ public sealed class RunnableWakeUpTests
 
     private static ServiceProvider Registered(ServiceProvider services)
     {
-        services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Definition())
+        services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Definition())
             .GetAwaiter().GetResult();
         return services;
     }
