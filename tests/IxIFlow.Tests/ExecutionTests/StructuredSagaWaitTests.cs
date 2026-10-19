@@ -1771,6 +1771,16 @@ public class StructuredSagaWaitTests
 
     public sealed class HandlerStartCrashStore : IWorkflowStateRepository
     {
+        public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
+            _inner.RegisterMemberAsync(member, cancellationToken);
+        public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
+            CancellationToken cancellationToken = default) =>
+            _inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
+        public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
+            _inner.UnregisterMemberAsync(memberId, cancellationToken);
+        public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
+            _inner.GetLiveMembersAsync(cancellationToken);
+
         public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
             CancellationToken cancellationToken = default) =>
             _inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);

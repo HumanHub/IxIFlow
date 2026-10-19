@@ -16,7 +16,7 @@ All four registrations compile in [Hosting.Services](../samples/IxIFlow.Samples/
 
 ## Common contract
 
-`IWorkflowStateRepository` includes revisioned checkpoint commits and receipts, execution leases, instance queries, child instances, inboxes, waits, committed trace history, outbox subscriptions/deliveries, retention and tombstones. Provider schemas are created on first use in a transaction. Creation supplies complete tables and indexes; it does not upgrade existing tables or repair their missing indexes. Before 1.0, recreate a database from an earlier schema build rather than reuse it. SQLite and PostgreSQL leave the schema alone once the instance table exists; SQL Server creates absent tables but does not alter existing ones.
+`IWorkflowStateRepository` includes revisioned checkpoint commits and receipts, execution leases, instance queries, child instances, inboxes, waits, committed trace history, outbox subscriptions/deliveries, retention, tombstones and the member registry. Provider schemas are created on first use in a transaction. Creation supplies complete tables and indexes; it does not upgrade existing tables or repair their missing indexes. Before 1.0, recreate a database from an earlier schema build rather than reuse it. All relational providers leave the schema alone once the instance table exists.
 
 Every commit requires a granted, active execution lease and fences the owner by its positive epoch and expected revision. An epoch is never granted twice in a store, and epochs strictly increase for each instance ID, including across deletions and re-creations. Across instances, epochs follow allocation order, with gaps allowed; grants may complete in a different order. Every commit after the first must also carry the row's incarnation. Instance changes, consumed events, wait transitions, child starts and terminal completion envelopes share the persistence transaction. Publishers use their own per-delivery leases. Cleanup atomically removes operational data and writes a tombstone while preserving the epoch sequence.
 
@@ -24,11 +24,11 @@ Persisted execution state is a validated schema-3 checkpoint JSON object. Whole 
 
 Definition/version registries are in memory for every provider. Load the matching definitions and activity code on every host that could resume work. The default template store is also in memory; workflow bundles and artifact storage remain planned.
 
-`IWorkflowVersionRegistry` supports registration, exact name/version lookup and deactivation. Child invocations require a registered definition; named invocations pin its version. Selecting the latest published version belongs to the planned publishing lifecycle. Re-registering a name/version rejects changed data types, descriptions, tags or runtime fingerprints. Deactivation blocks new starts while existing instances can recover.
+`IWorkflowVersionRegistry` supports registration, exact name/version lookup, snapshots of registered definitions and deactivation. Child invocations require a registered definition; named invocations pin its version. Selecting the latest published version belongs to the planned publishing lifecycle. Re-registering a name/version rejects changed data types, descriptions, tags or runtime fingerprints. Deactivation blocks new starts while existing instances can recover.
 
 ## Memory
 
-The singleton `InMemoryWorkflowStateRepository` survives DI request scopes in one process. It uses the registered `TimeProvider` and implements the same inbox, lease, outbox and retention semantics. Restarting the process loses those records. This is useful for examples and deterministic tests.
+The singleton `InMemoryWorkflowStateRepository` survives DI request scopes in one process. It uses the registered `TimeProvider` and implements the same inbox, lease, outbox, retention and member-registry semantics. Restarting the process loses those records. This is useful for examples and deterministic tests.
 
 ## SQLite
 
@@ -54,6 +54,6 @@ The provider implements `IRunnableWakeSource` using `LISTEN`/`NOTIFY`. Notificat
 
 ## Store extensions
 
-Set `IxIFlowOptions.UseCustomStateRepository` to the repository type in `AddIxIFlow(options => ...)`; it is registered as a singleton and counts as the chosen store. It must support concurrent calls and the complete public store contract, including inbox, outbox and retention. It implements batched cancellation reads, instance summaries and child queries directly. Batch cancellation reads preserve successful results when other reads fail and throw `AggregateException` when every read fails. `IxIFlow.Relational` is an internal implementation dependency, not a public provider SDK.
+Set `IxIFlowOptions.UseCustomStateRepository` to the repository type in `AddIxIFlow(options => ...)`; it is registered as a singleton and counts as the chosen store. It must support concurrent calls and the complete public store contract, including inbox, outbox, retention and the [member registry](coordinator-and-hosts.md#host-registry-and-capabilities). It implements batched cancellation reads, instance summaries and child queries directly. Batch cancellation reads preserve successful results when other reads fail and throw `AggregateException` when every read fails. `IxIFlow.Relational` is an internal implementation dependency, not a public provider SDK.
 
 Read [execution model](execution-model.md), [retention](retention-and-tombstones.md) and [outbox delivery](outbox-and-publishers.md) before implementing a store.

@@ -60,7 +60,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     internal override int OwnershipReadBatchSize => 1000;
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
+        operation is Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
             ? await connection.BeginTransactionAsync() : null;
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
@@ -649,7 +649,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         Statement.DeleteParts => """
                     DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId AND PartKey IN @Keys
                     """,
-        _ => RetentionSql(statement)
+        _ => RegistrySql(statement) ?? RetentionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -667,6 +667,14 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         """, transaction: transaction);
     if (lockResult < 0)
         throw new InvalidOperationException($"Could not lock the workflow schema ({lockResult})");
+    // Creation is atomic. Existing databases are recreated when the schema changes, never upgraded.
+    if (await connection.ExecuteScalarAsync<bool>(
+            "SELECT CASE WHEN OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NULL THEN 0 ELSE 1 END",
+            transaction: transaction))
+    {
+        await transaction.CommitAsync();
+        return;
+    }
     await connection.ExecuteAsync("""
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NULL
         BEGIN
@@ -781,6 +789,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         """, transaction: transaction);
     await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
+    await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }
