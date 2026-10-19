@@ -54,7 +54,7 @@ public class ConditionalTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ConditionalTestData)result.WorkflowData;
@@ -95,7 +95,7 @@ public class ConditionalTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ConditionalTestData)result.WorkflowData;
@@ -191,7 +191,7 @@ public class ConditionalTests
         var vipResult = await _workflowEngine.RunAsync(definition, vipData);
 
         // Assert
-        Assert.True(vipResult.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, vipResult.Status);
         Assert.NotNull(vipResult.WorkflowData);
 
         var vipFinalData = (ConditionalTestData)vipResult.WorkflowData;
@@ -218,7 +218,7 @@ public class ConditionalTests
         var businessResult = await _workflowEngine.RunAsync(definition, businessData);
 
         // Assert
-        Assert.True(businessResult.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, businessResult.Status);
         Assert.NotNull(businessResult.WorkflowData);
 
         var businessFinalData = (ConditionalTestData)businessResult.WorkflowData;
@@ -245,7 +245,7 @@ public class ConditionalTests
         var regularResult = await _workflowEngine.RunAsync(definition, regularData);
 
         // Assert
-        Assert.True(regularResult.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, regularResult.Status);
         Assert.NotNull(regularResult.WorkflowData);
 
         var regularFinalData = (ConditionalTestData)regularResult.WorkflowData;

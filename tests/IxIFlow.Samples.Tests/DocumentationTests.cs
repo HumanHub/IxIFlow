@@ -46,7 +46,7 @@ public sealed class DocumentationTests
         await using var provider = services.BuildServiceProvider();
         var client = SampleTests.Client(provider);
         var finished = await client.RunAsync(definition, new QuoteData());
-        Assert.True(finished.IsSuccess, finished.ErrorMessage);
+        Assert.True(finished.Status == WorkflowExecutionStatus.Success, finished.ErrorMessage);
         Assert.Equal(WorkflowExecutionStatus.Faulted, (await client.ReleaseAsync(finished.InstanceId)).Status);
         Assert.Equal(WorkflowExecutionStatus.Success, await client.GetStatusAsync(finished.InstanceId));
         Assert.Equal(WorkflowExecutionStatus.Faulted, (await client.RecoverAsync("unknown-doc-instance")).Status);
@@ -103,7 +103,7 @@ public sealed class DocumentationTests
         time.Advance(TimeSpan.FromMinutes(1));
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var finished = await client.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished, deadline.Token);
-        Assert.True(finished.IsSuccess, finished.ErrorMessage);
+        Assert.True(finished.Status == WorkflowExecutionStatus.Success, finished.ErrorMessage);
         var data = Assert.IsType<QuoteData>(finished.WorkflowData);
         Assert.Equal("timed out", data.Outcome);
         Assert.Equal("after sequence", data.Customer);
@@ -143,7 +143,7 @@ public sealed class DocumentationTests
         Assert.Equal("Ada", JsonSerializer.Deserialize<ReviewAnswer>(wait.DefaultPayloadJson!)!.Customer);
 
         var finished = await DocumentationExamples.AnswerReviewAsync(client, started.InstanceId, "Grace");
-        Assert.True(finished.IsSuccess, finished.ErrorMessage);
+        Assert.True(finished.Status == WorkflowExecutionStatus.Success, finished.ErrorMessage);
         Assert.Equal(EventOutcome.Consumed, finished.Event!.Outcome);
         Assert.Equal("Grace", Assert.IsType<QuoteData>(finished.WorkflowData).Customer);
     }
@@ -157,7 +157,7 @@ public sealed class DocumentationTests
         await using var provider = services.BuildServiceProvider();
         var client = SampleTests.Client(provider);
         var finished = await client.RunAsync(Quote.Definition(), new QuoteData());
-        Assert.True(finished.IsSuccess, finished.ErrorMessage);
+        Assert.True(finished.Status == WorkflowExecutionStatus.Success, finished.ErrorMessage);
 
         time.Advance(TimeSpan.FromDays(31));
         var store = provider.GetRequiredService<IWorkflowStateRepository>();

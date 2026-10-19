@@ -13,8 +13,8 @@ public sealed class DefinitionValidationTests
     [InlineData("build")]
     [InlineData("validation")]
     [InlineData("registration")]
-    [InlineData("persistent start")]
-    [InlineData("transient start")]
+    [InlineData("start with options")]
+    [InlineData("start with defaults")]
     public async Task HandBuiltStepsWithoutRuntimeAreInvalidAtTheirSource(string entry)
     {
         var definition = new WorkflowDefinition
@@ -44,7 +44,7 @@ public sealed class DefinitionValidationTests
                     return registry.RegisterWorkflowAsync(definition);
                 default:
                     return provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, new RegistrationData(),
-                        new WorkflowOptions { PersistState = entry == "persistent start" });
+                        entry == "start with options" ? new WorkflowOptions() : null);
             }
         });
         Assert.Null(await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version));

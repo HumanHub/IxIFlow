@@ -26,7 +26,7 @@ public sealed class ReadmeExamples
         WorkflowDefinitionValidator.Validate(definition);
         
         var result = await client.RunAsync(definition, new QuoteData());
-        if (!result.IsSuccess)
+        if (result.Status != WorkflowExecutionStatus.Success)
             throw new InvalidOperationException(result.ErrorMessage);
         Console.WriteLine(((QuoteData)result.WorkflowData!).Amount); // 12.50
         Assert.Equal(12.5m, Assert.IsType<QuoteData>(result.WorkflowData).Amount);
@@ -36,6 +36,6 @@ public sealed class ReadmeExamples
     public async Task RootHostingExampleRuns()
     {
         var result = await Hosting.RunHostedAsync();
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
     }
 }

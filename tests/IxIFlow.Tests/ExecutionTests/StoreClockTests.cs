@@ -882,7 +882,6 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
 
         public void ReleaseReads() => _readRelease?.TrySetResult();
 
-        public bool PersistsState => true;
         public CancellationToken Drain => CancellationToken.None;
         public long Epoch => 1;
         public ExecutionLimits Limits { get; } = new() { MaxCheckpointBytes = long.MaxValue };

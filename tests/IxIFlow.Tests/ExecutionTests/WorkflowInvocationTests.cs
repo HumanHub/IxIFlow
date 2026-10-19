@@ -64,7 +64,7 @@ public class WorkflowInvocationTests
         var result = await _workflowEngine.RunToEndAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ParentWorkflowData)result.WorkflowData;
@@ -113,7 +113,7 @@ public class WorkflowInvocationTests
         var result = await _workflowEngine.RunToEndAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ParentWorkflowData)result.WorkflowData;
@@ -148,7 +148,7 @@ public class WorkflowInvocationTests
         var result = await _workflowEngine.RunToEndAsync(definition,
             new ParentWorkflowData { OrderId = "ORD-004", ProcessingCount = 4 });
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var data = Assert.IsType<ParentWorkflowData>(result.WorkflowData);
         Assert.Equal("Processed[4]: Prepared: ORD-004", data.SubWorkflowOutput);
         Assert.Equal(data.SubWorkflowOutput, data.ValidationResult);
@@ -188,7 +188,7 @@ public class WorkflowInvocationTests
         var result = await _workflowEngine.RunToEndAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ParentWorkflowData)result.WorkflowData;

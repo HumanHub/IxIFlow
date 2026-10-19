@@ -158,7 +158,7 @@ public async Task YourNewFeature_ValidInput_ShouldWork()
     var result = await ExecuteWorkflow(workflowData);
     
     // Assert - Verify the results
-    Assert.True(result.IsSuccess);
+    Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
     Assert.Equal(expectedValue, result.ActualValue);
 }
 ```

@@ -22,30 +22,6 @@ public sealed class StructuredChildWaitTests
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
 
     [Fact]
-    public async Task NonpersistentParentCannotInvokeAWaitingChild()
-    {
-        var repository = new InMemoryWorkflowStateRepository();
-        using var services = Services(repository);
-        var child = Workflow.Create<ChildData>("PersistedChild")
-            .Step<NoopActivity>()
-            .WaitFor<Approval>("approval")
-            .Build();
-        await services.GetRequiredService<IWorkflowVersionRegistry>()
-            .RegisterWorkflowAsync(child);
-        var parent = Workflow.Create<ParentData>("NonpersistentParent")
-            .Step<NoopActivity>()
-            .Invoke<ChildData>("PersistedChild", 1)
-            .Build();
-
-        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
-            services.GetRequiredService<IWorkflowClient>()
-                .RunAsync(parent, new ParentData(),
-                    new WorkflowOptions { PersistState = false }));
-        Assert.Empty(await repository.GetWorkflowInstancesByNameAsync(parent.Name));
-        Assert.Empty(await repository.GetWorkflowInstancesByNameAsync(child.Name));
-    }
-
-    [Fact]
     [Trait("Spec", "D-06")]
     public async Task AChildRunsAsItsOwnInstanceAndItsCompletionWakesItsParent()
     {
@@ -427,10 +403,10 @@ public sealed class StructuredChildWaitTests
             started.InstanceId, $"child-completed-{finance}")).Outcome);
         // The finance branch has taken its child's output; the parent's data gets it at the join (D-14).
         var halfway = await WaitUntilAsync(
-            () => BranchProgress.ViewAsync<ParentData>(repository, started.InstanceId),
+            () => BranchProgress.ReadAsync<ParentData>(repository, started.InstanceId, 0),
             saved => saved.ChildApproved);
         Assert.True(halfway.ChildApproved);
-        Assert.False(halfway.LegalApproved);
+        Assert.False((await BranchProgress.ReadAsync<ParentData>(repository, started.InstanceId, 1)).LegalApproved);
         await ChildWaitingAsync(services, legal, "legal");
         Assert.Equal(WorkflowExecutionStatus.Success, (await engine.ResumeAsync(legal, "legal", new Approval())).Status);
 
