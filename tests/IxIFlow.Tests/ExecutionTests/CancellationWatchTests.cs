@@ -224,7 +224,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "CommitCancellation",
-            Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
+            Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}")
         };
         try
         {

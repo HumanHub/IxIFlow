@@ -331,7 +331,7 @@ public sealed class IncomingWebhookEndpointTests
                 contentType: "application/cloudevents+json")).Status);
         var eventId = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(
             JsonSerializer.Serialize(new[] { "urn:test", "event" }))));
-        Assert.Contains("true", (await host.Store.GetEventAsync(first.Id, eventId))!.PayloadJson);
+        Assert.Contains("true", (await host.Store.GetEventAsync(first.Id, eventId))!.PayloadJson.InlineText);
     }
 
     [Fact]
@@ -510,7 +510,7 @@ public sealed class IncomingWebhookEndpointTests
         await using var host = new Harness();
         var first = await host.Send("/orders/{orderId}", Cloud(type: "order", data: "{\"value\":8}"), contentType: "application/cloudevents+json");
         await host.Client.AwaitAsync(first.Id).WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal("urn:test", JsonSerializer.Deserialize<Data>((await host.Store.GetWorkflowInstanceAsync(first.Id))!.WorkflowDataJson)!.Source);
+        Assert.Equal("urn:test", JsonSerializer.Deserialize<Data>((await host.Store.GetWorkflowInstanceAsync(first.Id))!.WorkflowDataJson.InlineText)!.Source);
         Assert.Equal(400, (await host.Send("/workflows/{id}/events/{key}", Cloud(type: "forbidden"), instanceId: first.Id,
             contentType: "application/cloudevents+json")).Status);
         var refused = await host.Send("/workflows/{id}/events/{key}", Cloud(), instanceId: first.Id, eventKey: "wrong",

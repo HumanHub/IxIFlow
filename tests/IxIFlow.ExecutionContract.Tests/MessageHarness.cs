@@ -46,7 +46,7 @@ internal sealed class MessageHarness : IDisposable
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = definition.Name,
             WorkflowVersion = definition.Version, WorkflowDataType = typeof(Data).AssemblyQualifiedName!,
-            WorkflowDataJson = "{\"Value\":\"input\"}", Status = WorkflowStatus.Running,
+            WorkflowDataJson = StoredJson.Inline("{\"Value\":\"input\"}"), Status = WorkflowStatus.Running,
             CorrelationId = "correlation", CreatedAt = now, StartedAt = now,
             ExecutionStateJson = JsonSerializer.Serialize(new
             {

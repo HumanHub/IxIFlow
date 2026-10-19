@@ -457,7 +457,7 @@ public sealed class ResourceLimitTests
             new WorkflowInstance
             { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "PoolReservation", Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}"
+                WorkflowDataJson = StoredJson.Inline("{}")
             }, (await StoreTestSupport.LeaseAsync(store, instanceId)).Epoch, 0))).Status);
         Assert.True(await StoreTestSupport.ReleaseAsync(store, instanceId));
 

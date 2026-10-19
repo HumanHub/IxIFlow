@@ -59,7 +59,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "CrashCounting", Status = WorkflowStatus.Running,
-            WorkflowDataJson = "{}"
+            WorkflowDataJson = StoredJson.Inline("{}")
         };
         try
         {
@@ -129,7 +129,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "CrashCountReplay",
-            Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
+            Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}")
         };
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "same", clearsCrashCount: true))).Status);
@@ -261,7 +261,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var instanceId = await InterruptedRunAsync(services, store);
         var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short))!;
         var corrupted = (await store.GetWorkflowInstanceAsync(instanceId))!;
-        corrupted.WorkflowDataJson = "{ not json";
+        corrupted.WorkflowDataJson = StoredJson.Inline("{ not json");
         await CommitAsync(store, corrupted, grant, clearsCrashCount: false);
         await CrashOwnersAsync(store, time, instanceId, 3, alreadyHeld: true);
 
@@ -269,7 +269,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
 
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, quarantined.Status);
         Assert.Contains("quarantined", quarantined.ErrorMessage);
-        Assert.Equal("{ not json", (await store.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson);
+        Assert.Equal("{ not json", (await store.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson.InlineText);
         // A repeated start is answered without reading the data either.
         var repeated = await Client(services).RunAsync(InterruptedWorkflow(), new CrashData(),
             new WorkflowOptions { InstanceId = instanceId });
@@ -285,7 +285,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var instanceId = await InterruptedRunAsync(services, store);
         var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short))!;
         var corrupted = (await store.GetWorkflowInstanceAsync(instanceId))!;
-        corrupted.WorkflowDataJson = "{ not json";
+        corrupted.WorkflowDataJson = StoredJson.Inline("{ not json");
         await CommitAsync(store, corrupted, grant, clearsCrashCount: false);
         await CrashOwnersAsync(store, time, instanceId, 3, alreadyHeld: true);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution,

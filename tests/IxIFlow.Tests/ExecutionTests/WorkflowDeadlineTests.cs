@@ -210,7 +210,7 @@ public sealed class WorkflowDeadlineTests
 
         var saved = await repository.GetWorkflowInstanceAsync(instanceId);
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-        Assert.Equal("timeout", JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.Outcome);
+        Assert.Equal("timeout", JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!.Outcome);
     }
 
     [Fact]
@@ -329,7 +329,7 @@ public sealed class WorkflowDeadlineTests
             if (saved!.Status == WorkflowStatus.Suspended &&
                 ExecutionCheckpoint.Read(saved.ExecutionStateJson).TimedOut)
             {
-                Assert.False(JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.After);
+                Assert.False(JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!.After);
                 break;
             }
             Assert.True(DateTime.UtcNow < deadline, "The instance did not stop in its cleanup wait");

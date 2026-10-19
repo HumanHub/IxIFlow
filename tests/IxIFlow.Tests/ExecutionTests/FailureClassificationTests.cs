@@ -68,7 +68,7 @@ public sealed class FailureClassificationTests
                 await Task.Delay(50);
         }
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-        Assert.Contains("\"ChildTimedOut\":true", saved.WorkflowDataJson);
+        Assert.Contains("\"ChildTimedOut\":true", saved.WorkflowDataJson.InlineText);
     }
 
     [Fact]
@@ -100,7 +100,7 @@ public sealed class FailureClassificationTests
             while (repository.FailedCommits < 3)
                 await Task.Delay(10, patience.Token);
         var interrupted = await repository.GetWorkflowInstanceAsync(parentId);
-        Assert.DoesNotContain("\"Caught\":true", interrupted!.WorkflowDataJson);
+        Assert.DoesNotContain("\"Caught\":true", interrupted!.WorkflowDataJson.InlineText);
         Assert.Equal(WorkflowStatus.Suspended, interrupted.Status);
 
         repository.FailCommit = _ => false;
@@ -114,7 +114,7 @@ public sealed class FailureClassificationTests
                 await Task.Delay(50);
         }
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-        Assert.DoesNotContain("\"Caught\":true", saved.WorkflowDataJson);
+        Assert.DoesNotContain("\"Caught\":true", saved.WorkflowDataJson.InlineText);
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository repository, TimeProvider time)

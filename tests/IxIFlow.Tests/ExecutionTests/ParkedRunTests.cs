@@ -208,13 +208,13 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
                 await Commit(store, new WorkflowInstance
                 { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                     InstanceId = ids[index], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
-                    WorkflowDataJson = "{}"
+                    WorkflowDataJson = StoredJson.Inline("{}")
                 }, new OpenedWait($"{ids[index]}-delay", WaitKind.Delay, "delay", "",
                     TimeSpan.FromSeconds(7 - 3 * index)));
             await Commit(store, new WorkflowInstance
             { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = ids[3], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
-                WorkflowDataJson = "{}"
+                WorkflowDataJson = StoredJson.Inline("{}")
             });
             Assert.DoesNotContain(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == ids[0]);
             if (time != null)
@@ -254,7 +254,7 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
         var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromSeconds(30)))!;
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
-            InstanceId = instanceId, WorkflowName = "Parking", Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
+            InstanceId = instanceId, WorkflowName = "Parking", Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}")
         };
         var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, grant.Epoch, 0));
         Assert.Equal(WorkflowCommitStatus.Applied, result.Status);

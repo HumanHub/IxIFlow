@@ -9,7 +9,7 @@ internal static class InboxAtomicityContract
     internal static async Task MixedSettlementsRollBack(IWorkflowStateRepository store)
     {
         var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"),
-            WorkflowName = "InboxAtomicity", Status = WorkflowStatus.Suspended, WorkflowDataJson = "{\"value\":1}" };
+            WorkflowName = "InboxAtomicity", Status = WorkflowStatus.Suspended, WorkflowDataJson = StoredJson.Inline("{\"value\":1}") };
         var child = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = "AtomicChild", Status = WorkflowStatus.Running, ParentInstanceId = instance.InstanceId, ParentWaitId = "child" };
         try
@@ -28,7 +28,7 @@ internal static class InboxAtomicityContract
             var originalWait = await store.GetWaitAsync(instance.InstanceId, "original");
             var originalEvent = await store.GetEventAsync(instance.InstanceId, "already");
             instance = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
-            instance.WorkflowDataJson = "{\"value\":999}";
+            instance.WorkflowDataJson = StoredJson.Inline("{\"value\":999}");
             var rejected = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, before.Revision,
                 settlements: [new EventSettlement("pending", EventOutcome.Consumed, "original"),
                     new EventSettlement("already", EventOutcome.Consumed, "other")],

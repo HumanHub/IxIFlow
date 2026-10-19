@@ -102,7 +102,7 @@ public sealed class ActivityRecoveryTests
         Assert.Contains("checkpoint", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
         var saved = await store.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.Equal(WorkflowStatus.Failed, saved?.Status);
-        Assert.Null(JsonSerializer.Deserialize<CheckpointData>(saved!.WorkflowDataJson)?.Payload);
+        Assert.Null(JsonSerializer.Deserialize<CheckpointData>(saved!.WorkflowDataJson.InlineText)?.Payload);
     }
 
     [Fact]

@@ -219,7 +219,7 @@ public sealed class StructureHashReviewTests
         {
             InstanceId = "mismatch", WorkflowName = original.Name, WorkflowVersion = original.Version,
             WorkflowDataType = typeof(StructureHashData).AssemblyQualifiedName!,
-            WorkflowDataJson = JsonSerializer.Serialize(data), ExecutionStateJson = JsonSerializer.Serialize(checkpoint),
+            WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(data)), ExecutionStateJson = JsonSerializer.Serialize(checkpoint),
             Status = WorkflowStatus.Running, StartedAt = now, CreatedAt = now
         };
         var host = new RecordingHost();
@@ -236,7 +236,7 @@ public sealed class StructureHashReviewTests
         Assert.Equal(checkpoint.StructureHash, saved.StructureHash);
         Assert.Equal("root/1/then", saved.Continuations[0].Stack[0].ScopeId);
         Assert.Equal(0, saved.Continuations[0].Stack[0].NextStepIndex);
-        Assert.Equal(42, JsonSerializer.Deserialize<StructureHashData>(instance.WorkflowDataJson)!.Value);
+        Assert.Equal(42, JsonSerializer.Deserialize<StructureHashData>(instance.WorkflowDataJson.InlineText)!.Value);
         Assert.Contains(Hash(loaded), saved.OperatorStop.Reason);
         Assert.Equal(WorkflowStatus.NeedsResolution, Assert.Single(host.Commits).Instance.Status);
     }

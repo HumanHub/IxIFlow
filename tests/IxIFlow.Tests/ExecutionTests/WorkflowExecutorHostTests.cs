@@ -141,7 +141,7 @@ public sealed class WorkflowExecutorHostTests
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
             WorkflowDataType = typeof(ExecutorData).AssemblyQualifiedName!,
-            WorkflowDataJson = JsonSerializer.Serialize(data),
+            WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(data)),
             Status = WorkflowStatus.Running,
             CreatedAt = now,
             StartedAt = now
