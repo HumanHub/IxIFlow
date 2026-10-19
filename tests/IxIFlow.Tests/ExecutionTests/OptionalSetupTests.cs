@@ -121,6 +121,7 @@ public sealed class OptionalSetupTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
+        services.RegisterWorkflow<ChildWorkflow>();
         services.AddSingleton<SetupProbe>();
         services.AddTransient<RecordActivity>();
         services.AddTransient<FailActivity>();

@@ -55,7 +55,7 @@ Both console modes run the quote. The [sample map](../samples/README.md) covers 
 
 `AwaitAsync` considers a parked `Scheduled` result idle; `RunAsync` waits through that park. `RecoverAsync` may return `Running` for a busy owner or `Scheduled` for a parked retry. A `Faulted` recovery/release response can mean the operation was refused, rather than that the saved instance faulted; read its error and query the instance status.
 
-`WorkflowOptions.ExecutionTimeout` must be positive and persists an execution deadline that unwinds cleanup before `TimedOut`. `EnableDebugging = true` and a non-null `WorkflowRetryPolicy` are refused with `InvalidRequest`; configure retries on saga steps or sagas.
+`WorkflowOptions.ExecutionTimeout` must be positive and persists an execution deadline that unwinds cleanup before `TimedOut`. Configure retries on saga steps or sagas.
 
 A cancellation token interrupts the current call. Use `CancelAsync` with a `CancellationReason` to request durable workflow cancellation, including compensation and `Finally` cleanup. The token on a queued start only cancels waiting for acceptance; the host owns that execution.
 
