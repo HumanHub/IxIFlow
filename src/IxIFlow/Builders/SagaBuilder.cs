@@ -100,7 +100,6 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         var step = _steps[^1];
         step.RequestName = name;
         step.ReplyType = replyType;
-        step.RequestSubjectBehavior = subject;
         if (subject != null)
             step.RequestSubject = context => subject((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
         return next;
@@ -175,7 +174,6 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
             };
 
             suspendStep.CompiledCondition = conditionWrapper;
-            suspendStep.ConditionBehavior = resumeCondition;
         }
 
         // Configure the suspend step if a setup action is provided

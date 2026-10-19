@@ -9,7 +9,11 @@ using YamlDotNet.Core;
 
 namespace IxIFlow.Generators;
 
-/// <summary>Translates the shared workflow document into fluent C#.</summary>
+/// <summary>
+/// Lowers the parsed document model into the same executable structure as fluent C#.
+/// The runtime hashes that structure, rather than YAML text or generated method bodies,
+/// so comments, key order, source positions and presentation metadata cannot affect the hash.
+/// </summary>
 public static class WorkflowSourceTranslator
 {
     public static string Translate(string yaml, string sourcePath, WorkflowSourceOptions? options = null)
@@ -303,6 +307,10 @@ public static class WorkflowSourceTranslator
                         Line($"var {next} = {builder}.Result(valueExpression: ctx => {Expression(result.Value)});");
                         break;
                     case InvokeWorkflowTypeStepDocument typedInvocation:
+                        if (options.RequireResolvedTypes &&
+                            (!options.WorkflowIdentities.TryGetValue(typedInvocation.WorkflowType, out var identity) ||
+                             string.IsNullOrWhiteSpace(identity.Name) || identity.Version < 1))
+                            throw Error(typedInvocation, "Workflow class requires [Workflow(\"Name\", Version = n)] with a nonblank name and positive version", "workflowType");
                         var workflowType = Type(typedInvocation.WorkflowType!, typedInvocation, "workflowType");
                         var childData = Type(options.WorkflowDataTypes.TryGetValue(typedInvocation.WorkflowType, out var inferred) ? inferred :
                             typedInvocation.DataType ?? throw Error(typedInvocation, "Cannot infer IWorkflow<T>; supply dataType or a resolved workflow type contract", "workflowType"), typedInvocation, "dataType");

@@ -70,6 +70,10 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
                          ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                              $"Workflow definition not found: {step.WorkflowName} v{step.WorkflowVersion}");
         }
+        if (definition.Name != step.WorkflowName || definition.Version != step.WorkflowVersion)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Workflow '{step.WorkflowName}' v{step.WorkflowVersion} resolved to " +
+                $"'{definition.Name}' v{definition.Version}");
         if (definition.WorkflowDataType == null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Workflow {definition.Name} has no data type");
@@ -83,12 +87,19 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
     private async Task<WorkflowDefinition> ResolveRegisteredTypeAsync(WorkflowStep step)
     {
         var definition = step.Runtime.ChildDefinition!(services);
-        var published = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version)
+        if (definition.Name != step.WorkflowName || definition.Version != step.WorkflowVersion)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Workflow type '{step.WorkflowType}' is registered as '{definition.Name}' v{definition.Version}, " +
+                $"but the invocation requires '{step.WorkflowName}' v{step.WorkflowVersion}");
+        var published = await registry.GetWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Workflow definition not found: {definition.Name} v{definition.Version}");
-        if (new WorkflowScopeCatalog(published).Fingerprint != new WorkflowScopeCatalog(definition).Fingerprint)
+        var registeredHash = new WorkflowScopeCatalog(published).StructureHash;
+        var loadedHash = new WorkflowScopeCatalog(definition).StructureHash;
+        if (registeredHash != loadedHash)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                $"Workflow {definition.Name} v{definition.Version} differs from its registered definition");
+                $"Workflow {definition.Name} v{definition.Version} differs from its registered definition: " +
+                $"registered structure hash '{registeredHash}', loaded structure hash '{loadedHash}'");
         return published;
     }
 

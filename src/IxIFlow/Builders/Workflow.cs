@@ -15,10 +15,10 @@ public static class Workflow
     ///     Creates a new workflow builder for the specified workflow data type
     /// </summary>
     /// <typeparam name="TWorkflowData">The type of data that flows through the workflow</typeparam>
-    /// <param name="name">Optional workflow name</param>
+    /// <param name="name">Required workflow name</param>
     /// <param name="version">Optional workflow version</param>
     /// <returns>A new workflow builder instance</returns>
-    public static IWorkflowBuilder<TWorkflowData> Create<TWorkflowData>(string name = "", int version = 1)
+    public static IWorkflowBuilder<TWorkflowData> Create<TWorkflowData>(string name, int version = 1)
         where TWorkflowData : class
     {
         return new WorkflowBuilder<TWorkflowData>(name, version);

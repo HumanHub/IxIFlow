@@ -5,7 +5,7 @@ description: Build typed workflows, mappings and control flow.
 
 Start with `Workflow.Create<TData>(name, version)`, configure the fluent graph, then call its instance `Build()` to produce a `WorkflowDefinition`. `Build()` validates contracts and structure; `WorkflowDefinitionValidator.Validate` also exposes validation to applications.
 
-An unnamed direct definition receives a stable derived name when registered or started. Use an explicit name and version for durable deployments and named child invocations.
+Workflow identity is `(name, version)`. A nonblank name is required; definitions no longer receive implicit or hash-derived names. Declare the version and change it when changing behavior.
 
 ## Map activity data
 
@@ -46,9 +46,9 @@ The continuation builder exposes these families. The root builder exposes initia
 | `Request<TActivity>` | Run an `IRequestActivity<TReply>`, opening its reply address before the effect; [approval recipes](../samples/IxIFlow.Recipes/Approvals.cs) |
 | `WaitFor<TEvent>`, `Suspend<TEvent>` | Save an event/reply wait, predicate, output mappings, default suggestion and timeout path; [Review](../samples/IxIFlow.Samples/Review.cs) |
 | `Delay` | Durable positive duration, retaining the preceding value; [Reminder](../samples/IxIFlow.Samples/Reminder.cs) |
-| `Invoke<TWorkflow,TChildData>`, `Invoke<TChildData>(name, version)` | Independent child instance with mapped input/output; [Review](../samples/IxIFlow.Samples/Review.cs) |
+| `Invoke<TWorkflow,TChildData>(setup)`, `Invoke<TChildData>(name, version)` | Independent child instance with mapped input/output; [Review](../samples/IxIFlow.Samples/Review.cs) |
 
-Typed children require `services.RegisterWorkflow<TWorkflow>()` before building the service provider; the class supplies its version, and registration preserves an optional custom name. Named children require their exact name and version in `IWorkflowVersionRegistry`. Both invocation forms execute the registered definition. Every process that can resume the parent or child must load the same definitions.
+Workflow classes declare identity once with `[Workflow("Customer approval", Version = 3)]` from `IxIFlow.Core`, and implement only `Build` on `IWorkflow<TData>`. Register with `services.RegisterWorkflow<TWorkflow>()` or `services.RegisterWorkflow<TWorkflow,TData>()`; invoke with `Invoke<TWorkflow,TChildData>(setup)`. Both read the attribute from the type without constructing the class to discover identity. A missing attribute, blank name or nonpositive version is refused. The parent's structure hash includes the child's declared name and version. Registration constructs the class only when building its definition. Named children use `Invoke<TChildData>(name, version, setup)` and require that exact identity in `IWorkflowVersionRegistry`. Both forms execute the registered definition and verify its structure hash. Every process that can resume the parent or child must load matching definitions.
 
 ## Parallel work and lists
 
@@ -56,7 +56,7 @@ General parallel joins wait for all branches by default. `WaitAny()` selects the
 
 `ForEach` snapshots its item list at entry. The body receives a typed handle; read it with `ctx.Item(handle)` and its position with `ctx.Index(handle)`. Nested bodies may read enclosing handles. Items are read-only copies and handles cannot escape their scope.
 
-End result-producing paths with `Result`; `Into` writes a `List<ItemResult<T>>` in input order. Setup can select `Parallel(maxConcurrency: ...)`, `WaitAny`, `WaitConditionally<T>` and combiner overrides. [Batch.cs](../samples/IxIFlow.Samples/Batch.cs) demonstrates all modes, including expression-preserving overloads. Use named arguments such as `itemsExpression`, `valueExpression` and `completeWhenExpression` when matching a YAML twin's definition fingerprint; delegate overloads have different identity.
+End result-producing paths with `Result`; `Into` writes a `List<ItemResult<T>>` in input order. Setup can select `Parallel(maxConcurrency: ...)`, `WaitAny`, `WaitConditionally<T>` and combiner overrides. [Batch.cs](../samples/IxIFlow.Samples/Batch.cs) demonstrates all modes, including expression-preserving overloads. Use named arguments such as `itemsExpression`, `valueExpression` and `completeWhenExpression` when matching a YAML twin's structure hash; expression overloads retain tree shape and member references, while delegate bodies are ignored.
 
 ## Faults and recovery
 
@@ -66,7 +66,11 @@ Saga step retries and saga retries are different scopes. See [sagas](sagas.md), 
 
 ## Identity and expressions
 
-`WithId(id)` sets a unique author step ID and captures caller file/line by default; explicit source arguments are available. Fluent step objects otherwise receive random IDs; YAML supplies explicit or structural IDs. Persisted continuations and trace step references use the runtime's structural paths, independently of these author IDs. `Named(name)` changes the step's name. Names affect runtime fingerprints; author IDs and source locations do not.
+`WithId(id)` sets a unique author step ID and captures caller file/line by default; explicit source arguments are available. Fluent step objects otherwise receive random IDs; YAML supplies explicit or structural IDs. Persisted continuations and trace step references use the runtime's structural paths, independently of these author IDs. `Named(name)` changes the step's name. Step names, author IDs and source locations are presentation metadata and do not change the structure hash.
+
+The checkpoint stores a SHA-256 `StructureHash` of the executable structure. Step kinds and order, scope topology, activity/data/previous types, mapping contracts, wait keys and event/reply types, durations, join modes and combiner types (including attributes on data types), loop/result contracts, exception/fault types, handler policies and child identities with versions change it. Expression trees contribute node shape, literal nodes and referenced members, with parameter names and closure receivers normalized. Delegate bodies, helper implementations, captured values, descriptions, display names, tags and step names do not contribute. Changing behavior still requires a new workflow version.
+
+Registration refuses the same `(name, version)` with a different structure hash. Equal structure with different descriptions is accepted; the first registered definition supplies metadata. Start, resume, recovery and child resolution refuse incompatible saved state and report the workflow, version and both hashes. Checkpoint schema 4 refuses older saved instances without migration. Reset development state and coordinate host restarts for this one-time break.
 
 Conditions, mappings, result selectors, wait predicates and combiners can run again after recovery. Keep them pure. Use `ctx.UtcNow` for workflow time, not a system-clock call or external I/O.
 

@@ -45,7 +45,6 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
     {
         ArgumentNullException.ThrowIfNull(completeWhen);
         SetJoinMode(ParallelJoinMode.WaitConditionally);
-        _step.ParallelCompletionBehavior = completeWhen;
         _step.ParallelCompletionCondition = data => completeWhen((TWorkflowData)data);
         return this;
     }
@@ -77,7 +76,7 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
         var branchSteps = new List<WorkflowStep>();
 
         // Create a workflow builder for this branch
-        var branchBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(branchSteps);
+        var branchBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(branchSteps, string.Empty);
 
         // Configure the branch
         configure(branchBuilder);
