@@ -20,7 +20,7 @@ public sealed class MessageContractTests
         typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
         typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome),
         typeof(BreakpointSource), typeof(BreakpointStop), typeof(BreakpointHitTrace),
-        typeof(DataEditTarget), typeof(DataPatch), typeof(DataEditRequest), typeof(DataEditResult), typeof(DataEditDigest), typeof(DataEditedTrace),
+        typeof(FrozenRetry), typeof(TimerFreeze), typeof(TimerCommitResult), typeof(TimersTrace), typeof(DataEditTarget), typeof(DataPatch), typeof(DataEditRequest), typeof(DataEditResult), typeof(DataEditDigest), typeof(DataEditedTrace),
             typeof(DebugStepPosition), typeof(DebugStepping), typeof(BreakpointEvaluation), typeof(BreakpointConditionDiagnostic)
     ];
     public static TheoryData<Type> MessageTypes => new(MessageTypeList);
@@ -73,6 +73,12 @@ public sealed class MessageContractTests
                 { Reason = "ConditionCompilationFailed", Diagnostics = [new("BPC001", "Refused", 0, 3, 1, 1)] },
             new BreakpointHitTrace("root", "root/0", "stop", 3, 1)
                 { Reason = "ConditionCompilerUnavailable" },
+            new FrozenRetry(now.AddMinutes(1), now),
+            new TimerFreeze(now, new Dictionary<string, DateTime> { ["wait"] = now },
+                new Dictionary<string, FrozenRetry> { ["root"] = new(now.AddMinutes(1), now) }),
+            new TimerCommitResult(new DebugCheckpoint { Timers = new(now, new Dictionary<string, DateTime>(), new Dictionary<string, FrozenRetry>()) },
+                new Dictionary<string, DateTime> { ["wait"] = now.AddMinutes(1) }, new Dictionary<string, DateTime> { ["root"] = now.AddMinutes(2) }),
+            new TimersTrace("actor", "freeze", now, TimeSpan.FromMinutes(2)),
             new DataEditTarget(3, "branch"),
             new DataPatch(["Number"], JsonSerializer.SerializeToElement(true)),
             new DataEditRequest(5, new(3), [new(["Number"], JsonSerializer.SerializeToElement(7))]),
