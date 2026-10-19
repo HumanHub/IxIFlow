@@ -111,36 +111,125 @@ public sealed class CatalogArtifactReviewRegressionTests
             }
             case Scenario.StartWins:
             {
-                await store.RegisterWorkflowVersionAsync(new(name, 1, "child"));
-                var caller = name + "-caller";
-                await store.RegisterWorkflowVersionAsync(new(caller, 1, "parent", Dependencies: [new(name, 1)]));
-                var parent = Instance(caller);
-                var lease = await StoreTestSupport.LeaseAsync(store, parent.InstanceId);
-                var barrier = new BarrierArtifacts();
-                var holding = Task.Run(() => store.PurgeArtifactsAsync(barrier, TimeSpan.FromDays(90), 1));
-                await barrier.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-                var starting = Task.Run(() => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, lease.Epoch, 0)));
-                var retiring = Task.Run(async () =>
-                {
-                    Assert.Equal(WorkflowCommitStatus.Applied, (await starting).Status);
-                    await store.SetWorkflowVersionStateAsync(caller, 1, WorkflowVersionState.Retired);
-                    return await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-                        store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired));
-                });
+                var clock = new StartWinsClock();
+                var folder = store is SqliteWorkflowStateRepository ? TemporaryFolder() : null;
                 try
                 {
-                    await Task.Delay(50);
-                    Assert.False(starting.IsCompleted);
+                    // Only this scenario needs a clock that can stop a commit after it takes its lock.
+                    await using var sqlite = folder == null ? null : new SqliteWorkflowStateRepository(
+                        "Data Source=" + Path.Combine(folder, "start-wins.db"), clock);
+                    store = sqlite ?? (store is InMemoryWorkflowStateRepository
+                        ? new InMemoryWorkflowStateRepository(clock) : store);
+                    await store.RegisterWorkflowVersionAsync(new(name, 1, "child"));
+                    var caller = name + "-caller";
+                    await store.RegisterWorkflowVersionAsync(new(caller, 1, "parent", Dependencies: [new(name, 1)]));
+                    var parent = Instance(caller);
+                    var lease = await StoreTestSupport.LeaseAsync(store, parent.InstanceId);
+                    WorkflowEngineException error;
+                    if (store is InMemoryWorkflowStateRepository or SqliteWorkflowStateRepository)
+                    {
+                        // Memory reads the clock under its catalog/claim locks; SQLite reads it after
+                        // BEGIN IMMEDIATE, while holding its writer gate (also its catalog lock).
+                        clock.Pause = true;
+                        error = await RaceAsync(() => clock.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10)),
+                            _ => Task.CompletedTask, () => { clock.Release.TrySetResult(); return Task.CompletedTask; });
+                    }
+                    else
+                    {
+                        var sqlServer = store is SqlWorkflowStateRepository;
+                        var connectionString = sqlServer
+                            ? SqlTestDatabase<CatalogArtifactReviewRegressionTests>.ConnectionString
+                            : PostgreSqlTestDatabase<CatalogArtifactReviewRegressionTests>.ConnectionString;
+                        await using System.Data.Common.DbConnection blocker = sqlServer
+                            ? new SqlConnection(connectionString) : new NpgsqlConnection(connectionString);
+                        await blocker.OpenAsync();
+                        var blockerId = await blocker.ExecuteScalarAsync<int>(sqlServer ? "SELECT @@SPID" : "SELECT pg_backend_pid()");
+                        await using var transaction = await blocker.BeginTransactionAsync();
+                        // The start takes its shared catalog lock before reading/locking this lease.
+                        await blocker.ExecuteAsync(sqlServer
+                            ? "UPDATE dbo.IxIFlowWorkflowLeases SET Epoch=Epoch WHERE InstanceId=@InstanceId"
+                            : "UPDATE ixiflow_workflow_leases SET epoch=epoch WHERE instance_id=@InstanceId",
+                            new { parent.InstanceId }, transaction);
+                        await using System.Data.Common.DbConnection observer = sqlServer
+                            ? new SqlConnection(connectionString) : new NpgsqlConnection(connectionString);
+                        await observer.OpenAsync();
+                        error = await RaceAsync(
+                            () => UntilAsync(async () => await observer.ExecuteScalarAsync<int>(sqlServer
+                                ? """
+                                  SELECT COUNT(*) FROM sys.dm_exec_requests r
+                                  JOIN sys.dm_tran_locks l ON l.request_session_id=r.session_id
+                                  WHERE r.blocking_session_id=@BlockerId AND l.resource_database_id=DB_ID()
+                                    AND l.resource_type='APPLICATION' AND l.resource_description LIKE '%IxIFlow.Catalog%'
+                                    AND l.request_mode='S' AND l.request_status='GRANT'
+                                  """
+                                : """
+                                  SELECT COUNT(*)::int FROM pg_locks l
+                                  WHERE @BlockerId=ANY(pg_blocking_pids(l.pid)) AND l.locktype='advisory'
+                                    AND l.objid=(hashtext('IxIFlow.Catalog')::bigint & 4294967295)::oid
+                                    AND l.mode='ShareLock' AND l.granted
+                                  """, new { BlockerId = blockerId }) == 1),
+                            count => UntilAsync(async () => await observer.ExecuteScalarAsync<int>(sqlServer
+                                ? """
+                                  SELECT COUNT(*) FROM sys.dm_tran_locks
+                                  WHERE resource_database_id=DB_ID() AND resource_type='APPLICATION'
+                                    AND resource_description LIKE '%IxIFlow.Catalog%'
+                                    AND request_mode='X' AND request_status='WAIT'
+                                  """
+                                : """
+                                  SELECT COUNT(*)::int FROM pg_locks
+                                  WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database())
+                                    AND locktype='advisory'
+                                    AND objid=(hashtext('IxIFlow.Catalog')::bigint & 4294967295)::oid
+                                    AND mode='ExclusiveLock' AND NOT granted
+                                  """) == count),
+                            () => transaction.RollbackAsync());
+                    }
+                    Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
+                    Assert.Contains("unfinished parent", error.Message);
+                    Assert.Contains(name, error.Message);
+                    parent = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
+                    parent.Status = WorkflowStatus.Completed;
+                    await store.SeedAsync(parent);
+                    await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired);
+                    Assert.Equal(WorkflowVersionState.Retired, (await store.GetWorkflowVersionAsync(name, 1))!.State);
+
+                    async Task<WorkflowEngineException> RaceAsync(Func<Task> held, Func<int, Task> queued, Func<Task> release)
+                    {
+                        var starting = Task.Run(() => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, lease.Epoch, 0)));
+                        Task? retiringCaller = null;
+                        Task? retiringChild = null;
+                        try
+                        {
+                            await held();
+                            // Queue both requests before releasing the start. Awaiting caller retirement
+                            // here would let the child take its snapshot only after the start committed.
+                            retiringCaller = store.SetWorkflowVersionStateAsync(caller, 1, WorkflowVersionState.Retired);
+                            await queued(1);
+                            retiringChild = store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired);
+                            await queued(2);
+                            await Task.WhenAny(retiringChild, Task.Delay(50)); // Only a bounded blocked assertion.
+                            Assert.False(starting.IsCompleted);
+                            Assert.False(retiringCaller.IsCompleted);
+                            Assert.False(retiringChild.IsCompleted);
+                        }
+                        finally { await release(); }
+                        Assert.Equal(WorkflowCommitStatus.Applied, (await starting.WaitAsync(TimeSpan.FromSeconds(10))).Status);
+                        await retiringCaller!.WaitAsync(TimeSpan.FromSeconds(10));
+                        Assert.Equal(WorkflowVersionState.Retired, (await store.GetWorkflowVersionAsync(caller, 1))!.State);
+                        return await Assert.ThrowsAsync<WorkflowEngineException>(() => retiringChild!.WaitAsync(TimeSpan.FromSeconds(10)));
+                    }
+
+                    static async Task UntilAsync(Func<Task<bool>> reached)
+                    {
+                        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                        while (!await reached())
+                        {
+                            timeout.Token.ThrowIfCancellationRequested();
+                            await Task.Yield();
+                        }
+                    }
                 }
-                finally { barrier.Release.TrySetResult(); }
-                await holding;
-                var error = await retiring;
-                Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
-                Assert.Contains("unfinished parent", error.Message);
-                parent = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
-                parent.Status = WorkflowStatus.Completed;
-                await store.SeedAsync(parent);
-                await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired);
+                finally { if (folder != null) await SqliteTestFiles.DeleteAsync(folder); }
                 break;
             }
             case Scenario.RetirementSelection:
@@ -457,6 +546,23 @@ public sealed class CatalogArtifactReviewRegressionTests
         public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) => inner.SetWorkflowVersionStateAsync(name, version, state, artifacts);
         public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) => inner.PublishDefinitionAsync(draftId, version, artifacts);
         public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
+    }
+
+    // Used only by StartWins: no production hook, and no clock advances while a commit is held.
+    private sealed class StartWinsClock : TimeProvider
+    {
+        public bool Pause { get; set; }
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override DateTimeOffset GetUtcNow()
+        {
+            if (Pause)
+            {
+                Entered.TrySetResult();
+                Release.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+            }
+            return base.GetUtcNow();
+        }
     }
 
     private sealed class BarrierArtifacts : IArtifactStore

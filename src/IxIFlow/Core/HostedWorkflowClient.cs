@@ -27,6 +27,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class
     {
         WorkflowCatalogRules.ValidateName(name);
+        var versionOmitted = version == null;
         if (version == null && options?.InstanceId is { } instanceId &&
             await repository.GetWorkflowInstanceSummaryAsync(instanceId) is { } existing)
         {
@@ -42,15 +43,19 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         var definition = await catalog.GetWorkflowDefinitionAsync(name, row.Version)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Workflow definition not found: {name} v{row.Version}");
-        return await StartAsync(definition, workflowData, options, cancellationToken);
+        return await StartDefinitionAsync(definition, workflowData, options, cancellationToken, versionOmitted);
     }
 
     public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
         WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class =>
         StartAsync(name, null, workflowData, options, cancellationToken);
 
-    public async Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition,
+    public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition,
         TWorkflowData workflowData, WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+        where TWorkflowData : class => StartDefinitionAsync(definition, workflowData, options, cancellationToken, false);
+
+    private async Task<string> StartDefinitionAsync<TWorkflowData>(WorkflowDefinition definition,
+        TWorkflowData workflowData, WorkflowOptions? options, CancellationToken cancellationToken, bool versionOmitted)
         where TWorkflowData : class
     {
         ArgumentNullException.ThrowIfNull(definition);
@@ -58,7 +63,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         options ??= new WorkflowOptions();
         // Inside a slot the start runs inline, so it cannot return before the run ends. The host
         // decides inline or queued once, so a run that ends meanwhile cannot change the choice.
-        if (host.TryRunInline((client, _, token) => client.RunAsync(definition, workflowData, options, token),
+        if (host.TryRunInline((client, _, token) => client.RunAsync(definition, workflowData, options, token, versionOmitted),
                 cancellationToken, out var inline))
             return (await inline).InstanceId;
         var accepted = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -66,7 +71,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         var run = host.RunAsync(options.InstanceId, (client, control, token) =>
         {
             control.OnAccepted(instanceId => accepted.TrySetResult(instanceId));
-            return client.RunAsync(definition, workflowData, options, token);
+            return client.RunAsync(definition, workflowData, options, token, versionOmitted);
         }, CancellationToken.None);
         _ = run.ContinueWith(finished => _ = finished.Exception, TaskContinuationOptions.OnlyOnFaulted);
         if (await Task.WhenAny(accepted.Task, run).WaitAsync(cancellationToken) == accepted.Task)
