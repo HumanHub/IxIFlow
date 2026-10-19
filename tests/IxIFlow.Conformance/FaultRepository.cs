@@ -96,17 +96,14 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
 
     public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
         inner.GetWorkflowInstanceSummaryAsync(instanceId);
-    public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
-        inner.GetChildInstancesAsync(parentInstanceId);
 
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
         inner.GetWorkflowInstanceAsync(instanceId);
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
-        inner.GetWorkflowInstancesByNameAsync(workflowName);
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
-        inner.GetWorkflowInstancesByStatusAsync(status);
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
-        inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+    public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
+        inner.QueryInstancesAsync(query);
+
+    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason) =>
+        inner.RequestTerminationAsync(instanceId, reason);
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
         int limit = 1000) =>
         inner.GetTraceAsync(instanceId, afterSequence, limit);

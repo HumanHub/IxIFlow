@@ -668,7 +668,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             var cancelled = await store.CommitWorkflowInstanceAsync(cancelling);
             Assert.Equal(WorkflowCommitStatus.Applied, cancelled.Status);
             Assert.Equal("parent", (await store.GetCancellationRequestAsync(childId))!.ReasonCode);
-            Assert.Equal([childId], (await store.GetChildInstancesAsync(parentId)).Select(item => item.InstanceId));
+            Assert.Equal([childId], (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parentId, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!))).Select(item => item.InstanceId));
 
             // The child's terminal commit puts its completion in the parent's inbox, addressed to the wait.
             var grant = (await store.TryAcquireExecutionLeaseAsync(childId, "owner", TimeSpan.FromMinutes(1)))!;

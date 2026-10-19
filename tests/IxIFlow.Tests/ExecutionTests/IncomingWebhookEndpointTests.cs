@@ -288,7 +288,7 @@ public sealed class IncomingWebhookEndpointTests
         var response = await host.Send("/orders/{orderId}", new string('x', 1024 * 1024 + 1), contentLength: false);
         Assert.Equal(413, response.Status);
         Assert.Equal(0, host.Mappings);
-        Assert.Empty(await host.Store.GetWorkflowInstancesByNameAsync("IncomingWait"));
+        Assert.Empty(await Task.WhenAll((await host.Store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "IncomingWait", Limit: int.MaxValue))).Items.Select(async row => (await host.Store.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Fact]
@@ -304,7 +304,7 @@ public sealed class IncomingWebhookEndpointTests
         });
         using var disconnected = new CancellationTokenSource();
         var pending = host.Send("/disconnect", requestAborted: disconnected.Token);
-        var instance = Assert.Single(await host.Store.GetWorkflowInstancesByNameAsync("Disconnect"));
+        var instance = Assert.Single(await Task.WhenAll((await host.Store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Disconnect", Limit: int.MaxValue))).Items.Select(async row => (await host.Store.GetWorkflowInstanceAsync(row.InstanceId))!)));
         await host.Client.AwaitAsync(instance.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
         Assert.False(pending.IsCompleted);
         disconnected.Cancel();

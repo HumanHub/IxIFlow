@@ -164,7 +164,7 @@ public sealed class CheckpointLimitTests
             () => Engine(services).RunAsync(GrowingWorkflow("RefusedStart"),
                 new LimitData { Text = new string('x', GrownLength) }));
 
-        Assert.Empty(await repository.GetWorkflowInstancesByNameAsync("RefusedStart"));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "RefusedStart", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     private static WorkflowDefinition GrowingWorkflow(string name = "GrowingCheckpoint") =>

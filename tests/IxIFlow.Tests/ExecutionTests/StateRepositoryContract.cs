@@ -67,7 +67,7 @@ internal static class StateRepositoryContract
             var stored = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal(1, stored.Revision);
             Assert.Null(stored.RunnableAtUtc);
-            Assert.Equal(1, Assert.Single(await repository.GetWorkflowInstancesByNameAsync("Columns"),
+            Assert.Equal(1, Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Columns", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)),
                 candidate => candidate.InstanceId == instanceId).Revision);
             Assert.Equal(instance.ExecutionStateJson, stored.ExecutionStateJson);
         }
@@ -116,14 +116,14 @@ internal static class StateRepositoryContract
             Assert.NotNull(restored);
             Assert.Equal(WorkflowStatus.Suspended, restored.Status);
             Assert.Equal("{\"Value\":42}", restored.WorkflowDataJson);
-            Assert.Contains(await secondRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended),
+            Assert.Contains(await Task.WhenAll((await secondRepository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Suspended], Limit: int.MaxValue))).Items.Select(async row => (await secondRepository.GetWorkflowInstanceAsync(row.InstanceId))!)),
                 candidate => candidate.InstanceId == instanceId);
 
             restored.Status = WorkflowStatus.Completed;
             await secondRepository.SeedAsync(restored);
-            Assert.DoesNotContain(await firstRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended),
+            Assert.DoesNotContain(await Task.WhenAll((await firstRepository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Suspended], Limit: int.MaxValue))).Items.Select(async row => (await firstRepository.GetWorkflowInstanceAsync(row.InstanceId))!)),
                 candidate => candidate.InstanceId == instanceId);
-            Assert.Contains(await firstRepository.GetWorkflowInstancesByNameAsync("DurableTest"),
+            Assert.Contains(await Task.WhenAll((await firstRepository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "DurableTest", Limit: int.MaxValue))).Items.Select(async row => (await firstRepository.GetWorkflowInstanceAsync(row.InstanceId))!)),
                 candidate => candidate.InstanceId == instanceId);
         }
         finally

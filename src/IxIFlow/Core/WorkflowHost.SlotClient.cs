@@ -11,6 +11,10 @@ public sealed partial class WorkflowHost
     /// </summary>
     internal sealed class SlotClient
     {
+        public Task<InstancePage> SearchInstancesAsync(InstanceQuery query) => _runner.SearchInstancesAsync(query);
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTracePageAsync(string id, long after, int limit) => _runner.GetTracePageAsync(id, after, limit);
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string id, string code, string? description, string? actor) => _runner.RequestTerminationAsync(id, code, description, actor);
+        public Task<bool> FinishTerminationAsync(string id, Guid incarnation) => _runner.FinishTerminationAsync(id, expectedIncarnation: incarnation);
         private readonly InstanceOperations _runner;
 
         public SlotClient(InstanceOperations runner)

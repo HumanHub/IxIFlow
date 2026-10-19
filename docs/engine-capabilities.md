@@ -16,7 +16,7 @@ This page summarizes implemented behavior. The [roadmap](roadmap.md) identifies 
 | [Persistence](stores.md) | Memory, SQLite, SQL Server and PostgreSQL; fenced leases, revision-checked commits and recovery |
 | [Hosting](coordinator-and-hosts.md) | In-process host, scoped slots, local timers, recovery scanning, resource limits, crash quarantine, store-backed member registry, automatic/configured capabilities and graceful drain |
 | [Integrations](outbox-and-publishers.md) | Completion outbox, per-publisher durable deliveries, custom publishers, outgoing signed webhooks and versioned Liquid messages |
-| [Operations](retention-and-tombstones.md) | Retained terminal results, bounded cleanup, tombstones and explicit pending-activity resolution |
+| [Operations](operations.md) | Instance search, safe wait listings, trace paging, hard termination, retained results, cleanup, tombstones and pending-activity resolution |
 | [Observability](observability.md) | Separate committed trace history, typed transition/event/operator entries, snapshots, scoped logs and OpenTelemetry signals |
 
 ## Deployment boundary

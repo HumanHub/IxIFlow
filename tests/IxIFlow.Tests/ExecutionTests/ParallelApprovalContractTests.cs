@@ -498,7 +498,7 @@ public class ParallelApprovalContractTests
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(
             CreateRecoverWorkflow(), new ApprovalData { RequestId = "request-1" }));
 
-        var saved = (await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running)).Single();
+        var saved = (await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Single();
         Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceStarted);
 
         var recovered = await engine.RecoverAsync(saved.InstanceId);
@@ -998,7 +998,7 @@ public class ParallelApprovalContractTests
             var triggerDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
             while (DateTime.UtcNow < triggerDeadline)
             {
-                var saved = (await repository.GetWorkflowInstancesByNameAsync(definition.Name)).Single();
+                var saved = (await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: definition.Name, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Single();
                 if ((await BranchProgress.ReadAsync<ApprovalData>(repository, saved.InstanceId, 1))
                     .FinanceCompleted == 1)
                     break;
@@ -1010,7 +1010,7 @@ public class ParallelApprovalContractTests
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
             while (DateTime.UtcNow < deadline)
             {
-                var saved = (await repository.GetWorkflowInstancesByNameAsync(definition.Name)).Single();
+                var saved = (await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: definition.Name, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Single();
                 // The branch's commit is read from its saved changes; the instance's data waits for the join.
                 if ((await BranchProgress.ReadAsync<ApprovalData>(repository, saved.InstanceId, 2))
                     .LegalCompleted == 1)
@@ -1736,8 +1736,6 @@ public class ParallelApprovalContractTests
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
             _inner.GetWorkflowInstanceSummaryAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
-            _inner.GetChildInstancesAsync(parentInstanceId);
         public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
             IReadOnlyCollection<string> instanceIds) =>
             StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
@@ -1745,14 +1743,13 @@ public class ParallelApprovalContractTests
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);
 
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
-            _inner.GetWorkflowInstancesByNameAsync(workflowName);
+        public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
+            _inner.QueryInstancesAsync(query);
 
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
-            _inner.GetWorkflowInstancesByStatusAsync(status);
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason) =>
+            _inner.RequestTerminationAsync(instanceId, reason);
 
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
-            _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);

@@ -446,6 +446,13 @@ internal sealed class WorkflowExecutor
                 ExecutionTime = Now - instance.StartedAt!.Value
             };
         }
+        catch (TerminationCommittedException)
+        {
+            await AbandonInFlightAsync(inFlight);
+            instance.Status = WorkflowStatus.Terminated;
+            return new WorkflowExecutionResult { InstanceId = instance.InstanceId, Status = WorkflowExecutionStatus.Terminated,
+                ErrorMessage = "A termination command committed before this transition" };
+        }
         catch (ExecutionOwnershipLostException)
         {
             // The former owner cannot commit these activity outcomes.
@@ -506,7 +513,7 @@ internal sealed class WorkflowExecutor
             var cancelled = ex is OperationCanceledException && cancellationToken.IsCancellationRequested;
             if (!cancelled)
                 checkpoint.UnhandledError ??= SerializedException.From(ex);
-            instance.Status = cancelled ? WorkflowStatus.Cancelled : WorkflowStatus.Failed;
+            instance.Status = cancelled ? WorkflowStatus.Cancelled : IsPolicyTermination(ex) ? WorkflowStatus.Terminated : WorkflowStatus.Failed;
             // A reply wait whose scope already ended, such as a saga abandoned in this pass, closed as cancelled.
             checkpoint.CloseEndedRequests();
             // A run that fails ends every branch.
@@ -542,7 +549,7 @@ internal sealed class WorkflowExecutor
             return new WorkflowExecutionResult
             {
                 InstanceId = instance.InstanceId,
-                Status = cancelled ? WorkflowExecutionStatus.Cancelled : WorkflowExecutionStatus.Faulted,
+                Status = cancelled ? WorkflowExecutionStatus.Cancelled : IsPolicyTermination(ex) ? WorkflowExecutionStatus.Terminated : WorkflowExecutionStatus.Faulted,
                 WorkflowData = checkpoint.RootData,
                 TraceEntries = checkpoint.TakeTraceResult(),
                 ErrorMessage = ex.Message,
@@ -551,6 +558,10 @@ internal sealed class WorkflowExecutor
             };
         }
     }
+
+    private static bool IsPolicyTermination(Exception error) =>
+        error is SagaTerminatedException { IsPolicyTermination: true } or
+            DurableWorkflowException { Saved.IsPolicyTermination: true };
 
     private static bool CancellationPending(ExecutionCheckpoint checkpoint, IExecutionHost host) =>
         ContinuationTransitions.CancellationPending(checkpoint, host);
@@ -562,6 +573,13 @@ internal sealed class WorkflowExecutor
         // A run learns of requests from the host's cancellation watch and from its own commit
         // replies (B-10); it never reads them itself.
         var requested = observedReason;
+        if (requested?.Mode == WorkflowControlMode.Terminate)
+        {
+            // Cross a commit boundary before applying cancellation or running cleanup. The store
+            // refuses this ordinary transition and the host acknowledges the winning hard stop.
+            await host.CommitAsync(CheckpointCommit.Create(instance, host.Epoch, instance.Revision));
+            throw new ExecutionOwnershipLostException(new InvalidOperationException("Termination superseded the run"));
+        }
         if (checkpoint.CancellationRequested || requested == null)
             return false;
         var root = checkpoint.Continuations[0];

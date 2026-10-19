@@ -51,5 +51,8 @@ public enum WorkflowExecutionStatus
     NeedsResolution,
 
     /// <summary>Retention removed the result; the instance ID is still reserved.</summary>
-    Removed
+    Removed,
+
+    /// <summary>A hard stop or an unhandled saga termination ended the instance.</summary>
+    Terminated
 }

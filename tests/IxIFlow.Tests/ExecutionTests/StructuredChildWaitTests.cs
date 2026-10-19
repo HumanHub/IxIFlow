@@ -282,8 +282,7 @@ public sealed class StructuredChildWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
         Assert.True(Assert.IsType<ParentData>(cancelled.WorkflowData).ChildApproved);
-        var child = Assert.Single(await services.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstancesByNameAsync("CancellationCleanupChild"));
+        var child = Assert.Single(await Task.WhenAll((await services.GetRequiredService<IWorkflowStateRepository>().QueryInstancesAsync(new InstanceQuery(WorkflowName: "CancellationCleanupChild", Limit: int.MaxValue))).Items.Select(async row => (await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.Equal(WorkflowStatus.Completed, child.Status);
     }
 
@@ -305,8 +304,7 @@ public sealed class StructuredChildWaitTests
 
         var cancelling = await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, cancelling.Status);
-        var childId = Assert.Single(await services.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstancesByNameAsync("WaitingCleanupChild")).InstanceId;
+        var childId = Assert.Single(await Task.WhenAll((await services.GetRequiredService<IWorkflowStateRepository>().QueryInstancesAsync(new InstanceQuery(WorkflowName: "WaitingCleanupChild", Limit: int.MaxValue))).Items.Select(async row => (await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
         await ChildWaitingAsync(services, childId, "cleanup");
         EventAssert.Consumed(await engine.ResumeAsync(childId, "cleanup", new Approval()));
 
@@ -393,8 +391,8 @@ public sealed class StructuredChildWaitTests
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var started = await engine.RunAsync(parent, new ParentData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var finance = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("FinanceApprovalChild")).InstanceId;
-        var legal = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("LegalApprovalChild")).InstanceId;
+        var finance = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "FinanceApprovalChild", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
+        var legal = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "LegalApprovalChild", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
 
         await ChildWaitingAsync(services, finance, "finance");
         Assert.Equal(WorkflowExecutionStatus.Success, (await engine.ResumeAsync(finance, "finance", new Approval())).Status);
@@ -477,8 +475,8 @@ public sealed class StructuredChildWaitTests
             await firstProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
             await EngineAssert.StoreFailureAsync(() => firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(parent, new ParentData()));
-            parentId = Assert.Single(await store.GetWorkflowInstancesByNameAsync("CrashWindowParent")).InstanceId;
-            Assert.Empty(await store.GetWorkflowInstancesByNameAsync("CrashWindowChild"));
+            parentId = Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CrashWindowParent", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
+            Assert.Empty(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CrashWindowChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
         }
         store.FailCommit = _ => false;
         using var secondProvider = Services(store);
@@ -492,12 +490,12 @@ public sealed class StructuredChildWaitTests
         if (cancelBeforeRecovery)
         {
             Assert.Equal(WorkflowExecutionStatus.Cancelled, recovered.Status);
-            Assert.Empty(await store.GetWorkflowInstancesByNameAsync("CrashWindowChild"));
+            Assert.Empty(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CrashWindowChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
         }
         else
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
-            var started = Assert.Single(await store.GetWorkflowInstancesByNameAsync("CrashWindowChild"));
+            var started = Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CrashWindowChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
             Assert.Equal(await ChildIdAsync(secondProvider, parentId), started.InstanceId);
         }
     }
@@ -748,7 +746,7 @@ public sealed class StructuredChildWaitTests
         // The first branch's child was to start in the commit the failure now makes; it is not started.
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(WorkflowStatus.Failed, (await repository.GetWorkflowInstanceAsync(result.InstanceId))!.Status);
-        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Fact]
@@ -769,7 +767,7 @@ public sealed class StructuredChildWaitTests
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData()));
         Assert.Contains("is deactivated", error.Message);
-        Assert.Empty(await repository.GetWorkflowInstancesByNameAsync("RetiredChild"));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "RetiredChild", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Fact]
@@ -879,7 +877,7 @@ public sealed class StructuredChildWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(parent, new ParentData());
-        var childId = Assert.Single(await repository.GetChildInstancesAsync(started.InstanceId)).InstanceId;
+        var childId = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: started.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
         await ChildWaitingAsync(services, childId, "approval");
 
         var failed = await engine.ResumeAsync(started.InstanceId, "fail", new Approval());
@@ -907,7 +905,7 @@ public sealed class StructuredChildWaitTests
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     // An input mapped to a property the child's data does not have is an invalid definition, not skipped (F-23).
@@ -928,7 +926,7 @@ public sealed class StructuredChildWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("Child workflow input 'ChildData.Extra' is not a property of its data", result.ErrorMessage);
-        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     // A whole number takes a child's enum property, as reflection assigned it before conversion was checked.
@@ -950,7 +948,7 @@ public sealed class StructuredChildWaitTests
         var result = await FinishedAsync(engine, started.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        var child = Assert.Single(await repository.GetChildInstancesAsync(result.InstanceId));
+        var child = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.Contains("\"Level\":2", child.WorkflowDataJson);
     }
 
@@ -972,7 +970,7 @@ public sealed class StructuredChildWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("Child workflow input 'ChildData.Approved' takes Boolean, not String", result.ErrorMessage);
-        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     // An engine failure ends the parent at once, without unwinding its branches; the children it waits for are
@@ -994,7 +992,7 @@ public sealed class StructuredChildWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(parent, new ParentData());
-        var childId = Assert.Single(await repository.GetChildInstancesAsync(started.InstanceId)).InstanceId;
+        var childId = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: started.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
         await ChildWaitingAsync(services, childId, "approval");
 
         var failed = await engine.ResumeAsync(started.InstanceId, "fail", new Approval());

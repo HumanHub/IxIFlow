@@ -509,7 +509,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         child.WorkflowDataJson = "{\"Value\":43}";
         await Commit(child); // UpdateCommit rather than the initial insert.
         Assert.Equal(parent.InstanceId, (await store.GetWorkflowInstanceAsync(child.InstanceId))!.ParentInstanceId);
-        Assert.Equal(child.InstanceId, Assert.Single(await store.GetChildInstancesAsync(parent.InstanceId)).InstanceId);
+        Assert.Equal(child.InstanceId, Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parent.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId);
         if (newConnection != null)
         {
             await using var connection = newConnection();

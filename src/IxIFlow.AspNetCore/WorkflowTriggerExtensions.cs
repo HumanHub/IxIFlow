@@ -308,7 +308,7 @@ public static class WorkflowTriggerExtensions
         new(result.InstanceId, PublicStatus(result.Status), projection(result));
 
     private static bool IsTerminal(WorkflowExecutionStatus status) => status is WorkflowExecutionStatus.Success or
-        WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.Failed or WorkflowExecutionStatus.Cancelled or WorkflowExecutionStatus.TimedOut;
+        WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.Failed or WorkflowExecutionStatus.Cancelled or WorkflowExecutionStatus.TimedOut or WorkflowExecutionStatus.Terminated;
 
     private static string PublicStatus(WorkflowExecutionStatus? status) => status switch
     {

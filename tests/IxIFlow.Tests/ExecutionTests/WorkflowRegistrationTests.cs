@@ -158,7 +158,7 @@ public sealed class WorkflowRegistrationTests
 
         var parentInstance = await repository.GetWorkflowInstanceAsync(instanceId);
         Assert.Equal(WorkflowStatus.Completed, parentInstance?.Status);
-        var children = await repository.GetWorkflowInstancesByNameAsync("Customer approval");
+        var children = await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Customer approval", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!));
         var child = Assert.Single(children);
         Assert.Equal(WorkflowStatus.Completed, child.Status);
         Assert.Equal(3, child.WorkflowVersion);
@@ -197,8 +197,7 @@ public sealed class WorkflowRegistrationTests
         var childId = await repository.WaitingInstanceAsync(nameof(NamedWorkflow), "approval");
         EventAssert.Consumed(await engine.ResumeAsync(childId, "approval", new RegistrationEvent()));
         AssertCompleted(await engine.FinishedAsync(started));
-        var child = Assert.Single(await repository.GetWorkflowInstancesByNameAsync(
-            nameof(NamedWorkflow)));
+        var child = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: nameof(NamedWorkflow), Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.Equal(3, child.WorkflowVersion);
     }
 
@@ -221,8 +220,7 @@ public sealed class WorkflowRegistrationTests
 
         Assert.Contains("is not registered", error.Message);
         Assert.Equal(0, constructions);
-        Assert.Empty(await provider.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstancesByNameAsync(nameof(NamedWorkflow)));
+        Assert.Empty(await Task.WhenAll((await provider.GetRequiredService<IWorkflowStateRepository>().QueryInstancesAsync(new InstanceQuery(WorkflowName: nameof(NamedWorkflow), Limit: int.MaxValue))).Items.Select(async row => (await provider.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Fact]
@@ -239,8 +237,7 @@ public sealed class WorkflowRegistrationTests
             () => provider.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData()));
 
         Assert.Contains("Workflow definition not found: NamedWorkflow v3", error.Message);
-        Assert.Empty(await provider.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstancesByNameAsync(nameof(NamedWorkflow)));
+        Assert.Empty(await Task.WhenAll((await provider.GetRequiredService<IWorkflowStateRepository>().QueryInstancesAsync(new InstanceQuery(WorkflowName: nameof(NamedWorkflow), Limit: int.MaxValue))).Items.Select(async row => (await provider.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]
@@ -271,7 +268,7 @@ public sealed class WorkflowRegistrationTests
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => engine.RunAsync(parent, new ParentData()));
         Assert.Contains("is deactivated", error.Message);
-        Assert.Single(await repository.GetWorkflowInstancesByNameAsync("Customer approval"));
+        Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Customer approval", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     public sealed class RegistrationData

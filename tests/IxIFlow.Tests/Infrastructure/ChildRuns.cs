@@ -31,7 +31,7 @@ public static class ChildRuns
         using var patience = new CancellationTokenSource(Patience);
         while (true)
         {
-            foreach (var instance in await store.GetWorkflowInstancesByNameAsync(name))
+            foreach (var instance in await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: name, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
                 if ((await ((IWorkflowInbox)store).GetOpenWaitsAsync(
                         new WaitQuery(InstanceId: instance.InstanceId, Key: key))).Count > 0)
                     return instance.InstanceId;

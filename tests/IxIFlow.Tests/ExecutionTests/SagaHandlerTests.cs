@@ -834,7 +834,7 @@ public sealed class SagaHandlerTests
         {
             Assert.True(DateTime.UtcNow < deadline, "The handler's child never waited");
             await Task.Delay(20);
-            child = (await repository.GetChildInstancesAsync(started.InstanceId)).SingleOrDefault();
+            child = (await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: started.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).SingleOrDefault();
         }
 
         await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
