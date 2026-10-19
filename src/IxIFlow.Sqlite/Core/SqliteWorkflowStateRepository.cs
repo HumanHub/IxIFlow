@@ -80,7 +80,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
 
     internal override ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
         ValueTask.FromResult<DbTransaction?>(((SqliteConnection)connection).BeginTransaction(
-            deferred: operation is Operation.Read or Operation.Query or Operation.OutboxRead));
+            deferred: operation is Operation.Read or Operation.Query or Operation.RunnableRead or Operation.RetentionRead or Operation.OutboxRead));
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
     {

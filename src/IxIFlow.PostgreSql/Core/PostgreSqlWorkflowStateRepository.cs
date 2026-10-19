@@ -96,10 +96,29 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     private static DateTimeOffset Timestamp(DateTime value) => new(Utc(value));
 
     private static DateTimeOffset? Timestamp(DateTime? value) => value is { } time ? Timestamp(time) : null;
-    internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
-            or Operation.CancellationRequest or Operation.LeaseRelease
-            ? await connection.BeginTransactionAsync() : null;
+    internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation)
+    {
+        if (operation is not (Operation.Registry or Operation.RunnableRead or Operation.RetentionRead
+            or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim
+            or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
+            or Operation.CancellationRequest or Operation.LeaseRelease)) return null;
+        var transaction = await connection.BeginTransactionAsync();
+        try
+        {
+            if (operation is Operation.Registry or Operation.RunnableRead or Operation.RetentionRead
+                or Operation.OutboxClaim or Operation.Purge)
+                // These periodic OLTP queries return bounded pages, but generic set/lease estimates
+                // can still cross jit_above_cost. The backlog plan spent 290-340 ms compiling each
+                // call. Disable JIT only for this transaction, including claims and retention scans.
+                await connection.ExecuteAsync("SET LOCAL jit = off", transaction: transaction);
+            return transaction;
+        }
+        catch
+        {
+            await transaction.DisposeAsync();
+            throw;
+        }
+    }
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
     {
@@ -676,9 +695,10 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             ON ixiflow_workflow_instances (last_host_id, runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
         CREATE INDEX ix_ixiflow_instances_demand_set ON ixiflow_workflow_instances (demand_set_id);
         CREATE INDEX ix_ixiflow_instances_set_runnable
-            ON ixiflow_workflow_instances (demand_set_id, runnable_at_utc, instance_id) INCLUDE (last_host_id, pinned_host, pin_expires_at_utc) WHERE runnable_at_utc IS NOT NULL;
+            ON ixiflow_workflow_instances (demand_set_id COLLATE "C", runnable_at_utc, instance_id COLLATE "C") INCLUDE (last_host_id, pinned_host, pin_expires_at_utc) WHERE runnable_at_utc IS NOT NULL;
         CREATE INDEX ix_ixiflow_instances_set_pin
-            ON ixiflow_workflow_instances (demand_set_id, pin_expires_at_utc, runnable_at_utc, instance_id)
+            ON ixiflow_workflow_instances (demand_set_id COLLATE "C", pin_expires_at_utc, runnable_at_utc, instance_id COLLATE "C")
+            INCLUDE (pinned_host)
             WHERE pinned_host IS NOT NULL AND runnable_at_utc IS NOT NULL;
         CREATE INDEX ix_ixiflow_instances_set_affinity
             ON ixiflow_workflow_instances (demand_set_id, last_host_id, runnable_at_utc, instance_id) INCLUDE (pinned_host, pin_expires_at_utc) WHERE runnable_at_utc IS NOT NULL;

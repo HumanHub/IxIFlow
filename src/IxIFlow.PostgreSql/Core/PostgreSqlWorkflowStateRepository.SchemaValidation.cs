@@ -32,7 +32,27 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
-            if (await connection.ExecuteScalarAsync<int>("SELECT CASE WHEN to_regclass('ix_ixiflow_instances_set_pin') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction) != 1)
+            // Names alone would accept the old, noncovering pin index or a differently collated
+            // ordering key. Refuse those schemas rather than silently retaining unstable plans.
+            if (await connection.ExecuteScalarAsync<int>("""
+                SELECT count(*) FROM pg_index AS definition
+                WHERE definition.indrelid = 'ixiflow_workflow_instances'::regclass AND definition.indisvalid
+                  AND definition.indcollation[0] = '"C"'::regcollation
+                  AND (SELECT array_agg(attribute.attname::text ORDER BY key.ordinality)
+                       FROM unnest(definition.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+                       JOIN pg_attribute AS attribute ON attribute.attrelid = definition.indrelid AND attribute.attnum = key.attnum)
+                    = CASE WHEN definition.indexrelid = to_regclass('ix_ixiflow_instances_set_runnable')
+                        THEN ARRAY['demand_set_id', 'runnable_at_utc', 'instance_id', 'last_host_id', 'pinned_host', 'pin_expires_at_utc']
+                        ELSE ARRAY['demand_set_id', 'pin_expires_at_utc', 'runnable_at_utc', 'instance_id', 'pinned_host'] END
+                  AND ((definition.indexrelid = to_regclass('ix_ixiflow_instances_set_runnable')
+                        AND definition.indnkeyatts = 3 AND definition.indcollation[2] = '"C"'::regcollation
+                        AND definition.indoption[1] = 0 AND definition.indoption[2] = 0
+                        AND pg_get_expr(definition.indpred, definition.indrelid) = '(runnable_at_utc IS NOT NULL)')
+                    OR (definition.indexrelid = to_regclass('ix_ixiflow_instances_set_pin')
+                        AND definition.indnkeyatts = 4 AND definition.indcollation[3] = '"C"'::regcollation
+                        AND definition.indoption[1] = 0 AND definition.indoption[2] = 0 AND definition.indoption[3] = 0
+                        AND pg_get_expr(definition.indpred, definition.indrelid) = '((pinned_host IS NOT NULL) AND (runnable_at_utc IS NOT NULL))'))
+                """, transaction: transaction) != 2)
                 throw EarlierBuild();
             if (await connection.ExecuteScalarAsync<int>("SELECT CASE WHEN to_regclass('ixiflow_execution_epoch') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction) != 1)
                 throw EarlierBuild();

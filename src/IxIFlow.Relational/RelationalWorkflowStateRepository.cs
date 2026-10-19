@@ -23,7 +23,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>The connection, transaction and admission policy for a store operation.</summary>
     internal enum Operation
     {
-        Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge, Registry,
+        Schema, Read, Query, RunnableRead, RetentionRead, OutboxRead, OutboxClaim, OutboxMark, Purge, Registry,
         CancellationRequest, CancellationRead, LeaseClaim, LeaseRenew, LeaseRelease,
         Append, InboxPage, Commit, Delete
     }
@@ -410,9 +410,10 @@ public abstract partial class RelationalWorkflowStateRepository :
         if (query.Limit == 0) return [];
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var now = await OutboxNowAsync(connection, null);
+        await using var transaction = await BeginTransactionAsync(connection, Operation.RunnableRead);
+        var now = await OutboxNowAsync(connection, transaction);
         var rows = await connection.QueryAsync<RunnableRow>(RunnableSql,
-            PlacementParameters(query, now, query.Limit));
+            PlacementParameters(query, now, query.Limit), transaction);
         return rows.Select(row =>
             new RunnableInstance(row.InstanceId, ReadTime(row.RunnableAtUtc))).ToArray();
     }
