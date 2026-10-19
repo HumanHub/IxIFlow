@@ -144,10 +144,17 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
                 : "SELECT count(*) FROM ixiflow_workflow_instances WHERE demand_set_id = @Id", new { cuda.Id });
             Assert.Equal(30, failedSetSize);
             await store.GetUnschedulableAsync(32); // warm the complete production call
-            var start = Stopwatch.GetTimestamp();
-            var result = await store.GetUnschedulableAsync(32);
-            var elapsed = Stopwatch.GetElapsedTime(start);
-            output.WriteLine($"{provider}: {scenario}: {elapsed.TotalMilliseconds:F2} ms");
+            // The median of several warmed calls, so one scheduling stall on a busy machine is not the measurement.
+            var samples = new List<TimeSpan>();
+            UnschedulablePage result = null!;
+            for (var sample = 0; sample < 7; sample++)
+            {
+                var start = Stopwatch.GetTimestamp();
+                result = await store.GetUnschedulableAsync(32);
+                samples.Add(Stopwatch.GetElapsedTime(start));
+            }
+            var elapsed = samples.Order().ElementAt(samples.Count / 2);
+            output.WriteLine($"{provider}: {scenario}: {elapsed.TotalMilliseconds:F2} ms (median of {samples.Count})");
             Assert.Equal(25, result.Items.Count);
             Assert.All(result.Items, row => Assert.Equal(new WorkflowDemand("gpu", "cuda"), Assert.Single(row.UnmetDemands)));
             var sql = (string)store.GetType().GetProperty("UnschedulableSql", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
