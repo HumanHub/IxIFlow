@@ -1472,6 +1472,9 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             inner.GetWorkflowInstancesByStatusAsync(status);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string id) =>
             inner.GetWorkflowInstancesByCorrelationIdAsync(id);
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
+            inner.GetDiagnosticsAsync(instanceId);
+
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             inner.GetTraceAsync(instanceId, afterSequence, limit);

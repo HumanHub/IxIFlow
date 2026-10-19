@@ -107,6 +107,9 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.GetWorkflowInstancesByStatusAsync(status);
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
         inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+    public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
+        inner.GetDiagnosticsAsync(instanceId);
+
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
         int limit = 1000) =>
         inner.GetTraceAsync(instanceId, afterSequence, limit);

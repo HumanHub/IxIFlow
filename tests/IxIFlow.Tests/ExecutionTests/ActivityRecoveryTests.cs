@@ -982,6 +982,9 @@ public sealed class ActivityRecoveryTests
             _inner.GetWorkflowInstancesByStatusAsync(status);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
             _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
+            _inner.GetDiagnosticsAsync(instanceId);
+
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);
