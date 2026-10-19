@@ -22,6 +22,7 @@ public sealed record DebugCheckpoint(long PauseGeneration = 0, long AppliedOrder
 {
     public IReadOnlyList<Breakpoint> Breakpoints { get; init; } = [];
     public BreakpointStop? Stop { get; init; }
+    public BreakpointEvaluation? Evaluation { get; init; }
     public IReadOnlyList<BreakpointStop> SkipOnce { get; init; } = [];
 }
 

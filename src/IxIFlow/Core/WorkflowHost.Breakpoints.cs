@@ -22,6 +22,15 @@ public sealed partial class WorkflowHost
                 ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson).StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Workflow structure differs");
             var resolved = BreakpointResolver.Resolve(definition, breakpoints);
+            foreach (var breakpoint in resolved.Where(b => b.Condition != null))
+            {
+                var compiler = services.GetService(typeof(IBreakpointConditionCompiler)) as IBreakpointConditionCompiler;
+                if (compiler == null)
+                    throw new BreakpointConditionException([new("BPC000", "No breakpoint condition compiler is registered", 0,
+                        breakpoint.Condition!.Length, 1, 1)]);
+                var compilation = compiler.Compile(BreakpointConditionInputs.Request(definition, breakpoint.StepId, breakpoint.Condition!));
+                if (compilation.Evaluate == null) throw new BreakpointConditionException(compilation.Diagnostics);
+            }
             var state = (await _store.GetDebugStatesAsync([instanceId]))[instanceId];
             var generation = state.PauseGeneration + (instance.Status != WorkflowStatus.Paused &&
                 state.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause) ? 1 : 0);

@@ -1,10 +1,47 @@
 using IxIFlow.Core;
 using IxIFlow.Extensions;
+using IxIFlow.Debugging;
 using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Samples;
 
 public static class DebuggingExamples
 {
+    public static void ConfigureConditions(IServiceCollection services)
+    {
+        // snippet: configure-conditions
+        services.AddIxIFlow(options => options.Debugging = true);
+        services.AddBreakpointConditions();
+        // end-snippet: configure-conditions
+    }
+
+    public static async Task ConditionsAsync(IWorkflowOperations operations, string instanceId)
+    {
+        // snippet: conditions
+        await operations.SetBreakpointsAsync(instanceId,
+        [
+            new Breakpoint("large-order", "charge-card",
+                Condition: "context.WorkflowData.Total > 1000"),
+            new Breakpoint("failed-output", "after-charge",
+                Condition: "context.PreviousStep.Succeeded == false"),
+            new Breakpoint("second-item", "root/2/foreach/0", HitCondition: ">= 2",
+                Condition: "context.Index == 1 && context.Item.Amount > 100")
+        ], actor: "operator@example.com");
+        // end-snippet: conditions
+    }
+
+    public static Breakpoint[] PureConditions()
+    {
+        // snippet: pure-conditions
+        Breakpoint[] examples =
+        [
+            new("total", "charge-card", Condition: "context.WorkflowData.Items.Where(x => x.Amount > 0).Sum(x => x.Amount) > 1000"),
+            new("name", "charge-card", Condition: "context.WorkflowData.Name.StartsWith(\"test\", StringComparison.OrdinalIgnoreCase)"),
+            new("time", "charge-card", Condition: "context.UtcNow.Hour >= 18")
+        ];
+        // end-snippet: pure-conditions
+        return examples;
+    }
+
     public static void Configure(IServiceCollection services)
     {
         // snippet: configure
