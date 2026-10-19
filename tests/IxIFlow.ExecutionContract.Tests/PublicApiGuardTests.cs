@@ -14,7 +14,7 @@ public sealed class PublicApiGuardTests
         Type[] publicContract =
         [
             typeof(WorkflowExecutor), typeof(IExecutionHost), typeof(IWorkflowDefinitionSource),
-            typeof(Assign), typeof(Ready), typeof(Cancel), typeof(Arrivals), typeof(Recycle),
+            typeof(Assign), typeof(Ready), typeof(Cancel), typeof(Arrivals), typeof(Recycle), typeof(DebugCommands),
             typeof(Checkpoint), typeof(CheckpointReply), typeof(StartChild), typeof(StartChildReply),
             typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
             typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome),
@@ -25,7 +25,7 @@ public sealed class PublicApiGuardTests
         Assert.Equal([typeof(ExecutionLimits), typeof(WorkflowExecutor), typeof(WorkflowTypeIdentity)],
             typeof(WorkflowExecutor).Assembly.GetExportedTypes()
                 .Where(type => type.Namespace == "IxIFlow.Core.Runtime").OrderBy(type => type.Name));
-        Assert.Equal(["Deliver", "Deliver", "Deliver", "ExecuteAsync"], typeof(WorkflowExecutor)
+        Assert.Equal(["Deliver", "Deliver", "Deliver", "Deliver", "ExecuteAsync"], typeof(WorkflowExecutor)
             .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Select(method => method.Name).Order());
         Assert.Single(typeof(WorkflowExecutor).GetConstructors());

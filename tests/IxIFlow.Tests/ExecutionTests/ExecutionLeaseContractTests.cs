@@ -1377,6 +1377,14 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         }
         public async Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
         {
+            await BeforeCancellationReadAsync(instanceId);
+            var reason = await inner.GetCancellationRequestAsync(instanceId);
+            ObserveCancellation(reason);
+            return reason;
+        }
+
+        private async Task BeforeCancellationReadAsync(string instanceId)
+        {
             if (FailAfterObservedCancellation && Volatile.Read(ref _cancellationObserved) != 0)
                 throw new IOException("Cancellation store unavailable after observation");
             if (FailAllCancellationReads)
@@ -1397,13 +1405,15 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                     await inner.RequestCancellationAsync(instanceId,
                         new CancellationReason { ReasonCode = "late" });
             }
-            var reason = await inner.GetCancellationRequestAsync(instanceId);
+        }
+
+        private void ObserveCancellation(CancellationReason? reason)
+        {
             if (reason != null && FailAfterObservedCancellation)
             {
                 Interlocked.Exchange(ref _cancellationObserved, 1);
                 CancellationObserved.TrySetResult();
             }
-            return reason;
         }
         public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
             inner.GetRunnableInstancesAsync(limit);
@@ -1418,9 +1428,19 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             inner.GetWorkflowInstanceSummaryAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
             inner.GetChildInstancesAsync(parentInstanceId);
-        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+        public async Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds)
+        {
+            foreach (var instanceId in instanceIds.Distinct(StringComparer.Ordinal))
+                await BeforeCancellationReadAsync(instanceId);
+            var controls = await inner.GetControlRequestsAsync(instanceIds);
+            foreach (var reason in controls.Cancellations.Values)
+                ObserveCancellation(reason);
+            return controls;
+        }
+        public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+            inner.RequestDebugCommandAsync(instanceId, command);
+        public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+            inner.GetDebugStatesAsync(instanceIds);
 
         public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
         {

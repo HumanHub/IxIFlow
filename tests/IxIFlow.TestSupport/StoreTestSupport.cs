@@ -40,23 +40,6 @@ public static class StoreTestSupport
         finally { owner.Gate.Release(); }
     }
 
-    /// <summary>Explicit cancellation reads for fault-injecting test repositories.</summary>
-    public static async Task<IReadOnlyDictionary<string, CancellationReason>> ReadCancellationsAsync(
-        IReadOnlyCollection<string> ids, Func<string, Task<CancellationReason?>> read)
-    {
-        var requests = new ConcurrentDictionary<string, CancellationReason>(StringComparer.Ordinal);
-        var failures = new ConcurrentBag<Exception>();
-        var distinct = ids.Distinct(StringComparer.Ordinal).ToArray();
-        await Parallel.ForEachAsync(distinct, new ParallelOptions { MaxDegreeOfParallelism = 16 }, async (id, _) =>
-        {
-            try { if (await read(id) is { } reason) requests[id] = reason; }
-            catch (Exception error) { failures.Add(error); }
-        });
-        if (distinct.Length > 0 && failures.Count == distinct.Length)
-            throw new AggregateException("No cancellation request could be read", failures);
-        return requests;
-    }
-
     /// <summary>Seeds or updates a store fixture through its normal commit contract.</summary>
     public static async Task SeedAsync(this IWorkflowStateRepository store, WorkflowInstance instance,
         TimeSpan? wakeAfter = null)
