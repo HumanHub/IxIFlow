@@ -63,9 +63,10 @@ internal static class ExecutionCheckpointWriter
         using var span = Telemetry.Source.StartActivity("commit");
         Telemetry.Tag(span, instance);
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        checkpoint.Signals?.ThrowIfOwnershipLost();
+        // Resends resolve the same immutable commit even if its first attempt released the lease.
         for (var attempt = 1; ; attempt++)
         {
-            checkpoint.Signals?.ThrowIfOwnershipLost();
             CheckpointReply reply;
             try
             {

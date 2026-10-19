@@ -674,7 +674,7 @@ public sealed partial class WorkflowHost
 
         private sealed class RunReceipt
         {
-            public readonly HashSet<string> Commits = [];
+            public long Revision;
             public readonly List<ExecutionTraceEntry> Trace = [];
             public DateTime? WakeUtc;
             public WorkflowInstance? Instance;
@@ -812,22 +812,24 @@ public sealed partial class WorkflowHost
             {
                 case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
                     var receipt = _receipts.GetOrAdd(instance.InstanceId, _ => new RunReceipt());
-                    if (receipt.Commits.Add(commit.CommitId))
+                    // Commits are incorporated in order; a replay cannot add trace or replace newer state.
+                    if (result.Revision > receipt.Revision)
                     {
+                        receipt.Revision = result.Revision;
                         receipt.Instance = CheckpointParts.Summarize(commit.Payload,
                             commit.ApplyParts(basedOn.SavedParts).GetValueOrDefault(CheckpointParts.DataKey), result.Revision);
                         receipt.Instance.Incarnation = commit.Incarnation;
                         receipt.Instance.RunnableAtUtc = result.RunnableAtUtc;
                         receipt.Trace.AddRange(commit.TraceEntries.Select(json =>
                             JsonSerializer.Deserialize<ExecutionTraceEntry>(json)!));
+                        receipt.WakeUtc = result.RunnableAtUtc is { } due
+                            ? Now + (due > result.StoreTimeUtc ? due - result.StoreTimeUtc : TimeSpan.Zero)
+                            : null;
+                        // A child the commit started, or a parent its completion woke, runs here without waiting
+                        // for the poll (D-17).
+                        foreach (var runnable in result.MadeRunnable)
+                            _control.Runnable(runnable);
                     }
-                    receipt.WakeUtc = result.RunnableAtUtc is { } due
-                        ? Now + (due > result.StoreTimeUtc ? due - result.StoreTimeUtc : TimeSpan.Zero)
-                        : null;
-                    // A child the commit started, or a parent its completion woke, runs here without waiting
-                    // for the poll (D-17).
-                    foreach (var runnable in result.MadeRunnable)
-                        _control.Runnable(runnable);
                     return new CheckpointReply(assignmentId, CheckpointReplyKind.Ack, result.Revision,
                         PendingCancellation: result.PendingCancellation, Parked: result.Parked,
                         UnreadEvents: result.UnreadEvents);
@@ -946,7 +948,6 @@ public sealed partial class WorkflowHost
             public readonly object Sync = new();
             public Task Tail = Task.CompletedTask;
         }
-        private readonly ConcurrentDictionary<string, CommitQueue> _commitQueues = new(StringComparer.Ordinal);
 
         internal ConflictReason? AdmitReady(Ready ready)
         {
@@ -963,14 +964,14 @@ public sealed partial class WorkflowHost
             return run;
         }
 
-        /// <summary>Routes requests only to the currently active assignment. No rejection touches the store.</summary>
+        /// <summary>Routes requests only to their admitted assignment. No rejection touches the store.</summary>
         internal sealed class ExecutionHost(InstanceOperations operations) : IExecutionHost
         {
             private HostedRun? Find(Guid id, string instanceId) =>
                 operations._assignments.TryGetValue(id, out var run) && run.IsActive(instanceId) ? run : null;
 
             public Task<CheckpointReply> CheckpointAsync(Checkpoint request) =>
-                Find(request.AssignmentId, request.Commit.InstanceId) is { } run
+                operations._assignments.TryGetValue(request.AssignmentId, out var run)
                     ? run.CheckpointAsync(request)
                     : Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Conflict,
                         Conflict: ConflictReason.NotAssigned));
@@ -992,8 +993,10 @@ public sealed partial class WorkflowHost
         internal sealed class HostedRun(InstanceOperations operations, WorkflowInstance instance,
             WorkflowExecutionLease owner, Guid identity) : IDisposable
         {
-            private readonly CommitQueue _queue = operations._commitQueues.GetOrAdd(instance.InstanceId, _ => new());
+            private readonly CommitQueue _queue = new();
             private readonly Dictionary<string, (long Revision, string Hash, Task<CheckpointReply> Task)> _outstanding = [];
+            private sealed record RetryableCommit(string CommitId, long Revision, string Hash);
+            private RetryableCommit? _retryable;
             private WorkflowInstance _saved = instance;
             private AcknowledgedCommit? _releasedBy;
             public Exception? LastCommitError { get; set; }
@@ -1015,10 +1018,22 @@ public sealed partial class WorkflowHost
             public bool ReleasedBy(AcknowledgedCommit? acknowledged) =>
                 acknowledged != null && acknowledged == Volatile.Read(ref _releasedBy);
 
+            private bool CanCommit(CheckpointCommit commit)
+            {
+                if (IsActive(commit.InstanceId)) return true;
+                // A lost reply may have released the lease. Only that exact unresolved commit may
+                // cross the store's fencing check after loss; it cannot introduce a new transition.
+                var retryable = Volatile.Read(ref _retryable);
+                return commit.InstanceId == instance.InstanceId && operations._assignments.ContainsKey(identity) &&
+                    retryable != null && retryable.CommitId == commit.CommitId &&
+                    retryable.Revision == commit.ExpectedRevision &&
+                    retryable.Hash == Convert.ToHexString(commit.ContentHash);
+            }
+
             public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
             {
                 var commit = request.Commit;
-                if (request.AssignmentId != identity || !IsActive(commit.InstanceId) ||
+                if (request.AssignmentId != identity || !CanCommit(commit) ||
                     commit.Epoch != owner.Epoch || commit.Incarnation != instance.Incarnation)
                     return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Conflict,
                         Conflict: ConflictReason.NotAssigned));
@@ -1048,14 +1063,19 @@ public sealed partial class WorkflowHost
                     try { await preceding; } catch { /* A failed request does not break the queue. */ }
                     var commit = request.Commit;
                     CheckpointReply reply;
-                    if (!IsActive(commit.InstanceId) || request.AssignmentId != identity ||
+                    if (!CanCommit(commit) || request.AssignmentId != identity ||
                         commit.Epoch != owner.Epoch || commit.Incarnation != instance.Incarnation)
                         reply = new(identity, CheckpointReplyKind.Conflict, Conflict: ConflictReason.NotAssigned);
                     else
                     {
                         operations.CheckLimit(commit, _saved);
                         reply = await operations.CommitAsync(instance, commit, owner.Epoch, identity, _saved);
-                        if (reply.Kind == CheckpointReplyKind.Ack && reply.Revision >= _saved.Revision)
+                        if (reply.Kind is CheckpointReplyKind.Unknown or CheckpointReplyKind.Retry)
+                            Volatile.Write(ref _retryable, new RetryableCommit(commit.CommitId,
+                                commit.ExpectedRevision, Convert.ToHexString(commit.ContentHash)));
+                        else if (Volatile.Read(ref _retryable)?.CommitId == commit.CommitId)
+                            Volatile.Write(ref _retryable, null);
+                        if (reply.Kind == CheckpointReplyKind.Ack && reply.Revision > _saved.Revision)
                         {
                             _saved = commit.ReadInstance(_saved);
                             _saved.Incarnation = commit.Incarnation;
