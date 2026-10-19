@@ -6,6 +6,7 @@ using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
+using IxIFlow.Tests.Infrastructure;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.CodeAnalysis;
@@ -181,21 +182,31 @@ public sealed class DeclaredStructureHashTests
         services.RegisterWorkflow<TypedChild>();
         using var provider = services.BuildServiceProvider();
         var registered = provider.GetRequiredService<IWorkflowCatalog>();
-        var children = new ChildWorkflows(provider, registered, TimeProvider.System);
-        Assert.Equal(3, (await children.ResolveAsync(parent.Steps[1], starting: true)).Version);
-        var wrongStep = Parent().Steps[1];
-        wrongStep.WorkflowVersion = 4;
+        var client = provider.GetRequiredService<IWorkflowClient>();
+        Assert.Equal(WorkflowExecutionStatus.Success,
+            (await client.RunToEndAsync(parent, new StructureHashData())).Status);
+        var child = Assert.Single(await provider.GetRequiredService<IWorkflowStateRepository>()
+            .GetWorkflowInstancesByNameAsync("Pinned child"));
+        Assert.Equal(3, child.WorkflowVersion);
+        var wrongParent = Parent();
+        wrongParent.Name = "Wrong version parent";
+        wrongParent.Steps[1].WorkflowVersion = 4;
         var wrongVersion = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            children.ResolveAsync(wrongStep, starting: true));
+            client.RunAsync(wrongParent, new StructureHashData()));
+        Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, wrongVersion.Kind);
         Assert.Contains("v3", wrongVersion.Message);
         Assert.Contains("v4", wrongVersion.Message);
 
         var replacement = Workflow.Create<StructureHashData>("Pinned child", 3).Step<StructureHashMultiply>().Step<StructureHashMultiply>().Build();
         var registry = new WorkflowCatalog();
         await registry.RegisterWorkflowAsync(replacement);
+        services.AddSingleton<IWorkflowCatalog>(registry);
+        using var mismatchedProvider = services.BuildServiceProvider();
         var mismatch = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            new ChildWorkflows(provider, registry, TimeProvider.System).ResolveAsync(parent.Steps[1], starting: true));
+            mismatchedProvider.GetRequiredService<IWorkflowClient>().RunAsync(Parent(), new StructureHashData()));
+        Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, mismatch.Kind);
         var original = (await registered.GetWorkflowDefinitionAsync("Pinned child", 3))!;
+        Assert.Contains("differs from its registered definition: registered structure hash", mismatch.Message);
         AssertMismatch(mismatch.Message, original, replacement);
     }
 

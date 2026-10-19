@@ -57,6 +57,7 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<IWorkflowStateRepository>(), provider.GetServices<WorkflowDefinition>(),
             provider.GetRequiredService<IArtifactStore>()));
         services.TryAddSingleton<IArtifactStore>(provider => new RepositoryArtifactStore(provider.GetRequiredService<IWorkflowStateRepository>()));
+        services.AddSingleton<IWorkflowDefinitionSource>(provider => provider.GetRequiredService<IWorkflowCatalog>());
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
         return new IxIFlowBuilder(services);
     }
@@ -105,7 +106,6 @@ public static class ServiceCollectionExtensions
             MaxTraceEntriesPerCommit = options.MaxTraceEntriesPerCommit,
             TraceDetail = options.TraceDetail,
             MaxTraceEntriesPerInstance = options.MaxTraceEntriesPerInstance,
-            MaxCrashes = options.MaxCrashes,
             MaxActiveBranches = options.MaxActiveBranches,
             MaxActivitiesPerRun = options.MaxActivitiesPerRun,
             MaxForEachItems = options.MaxForEachItems,
@@ -121,7 +121,7 @@ public static class ServiceCollectionExtensions
         var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
         services.Replace(ServiceDescriptor.Singleton<HostSettings>(_ =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
-            { HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities }));
+            { HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes }));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
 
@@ -299,7 +299,7 @@ public class IxIFlowOptions
     /// lease, before the instance is quarantined at NeedsResolution. No host runs a quarantined
     /// instance until an operator releases it. Progress resets the count.
     /// </summary>
-    public int MaxCrashes { get; set; } = ExecutionLimits.DefaultMaxCrashes;
+    public int MaxCrashes { get; set; } = HostSettings.DefaultMaxCrashes;
 
     /// <summary>
     /// Maximum live branches of one instance, excluding the root, parents waiting at joins, and

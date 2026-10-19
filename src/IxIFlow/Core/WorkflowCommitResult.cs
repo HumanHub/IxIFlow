@@ -31,7 +31,8 @@ public enum WorkflowCommitStatus
 /// <summary>
 /// A durable commit receipt. On conflict or a stale epoch, Revision is the current stored revision.
 /// An applied commit also reports the instance's pending cancellation request, if any, so the owner
-/// learns of it with the commit instead of polling.
+/// learns of it with the commit instead of polling. RunnableAtUtc is the stored runnable time;
+/// StoreTimeUtc is a fresh sample of the store clock, including on receipt replay.
 /// </summary>
 public sealed record WorkflowCommitResult(
     WorkflowCommitStatus Status,
@@ -39,7 +40,9 @@ public sealed record WorkflowCommitResult(
     CancellationReason? PendingCancellation = null,
     bool Parked = false,
     bool UnreadEvents = false,
-    IReadOnlyList<string>? MadeRunnable = null)
+    IReadOnlyList<string>? MadeRunnable = null,
+    DateTime? RunnableAtUtc = null,
+    DateTime StoreTimeUtc = default)
 {
     /// <summary>The winning admission, also returned to a losing duplicate for fingerprint comparison.</summary>
     public WorkflowAdmissionRecord? Admission { get; init; }
@@ -54,10 +57,12 @@ public sealed record WorkflowCommitResult(
     public bool Equals(WorkflowCommitResult? other) =>
         other is not null && Status == other.Status && Revision == other.Revision &&
         Equals(Admission, other.Admission) && Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
+        RunnableAtUtc == other.RunnableAtUtc && StoreTimeUtc == other.StoreTimeUtc &&
         UnreadEvents == other.UnreadEvents && MadeRunnable.SequenceEqual(other.MadeRunnable, StringComparer.Ordinal);
 
     public override int GetHashCode() =>
-        HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission);
+        HashCode.Combine(HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission),
+            RunnableAtUtc, StoreTimeUtc);
 }
 
 /// <summary>
@@ -71,10 +76,11 @@ public sealed record ExecutionLeaseGrant(long Epoch, int CrashCount);
 /// One checkpoint write: the instance's trunk and the parts of its state that changed, fenced by the owner's
 /// incarnation, execution epoch and the revision it was based on. A commit is immutable, so sending the same commit again is safe.
 /// </summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(CheckpointCommitJsonConverter))]
 public sealed class CheckpointCommit
 {
     private CheckpointCommit(CommittedInstance instance, string payload, IReadOnlyList<CheckpointPart> parts,
-        IReadOnlyList<string> deletedParts, bool replacesParts, IReadOnlyDictionary<string, string> storedParts,
+        IReadOnlyList<string> deletedParts, bool replacesParts,
         Guid incarnation, long epoch, string commitId,
         long expectedRevision, bool clearsCrashCount, bool parks, IReadOnlyList<EventSettlement> settlements,
         long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
@@ -88,7 +94,6 @@ public sealed class CheckpointCommit
         Parts = parts;
         DeletedParts = deletedParts;
         ReplacesParts = replacesParts;
-        StoredParts = storedParts;
         Incarnation = incarnation;
         Epoch = epoch;
         CommitId = commitId;
@@ -143,9 +148,6 @@ public sealed class CheckpointCommit
     /// when it was not made from an instance whose stored parts are known, such as one just started.
     /// </summary>
     public bool ReplacesParts { get; }
-
-    /// <summary>Every part the instance has once the commit is applied.</summary>
-    internal IReadOnlyDictionary<string, string> StoredParts { get; }
 
     /// <summary>What a store reads from the instance to apply the commit, so it need not parse the payload.</summary>
     public CommittedInstance Instance { get; }
@@ -259,10 +261,54 @@ public sealed class CheckpointCommit
         ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null, bool admission = false)
     {
         ArgumentNullException.ThrowIfNull(instance);
-        ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
         if (!admission) ArgumentOutOfRangeException.ThrowIfNegativeOrZero(epoch);
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         commitId ??= Guid.NewGuid().ToString("N");
+        // Only the parts that differ from those the instance was last stored with are written (A-08).
+        var stored = Runtime.StoredCheckpoint.Of(instance);
+        var saved = instance.PartsAt(expectedRevision);
+        var written = stored.Parts
+            .Where(part => saved == null || !saved.TryGetValue(part.Key, out var json) || json != part.Value)
+            .OrderBy(part => part.Key, StringComparer.Ordinal)
+            .Select(part => new CheckpointPart(part.Key, part.Value)).ToArray();
+        var deleted = saved == null ? [] : saved.Keys.Where(key => !stored.Parts.ContainsKey(key))
+            .Order(StringComparer.Ordinal).ToArray();
+        // Stamp the caller too, so later checkpoints use the same incarnation as this immutable first commit.
+        if (expectedRevision == 0)
+            instance.Incarnation = Guid.NewGuid();
+        return FromFields(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(stored.Trunk)),
+            written, deleted, saved == null, instance.Incarnation, epoch, commitId,
+            expectedRevision, clearsCrashCount, parks, settlements ?? [], inboxReadThrough,
+            openedWaits ?? [], armedWaits ?? [], closedWaits ?? [], wakeAfter, stopped,
+            childStarts ?? [], childCancellations ?? [], parentNotice,
+            (traceEntries ?? []).Select(WorkflowStoreRules.SerializeTrace).ToArray());
+    }
+
+    /// <summary>
+    /// Rebuilds an immutable commit from its wire fields. The hash is recomputed, metadata must match the
+    /// payload, and the same validation applies as when creating a commit from a running instance.
+    /// </summary>
+    public static CheckpointCommit FromFields(CommittedInstance metadata, string payload,
+        IReadOnlyList<CheckpointPart> parts, IReadOnlyList<string> deletedParts, bool replacesParts,
+        Guid incarnation, long epoch, string commitId, long expectedRevision,
+        bool clearsCrashCount, bool parks, IReadOnlyList<EventSettlement> settlements,
+        long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
+        IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
+        IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
+        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        ArgumentNullException.ThrowIfNull(payload);
+        var instance = JsonSerializer.Deserialize<WorkflowInstance>(payload)
+            ?? throw new ArgumentException("A commit carries an instance payload", nameof(payload));
+        if (CommittedInstance.Of(instance) != metadata)
+            throw new ArgumentException("Commit metadata differs from its payload", nameof(metadata));
+        ArgumentNullException.ThrowIfNull(instance);
+        ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
+        ArgumentOutOfRangeException.ThrowIfNegative(epoch);
+        if (epoch == 0 && expectedRevision != 0)
+            throw new ArgumentException("Only an admission commit can have epoch zero", nameof(epoch));
+        ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         ArgumentException.ThrowIfNullOrWhiteSpace(commitId);
         if (commitId.Length > 100)
             throw new ArgumentException("Commit IDs must be at most 100 characters", nameof(commitId));
@@ -359,24 +405,29 @@ public sealed class CheckpointCommit
                 instance.ParentWaitId != parentNotice.ParentWaitId)
                 throw new ArgumentException("Only a child's terminal commit notifies its own parent", nameof(parentNotice));
         }
-        // Only the parts that differ from those the instance was last stored with are written (A-08).
-        var stored = Runtime.StoredCheckpoint.Of(instance);
-        var saved = instance.PartsAt(expectedRevision);
-        var written = stored.Parts
-            .Where(part => saved == null || !saved.TryGetValue(part.Key, out var json) || json != part.Value)
-            .OrderBy(part => part.Key, StringComparer.Ordinal)
-            .Select(part => new CheckpointPart(part.Key, part.Value)).ToArray();
-        var deleted = saved == null ? [] : saved.Keys.Where(key => !stored.Parts.ContainsKey(key))
-            .Order(StringComparer.Ordinal).ToArray();
-        // Stamp the caller too, so later checkpoints use the same incarnation as this immutable first commit.
-        if (expectedRevision == 0)
-            instance.Incarnation = Guid.NewGuid();
-        return new CheckpointCommit(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(stored.Trunk)),
-            Array.AsReadOnly(written), Array.AsReadOnly(deleted), saved == null, stored.Parts.AsReadOnly(), instance.Incarnation, epoch, commitId,
-            expectedRevision, clearsCrashCount, parks, Array.AsReadOnly(settled), inboxReadThrough,
-            Array.AsReadOnly(opened), Array.AsReadOnly(armed), Array.AsReadOnly(closed), wakeAfter, stopped,
-            Array.AsReadOnly(started), Array.AsReadOnly(cancelled), parentNotice,
-            Array.AsReadOnly((traceEntries ?? []).Select(WorkflowStoreRules.SerializeTrace).ToArray()));
+        ArgumentNullException.ThrowIfNull(parts);
+        ArgumentNullException.ThrowIfNull(deletedParts);
+        ArgumentNullException.ThrowIfNull(traceEntries);
+        var written = parts.ToArray();
+        var deleted = deletedParts.ToArray();
+        foreach (var part in written)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(part.Key, nameof(parts));
+            ArgumentNullException.ThrowIfNull(part.Json, nameof(parts));
+        }
+        foreach (var key in deleted) ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(deletedParts));
+        if (!written.Select(part => part.Key).SequenceEqual(written.Select(part => part.Key).Distinct().Order(StringComparer.Ordinal)) ||
+            !deleted.SequenceEqual(deleted.Distinct().Order(StringComparer.Ordinal)) ||
+            written.Any(part => deleted.Contains(part.Key, StringComparer.Ordinal)) || replacesParts && deleted.Length != 0)
+            throw new ArgumentException("Part keys must be unique, ordered and either written or deleted", nameof(parts));
+        foreach (var trace in traceEntries)
+            _ = JsonSerializer.Deserialize<ExecutionTraceEntry>(trace)
+                ?? throw new ArgumentException("Invalid trace entry", nameof(traceEntries));
+        return new CheckpointCommit(metadata, payload, Array.AsReadOnly(written), Array.AsReadOnly(deleted),
+            replacesParts, incarnation, epoch, commitId, expectedRevision, clearsCrashCount, parks,
+            Array.AsReadOnly(settled), inboxReadThrough, Array.AsReadOnly(opened), Array.AsReadOnly(armed),
+            Array.AsReadOnly(closed), wakeAfter, stopped, Array.AsReadOnly(started), Array.AsReadOnly(cancelled),
+            parentNotice, Array.AsReadOnly(traceEntries.ToArray()));
     }
 
     private static void ValidateDuration(TimeSpan? duration, string parameter)
