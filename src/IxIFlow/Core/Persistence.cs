@@ -976,29 +976,9 @@ public interface IWorkflowVersionRegistry
     Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
 
     /// <summary>
-    ///     Get latest workflow definition by name
-    /// </summary>
-    Task<WorkflowDefinition?> GetLatestWorkflowDefinitionAsync(string name);
-
-    /// <summary>
-    ///     Get all versions of a workflow
-    /// </summary>
-    Task<IEnumerable<WorkflowDefinition>> GetWorkflowVersionsAsync(string name);
-
-    /// <summary>
-    ///     Get all registered workflows
-    /// </summary>
-    Task<IEnumerable<WorkflowDefinition>> GetAllWorkflowDefinitionsAsync();
-
-    /// <summary>
     ///     Deactivate a workflow version
     /// </summary>
     Task DeactivateWorkflowVersionAsync(string name, int version);
-
-    /// <summary>
-    ///     Set default workflow version
-    /// </summary>
-    Task SetDefaultWorkflowVersionAsync(string name, int version);
 }
 
 /// <summary>
@@ -1047,29 +1027,6 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
         return Task.FromResult(definition);
     }
 
-    public Task<WorkflowDefinition?> GetLatestWorkflowDefinitionAsync(string name)
-    {
-        var versions = _workflows.Values
-            .Where(w => w.Name == name)
-            .OrderByDescending(w => w.Version)
-            .FirstOrDefault();
-        return Task.FromResult(versions);
-    }
-
-    public Task<IEnumerable<WorkflowDefinition>> GetWorkflowVersionsAsync(string name)
-    {
-        var versions = _workflows.Values
-            .Where(w => w.Name == name)
-            .OrderByDescending(w => w.Version)
-            .AsEnumerable();
-        return Task.FromResult(versions);
-    }
-
-    public Task<IEnumerable<WorkflowDefinition>> GetAllWorkflowDefinitionsAsync()
-    {
-        return Task.FromResult(_workflows.Values.AsEnumerable());
-    }
-
     public Task DeactivateWorkflowVersionAsync(string name, int version)
     {
         var key = $"{name}:{version}";
@@ -1100,21 +1057,6 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
             WorkflowDefinitionValidator.Validate(updatedDefinition);
             _workflows.TryUpdate(key, updatedDefinition, definition);
         }
-
-        return Task.CompletedTask;
-    }
-
-    public Task SetDefaultWorkflowVersionAsync(string name, int version)
-    {
-        // First, unset any existing default
-        var existingVersions = _workflows.Values.Where(w => w.Name == name).ToList();
-        foreach (var existing in existingVersions)
-            if (existing.Metadata.ContainsKey("IsDefault") && (bool)existing.Metadata["IsDefault"])
-                existing.Metadata["IsDefault"] = false;
-
-        // Set the new default
-        var key = $"{name}:{version}";
-        if (_workflows.TryGetValue(key, out var definition)) definition.Metadata["IsDefault"] = true;
 
         return Task.CompletedTask;
     }
