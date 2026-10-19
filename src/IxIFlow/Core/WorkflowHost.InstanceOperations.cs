@@ -698,14 +698,18 @@ public sealed partial class WorkflowHost
                 var ready = await Executor.ExecuteAsync(assign, CancellationToken.None);
                 if (ready.AssignmentId != signals.AssignmentId)
                     throw new ExecutionOwnershipLostException(new InvalidOperationException("Ready is not assigned"));
-                var outcome = ready.Outcome;
-                if (AdmitReady(ready) == ConflictReason.NotAssigned)
+                var readyAdmission = AdmitReady(ready);
+                var outcome = ready.Outcome ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Missing assignment outcome");
+                if (readyAdmission == ConflictReason.NotAssigned)
                     outcome = new(AssignmentOutcomeKind.OwnershipLost);
                 if (outcome.Kind == AssignmentOutcomeKind.Interrupted)
                 {
                     // Unknown may have applied; the next recovery starts with a new store read.
-                    throw _assignments[signals.AssignmentId].LastCommitError ?? new WorkflowEngineException(
+                    var error = _assignments[signals.AssignmentId].LastCommitError ?? new WorkflowEngineException(
                         WorkflowErrorKind.Infrastructure, outcome.ErrorMessage ?? "Execution was interrupted");
+                    if (error is WorkflowEngineException engineError)
+                        engineError.At(instance.InstanceId, outcome.StepId, outcome.AttemptId);
+                    throw error;
                 }
                 if (outcome.Kind == AssignmentOutcomeKind.RunCancelled)
                     throw new OperationCanceledException(cancellationToken);
@@ -768,7 +772,7 @@ public sealed partial class WorkflowHost
             }
             catch (CheckpointInterruptedException error) when (error.InnerException != null)
             {
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error.InnerException).Throw();
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(assignment.LastCommitError ?? error.InnerException).Throw();
                 throw;
             }
             catch (CheckpointLimitExceededException error)
@@ -778,7 +782,7 @@ public sealed partial class WorkflowHost
         }
 
         private async Task<CheckpointReply> CommitAsync(WorkflowInstance instance, CheckpointCommit commit,
-            long epoch, Guid assignmentId, RunReceipt receipt)
+            long epoch, Guid assignmentId, WorkflowInstance basedOn, RunReceipt receipt)
         {
             if (epoch == 0)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
@@ -787,10 +791,9 @@ public sealed partial class WorkflowHost
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"A commit for workflow instance '{commit.InstanceId}' reached the run of '{instance.InstanceId}'");
             if (commit.Epoch != epoch || commit.Incarnation != instance.Incarnation)
-                return new CheckpointReply(assignmentId, CheckpointReplyKind.Conflict, Error: new WorkflowEngineException(
-                    WorkflowErrorKind.InvalidState,
+                return new CheckpointReply(assignmentId, CheckpointReplyKind.Conflict, Error:
                     $"A commit from incarnation {commit.Incarnation} at execution epoch {commit.Epoch} cannot change " +
-                    $"workflow instance '{commit.InstanceId}' in incarnation {instance.Incarnation} owned at epoch {epoch}"));
+                    $"workflow instance '{commit.InstanceId}' in incarnation {instance.Incarnation} owned at epoch {epoch}");
             WorkflowCommitResult result;
             try
             {
@@ -798,7 +801,8 @@ public sealed partial class WorkflowHost
             }
             catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure)
             {
-                return new CheckpointReply(assignmentId, CheckpointReplyKind.Unknown, Error: error);
+                if (_assignments.TryGetValue(assignmentId, out var assigned)) assigned.LastCommitError = error;
+                return new CheckpointReply(assignmentId, CheckpointReplyKind.Unknown, Error: error.Message);
             }
 
             switch (result.Status)
@@ -809,7 +813,7 @@ public sealed partial class WorkflowHost
                     {
                         receipt.Revision = result.Revision;
                         receipt.Instance = CheckpointParts.Summarize(commit.Payload,
-                            commit.StoredParts.GetValueOrDefault(CheckpointParts.DataKey), result.Revision);
+                            commit.ApplyParts(basedOn.SavedParts).GetValueOrDefault(CheckpointParts.DataKey), result.Revision);
                         receipt.Instance.Incarnation = commit.Incarnation;
                         receipt.Instance.RunnableAtUtc = result.RunnableAtUtc;
                         receipt.Trace.AddRange(commit.TraceEntries.Select(json =>
@@ -827,21 +831,20 @@ public sealed partial class WorkflowHost
                         UnreadEvents: result.UnreadEvents);
                 case WorkflowCommitStatus.EventsChanged:
                     return new CheckpointReply(assignmentId, CheckpointReplyKind.Conflict, result.Revision,
-                        new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                            $"An inbox event workflow instance '{commit.InstanceId}' settles is no longer pending"), Conflict: ConflictReason.EventsChanged);
+                        $"An inbox event workflow instance '{commit.InstanceId}' settles is no longer pending", Conflict: ConflictReason.EventsChanged);
                 case WorkflowCommitStatus.Conflict:
                     return new CheckpointReply(assignmentId, CheckpointReplyKind.Conflict, result.Revision,
-                        new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                            $"Workflow instance '{commit.InstanceId}' changed at revision {result.Revision}"), Conflict: ConflictReason.Revision);
+                        $"Workflow instance '{commit.InstanceId}' changed at revision {result.Revision}", Conflict: ConflictReason.Revision);
                 case WorkflowCommitStatus.StaleEpoch:
                     return new CheckpointReply(assignmentId, CheckpointReplyKind.Conflict, result.Revision,
-                        new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                            $"Workflow instance '{commit.InstanceId}' is no longer owned by incarnation {commit.Incarnation} " +
-                            $"at execution epoch {commit.Epoch}"), Conflict: ConflictReason.StaleEpoch);
+                        $"Workflow instance '{commit.InstanceId}' is no longer owned by incarnation {commit.Incarnation} " +
+                        $"at execution epoch {commit.Epoch}", Conflict: ConflictReason.StaleEpoch);
                 default:
-                    return new CheckpointReply(assignmentId, CheckpointReplyKind.Retry, Error: new WorkflowEngineException(
+                    var error = new WorkflowEngineException(
                         WorkflowErrorKind.Infrastructure,
-                        $"Saving workflow instance '{commit.InstanceId}' was not applied; the store asked for a retry"));
+                        $"Saving workflow instance '{commit.InstanceId}' was not applied; the store asked for a retry");
+                    if (_assignments.TryGetValue(assignmentId, out var assigned)) assigned.LastCommitError = error;
+                    return new CheckpointReply(assignmentId, CheckpointReplyKind.Retry, Error: error.Message);
             }
         }
 
@@ -942,10 +945,13 @@ public sealed partial class WorkflowHost
             public Task Tail = Task.CompletedTask;
         }
 
-        internal ConflictReason? AdmitReady(Ready ready) =>
-            _assignments.TryGetValue(ready.AssignmentId, out var assignment) &&
-            (assignment.ReleasedBy(ready.LastAcknowledgedCommit) || assignment.IsActive(assignment.InstanceId))
+        internal ConflictReason? AdmitReady(Ready ready)
+        {
+            ExecutionContract.RequireVersion(ready.ContractVersion);
+            return _assignments.TryGetValue(ready.AssignmentId, out var assignment) &&
+                (assignment.ReleasedBy(ready.LastAcknowledgedCommit) || assignment.IsActive(assignment.InstanceId))
                 ? null : ConflictReason.NotAssigned;
+        }
 
         internal HostedRun Admit(WorkflowInstance instance, WorkflowExecutionLease owner, Guid identity)
         {
@@ -990,7 +996,7 @@ public sealed partial class WorkflowHost
             private RetryableCommit? _retryable;
             private WorkflowInstance _saved = instance;
             private AcknowledgedCommit? _releasedBy;
-            public Exception? LastCommitError { get; private set; }
+            public Exception? LastCommitError { get; set; }
             public WorkflowExecutionLease Owner => owner;
             public string InstanceId => instance.InstanceId;
             public ExecutionSession Session { get; } = new(new ExecutionHost(operations), identity,
@@ -1060,13 +1066,10 @@ public sealed partial class WorkflowHost
                     else
                     {
                         operations.CheckLimit(commit, _saved);
-                        reply = await operations.CommitAsync(instance, commit, owner.Epoch, identity, Receipt);
+                        reply = await operations.CommitAsync(instance, commit, owner.Epoch, identity, _saved, Receipt);
                         if (reply.Kind is CheckpointReplyKind.Unknown or CheckpointReplyKind.Retry)
-                        {
-                            LastCommitError = reply.Error;
                             Volatile.Write(ref _retryable, new RetryableCommit(commit.CommitId,
                                 commit.ExpectedRevision, Convert.ToHexString(commit.ContentHash)));
-                        }
                         else if (Volatile.Read(ref _retryable)?.CommitId == commit.CommitId)
                             Volatile.Write(ref _retryable, null);
                         if (reply.Kind == CheckpointReplyKind.Ack && reply.Revision > _saved.Revision)

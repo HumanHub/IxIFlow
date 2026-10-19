@@ -25,7 +25,7 @@ internal static class WorkflowInstances
             CreatedAt = now,
             StartedAt = now,
             TracingEnabled = options.EnableTracing,
-            Properties = new Dictionary<string, object>(options.Properties)
+            Properties = options.Properties.ToDictionary(pair => pair.Key, pair => JsonSerializer.SerializeToElement(pair.Value))
         };
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         var checkpoint = new ExecutionCheckpoint

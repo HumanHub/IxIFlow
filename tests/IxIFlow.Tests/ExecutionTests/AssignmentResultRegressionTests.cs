@@ -151,7 +151,7 @@ public sealed class AssignmentResultRegressionTests
         Assert.Equal(dataJson, instance.WorkflowDataJson);
         Assert.Equal(stateJson, instance.ExecutionStateJson);
         Assert.Same(stored, instance.Stored);
-        Assert.NotEqual(dataJson, endpoint.Attempt!.StoredParts[CheckpointParts.DataKey]);
+        Assert.NotEqual(dataJson, endpoint.Attempt!.ApplyParts(instance.PartsAt(instance.Revision))[CheckpointParts.DataKey]);
         Assert.NotEmpty(checkpoint.TakeMarks().Ids!);
     }
 
