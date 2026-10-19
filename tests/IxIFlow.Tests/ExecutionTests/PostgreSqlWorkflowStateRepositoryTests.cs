@@ -160,7 +160,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
     {
         var instanceId = Guid.NewGuid().ToString("N");
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "Deleted", Status = WorkflowStatus.Suspended,
             WorkflowDataJson = "{\"Value\":1}"
         };
@@ -195,17 +195,17 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
     {
         var repository = new PostgreSqlWorkflowStateRepository(connectionString);
         var parent = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Parent", Status = WorkflowStatus.Suspended,
             WorkflowDataJson = "{}"
         };
         var child = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Child", Status = WorkflowStatus.Running,
             WorkflowDataJson = "{}", ParentInstanceId = parent.InstanceId, ParentWaitId = "child"
         };
         Assert.Equal(WorkflowCommitStatus.Applied,
-            (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, 0))).Status);
+            (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(repository, parent.InstanceId)).Epoch, 0))).Status);
         parent.Revision = 1;
         try
         {
@@ -216,7 +216,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
                 await Task.Delay(TimeSpan.FromMilliseconds(500));
                 Assert.False(deleting.IsCompleted);
                 Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
-                    CheckpointCommit.Create(parent, 0, 1,
+                    CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(repository, parent.InstanceId)).Epoch, 1,
                         openedWaits: [new OpenedWait("child", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
                         childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child")])))
                     .Status);
@@ -243,7 +243,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         WorkflowInstance Instance(WorkflowStatus status, string? parentId = null, string? parentWaitId = null)
         {
             var instance = new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Notified", Status = status,
                 WorkflowDataJson = "{}", ParentInstanceId = parentId, ParentWaitId = parentWaitId
             };
@@ -252,52 +252,47 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         }
         try
         {
-            // Saves of a running instance and of an idle one whose time has passed.
-            await notifications.ExpectAsync(() => repository.SaveWorkflowInstanceAsync(Instance(WorkflowStatus.Running)));
+            // A commit whose suspended checkpoint is due wakes a scanner.
             var due = Instance(WorkflowStatus.Suspended);
-            due.RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1);
-            await notifications.ExpectAsync(() => repository.SaveWorkflowInstanceAsync(due));
+            await notifications.ExpectAsync(() => repository.SeedAsync(due, TimeSpan.Zero));
 
             // A cancellation request and an event for idle instances.
             var idle = Instance(WorkflowStatus.Suspended);
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(idle, 0, 0,
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(idle, (await StoreTestSupport.LeaseAsync(repository, idle.InstanceId)).Epoch, 0,
                 openedWaits: [new OpenedWait("approval", WaitKind.Event, "approval", "Approval", null)]));
             await notifications.ExpectAsync(() => repository.RequestCancellationAsync(idle.InstanceId, reason));
             var waiting = Instance(WorkflowStatus.Suspended);
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(waiting, 0, 0,
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(waiting, (await StoreTestSupport.LeaseAsync(repository, waiting.InstanceId)).Epoch, 0,
                 openedWaits: [new OpenedWait("approval", WaitKind.Event, "approval", "Approval", null)]));
             await notifications.ExpectAsync(() => repository.AppendEventAsync(
                 new WorkflowEvent(waiting.InstanceId, "event-1", "Approval", "{}", Key: "approval")));
 
-            // A running instance committed without a lease, and the release of a lease on a due instance.
-            var unleased = Instance(WorkflowStatus.Running);
-            await notifications.ExpectAsync(() => repository.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(unleased, 0, 0)));
-            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(unleased.InstanceId, "owner",
-                TimeSpan.FromMinutes(1)));
-            await notifications.ExpectAsync(() => repository.ReleaseExecutionLeaseAsync(unleased.InstanceId, "owner"));
+            // Releasing the active lease on a due running instance wakes a scanner.
+            var running = Instance(WorkflowStatus.Running);
+            var runningGrant = (await repository.TryAcquireExecutionLeaseAsync(running.InstanceId, "owner",
+                TimeSpan.FromMinutes(1)))!;
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(running, runningGrant.Epoch, 0));
+            await notifications.ExpectAsync(() => repository.ReleaseExecutionLeaseAsync(running.InstanceId, "owner"));
 
             // A child's start, then its completion, which wakes its parent.
             var parent = Instance(WorkflowStatus.Suspended);
             var child = Instance(WorkflowStatus.Running, parent.InstanceId, "child");
-            await notifications.ExpectAsync(() => repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
-                parent, 0, 0, openedWaits: [new OpenedWait("child", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
+            await notifications.ExpectAsync(async () => await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(repository, parent.InstanceId)).Epoch, 0, openedWaits: [new OpenedWait("child", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
                 childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child")])));
             var grant = (await repository.TryAcquireExecutionLeaseAsync(child.InstanceId, "child-owner",
                 TimeSpan.FromMinutes(1)))!;
             child = (await repository.GetWorkflowInstanceAsync(child.InstanceId))!;
             child.Status = WorkflowStatus.Completed;
-            await notifications.ExpectAsync(() => repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
+            await notifications.ExpectAsync(async () => await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
                 child, grant.Epoch, 1, parentNotice: new ParentNotice(parent.InstanceId, "child",
                     $"completed-{child.InstanceId}", "IxIFlow.ChildCompleted", "{}"))));
 
             // A child that is gone when its idle parent asks it to cancel.
             var orphaned = Instance(WorkflowStatus.Suspended);
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(orphaned, 0, 0,
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(orphaned, (await StoreTestSupport.LeaseAsync(repository, orphaned.InstanceId)).Epoch, 0,
                 openedWaits: [new OpenedWait("missing", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)]));
             orphaned.Revision = 1;
-            await notifications.ExpectAsync(() => repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
-                orphaned, 0, 1, childCancellations: [new ChildCancellation("missing-child", reason, "missing")])));
+            await notifications.ExpectAsync(async () => await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(orphaned, (await StoreTestSupport.LeaseAsync(repository, orphaned.InstanceId)).Epoch, 1, childCancellations: [new ChildCancellation("missing-child", reason, "missing")])));
         }
         finally
         {
@@ -319,12 +314,14 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
     private static async Task VerifyNewInstanceSerialization(IWorkflowStateRepository repository, Func<string, Task<IdentityHold>> holdIdentity)
     {
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "NewInstance", Status = WorkflowStatus.Running,
             WorkflowDataJson = "{}"
         };
         // The schema is made first, so only the lock can hold the store up.
         await repository.GetWorkflowInstanceAsync(instance.InstanceId);
+        var grant = await StoreTestSupport.LeaseAsync(repository, instance.InstanceId);
+        var transition = CheckpointCommit.Create(instance, grant.Epoch, 0);
         try
         {
             Task<WorkflowCommitResult> commit;
@@ -332,17 +329,17 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
             await using (var holder = await holdIdentity(instance.InstanceId))
             {
                 commit = repository is SqliteWorkflowStateRepository
-                    ? Task.Run(() => repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0)))
-                    : repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0));
+                    ? Task.Run(() => repository.CommitWorkflowInstanceAsync(transition))
+                    : repository.CommitWorkflowInstanceAsync(transition);
                 claim = repository is SqliteWorkflowStateRepository
                     ? Task.Run(() => repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1)))
                     : repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1));
                 await Task.Delay(TimeSpan.FromMilliseconds(500));
                 Assert.False(commit.IsCompleted || claim.IsCompleted);
             }
-            // Whichever went first, the other saw it: a commit after the claim is refused, one before it is not.
-            Assert.NotNull(await claim);
-            Assert.Contains((await commit).Status, new[] { WorkflowCommitStatus.Applied, WorkflowCommitStatus.StaleEpoch });
+            // The granted owner commits; the contending claim cannot replace its active lease.
+            Assert.Null(await claim);
+            Assert.Equal(WorkflowCommitStatus.Applied, (await commit).Status);
 
             Task deleting;
             await using (var holder = await holdIdentity(instance.InstanceId))

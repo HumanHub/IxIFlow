@@ -41,31 +41,10 @@ public static class WorkflowStoreRules
     public static bool IsTerminal(WorkflowStatus status) => status is WorkflowStatus.Completed or WorkflowStatus.Failed
         or WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut;
 
-    /// <summary>
-    /// True when a saved instance is runnable from the moment it is saved, whatever time it carries:
-    /// an idle save that leaves a cancellation request unacknowledged, so the request is
-    /// unwound, and a running instance saved without a time, so it can be claimed as soon as its
-    /// owner's lease ends. Stores stamp these with their own clock.
-    /// </summary>
-    public static bool IsRunnableNow(WorkflowInstance instance, bool unacknowledgedCancellation) =>
-        UnwindsNow(instance, unacknowledgedCancellation) ||
-        (instance.RunnableAtUtc == null && instance.Status == WorkflowStatus.Running);
-
-    /// <summary>True when an idle save leaves a cancellation request unacknowledged, so the instance must unwind now.</summary>
-    public static bool UnwindsNow(WorkflowInstance instance, bool unacknowledgedCancellation) =>
-        UnwindsNow(instance.Status, instance.CancellationReason != null, unacknowledgedCancellation);
-
     public static bool UnwindsNow(WorkflowStatus status, bool acknowledgesCancellation,
         bool unacknowledgedCancellation) =>
         unacknowledgedCancellation && !acknowledgesCancellation &&
         status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
-
-    /// <summary>
-    /// When an instance saved without a commit becomes runnable, with <paramref name="now"/> as the
-    /// store's clock. Such a save carries its own time; a commit never does.
-    /// </summary>
-    public static DateTime? RunnableAt(WorkflowInstance instance, bool unacknowledgedCancellation, DateTime now) =>
-        IsRunnableNow(instance, unacknowledgedCancellation) ? now : instance.RunnableAtUtc;
 
     /// <summary>
     /// When a committed instance becomes runnable, in the store's clock: now when
@@ -161,7 +140,7 @@ public static class WorkflowStoreRules
 }
 
 /// <summary>
-/// Stores workflow instances. First commits carry a fresh incarnation; saves and child starts allocate
+/// Stores workflow instances. First commits carry a fresh incarnation; child starts allocate
 /// one in the store on insertion. Every instance read round-trips it separately from serialized state.
 /// </summary>
 public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
@@ -187,34 +166,11 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     Task<CancellationReason?> GetCancellationRequestAsync(string instanceId);
 
     /// <summary>
-    /// Reads the durable cancellation requests of several instances at once; instances without a
-    /// request are left out. A host watches all its running instances with one call per interval.
-    /// This fallback reads each instance separately, a few at a time, and leaves out instances whose
-    /// read failed; it fails only when every read fails. Stores should override it with one query.
+    /// Reads cancellation requests for the distinct instances. Instances without a request are omitted.
+    /// Successful reads survive failures of other reads; if every read fails, throws AggregateException.
     /// </summary>
-    async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds)
-    {
-        var requests = new System.Collections.Concurrent.ConcurrentDictionary<string, CancellationReason>(
-            StringComparer.Ordinal);
-        var failures = new System.Collections.Concurrent.ConcurrentBag<Exception>();
-        await Parallel.ForEachAsync(instanceIds.Distinct(StringComparer.Ordinal),
-            new ParallelOptions { MaxDegreeOfParallelism = 16 }, async (instanceId, _) =>
-            {
-                try
-                {
-                    if (await GetCancellationRequestAsync(instanceId) is { } reason)
-                        requests[instanceId] = reason;
-                }
-                catch (Exception error)
-                {
-                    failures.Add(error);
-                }
-            });
-        if (instanceIds.Count > 0 && failures.Count == instanceIds.Distinct(StringComparer.Ordinal).Count())
-            throw new AggregateException("No cancellation request could be read", failures);
-        return requests;
-    }
+    Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        IReadOnlyCollection<string> instanceIds);
 
     /// <summary>
     /// Lists up to <paramref name="limit"/> instances a host may claim now: their runnable time has
@@ -223,19 +179,14 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit);
 
     /// <summary>
-    /// Atomically saves the commit's payload at its expected revision + 1. Expected revision zero
-    /// is a first commit and bypasses the incarnation check: an absent row is inserted, a saved
-    /// revision-zero row is updated, and either takes the commit's incarnation under the existing
-    /// lease and revision rules. An existing row above revision zero returns a revision conflict.
-    /// Later commits preserve the row's incarnation. Child starts allocate fresh incarnations in the store.
+    /// Atomically saves a valid schema-3 checkpoint at its expected revision + 1, under a granted,
+    /// active execution lease with the same epoch. The first commit inserts a fresh incarnation;
+    /// later commits must carry the row's incarnation. A different incarnation or missing, expired or
+    /// mismatched lease returns <see cref="WorkflowCommitStatus.StaleEpoch"/>.
     /// Repeating a commit ID with the same payload returns its original receipt, even after subsequent
-    /// commits. Receipt lookup precedes incarnation and revision checks. Every commit above expected
-    /// revision zero must carry the row's incarnation, including an unleased (epoch-zero) commit.
-    /// A different incarnation or a leased commit without an active lease at exactly its epoch returns
-    /// <see cref="WorkflowCommitStatus.StaleEpoch"/>. An unleased commit requires no active lease,
-    /// with revision checks ordering the write. A store that knows nothing was
-    /// written may return <see cref="WorkflowCommitStatus.Retry"/>; any exception means the
-    /// outcome is unknown and the same commit may be sent again.
+    /// commits. Receipt lookup precedes incarnation and revision checks. A store that knows nothing was
+    /// written may return <see cref="WorkflowCommitStatus.Retry"/>; an exception means the outcome is
+    /// unknown and the same commit may be sent again.
     /// </summary>
     Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit);
 
@@ -260,12 +211,6 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token);
 
     /// <summary>
-    /// Saves revision-zero state. An insert allocates a fresh incarnation in the store; an update
-    /// preserves the existing one. Sets the supplied instance's Incarnation to the row's value.
-    /// </summary>
-    Task SaveWorkflowInstanceAsync(WorkflowInstance instance);
-
-    /// <summary>
     /// The whole instance: its trunk and every part of its state, read at one revision.
     /// Every instance read, including summaries, queries and child lists, must round-trip the row's
     /// Incarnation separately from serialized state.
@@ -274,10 +219,9 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
 
     /// <summary>
     /// The instance without its branches: its fields, its workflow data and the trunk of its execution state.
-    /// Enough for a status, a result or a stop check, never to run it. This fallback reads the whole instance; a
-    /// store that keeps parts reads only the trunk and the data.
+    /// Enough for a status, a result or a stop check, never to run it. Reads only the trunk and the data.
     /// </summary>
-    Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) => GetWorkflowInstanceAsync(instanceId);
+    Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId);
 
     /// <summary>
     ///     Get workflow instances by workflow name
@@ -300,15 +244,8 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
     /// </summary>
     Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000);
 
-    /// <summary>
-    /// The child workflows a parent started, for operators. This fallback reads the instances that
-    /// share the parent's correlation ID; stores should override it with one query.
-    /// </summary>
-    async Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
-        await GetWorkflowInstanceAsync(parentInstanceId) is { } parent
-            ? (await GetWorkflowInstancesByCorrelationIdAsync(parent.CorrelationId))
-            .Where(instance => instance.ParentInstanceId == parentInstanceId).ToArray()
-            : [];
+    /// <summary>The child workflows a parent started, for operators.</summary>
+    Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId);
 
     /// <summary>
     /// Deletes an instance and its inbox, waits and receipts. A child whose parent still waits for it ends
@@ -388,7 +325,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         return true;
     }
 
-    public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
+    public virtual Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         lock (_claimLock)
@@ -399,20 +336,27 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         }
     }
 
-    public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+    public async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
         IReadOnlyCollection<string> instanceIds)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
-        lock (_claimLock)
+        var requests = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
+        var failures = new List<Exception>();
+        foreach (var instanceId in instanceIds.Distinct(StringComparer.Ordinal))
         {
-            IReadOnlyDictionary<string, CancellationReason> requests = instanceIds
-                .Where(_cancellations.ContainsKey)
-                .Distinct(StringComparer.Ordinal)
-                .ToDictionary(instanceId => instanceId, instanceId =>
-                    JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(_cancellations[instanceId]))!,
-                    StringComparer.Ordinal);
-            return Task.FromResult(requests);
+            try
+            {
+                if (await GetCancellationRequestAsync(instanceId) is { } reason)
+                    requests[instanceId] = reason;
+            }
+            catch (Exception error)
+            {
+                failures.Add(error);
+            }
         }
+        if (instanceIds.Count > 0 && failures.Count == instanceIds.Distinct(StringComparer.Ordinal).Count())
+            throw new AggregateException("No cancellation request could be read", failures);
+        return requests;
     }
 
     public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit)
@@ -565,7 +509,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 CloseWait(commit.InstanceId, closed.WaitId, closed.Reason, now);
             snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit,
                 (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
-                WorkflowStoreRules.UnwindsNow(snapshot, unacknowledged),
+                WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.CancellationReason != null, unacknowledged),
                 now, OpenWaits(commit.InstanceId).Min(open => open.DeadlineUtc));
             // A finished instance takes no more events; those still pending are closed, and so are its waits.
             if (WorkflowStoreRules.IsTerminal(snapshot.Status))
@@ -587,8 +531,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 parts.Remove(deleted);
             foreach (var part in commit.Parts)
                 parts[part.Key] = part.Json;
-            snapshot.Incarnation = commit.ExpectedRevision == 0
-                ? commit.Incarnation : stored!.Incarnation;
+            snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
             _instances[commit.InstanceId] = snapshot;
             RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
@@ -810,37 +753,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             ? JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))
             : null;
 
-    // A leased commit needs the instance's current, active lease. An unleased commit (epoch zero)
-    // is accepted only while nobody holds the lease; the revision check still orders it.
-    private bool OwnsInstance(CheckpointCommit commit)
-    {
-        var hasLease = _leases.TryGetValue(commit.InstanceId, out var lease);
-        var active = hasLease && lease.ExpiresAtUtc > Now;
-        return commit.Epoch == 0
-            ? !active
-            : active && lease.Epoch == commit.Epoch;
-    }
-
-    public Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
-    {
-        lock (_claimLock)
-        {
-            RefuseRemoved(instance.InstanceId, Now);
-            if (instance.Revision != 0 ||
-                (_instances.TryGetValue(instance.InstanceId, out var stored) && stored.Revision != 0))
-                throw new InvalidOperationException("Revisioned instances require an atomic commit");
-            var saved = instance.Revision != 0 || ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
-                ? JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!
-                : instance;
-            instance.Incarnation = stored?.Incarnation ?? Guid.NewGuid();
-            saved.Incarnation = instance.Incarnation;
-            saved.RunnableAtUtc = WorkflowStoreRules.RunnableAt(saved, false, Now);
-            _instances[instance.InstanceId] = saved;
-            RecordCompletion(saved, Now);
-            _parts.Remove(instance.InstanceId);
-        }
-        return Task.CompletedTask;
-    }
+    // Caller holds _claimLock. Every new transition needs its granted, active execution lease.
+    private bool OwnsInstance(CheckpointCommit commit) =>
+        _leases.TryGetValue(commit.InstanceId, out var lease) && lease.ExpiresAtUtc > Now &&
+        lease.Epoch == commit.Epoch;
 
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
     {
@@ -855,8 +771,6 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         {
             if (!_instances.TryGetValue(instanceId, out var instance))
                 return Task.FromResult<WorkflowInstance?>(null);
-            if (instance.Revision == 0 && !ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson))
-                return Task.FromResult<WorkflowInstance?>(instance);
             var summary = CheckpointParts.Summarize(JsonSerializer.Serialize(instance),
                 _parts.GetValueOrDefault(instanceId)?.GetValueOrDefault(CheckpointParts.DataKey), instance.Revision);
             summary.Incarnation = instance.Incarnation;
@@ -950,8 +864,6 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     // The whole instance, its trunk with its parts, as a copy. Caller holds _claimLock.
     private WorkflowInstance SnapshotStructured(WorkflowInstance instance)
     {
-        if (instance.Revision == 0 && !ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson))
-            return instance;
         var snapshot = CheckpointParts.Assemble(JsonSerializer.Serialize(instance),
             (_parts.GetValueOrDefault(instance.InstanceId) ?? new Dictionary<string, string>())
             .Select(part => new CheckpointPart(part.Key, part.Value)), instance.Revision);

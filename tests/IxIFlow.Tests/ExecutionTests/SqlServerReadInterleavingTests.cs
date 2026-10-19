@@ -28,7 +28,7 @@ public sealed class SqlServerReadInterleavingTests
         var original = CheckpointRaceContract.Instance(id, "old");
         original.WorkflowName = "read-" + id;
         original.CorrelationId = id;
-        Assert.Equal(WorkflowCommitStatus.Applied, (await writer.CommitWorkflowInstanceAsync(CheckpointCommit.Create(original, 0, 0))).Status);
+        Assert.Equal(WorkflowCommitStatus.Applied, (await writer.CommitWorkflowInstanceAsync(CheckpointCommit.Create(original, (await StoreTestSupport.LeaseAsync(writer, original.InstanceId)).Epoch, 0))).Status);
         var readerName = "interleaving-" + id;
         var reader = new SqlWorkflowStateRepository(new SqlConnectionStringBuilder(cs) { ApplicationName = readerName }.ConnectionString);
         await reader.GetWorkflowInstanceAsync(id); // Complete schema admission before command interception.
@@ -73,7 +73,7 @@ public sealed class SqlServerReadInterleavingTests
                 await observer.ExecuteAsync("DELETE FROM dbo.IxIFlowWorkflowTombstones WHERE InstanceId=@Id", new { Id = id });
             }
             Assert.Equal(WorkflowCommitStatus.Applied, (await writer.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(replacement, 0, recreate ? 0 : 1))).Status);
+                CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(writer, replacement.InstanceId)).Epoch, recreate ? 0 : 1))).Status);
         }
         finally { await transaction.RollbackAsync(); }
         var saved = Assert.IsType<WorkflowInstance>(await reading.WaitAsync(TimeSpan.FromSeconds(15)));

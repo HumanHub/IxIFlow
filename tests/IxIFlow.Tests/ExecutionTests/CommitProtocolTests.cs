@@ -95,7 +95,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
             var first = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", TimeSpan.FromSeconds(10));
             Assert.True(first?.Epoch > 0);
             var instance = new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "EpochFencing", Status = WorkflowStatus.Running,
                 WorkflowDataJson = "{}"
             };
@@ -110,7 +110,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
             Assert.Equal(WorkflowCommitStatus.StaleEpoch,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, first!.Epoch, 1))).Status);
             Assert.Equal(WorkflowCommitStatus.StaleEpoch,
-                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 1))).Status);
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, second!.Epoch + 1, 1))).Status);
 
             instance.Status = WorkflowStatus.Completed;
             Assert.Equal(WorkflowCommitStatus.Applied,
@@ -152,7 +152,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
         {
             var epoch = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromSeconds(10)))!.Epoch;
             var instance = new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "DistinctResults", Status = WorkflowStatus.Running,
                 WorkflowDataJson = "{}"
             };

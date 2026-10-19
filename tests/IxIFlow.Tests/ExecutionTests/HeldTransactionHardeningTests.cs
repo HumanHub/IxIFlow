@@ -50,13 +50,13 @@ public sealed class HeldTransactionHardeningTests
     private static async Task ExpireWhileBlocked(bool sqlServer)
     {
         var (store, connect) = Database(sqlServer);
-        var parent = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "BlockedParent",
+        var parent = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "BlockedParent",
             Status = WorkflowStatus.Running, WorkflowDataJson = "{\"before\":true}" };
-        var child = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "LockedChild",
+        var child = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "LockedChild",
             Status = WorkflowStatus.Running, ParentInstanceId = parent.InstanceId, ParentWaitId = "child" };
         var grant = (await store.TryAcquireExecutionLeaseAsync(parent.InstanceId, "owner", TimeSpan.FromHours(1)))!;
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, grant.Epoch, 0))).Status);
-        Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(child, 0, 0))).Status);
+        Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(child, (await StoreTestSupport.LeaseAsync(store, child.InstanceId)).Epoch, 0))).Status);
         var before = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
         var childBefore = (await store.GetWorkflowInstanceAsync(child.InstanceId))!;
         parent = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;

@@ -1831,8 +1831,14 @@ public class StructuredSagaWaitTests
             return result;
         }
 
-        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
-            _inner.SaveWorkflowInstanceAsync(instance);
+        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
+            _inner.GetWorkflowInstanceSummaryAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
+            _inner.GetChildInstancesAsync(parentInstanceId);
+        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+            IReadOnlyCollection<string> instanceIds) =>
+            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>

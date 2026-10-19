@@ -16,8 +16,8 @@ public sealed class WorkflowRecoveryServiceTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         for (var index = 0; index < 2; index++)
-            await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
-            {
+            await repository.SeedAsync(new WorkflowInstance
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = Guid.NewGuid().ToString("N"),
                 WorkflowName = "IndependentRecovery",
                 Status = WorkflowStatus.Running
@@ -113,14 +113,14 @@ public sealed class WorkflowRecoveryServiceTests
         var repository = new InMemoryWorkflowStateRepository();
         var runningId = Guid.NewGuid().ToString("N");
         var waitingId = Guid.NewGuid().ToString("N");
-        await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
-        {
+        await repository.SeedAsync(new WorkflowInstance
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = runningId,
             WorkflowName = "Running",
             Status = WorkflowStatus.Running
         });
-        await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
-        {
+        await repository.SeedAsync(new WorkflowInstance
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = waitingId,
             WorkflowName = "Waiting",
             Status = WorkflowStatus.Suspended

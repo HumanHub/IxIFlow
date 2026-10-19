@@ -50,6 +50,11 @@ public class FaultInjectingRepository : IWorkflowStateRepository
     public int FailedReads => Volatile.Read(ref _failedReads);
     public int FailedCommits => Volatile.Read(ref _failedCommits);
 
+    public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
+        _inner.GetWorkflowInstanceSummaryAsync(instanceId);
+    public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
+        _inner.GetChildInstancesAsync(parentInstanceId);
+
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
     {
         if (!FailRead(instanceId))
@@ -85,7 +90,7 @@ public class FaultInjectingRepository : IWorkflowStateRepository
         _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
     public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         _inner.ReleaseExecutionLeaseAsync(instanceId, token);
-    public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) => _inner.SaveWorkflowInstanceAsync(instance);
+
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
         _inner.GetWorkflowInstancesByNameAsync(workflowName);
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>

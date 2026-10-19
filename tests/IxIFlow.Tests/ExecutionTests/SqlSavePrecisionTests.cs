@@ -9,20 +9,24 @@ public class SqlSavePrecisionTests
 {
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public async Task SaveRoundTripsRunnableTimeWithSubThreeMillisecondPrecision()
+    public async Task CommitRoundTripsRunnableTimeWithSubThreeMillisecondPrecision()
     {
         var repository = new SqlWorkflowStateRepository(SqlTestDatabase<SqlSavePrecisionTests>.ConnectionString);
         var instanceId = Guid.NewGuid().ToString("N");
-        var runnableAt = new DateTime(2030, 1, 2, 3, 4, 5, DateTimeKind.Utc).AddTicks(12345);
+        var wakeAfter = TimeSpan.FromMinutes(1) + TimeSpan.FromTicks(12345);
         try
         {
-            await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
+            var instance = new WorkflowInstance
             {
-                InstanceId = instanceId,
-                WorkflowName = "SavePrecision",
-                Status = WorkflowStatus.Suspended,
-                RunnableAtUtc = runnableAt
-            });
+                ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = instanceId,
+                WorkflowName = "CommitPrecision", Status = WorkflowStatus.Suspended
+            };
+            var grant = await StoreTestSupport.LeaseAsync(repository, instanceId);
+            var commit = CheckpointCommit.Create(instance, grant.Epoch, 0, wakeAfter: wakeAfter,
+                openedWaits: [new OpenedWait("clock", WaitKind.Delay, "", "", TimeSpan.FromMinutes(2))]);
+            Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
+            var storeNow = (await repository.GetWaitAsync(instanceId, "clock"))!.OpenedAtUtc;
+            var runnableAt = storeNow + wakeAfter;
             var restored = await repository.GetWorkflowInstanceAsync(instanceId);
             Assert.NotNull(restored);
             Assert.Equal(runnableAt.Ticks, restored.RunnableAtUtc?.Ticks);
