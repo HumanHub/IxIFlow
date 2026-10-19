@@ -12,7 +12,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
-                SELECT instance_id, workflow_name, status, correlation_id, runnable_at_utc, last_host_id, ended_at_utc, state_json, cancellation_json, cancellation_acknowledged, revision, inbox_sequence, inbox_read_through, incarnation, parent_instance_id FROM ixiflow_workflow_instances WHERE 1=0;
+                SELECT instance_id, workflow_name, status, correlation_id, runnable_at_utc, last_host_id, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit, ended_at_utc, state_json, cancellation_json, cancellation_acknowledged, revision, inbox_sequence, inbox_read_through, incarnation, parent_instance_id FROM ixiflow_workflow_instances WHERE 1=0;
                 SELECT instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, payload_json, payload_hash, received_at_utc, outcome, wait_id, rejection, settled_at_utc FROM ixiflow_workflow_events WHERE 1=0;
                 SELECT instance_id, part_key, json FROM ixiflow_workflow_parts WHERE 1=0;
                 SELECT instance_id, sequence, entry_json FROM ixiflow_workflow_traces WHERE 1=0;
@@ -27,7 +27,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 SELECT incarnation, instance_id, sender, trigger_id, owner_kind, owner_id, tenant FROM ixiflow_workflow_ownership WHERE 1=0;
                 SELECT delivery_identity, payload_hash, sequence, rejection, expires_at_utc FROM ixiflow_webhook_deliveries WHERE 1=0;
                 SELECT member_id, kind, name, endpoint, slots, engine_version, heartbeat_interval_ticks, started_at_utc, heartbeat_at_utc FROM ixiflow_hosts WHERE 1=0;
-                SELECT instance_id, demand_key, demand_value, expires_at_utc, inherit FROM ixiflow_workflow_demands WHERE 1=0;
+                SELECT demand_set_id FROM ixiflow_demand_sets WHERE 1=0;
+                SELECT demand_set_id, demand_key, demand_value, expires_at_utc, inherit FROM ixiflow_demand_set_rows WHERE 1=0;
                 SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();

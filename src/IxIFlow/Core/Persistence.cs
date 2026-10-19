@@ -301,7 +301,34 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
-    private readonly Dictionary<string, IReadOnlyList<WorkflowDemand>> _demands = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, WorkflowDemand[]> _demandSets = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> _demandSetMembers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string DemandSetId, WorkflowDemand? Pin)> _placement = new(StringComparer.Ordinal);
+
+    private void SavePlacement(string instanceId, DemandSet set)
+    {
+        if (!_demandSets.ContainsKey(set.Id))
+        {
+            _demandSets.Add(set.Id, set.Rows);
+            _demandSetMembers.Add(set.Id, new(StringComparer.Ordinal));
+        }
+        _placement.Add(instanceId, (set.Id, set.Pin));
+        _demandSetMembers[set.Id].Add(instanceId);
+    }
+
+    private IEnumerable<WorkflowDemand> SavedDemands(string id)
+    {
+        if (!_placement.TryGetValue(id, out var placement)) return [];
+        return (placement.Pin is { } pin ? _demandSets[placement.DemandSetId].Append(pin)
+            : _demandSets[placement.DemandSetId]).OrderBy(d => d.Key, StringComparer.Ordinal);
+    }
+
+    private static void StripDemands(WorkflowInstance instance)
+    {
+        instance.ExecutionStateJson = JsonSerializer.Deserialize<WorkflowInstance>(
+            DemandSet.StripPayload(JsonSerializer.Serialize(instance)))!.ExecutionStateJson;
+    }
+
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] ContentHash, long Revision)> _commits = new();
     private long _executionEpoch;
     // A lease record keeps the instance's crash count until deletion. Epochs come from the store-wide
@@ -387,9 +414,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
         {
             var now = Now;
-            var runnable = _instances.Values
+            var matchingSets = _demandSets.Where(set => DemandMatching.Meets(set.Value, query, now));
+            var runnable = matchingSets.SelectMany(set => _demandSetMembers[set.Key]).Select(id => _instances[id])
                 .Where(instance => instance.RunnableAtUtc <= now &&
-                    DemandMatching.Meets(_demands.GetValueOrDefault(instance.InstanceId) ?? [], query, now) &&
+                    (_placement[instance.InstanceId].Pin is not { } pin || DemandMatching.Meets([pin], query, now)) &&
                     !(_leases.TryGetValue(instance.InstanceId, out var lease) && lease.ExpiresAtUtc > now))
                 .OrderByDescending(instance => instance.LastHostId == query.HostId)
                 .ThenBy(instance => instance.RunnableAtUtc)
@@ -415,7 +443,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                  !(candidate.RunnableAtUtc <= now || kind == ExecutionClaimKind.Operator &&
                     (candidate.Status == WorkflowStatus.NeedsResolution ||
                         ExecutionCheckpoint.IsStructured(candidate.ExecutionStateJson) && ExecutionCheckpoint.StopOf(candidate) != null)) ||
-                 !DemandMatching.Meets(_demands.GetValueOrDefault(instanceId) ?? [], query, now)))
+                 !DemandMatching.Meets(SavedDemands(instanceId), query, now)))
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
             if (ActiveTombstone(instanceId, now) != null)
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
@@ -531,14 +559,14 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             if (stored == null)
                 snapshot.ExecutionStateJson = JsonSerializer.Deserialize<WorkflowInstance>(WorkflowDemands.StampStartPayload(
                     JsonSerializer.Serialize(snapshot), now))!.ExecutionStateJson;
-            var createdDemands = stored == null ? WorkflowDemands.Saved(snapshot).ToArray() : null;
+            var createdDemands = stored == null ? DemandSet.Create(WorkflowDemands.Saved(snapshot)) : null;
             var createdChildren = commit.ChildStarts.Select(start =>
             {
                 var child = JsonSerializer.Deserialize<WorkflowInstance>(WorkflowDemands.StampStartPayload(start.Payload, now))!;
                 child.Incarnation = Guid.NewGuid();
                 child.Revision = 1;
                 child.RunnableAtUtc = now;
-                return (Instance: child, Demands: WorkflowDemands.Saved(child).ToArray());
+                return (Instance: child, Demands: DemandSet.Create(WorkflowDemands.Saved(child)));
             }).ToArray();
             var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
                 !_acknowledgedCancellations.Contains(commit.InstanceId);
@@ -601,7 +629,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 parts[part.Key] = part.Json;
             snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
             if (createdDemands != null)
-                _demands[commit.InstanceId] = createdDemands;
+                SavePlacement(commit.InstanceId, createdDemands);
+            StripDemands(snapshot);
             _instances[commit.InstanceId] = snapshot;
             RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
@@ -625,7 +654,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             foreach (var created in createdChildren)
             {
                 var child = created.Instance;
-                _demands[child.InstanceId] = created.Demands;
+                SavePlacement(child.InstanceId, created.Demands);
+                StripDemands(child);
                 _instances[child.InstanceId] = child;
                 _parts.Remove(child.InstanceId);
                 madeRunnable.Add(child.InstanceId);
@@ -846,8 +876,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId)
     {
         lock (_claimLock)
-            return Task.FromResult<IReadOnlyList<WorkflowDemand>>(_demands.TryGetValue(instanceId, out var demands)
-                ? demands.ToArray() : []);
+            return Task.FromResult<IReadOnlyList<WorkflowDemand>>(SavedDemands(instanceId).ToArray());
     }
 
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
@@ -867,7 +896,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 _parts.GetValueOrDefault(instanceId)?.GetValueOrDefault(CheckpointParts.DataKey), instance.Revision);
             summary.Incarnation = instance.Incarnation;
             summary.LastHostId = instance.LastHostId;
-            return Task.FromResult<WorkflowInstance?>(summary);
+            return Task.FromResult<WorkflowInstance?>(DemandSet.Hydrate(summary, SavedDemands(instanceId)));
         }
     }
 
@@ -938,7 +967,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
             Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
         _instances.TryRemove(instanceId, out _);
-        _demands.Remove(instanceId);
+        if (_placement.Remove(instanceId, out var placement))
+            _demandSetMembers[placement.DemandSetId].Remove(instanceId);
         _leases.Remove(instanceId);
         _endedAt.Remove(instanceId);
         _cancellations.Remove(instanceId);
@@ -963,7 +993,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             .Select(part => new CheckpointPart(part.Key, part.Value)), instance.Revision);
         snapshot.Incarnation = instance.Incarnation;
         snapshot.LastHostId = instance.LastHostId;
-        return snapshot;
+        return DemandSet.Hydrate(snapshot, SavedDemands(instance.InstanceId));
     }
 
     private static void ValidateLeaseArguments(string instanceId, string token, TimeSpan duration)
