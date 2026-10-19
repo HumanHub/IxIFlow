@@ -37,6 +37,16 @@ public sealed partial class SqliteWorkflowStateRepository
         Statement.CatalogVersions => """
             SELECT metadata_json AS MetadataJson, state AS State FROM ixiflow_workflow_versions
             """,
+        Statement.CatalogNamedVersions => """
+            SELECT metadata_json AS MetadataJson, state AS State FROM ixiflow_workflow_versions WHERE name=@Name
+            """,
+        Statement.CatalogVersion => """
+            SELECT metadata_json AS MetadataJson, state AS State FROM ixiflow_workflow_versions WHERE name=@Name AND version=@Version
+            """,
+        Statement.CatalogUnfinishedCallers => """
+            SELECT workflow_name AS Name, json_extract(state_json, '$.WorkflowVersion') AS Version FROM ixiflow_workflow_instances
+            WHERE workflow_name IN @Names AND status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
+            """,
         Statement.CatalogVersionInsert => """
             INSERT INTO ixiflow_workflow_versions (name, version, structure_hash, state, artifact_digest, metadata_json) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson)
             """,
@@ -47,13 +57,13 @@ public sealed partial class SqliteWorkflowStateRepository
             SELECT name AS Name, version AS Version, kind AS Kind, source AS Source, revision AS Revision FROM ixiflow_definitions WHERE name=@Name AND version=@Version
             """,
         Statement.CatalogDefinitionInsert => """
-            INSERT INTO ixiflow_definitions (name, version, kind, source, revision, state) VALUES (@Name, @Version, @Kind, @Source, @Revision, 'Draft')
+            INSERT INTO ixiflow_definitions (name, version, kind, source, revision, state) VALUES (@Name, @Version, @Kind, @Source, @Revision, 'Draft') ON CONFLICT (name, version) DO NOTHING
             """,
         Statement.CatalogDefinitionUpdate => """
-            UPDATE ixiflow_definitions SET kind=@Kind, source=@Source, revision=@Revision WHERE name=@Name AND version=@Version
+            UPDATE ixiflow_definitions SET kind=@Kind, source=@Source, revision=@Revision WHERE name=@Name AND version=@Version AND revision=@ExpectedRevision
             """,
         Statement.ArtifactPut => """
-            INSERT INTO ixiflow_artifacts (digest, kind, content, created_at_utc) VALUES (@Digest,@Kind,@Content,@Now) ON CONFLICT (digest) DO NOTHING
+            INSERT INTO ixiflow_artifacts (digest, kind, content, created_at_utc) VALUES (@Digest,@Kind,@Content,@Now) ON CONFLICT (digest) DO UPDATE SET created_at_utc=excluded.created_at_utc
             """,
         Statement.ArtifactRead => """
             SELECT content FROM ixiflow_artifacts WHERE digest=@Digest
@@ -64,8 +74,11 @@ public sealed partial class SqliteWorkflowStateRepository
         Statement.ArtifactDelete => """
             DELETE FROM ixiflow_artifacts WHERE digest=@Digest
             """,
+        Statement.ArtifactDeleteOld => """
+            DELETE FROM ixiflow_artifacts WHERE digest=@Digest AND created_at_utc < @Cutoff
+            """,
         Statement.ArtifactCandidates => """
-            SELECT digest FROM ixiflow_artifacts WHERE created_at_utc < @Cutoff ORDER BY created_at_utc, digest
+            SELECT digest FROM ixiflow_artifacts WHERE created_at_utc < @Cutoff AND digest NOT IN (SELECT value FROM json_each(@References)) ORDER BY created_at_utc, digest LIMIT @Limit
             """,
         _ => null
     };
