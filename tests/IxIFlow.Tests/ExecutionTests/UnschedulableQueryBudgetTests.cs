@@ -82,7 +82,6 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
                     CASE WHEN @Growth = 0 AND n % 10000 = 0 THEN @Cuda ELSE @Metal END,
                     CASE WHEN n % 5 = 0 THEN @Host END,
                     CASE WHEN n % 5 = 0 THEN DATEADD(MINUTE, -1, SYSUTCDATETIME()) END FROM numbers;
-                UPDATE STATISTICS dbo.IxIFlowWorkflowInstances WITH FULLSCAN;
                 """ : postgres ? """
                 INSERT INTO ixiflow_workflow_instances
                     (instance_id, workflow_name, status, runnable_at_utc, state_json, revision, demand_set_id, pinned_host, pin_expires_at_utc)
@@ -90,7 +89,6 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
                     CASE WHEN NOT @Growth AND n % 10000 = 0 THEN @Cuda ELSE @Metal END,
                     CASE WHEN n % 5 = 0 THEN @Host END,
                     CASE WHEN n % 5 = 0 THEN clock_timestamp() - INTERVAL '1 minute' END FROM generate_series(1, 300000) n;
-                ANALYZE ixiflow_workflow_instances;
                 """ : """
                 WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 300000)
                 INSERT INTO ixiflow_workflow_instances
@@ -98,7 +96,6 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
                 SELECT @Prefix || n, '00000000-0000-0000-0000-000000000001', 'budget', 'Running', '2020-01-01 00:00:00.0000000', '{"WorkflowVersion":1}', 1,
                     CASE WHEN @Growth = 0 AND n % 10000 = 0 THEN @Cuda ELSE @Metal END,
                     CASE WHEN n % 5 = 0 THEN @Host END, CASE WHEN n % 5 = 0 THEN '2020-01-01 00:00:00.0000000' END FROM numbers;
-                ANALYZE ixiflow_workflow_instances;
                 """;
             await connection.ExecuteAsync(sql, new { Prefix = growth ? "growth-" : "base-", Growth = growth,
                 Cuda = cuda.Id, Metal = metal.Id, Host = host.ToString("D") }, commandTimeout: 180);
@@ -137,6 +134,15 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
 
         async Task<(UnschedulablePage Page, TimeSpan Elapsed)> Measure(string scenario)
         {
+            // Refresh every backlog input after loading (including leases), at both volumes.
+            foreach (var table in sqlserver
+                ? new[] { "IxIFlowWorkflowInstances", "IxIFlowDemandSets", "IxIFlowDemandSetRows", "IxIFlowWorkflowLeases", "ixiflow_hosts", "ixiflow_host_capabilities" }
+                : new[] { "ixiflow_workflow_instances", "ixiflow_demand_sets", "ixiflow_demand_set_rows", "ixiflow_workflow_leases", "ixiflow_hosts", "ixiflow_host_capabilities" })
+                await connection.ExecuteAsync(sqlserver ? $"UPDATE STATISTICS dbo.{table} WITH FULLSCAN" : $"ANALYZE {table}", commandTimeout: 180);
+            var failedSetSize = await connection.ExecuteScalarAsync<int>(sqlserver
+                ? "SELECT count(*) FROM dbo.IxIFlowWorkflowInstances WHERE DemandSetId = @Id"
+                : "SELECT count(*) FROM ixiflow_workflow_instances WHERE demand_set_id = @Id", new { cuda.Id });
+            Assert.Equal(30, failedSetSize);
             await store.GetUnschedulableAsync(32); // warm the complete production call
             var start = Stopwatch.GetTimestamp();
             var result = await store.GetUnschedulableAsync(32);
@@ -154,7 +160,9 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
                 var plan = (await connection.QueryAsync("EXPLAIN QUERY PLAN " + sql, parameters)).Select(row => (string)row.detail).ToArray();
                 output.WriteLine(string.Join(Environment.NewLine, plan));
                 Assert.Contains(plan, line => line.Contains("ix_ixiflow_instances_set_runnable (demand_set_id=?"));
-                Assert.Contains(plan, line => line.Contains("ix_ixiflow_instances_set_pin (demand_set_id=? AND pin_expires_at_utc"));
+                // SQLite renders IS NULL as an equality seek, separately from the future range.
+                Assert.Contains(plan, line => line.Contains("ix_ixiflow_instances_set_pin (demand_set_id=? AND pin_expires_at_utc=?"));
+                Assert.Contains(plan, line => line.Contains("ix_ixiflow_instances_set_pin (demand_set_id=? AND pin_expires_at_utc>?"));
                 Assert.DoesNotContain(plan, line => line.StartsWith("SCAN instance"));
             }
             else if (postgres)
@@ -169,25 +177,27 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
                 var json = await connection.QuerySingleAsync<string>(
                     "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, parameters, transaction, commandTimeout: 60);
                 using var document = JsonDocument.Parse(json);
+                Assert.False(document.RootElement[0].TryGetProperty("JIT", out _));
                 var scans = Nodes(document.RootElement[0].GetProperty("Plan"))
                     .Where(node => node.TryGetProperty("Relation Name", out var relation) &&
                         relation.GetString() == "ixiflow_workflow_instances").ToArray();
-                Assert.All(scans, node => Assert.Contains(node.GetProperty("Node Type").GetString(),
-                    new[] { "Index Scan", "Index Only Scan" }));
-                var failed = Assert.Single(scans, node => node.GetProperty("Index Name").GetString() == "ix_ixiflow_instances_set_runnable");
-                Assert.Contains("demand_set_id", failed.GetProperty("Index Cond").GetString());
-                Assert.Contains("runnable_at_utc <=", failed.GetProperty("Index Cond").GetString());
-                var pins = scans.Where(node => node.GetProperty("Index Name").GetString() == "ix_ixiflow_instances_set_pin").ToArray();
-                Assert.Equal(2, pins.Length);
-                Assert.Contains(pins, node => node.GetProperty("Index Cond").GetString()!.Contains("pin_expires_at_utc IS NULL"));
-                Assert.Contains(pins, node => node.GetProperty("Index Cond").GetString()!.Contains("pin_expires_at_utc >"));
-                Assert.All(pins, node =>
+                Assert.NotEmpty(scans);
+                Assert.All(scans, node =>
                 {
-                    Assert.Contains("demand_set_id", node.GetProperty("Index Cond").GetString());
-                    Assert.Equal(0, node.GetProperty("Actual Rows").GetInt32());
+                    Assert.Contains(node.GetProperty("Node Type").GetString(), new[] { "Index Scan", "Index Only Scan" });
+                    var condition = node.GetProperty("Index Cond").GetString()!;
+                    // Candidate accesses seek the set; final hydration instead seeks each page ID.
+                    // Neither assertion depends on which suitable index PostgreSQL chooses.
+                    if (condition.Contains("page.instance_id")) Assert.Contains("instance_id", condition);
+                    else Assert.Contains("demand_set_id", condition);
+                    var rows = node.GetProperty("Actual Rows").GetDouble();
+                    if (node.TryGetProperty("Rows Removed by Filter", out var removed)) rows += removed.GetDouble();
+                    if (node.TryGetProperty("Rows Removed by Index Recheck", out var rechecked)) rows += rechecked.GetDouble();
+                    // EXPLAIN reports rows per execution: count repeated probes as well.
+                    var rowsRead = rows * node.GetProperty("Actual Loops").GetDouble();
+                    var bound = condition.Contains("page.instance_id") ? parameters.Limit : failedSetSize + parameters.Limit;
+                    Assert.True(rowsRead <= bound, $"An instance access read {rowsRead} rows, exceeding {bound}: {node}");
                 });
-                Assert.All(scans, node => Assert.True(!node.TryGetProperty("Rows Removed by Filter", out var removed) || removed.GetInt32() <= 5,
-                    "An instance scan filtered unrelated schedulable rows."));
             }
             else
             {
@@ -215,11 +225,26 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
         }
         finally { await connection.ExecuteAsync(originalJit == "on" ? "SET jit = on" : "SET jit = off"); }
 
-        foreach (var index in new[] { "ix_ixiflow_instances_set_runnable", "ix_ixiflow_instances_set_pin" })
+        foreach (var index in new[] { "ix_ixiflow_instances_set_runnable", "ix_ixiflow_instances_set_pin", "ix_ixiflow_instances_set_pin_no_expiry" })
         {
             var definition = await connection.QuerySingleAsync<string>("SELECT pg_get_indexdef(CAST(@Index AS regclass))", new { Index = index });
             var invalid = new List<string> { definition.Replace("instance_id)", "instance_id COLLATE \"POSIX\")") };
-            if (index.EndsWith("set_pin")) invalid.Add(definition.Replace(" INCLUDE (pinned_host)", ""));
+            if (index.Contains("set_pin"))
+            {
+                invalid.Add(definition.Replace(" INCLUDE (pinned_host)", ""));
+                var expiry = index.EndsWith("no_expiry") ? "(pin_expires_at_utc IS NULL)" : "(pin_expires_at_utc IS NOT NULL)";
+                invalid.Add(definition.Replace(expiry, "true"));
+                invalid.Add(definition.Replace(expiry, index.EndsWith("no_expiry")
+                    ? "(pin_expires_at_utc IS NOT NULL)" : "(pin_expires_at_utc IS NULL)"));
+                try
+                {
+                    await connection.ExecuteAsync($"DROP INDEX {index}");
+                    var reopened = new PostgreSqlWorkflowStateRepository(connectionString);
+                    var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.GetWorkflowInstanceAsync("missing"));
+                    Assert.Contains("must be recreated", error.Message);
+                }
+                finally { await connection.ExecuteAsync(definition); }
+            }
             foreach (var sql in invalid)
             {
                 Assert.NotEqual(definition, sql);
