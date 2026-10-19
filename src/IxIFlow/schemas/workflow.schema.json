@@ -428,10 +428,6 @@
       "description": "A reusable block of steps with optional typed parameters.",
       "additionalProperties": false,
       "properties": {
-        "kind": {
-          "type": "string",
-          "description": "The template kind retained in the document."
-        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
@@ -809,13 +805,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "activity": {
           "type": "string",
           "description": "The activity CLR type or resolved catalog key."
@@ -998,13 +987,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "ref": {
           "type": "string",
           "description": "The key of an activity template in activities."
@@ -1035,13 +1017,6 @@
             "null"
           ],
           "description": "The explicit step name used by the fluent definition."
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
         },
         "ref": {
           "type": "string",
@@ -1080,13 +1055,6 @@
             "null"
           ],
           "description": "The explicit step name used by the fluent definition."
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
         },
         "condition": {
           "$ref": "#/definitions/expression",
@@ -1133,13 +1101,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "steps": {
           "type": "array",
           "items": {
@@ -1172,13 +1133,6 @@
             "null"
           ],
           "description": "The explicit step name used by the fluent definition."
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
         },
         "items": {
           "$ref": "#/definitions/expression",
@@ -1301,13 +1255,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "event": {
           "type": "string",
           "description": "The event CLR type or resolved catalog key."
@@ -1377,13 +1324,6 @@
             "null"
           ],
           "description": "The explicit step name used by the fluent definition."
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
         },
         "cancelWithParent": {
           "type": "boolean",
@@ -1456,13 +1396,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "branches": {
           "type": "array",
           "items": {
@@ -1532,13 +1465,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "condition": {
           "$ref": "#/definitions/expression",
           "description": "The Boolean loop condition."
@@ -1577,13 +1503,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "condition": {
           "$ref": "#/definitions/expression",
           "description": "The Boolean loop condition."
@@ -1621,13 +1540,6 @@
             "null"
           ],
           "description": "The explicit step name used by the fluent definition."
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
         },
         "steps": {
           "type": "array",
@@ -1710,13 +1622,6 @@
             "null"
           ],
           "description": "The explicit step name used by the fluent definition."
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
         },
         "steps": {
           "type": "array",
@@ -1834,13 +1739,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "value": {
           "$ref": "#/definitions/expression",
           "description": "The expression selecting an outcome value."
@@ -1907,13 +1805,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "duration": {
           "type": "string",
           "description": "The positive delay as an invariant TimeSpan."
@@ -1944,13 +1835,6 @@
             "null"
           ],
           "description": "The explicit step name used by the fluent definition."
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
         },
         "activity": {
           "type": "string",
@@ -2029,13 +1913,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "event": {
           "type": "string",
           "description": "The event CLR type or resolved catalog key."
@@ -2107,13 +1984,6 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
-        },
         "value": {
           "$ref": "#/definitions/expression",
           "description": "The value returned for the current item."
@@ -2144,13 +2014,6 @@
             "null"
           ],
           "description": "The explicit step name used by the fluent definition."
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The step description retained in the document."
         },
         "workflowType": {
           "type": "string",

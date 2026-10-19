@@ -151,11 +151,6 @@ public class WorkflowOptions
     public bool EnableTracing { get; set; } = true;
 
     /// <summary>
-    ///     Whether to enable debugging support
-    /// </summary>
-    public bool EnableDebugging { get; set; } = false;
-
-    /// <summary>
     ///     Custom correlation ID
     /// </summary>
     public string? CorrelationId { get; set; }
@@ -169,11 +164,6 @@ public class WorkflowOptions
     ///     Custom properties for the workflow execution
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
-
-    /// <summary>
-    ///     Retry policy for the entire workflow
-    /// </summary>
-    public RetryPolicy? WorkflowRetryPolicy { get; set; }
 
     /// <summary>
     ///     Whether to persist workflow state

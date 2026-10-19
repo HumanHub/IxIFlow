@@ -127,7 +127,10 @@ and generation cached across unrelated edits.
 
 The generator runs the shared `WorkflowDocumentValidator` before translation and reports errors
 at YAML members. Explicit `activityVersion` values must match the resolved declared version.
-Library hosts supply those versions through `ActivityVersions`. Imports require publishing to
+Library hosts supply resolved `ActivityDocumentContract` values through `Activities`, including
+package names and versions when activities come from catalog dependencies. The same resolved
+contracts drive document validation and translation; data and event contracts use `Types`,
+and pinned child workflow contracts use `Workflows`. Imports require publishing to
 resolve and pin dependencies; publishing hosts attest completed pins through `ResolvedImports`.
 A workflow display name is retained in `definition.Metadata["DisplayName"]`.
 

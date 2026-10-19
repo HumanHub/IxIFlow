@@ -70,8 +70,6 @@ public sealed record ActivityTemplateDocument : DocumentNode
 [Description("A reusable block of steps with optional typed parameters.")]
 public sealed record StepTemplateDocument : DocumentNode
 {
-    [Description("The template kind retained in the document.")]
-    public string Kind { get; init; } = string.Empty;
     [Description("Parameters bound from reference arguments or scalar defaults.")]
     public Dictionary<string, TemplateParameterDocument> Parameters { get; init; } = new();
     [Description("The steps expanded when the template is referenced.")]
@@ -113,8 +111,6 @@ public abstract record WorkflowStepDocument : DocumentNode
     public string Kind { get; init; } = string.Empty;
     [Description("The explicit step name used by the fluent definition.")]
     public string? Name { get; init; }
-    [Description("The step description retained in the document.")]
-    public string? Description { get; init; }
 }
 
 [Description("An activity invocation with defaults and input and output mappings.")]
