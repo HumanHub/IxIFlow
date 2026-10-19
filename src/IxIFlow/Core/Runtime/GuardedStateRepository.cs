@@ -7,6 +7,16 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
+    public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
+        Guard(() => _store.RegisterMemberAsync(member, cancellationToken), "Registering store member");
+    public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => _store.HeartbeatAsync(memberId, capabilities, cancellationToken), "Renewing store member heartbeat");
+    public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
+        Guard(() => _store.UnregisterMemberAsync(memberId, cancellationToken), "Unregistering store member");
+    public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
+        Guard(() => _store.GetLiveMembersAsync(cancellationToken), "Reading live store members");
+
     public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
         Guard(() => _store.RegisterPublisherAsync(name, eventTypes, replayRetained), "Accessing workflow outbox");
     public Task UnregisterPublisherAsync(string name) =>
@@ -78,6 +88,16 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit) =>
         Guard(() => _store.CommitWorkflowInstanceAsync(commit),
             $"Saving workflow instance '{commit.InstanceId}'");
+
+    public Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission) =>
+        Guard(() => _store.AdmitWorkflowInstanceAsync(commit, admission),
+            $"Admitting workflow instance '{commit.InstanceId}'");
+
+    public Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId) =>
+        Guard(() => _store.GetWorkflowOwnershipAsync(instanceId), $"Reading ownership of '{instanceId}'");
+
+    public Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key) =>
+        Guard(() => _store.GetWorkflowAdmissionAsync(sender, trigger, key), "Reading workflow admission");
 
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration) =>

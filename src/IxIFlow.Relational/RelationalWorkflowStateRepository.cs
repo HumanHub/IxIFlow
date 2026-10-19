@@ -23,7 +23,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>The connection, transaction and admission policy for a store operation.</summary>
     internal enum Operation
     {
-        Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge,
+        Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge, Registry,
         CancellationRequest, CancellationRead, LeaseClaim, LeaseRenew, LeaseRelease,
         Append, InboxPage, Commit, Delete
     }
@@ -31,6 +31,10 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>SQL steps in the shared protocol. Optional steps return null.</summary>
     internal enum Statement
     {
+        WebhookDeliveryRead, WebhookDeliveryDelete, WebhookDeliveryInsert, WebhookDeliveryExpire,
+        AdmissionLock, AdmissionRead, AdmissionDelete, AdmissionInsert, OwnershipRead, OwnershipInsert, OwnershipDelete, AdmissionExpire, OwnershipExpire,
+        RegistryLock, RegisterMember, MemberHeartbeat, UnregisterMember, PruneMembers,
+        Members, MemberCapabilities, DeleteCapabilities, InsertCapability,
         RetentionLock, RetentionCandidates, RetentionBlockedPublishers, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
@@ -135,6 +139,8 @@ public abstract partial class RelationalWorkflowStateRepository :
     internal virtual DateTime ReadTime(DateTime value) => Utc(value);
     /// <summary>The database has no server clock; sample LocalNow only after its write or inbox lock.</summary>
     internal virtual bool UsesLocalClock => false;
+    /// <summary>SQLite's owned repository may advertise one host and no coordinator.</summary>
+    internal virtual bool SingleHostRegistry => false;
     /// <summary>Reads the injected local UTC clock while the operation holds the required lock.</summary>
     internal virtual DateTime LocalNow() => throw new InvalidOperationException("The provider uses its server clock");
     /// <summary>Reads need revision and incarnation rechecks because no transaction snapshot joins trunk and parts.</summary>
@@ -406,8 +412,19 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             await using var connection = await OpenConnectionAsync();
             await using var transaction = (await BeginTransactionAsync(connection, Operation.Append))!;
+            if (workflowEvent.DeliveryIdentity is { } delivery)
+            {
+                await ExecuteOptionalAsync(connection, transaction, Statement.AdmissionLock, new { Identity = delivery });
+                if (await ReadWebhookDeliveryAsync(connection, transaction, workflowEvent, hash) is { } duplicate)
+                {
+                    await transaction.CommitAsync();
+                    return duplicate;
+                }
+            }
             var (instance, now) = await LockAsync<InboxRow>(connection, transaction, Statement.LockInbox, workflowEvent.InstanceId);
             var result = await AppendAsync(connection, transaction, workflowEvent, hash, instance, now);
+            if (workflowEvent.DeliveryIdentity != null && result.Status is EventAppendStatus.Stored or EventAppendStatus.Duplicate or EventAppendStatus.Rejected)
+                await WriteWebhookDeliveryAsync(connection, transaction, workflowEvent, hash, result, now);
             if (result.MadeRunnable)
                 await NotifyRunnableAsync(connection, transaction);
             await transaction.CommitAsync();
@@ -586,12 +603,25 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     // Lock order invariant: parent, then identity, then instance, then lease. A child completing into
     // its parent inbox and a parent cancelling its children must acquire these locks in the same order.
-    private async Task<WorkflowCommitResult> CommitAsync(CheckpointCommit commit)
+    private async Task<WorkflowCommitResult> CommitAsync(CheckpointCommit commit, WorkflowAdmission? admission = null)
     {
         var snapshot = commit.Instance;
         var revision = checked(commit.ExpectedRevision + 1);
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (await BeginTransactionAsync(connection, Operation.Commit))!;
+        WorkflowAdmissionRecord? admitted = null;
+        if (admission != null)
+        {
+            await ExecuteOptionalAsync(connection, transaction, Statement.AdmissionLock, new { Identity = AdmissionLockId(admission) });
+            var admissionNow = await OutboxNowAsync(connection, transaction);
+            if (await ReadAdmissionAsync(connection, transaction, admission.Sender, admission.Trigger, admission.Key, admissionNow) is { } winner)
+            {
+                await transaction.CommitAsync();
+                return new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 0) { Admission = winner };
+            }
+            admitted = new(admission.Sender, admission.Trigger, admission.Key, admission.Fingerprint,
+                commit.InstanceId, snapshot.WorkflowName, commit.ReadTrunk().WorkflowVersion, admissionNow + admission.KeyRetention, commit.Incarnation);
+        }
         // A child's terminal commit appends to its parent's inbox. Rows are locked parent first, as a
         // parent's commit that cancels its children does, so the two cannot deadlock.
         // SQLite already holds its write lock. Server clocks are read after the row locks below.
@@ -632,7 +662,8 @@ public abstract partial class RelationalWorkflowStateRepository :
             now = await OutboxNowAsync(connection, transaction);
         }
         var lease = await connection.QuerySingleOrDefaultAsync<LeaseRecord>(RequiredSql(Statement.Lease), LeaseParameters(commit.InstanceId, now), transaction);
-        var owns = lease is { IsActive: true } && lease.Epoch == commit.Epoch;
+        var owns = admission != null ? current == null && lease is not { IsActive: true }
+            : lease is { IsActive: true } && lease.Epoch == commit.Epoch;
         if (receipt != null)
         {
             if (receipt.ExpectedRevision != commit.ExpectedRevision ||
@@ -775,9 +806,22 @@ public abstract partial class RelationalWorkflowStateRepository :
         // and nobody holds it, because the commit let it go or woke it with an event.
         if (madeRunnable.Count > 0 || woken || (runnableAt <= now && releases))
             await NotifyRunnableAsync(connection, transaction);
+        if (admitted != null)
+        {
+            var identity = new { admission!.Sender, admission.Trigger, admission.Key };
+            await connection.ExecuteAsync(RequiredSql(Statement.AdmissionDelete), identity, transaction);
+            await connection.ExecuteAsync(RequiredSql(Statement.AdmissionInsert), WithTimes(new
+            {
+                admission.Sender, admission.Trigger, admission.Key, admission.Fingerprint, commit.InstanceId, commit.Incarnation,
+                admitted.WorkflowName, admitted.WorkflowVersion
+            }, ("ExpiresAtUtc", admitted.ExpiresAtUtc)), transaction);
+            await connection.ExecuteAsync(RequiredSql(Statement.OwnershipDelete), new { commit.InstanceId }, transaction);
+            await connection.ExecuteAsync(RequiredSql(Statement.OwnershipInsert),
+                new { commit.InstanceId, commit.Incarnation, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, admission.OwnerKind }, transaction);
+        }
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,
-            ReadReason(current?.CancellationJson), parked, unread, madeRunnable);
+            ReadReason(current?.CancellationJson), parked, unread, madeRunnable) { Admission = admitted };
     }
 
     // Replaced and removed parts go before inserts, in the same transaction as the trunk.

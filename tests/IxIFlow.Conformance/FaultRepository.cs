@@ -8,11 +8,27 @@ namespace IxIFlow.Tests.Conformance;
 /// </summary>
 internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflowStateRepository
 {
+    public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
+        inner.RegisterMemberAsync(member, cancellationToken);
+    public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
+        CancellationToken cancellationToken = default) =>
+        inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
+    public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
+        inner.UnregisterMemberAsync(memberId, cancellationToken);
+    public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
+        inner.GetLiveMembersAsync(cancellationToken);
+
     public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
         CancellationToken cancellationToken = default) =>
         inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
     public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
         inner.GetTombstoneAsync(instanceId);
+    public Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission) =>
+        inner.AdmitWorkflowInstanceAsync(commit, admission);
+    public Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId) =>
+        inner.GetWorkflowOwnershipAsync(instanceId);
+    public Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key) =>
+        inner.GetWorkflowAdmissionAsync(sender, trigger, key);
 
     public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
         inner.RegisterPublisherAsync(name, eventTypes, replayRetained);

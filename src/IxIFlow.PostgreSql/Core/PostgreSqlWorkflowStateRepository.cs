@@ -97,7 +97,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
 
     private static DateTimeOffset? Timestamp(DateTime? value) => value is { } time ? Timestamp(time) : null;
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
+        operation is Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
             or Operation.CancellationRequest or Operation.LeaseRelease
             ? await connection.BeginTransactionAsync() : null;
 
@@ -646,21 +646,21 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key = ANY(@Keys)
                 """,
-        _ => RetentionSql(statement)
+        _ => RegistrySql(statement) ?? AdmissionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
     {
     await using var transaction = await connection.BeginTransactionAsync();
     // Separate hosts can initialize the same database at the same time.
-    // The schema is created in one transaction, so its instance table stands for all of it. A schema that
-    // exists is left alone: creating an index that exists still locks its table against other hosts' writes.
+    // Validate existing tables without running DDL that would lock other hosts' writes.
     await connection.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtext('IxIFlow.WorkflowSchema'))",
         transaction: transaction);
     if (await connection.ExecuteScalarAsync<bool>(
             "SELECT to_regclass('ixiflow_workflow_instances') IS NOT NULL",
             transaction: transaction))
     {
+        await ValidateCurrentSchemaAsync(connection, transaction);
         await transaction.CommitAsync();
         return;
     }
@@ -760,6 +760,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         """, transaction: transaction);
     await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
+    await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
+    await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }
