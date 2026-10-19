@@ -699,7 +699,11 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         CREATE INDEX ix_ixiflow_instances_set_pin
             ON ixiflow_workflow_instances (demand_set_id COLLATE "C", pin_expires_at_utc, runnable_at_utc, instance_id COLLATE "C")
             INCLUDE (pinned_host)
-            WHERE pinned_host IS NOT NULL AND runnable_at_utc IS NOT NULL;
+            WHERE pinned_host IS NOT NULL AND pin_expires_at_utc IS NOT NULL AND runnable_at_utc IS NOT NULL;
+        CREATE INDEX ix_ixiflow_instances_set_pin_no_expiry
+            ON ixiflow_workflow_instances (demand_set_id COLLATE "C", runnable_at_utc, instance_id COLLATE "C")
+            INCLUDE (pinned_host)
+            WHERE pinned_host IS NOT NULL AND pin_expires_at_utc IS NULL AND runnable_at_utc IS NOT NULL;
         CREATE INDEX ix_ixiflow_instances_set_affinity
             ON ixiflow_workflow_instances (demand_set_id, last_host_id, runnable_at_utc, instance_id) INCLUDE (pinned_host, pin_expires_at_utc) WHERE runnable_at_utc IS NOT NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_events (
