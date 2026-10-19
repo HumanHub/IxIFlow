@@ -502,7 +502,7 @@ public sealed partial class YamlParityTests
         if (result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
             result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
         verifyProbe?.Invoke(services.GetRequiredService<ParityProbe>());
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
         return (Assert.IsType<ParityData>(result.WorkflowData), checkpoint.RootElement.GetProperty("DefinitionFingerprint").GetString()!);

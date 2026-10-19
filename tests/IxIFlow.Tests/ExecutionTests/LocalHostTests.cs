@@ -129,13 +129,24 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
 
         var result = await Client(services).RunAsync(definition, new HostData()).WaitAsync(Patience);
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.True(probe.ParentScope!.Disposed);
+        var busy = Client(services).RunAsync(BlockingWorkflow("HoldsTheEscapedCallsSlot"), new HostData());
+        await Gate(services).WaitForRunningAsync(1);
         probe.Later.SetResult();
+        await probe.Calling.Task.WaitAsync(Patience);
+        await Task.Delay(100);
+        Assert.False(probe.Result.Task.IsCompleted);
+        Gate(services).Release();
+        Assert.Equal(WorkflowExecutionStatus.Success, (await busy.WaitAsync(Patience)).Status);
         var background = await probe.Result.Task.WaitAsync(Patience);
 
         // The run's context went with the background task, but the run is over: the call takes its
         // own slot and scope instead of the disposed ones.
-        Assert.True(probe.InsideDuringRun);
-        Assert.False(probe.InsideAfterRun);
+        var scopes = Probe(services).QuickScopes.ToArray();
+        Assert.Equal(2, scopes.Length);
+        Assert.All(scopes, scope => Assert.NotSame(probe.ParentScope, scope));
+        Assert.Same(scopes[0], scopes[1]);
+        Assert.All(scopes, scope => Assert.True(scope.Disposed));
         Assert.Equal(WorkflowExecutionStatus.Success, background.Status);
         Assert.Equal(2, Probe(services).Count("quick"));
     }
@@ -439,6 +450,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         services.AddIxIFlow(options => options.Slots = slots);
         services.AddSingleton<ActivityGate>();
         services.AddSingleton<HostProbe>();
+        services.AddScoped<RunScope>();
         services.AddTransient<BlockingActivity>();
         services.AddTransient<QuickActivity>();
         services.AddTransient<ClientCallingActivity>();
@@ -505,6 +517,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     public sealed class HostProbe
     {
         private readonly ConcurrentDictionary<string, int> _counts = new();
+        public ConcurrentQueue<RunScope> QuickScopes { get; } = new();
         public void Record(string name) => _counts.AddOrUpdate(name, 1, (_, count) => count + 1);
         public int Count(string name) => _counts.GetValueOrDefault(name);
     }
@@ -537,23 +550,24 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         public TaskCompletionSource Later { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<WorkflowExecutionResult> Result { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public bool InsideDuringRun { get; set; }
-        public bool InsideAfterRun { get; set; }
+        public RunScope? ParentScope { get; set; }
+        public TaskCompletionSource Calling { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     /// <summary>Leaves a task behind that calls the client after the run has finished.</summary>
-    internal sealed class BackgroundCallingActivity(WorkflowHost host, IWorkflowClient client,
+    internal sealed class BackgroundCallingActivity(RunScope scope, IWorkflowClient client,
         BackgroundProbe probe) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
-            probe.InsideDuringRun = host.IsInsideRun;
+            Assert.False(scope.Disposed);
+            probe.ParentScope = scope;
             _ = Task.Run(async () =>
             {
                 try
                 {
                     await probe.Later.Task;
-                    probe.InsideAfterRun = host.IsInsideRun;
+                    probe.Calling.SetResult();
                     probe.Result.SetResult(await client.RunAsync(QuickWorkflow("CalledAfterTheRun"),
                         new HostData()));
                 }
@@ -598,10 +612,18 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         }
     }
 
-    public sealed class QuickActivity(HostProbe probe) : IAsyncActivity
+    public sealed class RunScope : IDisposable
+    {
+        public bool Disposed { get; private set; }
+        public void Dispose() => Disposed = true;
+    }
+
+    public sealed class QuickActivity(HostProbe probe, RunScope scope) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
+            Assert.False(scope.Disposed);
+            probe.QuickScopes.Enqueue(scope);
             probe.Record("quick");
             return Task.CompletedTask;
         }

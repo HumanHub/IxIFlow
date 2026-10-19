@@ -87,52 +87,6 @@ public class CancellationReason
 }
 
 /// <summary>
-///     Workflow version information
-/// </summary>
-public class WorkflowVersionInfo
-{
-    /// <summary>
-    ///     Workflow name
-    /// </summary>
-    public string Name { get; set; } = "";
-
-    /// <summary>
-    ///     Version number
-    /// </summary>
-    public int Version { get; set; }
-
-    /// <summary>
-    ///     Version description
-    /// </summary>
-    public string Description { get; set; } = "";
-
-    /// <summary>
-    ///     When this version was created
-    /// </summary>
-    public DateTime CreatedAt { get; set; }
-
-    /// <summary>
-    ///     Who created this version
-    /// </summary>
-    public string CreatedBy { get; set; } = "";
-
-    /// <summary>
-    ///     Whether this version is active
-    /// </summary>
-    public bool IsActive { get; set; }
-
-    /// <summary>
-    ///     Whether this is the default version
-    /// </summary>
-    public bool IsDefault { get; set; }
-
-    /// <summary>
-    ///     Tags associated with this version
-    /// </summary>
-    public string[] Tags { get; set; } = Array.Empty<string>();
-}
-
-/// <summary>
 ///     Workflow options for execution control
 /// </summary>
 public class WorkflowOptions
@@ -164,11 +118,6 @@ public class WorkflowOptions
     ///     Custom properties for the workflow execution
     /// </summary>
     public Dictionary<string, object> Properties { get; set; } = new();
-
-    /// <summary>
-    ///     Whether to persist workflow state
-    /// </summary>
-    public bool PersistState { get; set; } = true;
 }
 
 /// <summary>
@@ -182,8 +131,6 @@ public class WorkflowInstance
 
     /// <summary>The revision assigned by an atomic repository commit.</summary>
     public long Revision { get; set; }
-
-    internal WorkflowInstance CopyForResume() => (WorkflowInstance)MemberwiseClone();
 
     /// <summary>
     ///     Unique identifier for this workflow instance
@@ -243,16 +190,6 @@ public class WorkflowInstance
     public DateTime? RunnableAtUtc { get; set; }
 
     /// <summary>
-    ///     Current step number being executed
-    /// </summary>
-    public int CurrentStepNumber { get; set; }
-
-    /// <summary>
-    ///     Total number of steps in the workflow
-    /// </summary>
-    public int TotalSteps { get; set; }
-
-    /// <summary>
     ///     Serialized workflow data
     /// </summary>
     public string WorkflowDataJson { get; set; } = "";
@@ -261,11 +198,6 @@ public class WorkflowInstance
     ///     Workflow data type for deserialization
     /// </summary>
     public string WorkflowDataType { get; set; } = "";
-
-    /// <summary>
-    ///     Serialized workflow definition (for resume operations)
-    /// </summary>
-    public string WorkflowDefinitionJson { get; set; } = "";
 
     /// <summary>
     ///     Serialized execution state at suspension point (for resume operations)
@@ -411,11 +343,6 @@ public class ExecutionPointer
     ///     Pointer status, such as Active, Waiting, or Completed
     /// </summary>
     public string Status { get; set; } = string.Empty;
-
-    /// <summary>
-    ///     Optional parent pointer for nested execution
-    /// </summary>
-    public string? ParentPointerId { get; set; }
 
     /// <summary>
     ///     Associated frame when the pointer belongs to a nested control-flow scope
@@ -684,31 +611,6 @@ public class WorkflowDefinition
     public string[] Tags { get; set; } = Array.Empty<string>();
 
     /// <summary>
-    ///     Estimated number of steps
-    /// </summary>
-    public int EstimatedStepCount { get; set; }
-
-    /// <summary>
-    ///     Whether this workflow supports suspension
-    /// </summary>
-    public bool SupportsSuspension { get; set; }
-
-    /// <summary>
-    ///     Whether this workflow uses saga pattern
-    /// </summary>
-    public bool UsesSagaPattern { get; set; }
-
-    /// <summary>
-    ///     Whether this workflow supports parallel execution
-    /// </summary>
-    public bool SupportsParallelExecution { get; set; }
-
-    /// <summary>
-    ///     Workflow execution factory
-    /// </summary>
-    public Func<object> WorkflowFactory { get; set; } = null!;
-
-    /// <summary>
     ///     Additional metadata
     /// </summary>
     public Dictionary<string, object> Metadata { get; set; } = new();
@@ -723,13 +625,6 @@ public class WorkflowDefinition
     /// </summary>
     public WorkflowStep? FirstStep => Steps.FirstOrDefault();
 
-    /// <summary>
-    ///     Gets a step by its ID
-    /// </summary>
-    public WorkflowStep? GetStep(string stepId)
-    {
-        return Steps.FirstOrDefault(s => s.Id == stepId);
-    }
 }
 
 /// <summary>

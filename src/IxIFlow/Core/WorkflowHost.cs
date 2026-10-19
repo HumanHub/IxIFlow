@@ -206,9 +206,6 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         }
     }
 
-    /// <summary>True inside a slot, where client calls run inline.</summary>
-    internal bool IsInsideRun => CurrentRun.Value?.IsOpen == true;
-
     /// <summary>
     /// Runs an operation inline when called from inside a run that is still open, and returns false
     /// otherwise. The run's scope stays alive until the operation ends, even if the run ends first.

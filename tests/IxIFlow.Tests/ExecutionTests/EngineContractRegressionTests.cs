@@ -809,7 +809,7 @@ public class EngineContractRegressionTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
         // While the parallel step is open, the branches' work is read from their saved changes (D-14).
         var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
-        var suspendedData = await BranchProgress.ViewAsync<RegressionData>(repository, suspended.InstanceId);
+        var suspendedData = await BranchProgress.ReadAsync<RegressionData>(repository, suspended.InstanceId, 0);
         Assert.Equal(1, suspendedData.ParallelCompletedBranchCount);
         Assert.False(suspendedData.AfterTryExecuted);
 
@@ -817,9 +817,10 @@ public class EngineContractRegressionTests
             new RegressionApprovalEvent { Approved = true });
         Assert.True(resumed.Status == WorkflowExecutionStatus.Suspended,
             $"Expected a second parallel wait, got {resumed.Status}: {resumed.ErrorMessage}");
-        var data = await BranchProgress.ViewAsync<RegressionData>(repository, resumed.InstanceId);
+        var data = await BranchProgress.ReadAsync<RegressionData>(repository, resumed.InstanceId, 0);
         Assert.Equal(1, data.ParallelCompletedBranchCount);
-        Assert.True(data.ParallelWaitBranchCompleted);
+        Assert.True((await BranchProgress.ReadAsync<RegressionData>(repository, resumed.InstanceId, 1))
+            .ParallelWaitBranchCompleted);
         Assert.False(data.AfterTryExecuted);
 
         var completed = await engine.ResumeAsync(suspended.InstanceId,
@@ -1047,7 +1048,7 @@ public class EngineContractRegressionTests
         var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
             .RunToEndAsync(parent, new RegressionData { Value = "input" });
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);
     }
 
@@ -1081,7 +1082,7 @@ public class EngineContractRegressionTests
                 .Build());
         var result = await engine.FinishedAsync(await engine.RecoverAsync(saved.InstanceId));
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);
     }
 

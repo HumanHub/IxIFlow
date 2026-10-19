@@ -170,7 +170,7 @@ public sealed class PackageConsumerTests
             var result = await client.RunAsync(definition, new Data());
             if (result.Status == WorkflowExecutionStatus.Running)
                 result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
-            if (!result.IsSuccess) throw new Exception(result.ErrorMessage);
+            if (result.Status != WorkflowExecutionStatus.Success) throw new Exception(result.ErrorMessage);
             return ((Data)result.WorkflowData!).Value;
         }
         var custom = await Execute(Consumer.Generated.Workflow_custom.Build());

@@ -144,10 +144,6 @@ public sealed class CheckpointCommit
     /// <summary>Every part the instance has once the commit is applied.</summary>
     internal IReadOnlyDictionary<string, string> StoredParts { get; }
 
-    /// <summary>The bytes of state the commit carries: its payload and the parts it writes, as UTF-8.</summary>
-    public long StateBytes => Encoding.UTF8.GetByteCount(Payload) +
-                              Parts.Sum(part => (long)Encoding.UTF8.GetByteCount(part.Json));
-
     /// <summary>What a store reads from the instance to apply the commit, so it need not parse the payload.</summary>
     public CommittedInstance Instance { get; }
 
@@ -156,10 +152,6 @@ public sealed class CheckpointCommit
     /// in order.
     /// </summary>
     public IReadOnlyList<string> TraceEntries { get; }
-
-    /// <summary>The trace entries this commit carries.</summary>
-    public IReadOnlyList<ExecutionTraceEntry> ReadTraceEntries() =>
-        TraceEntries.Select(entry => JsonSerializer.Deserialize<ExecutionTraceEntry>(entry)!).ToArray();
 
     /// <summary>The execution epoch granted with the owner's lease; zero for an unleased commit.</summary>
     public long Epoch { get; }

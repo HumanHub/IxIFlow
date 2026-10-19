@@ -342,7 +342,6 @@ public sealed class TraceReviewTests
     private sealed class VerificationHost : IExecutionHost
     {
         public List<CheckpointCommit> Commits { get; } = [];
-        public bool PersistsState => true;
         public ExecutionLimits Limits { get; } = new() { VerifyCheckpointParts = true };
         public CancellationToken Drain => CancellationToken.None;
         public Task? OwnershipLoss => null;

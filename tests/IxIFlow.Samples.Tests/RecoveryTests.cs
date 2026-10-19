@@ -42,7 +42,7 @@ public sealed class RecoveryTests
         }
         else
             result = await client.RunAsync(Recovery.Definition(), new ReservationData());
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal("reservation-1", Assert.IsType<ReservationData>(result.WorkflowData).Reference);
         Assert.Equal(1, reservations.Calls);
         if (interrupted)

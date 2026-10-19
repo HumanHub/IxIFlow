@@ -61,7 +61,7 @@ public class ExceptionHandlingTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExceptionTestData)result.WorkflowData;
@@ -110,7 +110,7 @@ public class ExceptionHandlingTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExceptionTestData)result.WorkflowData;
@@ -169,7 +169,7 @@ public class ExceptionHandlingTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExceptionTestData)result.WorkflowData;
@@ -218,7 +218,7 @@ public class ExceptionHandlingTests
         var exceptionResult = await _workflowEngine.RunAsync(definition, exceptionData);
 
         // Assert - with exception
-        Assert.True(exceptionResult.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, exceptionResult.Status);
         Assert.NotNull(exceptionResult.WorkflowData);
 
         var exceptionFinalData = (ExceptionTestData)exceptionResult.WorkflowData;
@@ -239,7 +239,7 @@ public class ExceptionHandlingTests
         var successResult = await _workflowEngine.RunAsync(definition, successData);
 
         // Assert - without exception
-        Assert.True(successResult.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, successResult.Status);
         Assert.NotNull(successResult.WorkflowData);
 
         var successFinalData = (ExceptionTestData)successResult.WorkflowData;
@@ -292,7 +292,7 @@ public class ExceptionHandlingTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExceptionTestData)result.WorkflowData;
@@ -336,7 +336,7 @@ public class ExceptionHandlingTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExceptionTestData)result.WorkflowData;
@@ -383,7 +383,7 @@ public class ExceptionHandlingTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExceptionTestData)result.WorkflowData;
@@ -426,7 +426,7 @@ public class ExceptionHandlingTests
         var validResult = await _workflowEngine.RunAsync(definition, validData);
 
         // Assert - with valid data
-        Assert.True(validResult.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, validResult.Status);
         Assert.NotNull(validResult.WorkflowData);
 
         var validFinalData = (ExceptionTestData)validResult.WorkflowData;
@@ -446,7 +446,7 @@ public class ExceptionHandlingTests
         var invalidResult = await _workflowEngine.RunAsync(definition, invalidData);
 
         // Assert - with invalid data
-        Assert.False(invalidResult.IsSuccess); // Workflow should fail because exception is not caught
+        Assert.Equal(WorkflowExecutionStatus.Faulted, invalidResult.Status); // Workflow should fail because exception is not caught
         Assert.NotNull(invalidResult.WorkflowData);
 
         var invalidFinalData = (ExceptionTestData)invalidResult.WorkflowData;
@@ -502,7 +502,7 @@ public class ExceptionHandlingTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExceptionTestData)result.WorkflowData;
@@ -553,7 +553,7 @@ public class ExceptionHandlingTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.False(result.IsSuccess); // Workflow should fail because exception in finally is not caught
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status); // Workflow should fail because exception in finally is not caught
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExceptionTestData)result.WorkflowData;
@@ -609,7 +609,7 @@ public class ExceptionHandlingTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExceptionTestData)result.WorkflowData;
@@ -658,7 +658,7 @@ public class ExceptionHandlingTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.False(result.IsSuccess); // Workflow should fail because exception is not caught
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status); // Workflow should fail because exception is not caught
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExceptionTestData)result.WorkflowData;

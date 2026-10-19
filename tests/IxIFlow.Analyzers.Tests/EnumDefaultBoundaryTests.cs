@@ -100,7 +100,7 @@ public sealed class EnumDefaultBoundaryTests
         services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition!, Activator.CreateInstance(assembly.GetType("Data")!)!);
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var actual = result.WorkflowData!.GetType().GetProperty("Value")!.GetValue(result.WorkflowData);
         Assert.Equal(expected, actual == null ? "null" : Convert.ToString(Convert.ChangeType(actual, Enum.GetUnderlyingType(actual.GetType())), System.Globalization.CultureInfo.InvariantCulture));
     }
