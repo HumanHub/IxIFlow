@@ -321,13 +321,13 @@ public sealed class StoreWideEpochContractTests
             Assert.True(current.Epoch > old.Epoch);
             var first = CheckpointCommit.Create(Instance(id, "replacement"), current.Epoch, 0);
 
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 0),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 0),
                 await store.CommitWorkflowInstanceAsync(late));
             Assert.Null(await store.GetWorkflowInstanceAsync(id));
             Assert.True(await store.RenewExecutionLeaseAsync(id, "host-b", Duration));
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1),
                 await store.CommitWorkflowInstanceAsync(first));
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 1),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 1),
                 await store.CommitWorkflowInstanceAsync(late));
             var saved = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.Equal(first.Incarnation, saved.Incarnation);
@@ -359,14 +359,14 @@ public sealed class StoreWideEpochContractTests
             Assert.Equal(late.ExpectedRevision, replacement.Revision);
             Assert.NotEqual(late.Incarnation, replacement.Incarnation);
 
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, replacement.Revision),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, replacement.Revision),
                 await store.CommitWorkflowInstanceAsync(late));
             var unchanged = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.Equal(replacement.Revision, unchanged.Revision);
             Assert.Equal(replacement.Incarnation, unchanged.Incarnation);
             Assert.Equal(WorkflowStatus.Suspended, unchanged.Status);
             Assert.Equal(replacement.WorkflowDataJson, unchanged.WorkflowDataJson);
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 2),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 2),
                 await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(unchanged, (await StoreTestSupport.LeaseAsync(store, unchanged.InstanceId)).Epoch, unchanged.Revision)));
         }
         finally { await store.DeleteWorkflowInstanceAsync(id); }
@@ -397,14 +397,14 @@ public sealed class StoreWideEpochContractTests
 
             // The epoch and revision are current: only the incarnation can fence this payload.
             var stale = CheckpointCommit.Create(original.CopyForResume(), current.Epoch, replacement.Revision);
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, replacement.Revision),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, replacement.Revision),
                 await store.CommitWorkflowInstanceAsync(stale));
             var unchanged = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.Equal(replacement.Revision, unchanged.Revision);
             Assert.Equal(replacement.Incarnation, unchanged.Incarnation);
             Assert.Equal(before, JsonSerializer.Serialize(unchanged));
             Assert.True(await store.RenewExecutionLeaseAsync(id, "current-owner", Duration));
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, replacement.Revision + 1),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, replacement.Revision + 1),
                 await store.CommitWorkflowInstanceAsync(
                     CheckpointCommit.Create(unchanged.CopyForResume(), current.Epoch, unchanged.Revision)));
             var saved = (await store.GetWorkflowInstanceAsync(id))!;

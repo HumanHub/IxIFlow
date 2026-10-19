@@ -226,10 +226,13 @@ public sealed class StructureHashReviewTests
         abandoned.Continuations[0].Stack[0].NextStepIndex = 999;
         var host = new RecordingHost();
         var executor = new WorkflowExecutor(services, services.GetRequiredService<IActivityExecutor>(), TimeProvider.System);
-        var result = await executor.RunAsync(loaded, instance, abandoned, new StructureHashData { Value = 99 },
-            host, CancellationToken.None);
+        using var run = executor.OpenRun();
+        var outcome = await executor.RunAsync(loaded, instance, abandoned, new StructureHashData { Value = 99 },
+            host, run.RunId);
 
-        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
+        Assert.Equal(AssignmentOutcomeKind.Idle, outcome.Kind);
+        Assert.NotNull(host.Saved);
+        instance = host.Saved;
         Assert.Equal(WorkflowStatus.NeedsResolution, instance.Status);
         var saved = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
         Assert.Equal(OperatorStopKind.Verification, saved.OperatorStop!.Kind);
@@ -246,22 +249,16 @@ public sealed class StructureHashReviewTests
     private sealed class RecordingHost : IExecutionHost
     {
         public List<CheckpointCommit> Commits { get; } = [];
+        public WorkflowInstance? Saved { get; private set; }
         public ExecutionLimits Limits => ExecutionLimits.Default;
         public long Epoch => 1;
-        public CancellationToken Drain => CancellationToken.None;
-        public Task? OwnershipLoss => null;
-        public Task<CancellationReason>? CancellationSignal => null;
-        public long ObservedInboxSequence => 0;
-        public Task? InboxChanged => null;
-        public CancellationReason? ObservedCancellation => null;
         public bool CanPark => false;
         public Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
         {
+            Saved = commit.ReadInstance(Saved);
             Commits.Add(commit);
             return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, Commits.Count));
         }
-        public void ThrowIfOwnershipLost() => throw new InvalidOperationException("Must refuse before execution");
-        public void ObserveCancellation(CancellationReason reason) => throw new InvalidOperationException();
         public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) => throw new InvalidOperationException();
         public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
             string childInstanceId, string parentWaitId) => throw new InvalidOperationException();
