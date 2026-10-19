@@ -27,12 +27,48 @@ public static class WorkflowCompilation
     public static WorkflowCompilerSettings Settings { get; } = new(
         typeof(CSharpCompilation).Assembly.GetName().Version!.ToString(), "CSharp14", "Release", true, "PortablePdb");
 
-    public static string[] ReferencePaths() => ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "")
-        .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-        .Concat(AppDomain.CurrentDomain.GetAssemblies().Where(assembly => !assembly.IsDynamic && !assembly.IsCollectible)
-            .Select(assembly => assembly.Location).Where(path => path.Length != 0))
-        .Append(typeof(WorkflowDefinition).Assembly.Location).Append(typeof(IAsyncActivity).Assembly.Location)
-        .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal).ToArray();
+    // TPA is the host's fixed runtime/dependency profile, independent of lazy loading.
+    // Extend it with the entry point's transitive closure and explicitly configured types.
+    public static string[] ReferencePaths(WorkflowSourceOptions? options = null)
+    {
+        var paths = new HashSet<string>(((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "")
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+        var pending = new Queue<Assembly>();
+        if (Assembly.GetEntryAssembly() is { } entry) pending.Enqueue(entry);
+        pending.Enqueue(typeof(WorkflowCompilation).Assembly);
+        if (options != null)
+            foreach (var name in options.Types.Values.Concat(options.WorkflowDataTypes.Values)
+                         .Concat(options.Workflows.Values.Select(item => item.DataType)).Distinct(StringComparer.Ordinal))
+            {
+                var clrName = name.Replace("global::", "", StringComparison.Ordinal);
+                // Only explicit SourceOptions may introduce assemblies outside the host profile.
+                foreach (var assembly in AssemblyLoadContext.Default.Assemblies.Where(item => !item.IsDynamic))
+                    if (WorkflowPublisher.FindType(assembly, clrName) != null) pending.Enqueue(assembly);
+            }
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        while (pending.TryDequeue(out var assembly))
+        {
+            if (!visited.Add(assembly.FullName!)) continue;
+            if (!assembly.IsDynamic && assembly.Location.Length > 0) paths.Add(assembly.Location);
+            foreach (var reference in assembly.GetReferencedAssemblies().OrderBy(item => item.FullName, StringComparer.Ordinal))
+                pending.Enqueue(Assembly.Load(reference));
+        }
+        return NormalizeReferences(paths);
+    }
+
+    internal static string[] NormalizeReferences(IEnumerable<string> paths) => paths
+        .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal)
+        .Select(path => (Path: path, Name: AssemblyName.GetAssemblyName(path)))
+        .GroupBy(item => (item.Name.Name!.ToUpperInvariant(),
+            Culture: item.Name.CultureName?.ToUpperInvariant() ?? "",
+            Token: Convert.ToHexString(item.Name.GetPublicKeyToken() ?? [])))
+        .Select(group =>
+        {
+            var versions = group.Select(item => item.Name.Version).Distinct().ToArray();
+            if (versions.Length > 1)
+                throw new InvalidOperationException($"Conflicting reference versions for assembly '{group.First().Name.Name}': {string.Join(", ", versions.Select(item => item?.ToString() ?? "unspecified"))}");
+            return group.First().Path;
+        }).Order(StringComparer.Ordinal).ToArray();
 
     public static WorkflowCompilationResult Compile(string source, IReadOnlyList<string>? references = null,
         string sourcePath = "workflow.yaml", CancellationToken cancellationToken = default)
@@ -40,7 +76,7 @@ public static class WorkflowCompilation
         var tree = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.CSharp14),
             "workflow.g.cs", Encoding.UTF8, cancellationToken);
         var compilation = CSharpCompilation.Create("Workflow_" + ArtifactDigest.Of(Encoding.UTF8.GetBytes(source)).Value[7..],
-            [tree], (references ?? ReferencePaths()).Select(path => MetadataReference.CreateFromFile(path)),
+            [tree], NormalizeReferences(references ?? ReferencePaths()).Select(path => MetadataReference.CreateFromFile(path)),
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: OptimizationLevel.Release,
                 deterministic: true, nullableContextOptions: NullableContextOptions.Enable));
         using var assembly = new MemoryStream();

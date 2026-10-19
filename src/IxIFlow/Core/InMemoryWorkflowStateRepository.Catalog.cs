@@ -36,7 +36,7 @@ public partial class InMemoryWorkflowStateRepository
         }
     }
 
-    public async Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version)
+    public async Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null)
     {
         await _catalogLock.WaitAsync();
         try
@@ -47,6 +47,13 @@ public partial class InMemoryWorkflowStateRepository
                 var existing = _versions.GetValueOrDefault(key);
                 WorkflowCatalogRules.CheckPublication(draftId, version, _definitions.GetValueOrDefault(key), existing);
                 if (existing != null) return CopyVersion(existing);
+            }
+            await WorkflowCatalogRules.CheckArtifactsAsync(version, artifacts ?? this);
+            lock (_claimLock)
+            {
+                var key = (draftId.Name, draftId.Version);
+                // Draft edits use the instance monitor rather than the catalog gate.
+                WorkflowCatalogRules.CheckPublication(draftId, version, _definitions.GetValueOrDefault(key), null);
                 foreach (var dependency in version.Dependencies ?? [])
                     WorkflowCatalogRules.CheckStartable(_versions.GetValueOrDefault((dependency.Name, dependency.Version)), dependency.Name, dependency.Version);
                 _versions.Add(key, CopyVersion(version));

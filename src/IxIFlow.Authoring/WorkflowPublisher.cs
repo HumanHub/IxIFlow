@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.Loader;
 using System.Text;
 using System.Text.Json;
 using IxIFlow.Core;
@@ -22,7 +23,7 @@ public sealed record WorkflowPublishResult(WorkflowVersion? Version, IReadOnlyLi
     public bool Success => Version != null && Diagnostics.All(item => item.Severity != WorkflowDiagnosticSeverity.Error);
 }
 
-/// <summary>Publishes import-free drafts using the runtime shared set and already-loaded application assemblies.</summary>
+/// <summary>Publishes import-free drafts using the host reference profile, entry assembly closure and configured types.</summary>
 public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactStore artifacts, WorkflowPublisherOptions? options = null,
     ILogger<WorkflowPublisher>? logger = null)
 {
@@ -46,7 +47,11 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             if (published?.PublishedDraftRevision == draftId.Revision && draftId.Revision > 0) return new(published, []);
             var draft = await catalog.GetDefinitionAsync(draftId.Name, draftId.Version);
             if (draft == null || draft.Revision != draftId.Revision)
+            {
+                published = await catalog.GetWorkflowVersionAsync(draftId.Name, draftId.Version);
+                if (published?.PublishedDraftRevision == draftId.Revision && draftId.Revision > 0) return new(published, []);
                 return Failure("PUB001", "The draft was not found or its revision changed");
+            }
             if (draft.Kind != "workflow") return Failure("PUB002", "Only workflow YAML drafts can be published");
             document = WorkflowYamlSerializer.Read(draft.Source);
             location = document.Workflow.Location;
@@ -55,7 +60,8 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 location = document.Imports.Location;
                 return Failure("PUB003", "Imports are not supported by this publisher yet");
             }
-            var sourceOptions = ResolveTypes(document, _options.SourceOptions);
+            var references = WorkflowCompilation.ReferencePaths(_options.SourceOptions);
+            var sourceOptions = ResolveTypes(document, _options.SourceOptions, references);
             var validation = await new WorkflowDocumentValidator().ValidateAsync(document, new WorkflowSourceContracts(sourceOptions), cancellationToken);
             diagnostics.AddRange(validation.Diagnostics.Select(item =>
             {
@@ -66,7 +72,6 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             stage = WorkflowPublishStage.Translate;
             var source = WorkflowSourceTranslator.Translate(document, Path, sourceOptions);
             stage = WorkflowPublishStage.Compile;
-            var references = WorkflowCompilation.ReferencePaths();
             var compilation = WorkflowCompilation.Compile(source, references, Path, cancellationToken);
             diagnostics.AddRange(compilation.Diagnostics);
             if (!compilation.Success) return new(null, diagnostics);
@@ -104,7 +109,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             var version = new WorkflowVersion(draft.Name, draft.Version, tested.StructureHash,
                 ArtifactDigest: digest, Dependencies: tested.Dependencies, PublishedDraftRevision: draft.Revision,
                 ManifestJson: JsonSerializer.Serialize(bundle.Manifest));
-            return new(await catalog.PublishDefinitionAsync(draftId, version), diagnostics);
+            return new(await catalog.PublishDefinitionAsync(draftId, version, artifacts), diagnostics);
         }
         catch (WorkflowSourceException error)
         {
@@ -120,7 +125,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         { return Failure("PUB007", error.Message); }
     }
 
-    private static WorkflowSourceOptions ResolveTypes(WorkflowDocument document, WorkflowSourceOptions configured)
+    private static WorkflowSourceOptions ResolveTypes(WorkflowDocument document, WorkflowSourceOptions configured, IReadOnlyList<string> references)
     {
         var result = new WorkflowSourceOptions { RequireResolvedTypes = true, Namespace = configured.Namespace, ClassName = configured.ClassName };
         foreach (var pair in configured.Types) result.Types.Add(pair);
@@ -129,18 +134,23 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         foreach (var pair in configured.Workflows) result.Workflows.Add(pair);
         foreach (var pair in configured.WorkflowDataTypes) result.WorkflowDataTypes.Add(pair);
         foreach (var pair in configured.WorkflowIdentities) result.WorkflowIdentities.Add(pair);
-        var assemblies = AppDomain.CurrentDomain.GetAssemblies().Where(assembly => !assembly.IsDynamic && !assembly.IsCollectible).ToArray();
+        var assemblies = references.Select(path => AssemblyLoadContext.Default.LoadFromAssemblyName(AssemblyName.GetAssemblyName(path))).ToArray();
         foreach (var key in WorkflowSourceTranslator.TypeNames(document).Distinct())
         {
             if (result.Types.ContainsKey(key)) continue;
             var name = key.Replace("global::", "", StringComparison.Ordinal);
             var matches = assemblies.Select(assembly => FindType(assembly, name)).OfType<Type>().Distinct().ToArray();
-            if (matches.Length == 1) result.Types[key] = "global::" + matches[0].FullName!.Replace('+', '.');
+            if (matches.Length == 1)
+            {
+                result.Types[key] = "global::" + matches[0].FullName!.Replace('+', '.');
+                foreach (var property in matches[0].GetProperties())
+                    result.Members.TryAdd(key + "." + char.ToLowerInvariant(property.Name[0]) + property.Name[1..], property.Name);
+            }
         }
         return result;
     }
 
-    private static Type? FindType(Assembly assembly, string name)
+    internal static Type? FindType(Assembly assembly, string name)
     {
         var type = assembly.GetType(name);
         // YAML uses C# nested names, while reflection expects '+' between declaring types.
