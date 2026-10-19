@@ -15,12 +15,12 @@ internal sealed class WorkflowScopeCatalog
     public WorkflowScopeCatalog(WorkflowDefinition definition)
     {
         AddScope("root", definition.Steps);
-        Fingerprint = ComputeFingerprint(definition);
+        StructureHash = ComputeStructureHash(definition);
     }
 
     internal IEnumerable<KeyValuePair<string, WorkflowStep>> AllSteps => _steps;
 
-    public string Fingerprint { get; }
+    public string StructureHash { get; }
 
     public IReadOnlyCollection<PropertyInfo> FaultProperties(Type exceptionType) => _steps.Values
         .Where(step => step.StepType == WorkflowStepType.CatchBlock &&
@@ -137,67 +137,85 @@ internal sealed class WorkflowScopeCatalog
         }
     }
 
-    private string ComputeFingerprint(WorkflowDefinition definition)
+    private string ComputeStructureHash(WorkflowDefinition definition)
     {
-        // Combiners declared on the data type decide how joins merge, so they are part of it (spec E-05).
-        var combiners = ParallelRules.CombinerSignature(definition.WorkflowDataType);
-        var signature = (combiners.Length == 0 ? "" : "combiners:" + combiners + "\n") +
-            string.Join("\n", _steps.OrderBy(pair => pair.Key, StringComparer.Ordinal)
-            .Select(pair =>
+        // Both authoring routes lower to this executable model. Include empty scopes as well:
+        // adding an empty branch changes the topology even when it adds no steps.
+        var manifest = new
+        {
+            Format = 1,
+            Data = WorkflowTypeIdentity.StableName(definition.WorkflowDataType),
+            Combiners = ParallelRules.CombinerSignature(definition.WorkflowDataType),
+            Scopes = _scopes.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => new { Id = pair.Key, Count = pair.Value.Count }),
+            Steps = _steps.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair =>
             {
                 var step = pair.Value;
-                // DefaultPayload is discovery metadata, not execution behavior (D-14).
-                var waitKey = step.StepMetadata.TryGetValue("WaitKey", out var key) ? key?.ToString() : "";
-                return WorkflowBuildError.Check(step, () => string.Join('|', pair.Key, step.StepType,
-                    step.Name, WorkflowTypeIdentity.StableName(step.WorkflowDataType),
-                    WorkflowTypeIdentity.StableName(step.PreviousStepDataType),
-                    WorkflowTypeIdentity.StableName(step.ActivityType),
-                    WorkflowTypeIdentity.StableName(step.WorkflowType),
+                return WorkflowBuildError.Check(step, () => new
+                {
+                    Id = pair.Key,
+                    step.StepType,
+                    Data = WorkflowTypeIdentity.StableName(step.WorkflowDataType),
+                    Previous = WorkflowTypeIdentity.StableName(step.PreviousStepDataType),
+                    Activity = WorkflowTypeIdentity.StableName(step.ActivityType),
+                    Workflow = WorkflowTypeIdentity.StableName(step.WorkflowType),
+                    InvokedData = WorkflowTypeIdentity.StableName(step.InvokedDataType),
                     step.WorkflowName, step.WorkflowVersion, step.CancelWithParent,
-                    WorkflowTypeIdentity.StableName(step.ResumeEventType), waitKey,
-                    step.WaitTimeout?.Ticks, step.DelayDuration?.Ticks, step.ParallelJoinMode,
-                    step.LoopType, WorkflowTypeIdentity.StableName(step.ExceptionType),
-                    WorkflowTypeIdentity.StableName(step.FaultType),
-                    Shape(step.ConditionExpression),
-                    step.ConditionExpression == null ? Code(step.ConditionBehavior ?? step.CompiledCondition) : "",
-                    step.OutcomeExpression == null ? Code(step.OutcomeSelector) : Shape(step.OutcomeExpression),
-                    step.ParallelCompletionExpression == null ? Code(step.ParallelCompletionBehavior ?? step.ParallelCompletionCondition) : Shape(step.ParallelCompletionExpression),
-                    string.Join(';', step.OutcomeBranches.Select(OutcomeBranchSignature)),
-                    ErrorPolicySignature(step),
-                    string.Join(';', step.InputMappings.Select(MappingSignature)),
-                    string.Join(';', step.OutputMappings.Select(MappingSignature)),
-                    step.RequestName, WorkflowTypeIdentity.StableName(step.ReplyType), step.ReplyToRequest,
-                    step.RequestSubjectExpression == null ? Code(step.RequestSubjectBehavior ?? step.RequestSubject) : Shape(step.RequestSubjectExpression),
-                    string.Join(';', step.ParallelCombiners.OrderBy(pair => pair.Key, StringComparer.Ordinal)
-                        .Select(pair => pair.Key + "=" + WorkflowTypeIdentity.StableName(pair.Value))),
-                    // A ForEach is sequential until a parallel mode exists; its handle is known by this step.
-                    step.ForEachItem == null
-                        ? ""
-                        : (step.ForEachParallel
-                              ? $"parallel:{step.ForEachMaxConcurrency}:{step.ParallelJoinMode}"
-                              : "sequential") + ":" + WorkflowTypeIdentity.StableName(step.ForEachItem.ItemType),
-                    step.ForEachCompletionExpression == null ? Code(step.ForEachCompletionBehavior ?? step.ForEachCompletionCondition) : Shape(step.ForEachCompletionExpression),
-                    step.ForEachItemsExpression == null ? Code(step.ForEachItemsBehavior ?? step.ForEachItems) : Shape(step.ForEachItemsExpression),
-                    WorkflowTypeIdentity.StableName(step.ResultType), step.ResultExpression == null ? Code(step.ResultBehavior ?? step.ResultSelector) : Shape(step.ResultExpression),
-                    Shape(step.ForEachIntoExpression)));
-            }));
-        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature));
-        return Convert.ToHexString(bytes);
+                    Event = WorkflowTypeIdentity.StableName(step.ResumeEventType),
+                    WaitKey = step.StepMetadata.GetValueOrDefault("WaitKey") as string,
+                    Timeout = step.WaitTimeout?.Ticks, Delay = step.DelayDuration?.Ticks,
+                    step.ParallelJoinMode, step.LoopType,
+                    Exception = WorkflowTypeIdentity.StableName(step.ExceptionType),
+                    Fault = WorkflowTypeIdentity.StableName(step.FaultType),
+                    Condition = Shape(step.ConditionExpression),
+                    Outcome = Shape(step.OutcomeExpression),
+                    Completion = Shape(step.ParallelCompletionExpression),
+                    Outcomes = step.OutcomeBranches.Select(OutcomeBranchSignature),
+                    Policy = ErrorPolicySignature(step),
+                    Compensations = (step.StepMetadata.GetValueOrDefault("CompensationActivities") as List<CompensationActivityInfo> ?? [])
+                        .Select(activity => new
+                        {
+                            Activity = WorkflowTypeIdentity.StableName(activity.ActivityType),
+                            Previous = WorkflowTypeIdentity.StableName(activity.PreviousChainActivityType),
+                            Reply = WorkflowTypeIdentity.StableName(activity.ReplyType)
+                        }),
+                    Inputs = step.InputMappings.Select(MappingSignature),
+                    Outputs = step.OutputMappings.Select(MappingSignature),
+                    step.RequestName,
+                    Reply = WorkflowTypeIdentity.StableName(step.ReplyType), step.ReplyToRequest,
+                    Subject = Shape(step.RequestSubjectExpression),
+                    Combiners = step.ParallelCombiners.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                        .Select(pair => new { Path = pair.Key, Type = WorkflowTypeIdentity.StableName(pair.Value) }),
+                    step.ForEachParallel, step.ForEachMaxConcurrency,
+                    Item = WorkflowTypeIdentity.StableName(step.ForEachItem?.ItemType),
+                    ItemCompletion = Shape(step.ForEachCompletionExpression),
+                    Items = Shape(step.ForEachItemsExpression),
+                    ResultType = WorkflowTypeIdentity.StableName(step.ResultType),
+                    StoredResult = WorkflowTypeIdentity.StableName(step.ForEachStoredResultType),
+                    ConditionResult = WorkflowTypeIdentity.StableName(step.ForEachConditionResultType),
+                    Result = Shape(step.ResultExpression), Into = Shape(step.ForEachIntoExpression)
+                });
+            })
+        };
+        var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(manifest);
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
     }
 
-    private string Code(Delegate? behavior) => WorkflowCodeSignature.Of(behavior, _handles);
+    public string Mismatch(WorkflowDefinition definition, string savedHash) =>
+        $"Workflow '{definition.Name}' v{definition.Version} differs from the saved version: " +
+        $"saved structure hash '{savedHash}', loaded structure hash '{StructureHash}'";
 
     private string Shape(System.Linq.Expressions.LambdaExpression? expression) =>
         expression == null ? "" : WorkflowExpressionSignature.Of(expression, _handles);
 
-    private string MappingSignature(PropertyMapping mapping) => string.Join(':',
-        mapping.Direction, mapping.TargetProperty,
-        WorkflowTypeIdentity.StableName(mapping.SourceType),
-        WorkflowTypeIdentity.StableName(mapping.TargetType),
+    private string MappingSignature(PropertyMapping mapping) => System.Text.Json.JsonSerializer.Serialize(new
+    {
+        mapping.Direction, mapping.TargetProperty, mapping.TargetPath,
+        Source = WorkflowTypeIdentity.StableName(mapping.SourceType),
+        Target = WorkflowTypeIdentity.StableName(mapping.TargetType),
         mapping.CompensationSource,
-        Shape(mapping.Expression),
-        mapping.Expression == null ? Code(mapping.SourceFunction) : "",
-        mapping.Expression == null ? Code(mapping.TargetAssignmentFunction) : "");
+        Expression = Shape(mapping.Expression)
+    });
 
     private static string OutcomeBranchSignature(WorkflowOutcomeBranch branch) => string.Join(':',
         branch.IsDefault,

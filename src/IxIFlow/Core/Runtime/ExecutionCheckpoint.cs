@@ -40,8 +40,9 @@ internal sealed class ExecutionCheckpoint
     /// as unsupported rather than read wrongly.
     /// </summary>
     [JsonRequired]
-    public int SchemaVersion { get; set; } = 3;
-    public string DefinitionFingerprint { get; set; } = "";
+    public int SchemaVersion { get; set; } = 4;
+    [JsonRequired]
+    public string StructureHash { get; set; } = "";
     public List<ContinuationState> Continuations { get; set; } = [];
     public List<ParallelJoinState> Joins { get; set; } = [];
     public List<WaitState> Waits { get; set; } = [];
@@ -144,15 +145,23 @@ internal sealed class ExecutionCheckpoint
 
     /// <summary>
     /// Reads a checkpoint whole, or only the trunk a summary read returns: enough for what belongs to the instance,
-    /// such as its definition's fingerprint and its operator stop, but not to run it.
+    /// such as its definition's structure hash and its operator stop, but not to run it.
     /// </summary>
     public static ExecutionCheckpoint ReadTrunk(string json)
     {
-        var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(json);
-        if (checkpoint?.Runtime != "structured-v2" || checkpoint.SchemaVersion != 3)
+        // Check the envelope before interpreting state that belongs to another schema.
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        var version = root.ValueKind == JsonValueKind.Object && root.TryGetProperty(nameof(SchemaVersion), out var savedVersion)
+            ? savedVersion.ToString() : "missing";
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty(nameof(Runtime), out var runtime) || runtime.GetString() != "structured-v2" ||
+            !root.TryGetProperty(nameof(SchemaVersion), out savedVersion) ||
+            savedVersion.ValueKind != JsonValueKind.Number || !savedVersion.TryGetInt32(out var number) || number != 4)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                "Unsupported execution checkpoint version");
-        return checkpoint;
+                $"Unsupported execution checkpoint version '{version}'; expected 4. " +
+                "Saved instances from earlier builds cannot be read; no migration is available");
+        return JsonSerializer.Deserialize<ExecutionCheckpoint>(json)!;
     }
 
     /// <summary>

@@ -35,7 +35,7 @@ public sealed class YamlSampleTests
     [InlineData("failure", 0)]
     [InlineData("retry", 0)]
     [InlineData("reminder", 0)]
-    public async Task YamlAndFluentHaveTheSameSavedFingerprintAndResult(string sample, int initial)
+    public async Task YamlAndFluentHaveTheSameSavedStructureHashAndResult(string sample, int initial)
     {
         var fluent = sample switch
         {
@@ -48,10 +48,10 @@ public sealed class YamlSampleTests
         };
         var first = await Execute(fluent);
         var second = await Execute(YamlDefinitions[sample]());
-        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        Assert.Equal(first.StructureHash, second.StructureHash);
         Assert.Equal(JsonSerializer.Serialize(first.Data), JsonSerializer.Serialize(second.Data));
 
-        async Task<(object Data, string Fingerprint)> Execute(WorkflowDefinition definition)
+        async Task<(object Data, string StructureHash)> Execute(WorkflowDefinition definition)
         {
             var time = new FakeTimeProvider();
             await using var services = SampleTests.Services(time);
@@ -105,7 +105,7 @@ public sealed class YamlSampleTests
                     Assert.Equal(time.GetUtcNow(), reminder.SentAt);
                     break;
             }
-            return (result.WorkflowData!, await Fingerprint(services, result.InstanceId));
+            return (result.WorkflowData!, await StructureHash(services, result.InstanceId));
         }
     }
 
@@ -119,7 +119,7 @@ public sealed class YamlSampleTests
         var second = await Execute(YamlDefinitions["approval"]());
         Assert.Equal(first, second);
 
-        async Task<(string Data, string Fingerprint)> Execute(WorkflowDefinition definition)
+        async Task<(string Data, string StructureHash)> Execute(WorkflowDefinition definition)
         {
             var time = new FakeTimeProvider();
             var gateway = new Gateway();
@@ -159,7 +159,7 @@ public sealed class YamlSampleTests
             Assert.Equal(answer == "timeout", order.Escalated);
             Assert.Equal(answer == "timeout" ? "" : answer == "approve" ? "approved" : "rejected", order.Outcome);
             Assert.Equal(answer == "timeout" ? "" : "manager", order.ApprovedBy);
-            return (JsonSerializer.Serialize(order), await Fingerprint(services, result.InstanceId));
+            return (JsonSerializer.Serialize(order), await StructureHash(services, result.InstanceId));
         }
     }
 
@@ -172,7 +172,7 @@ public sealed class YamlSampleTests
         var second = await Execute(YamlDefinitions["payment"]());
         Assert.Equal(first, second);
 
-        async Task<(string Data, string Fingerprint)> Execute(WorkflowDefinition definition)
+        async Task<(string Data, string StructureHash)> Execute(WorkflowDefinition definition)
         {
             var gateway = new Gateway { FailStock = stockFails };
             var time = new TimerRecordingClock();
@@ -202,15 +202,15 @@ public sealed class YamlSampleTests
             var payment = Assert.IsType<Payment>(result.WorkflowData);
             Assert.Equal(stockFails ? "pay-2" : "pay-1", payment.PaymentReference);
             Assert.Equal("paid", payment.PaymentStatus);
-            return (JsonSerializer.Serialize(payment), await Fingerprint(services, result.InstanceId));
+            return (JsonSerializer.Serialize(payment), await StructureHash(services, result.InstanceId));
         }
     }
 
-    private static async Task<string> Fingerprint(IServiceProvider services, string instanceId)
+    private static async Task<string> StructureHash(IServiceProvider services, string instanceId)
     {
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(instanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
-        return checkpoint.RootElement.GetProperty("DefinitionFingerprint").GetString()!;
+        return checkpoint.RootElement.GetProperty("StructureHash").GetString()!;
     }
 
     private static ServiceProvider Services(Gateway gateway, FakeTimeProvider time)

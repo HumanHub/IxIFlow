@@ -89,7 +89,7 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         var join = new ParallelJoinState { Id = "join", ParentContinuationId = root.Id, StepId = "root/0" };
         var branch = new ContinuationState { Id = "branch", ParentJoinId = join.Id,
             Status = ContinuationStatus.Waiting, Stack = [new ScopePosition { ScopeId = "root/0/branch/0" }] };
-        var checkpoint = new ExecutionCheckpoint { DefinitionFingerprint = "receipt-parts",
+        var checkpoint = new ExecutionCheckpoint { StructureHash = "receipt-parts",
             Continuations = [root, branch], Joins = [join] };
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var original = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first");

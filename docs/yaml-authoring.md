@@ -3,7 +3,7 @@ title: YAML authoring
 description: Every workflow document construct, strict validation and editor schema.
 ---
 
-YAML has a form for every fluent workflow construct. The source generator translates documents into the fluent API; generated and handwritten definitions use the same build rules and executor.
+YAML has a form for every fluent workflow construct. The source generator translates documents into the fluent API; generated and handwritten definitions use the same build rules and executor. Workflow names are required, and identity is the declared `(name, version)`. The parsed document model lowers to the same executable structure as fluent C#, so equivalent definitions have equal `StructureHash` values. Whitespace, comments, mapping key order, descriptions, display names and step labels do not affect the hash. Changed executable structure or expression shape does. Delegate bodies and captured values are excluded; bump the version when behavior changes. Checkpoint schema 4 refuses instances saved by earlier builds without migration.
 
 The `IxIFlow` package automatically includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files. A file such as `reminder.workflow.yaml` generates `<RootNamespace>.Generated.Workflow_reminder_workflow.Build()`. Punctuation in filenames becomes underscores; use distinct filenames. Project-reference applications need analyzer references and package props explicitly, as in [the samples project](../samples/IxIFlow.Samples/IxIFlow.Samples.csproj).
 
@@ -53,7 +53,7 @@ Activity keys come from `[WorkflowActivity]` metadata or fully qualified CLR typ
 
 ## Every step kind
 
-All steps accept `id`; `name` is accepted only in workflow-scope bodies. A name in a catch, saga or saga-handler body fails validation with `SCOPE002`. IDs are unique; omitted IDs derive from structural positions. A name changes the fluent step name and runtime fingerprint; IDs and source coordinates do not.
+All steps accept `id`; `name` is accepted only in workflow-scope bodies. A name in a catch, saga or saga-handler body fails validation with `SCOPE002`. IDs are unique; omitted IDs derive from structural positions. A step name changes presentation only; it does not change the structure hash. IDs and source coordinates are excluded too, except when an identifier supplies an executable reference or wait key.
 
 | `kind` | Members and behavior |
 | --- | --- |
@@ -75,7 +75,7 @@ All steps accept `id`; `name` is accepted only in workflow-scope bodies. A name 
 | `waitFor` | Required `key` and `event`; plain event wait or the paired request's reply wait |
 | `suspend` | Required `event`, optional `reason` key (step ID fallback) |
 | `invokeWorkflow` | `workflow: { name, version }`, `input`, `output`, optional `cancelWithParent` (true by default); the source generator requires an explicit `version` because it registers only `name@version` references |
-| `invokeWorkflowType` | `workflowType`, optional `dataType` fallback, mappings and `cancelWithParent`; resolves an `IWorkflow<T>` class registered with `services.RegisterWorkflow<TWorkflow>()` before building the service provider |
+| `invokeWorkflowType` | `workflowType`, optional `dataType` fallback, mappings and `cancelWithParent`; the generator reads the class's `[Workflow("Name", Version = n)]` identity; register the class with `services.RegisterWorkflow<TWorkflow>()` before building the service provider |
 
 The schema describes possible nodes; shared builder rules also enforce where constructs are legal. Saga bodies accept activities/references, requests, waits and outcomes. Saga handlers accept ordinary activities/references and `waitFor`; catch bodies exclude requests, delays, results and outcomes. Timeout paths and result-producing lists retain the fluent API's scope restrictions. Use `name` for a step label; descriptions belong to the workflow.
 

@@ -132,7 +132,7 @@ public sealed class GeneratorRegressionTests
 
     [Fact]
     [Trait("Spec", "F-06")]
-    public async Task TemplatesDefaultsAndAssetsMatchFluentFingerprintAndResults()
+    public async Task TemplatesDefaultsAndAssetsMatchFluentStructureHashAndResults()
     {
         var yaml = Header + """
               - kind: stepRef
@@ -174,7 +174,7 @@ public sealed class GeneratorRegressionTests
         var first = await GeneratedWorkflowTests.Execute(fluent, new() { Value = 4 });
         var second = await GeneratedWorkflowTests.Execute(generated, new() { Value = 4 });
         Assert.Equal(15, second.Data.Result);
-        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        Assert.Equal(first.StructureHash, second.StructureHash);
         Assert.Equal(first.Data.Result, second.Data.Result);
     }
 
@@ -184,7 +184,7 @@ public sealed class GeneratorRegressionTests
     [InlineData("any")]
     [InlineData("conditionally")]
     [Trait("Spec", "F-06")]
-    public async Task ForEachMatchesFluentFingerprintAndResults(string join)
+    public async Task ForEachMatchesFluentStructureHashAndResults(string join)
     {
         var yaml = Header + "  - kind: forEach\n    id: items\n    items: {path: workflow.Values}\n    as: number\n" +
             (join == "sequential" ? "" : "    parallel: {maxConcurrency: " + (join == "all" ? 2 : 1) + ", join: " +
@@ -211,7 +211,7 @@ public sealed class GeneratorRegressionTests
         Assert.Equal(GeneratedWorkflowTests.Shape(fluent), GeneratedWorkflowTests.Shape(generated));
         var first = await GeneratedWorkflowTests.Execute(fluent, new() { Values = [2, 3, 2] });
         var second = await GeneratedWorkflowTests.Execute(generated, new() { Values = [2, 3, 2] });
-        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        Assert.Equal(first.StructureHash, second.StructureHash);
         Assert.Equal(first.Data.Results.Select(item => (item.Status, item.Value)),
             second.Data.Results.Select(item => (item.Status, item.Value)));
         var expected = join is "sequential" or "all" ? new[] { 4, 6, 4 } : [4];
@@ -263,7 +263,7 @@ public sealed class GeneratorRegressionTests
     [InlineData(false)]
     [InlineData(true)]
     [Trait("Spec", "F-06")]
-    public async Task ActivityDefaultsAndOverridesMatchFluentFingerprintAndResults(bool overridden)
+    public async Task ActivityDefaultsAndOverridesMatchFluentStructureHashAndResults(bool overridden)
     {
         var yaml = Header + "  - {kind: activityRef, id: multiply, ref: multiply}\nactivities:\n  multiply:\n" +
             "    activity: IxIFlow.Generators.Tests.Multiply\n    defaults: {Factor: 3}\n    input:\n" +
@@ -282,7 +282,7 @@ public sealed class GeneratorRegressionTests
         var first = await GeneratedWorkflowTests.Execute(fluent, new() { Value = 4 });
         var second = await GeneratedWorkflowTests.Execute(generated, new() { Value = 4 });
         Assert.Equal(overridden ? 20 : 12, second.Data.Result);
-        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        Assert.Equal(first.StructureHash, second.StructureHash);
         Assert.Equal(first.Data.Result, second.Data.Result);
     }
 

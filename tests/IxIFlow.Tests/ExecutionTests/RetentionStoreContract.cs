@@ -150,7 +150,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var instance = Instance(WorkflowStatus.Suspended);
         instance.ExecutionStateJson = JsonSerializer.Serialize(new ExecutionCheckpoint
         {
-            DefinitionFingerprint = "retention", Continuations = [new ContinuationState
+            StructureHash = "retention", Continuations = [new ContinuationState
                 { Id = "branch", Status = ContinuationStatus.Waiting, Stack = [new ScopePosition { ScopeId = "root" }] }]
         });
         var first = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0, openedWaits:

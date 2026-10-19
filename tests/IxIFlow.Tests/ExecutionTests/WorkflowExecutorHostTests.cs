@@ -143,7 +143,7 @@ public sealed class WorkflowExecutorHostTests
         };
         var checkpoint = new ExecutionCheckpoint
         {
-            DefinitionFingerprint = new WorkflowScopeCatalog(definition).Fingerprint,
+            StructureHash = new WorkflowScopeCatalog(definition).StructureHash,
             Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
         };
         var executor = new WorkflowExecutor(services, services.GetRequiredService<IActivityExecutor>(), time);

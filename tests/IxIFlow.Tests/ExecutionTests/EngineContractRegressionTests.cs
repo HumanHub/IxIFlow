@@ -15,46 +15,17 @@ public class EngineContractRegressionTests
 {
     [Trait("Feature", "registration")]
     [Fact]
-    public async Task UnnamedDefinitionsHaveDistinctStableRecoveryNames()
+    public void WorkflowWithoutANameIsRefusedWhenBuilt()
     {
-        var repository = new InMemoryWorkflowStateRepository();
-        WorkflowDefinition Immediate() => Workflow.Create<RegressionData>()
-            .Step<MarkChildActivity>().Build();
-        WorkflowDefinition Waiting() => Workflow.Create<RegressionData>()
-            .Step<MarkChildActivity>()
-            .WaitFor<RegressionApprovalEvent>("approval").Build();
-
-        string waitingId;
-        string waitingName;
-        using (var firstProvider = new ServiceCollection().AddLogging().AddIxIFlow().Services
-                   .AddSingleton<IWorkflowStateRepository>(repository).BuildServiceProvider())
-        {
-            var engine = firstProvider.GetRequiredService<IWorkflowClient>();
-            var first = await engine.RunAsync(Immediate(), new RegressionData());
-            var waiting = await engine.RunAsync(Waiting(), new RegressionData());
-            Assert.Equal(WorkflowExecutionStatus.Success, first.Status);
-            Assert.Equal(WorkflowExecutionStatus.Suspended, waiting.Status);
-            var savedFirst = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
-            var savedWaiting = (await repository.GetWorkflowInstanceAsync(waiting.InstanceId))!;
-            Assert.False(string.IsNullOrWhiteSpace(savedFirst.WorkflowName));
-            Assert.NotEqual(savedFirst.WorkflowName, savedWaiting.WorkflowName);
-            waitingId = waiting.InstanceId;
-            waitingName = savedWaiting.WorkflowName;
-        }
-
-        using var secondProvider = new ServiceCollection().AddLogging().AddIxIFlow().Services
-            .AddSingleton<IWorkflowStateRepository>(repository).BuildServiceProvider();
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
-            .RegisterWorkflowAsync(Waiting());
-        var recovered = await secondProvider.GetRequiredService<IWorkflowClient>()
-            .ResumeAsync(waitingId, "approval", new RegressionApprovalEvent());
-        Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
-        Assert.Equal(waitingName, (await repository.GetWorkflowInstanceAsync(waitingId))!.WorkflowName);
+        var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<RegressionData>("")
+            .Step<MarkChildActivity>().Build());
+        Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
+        Assert.Contains("name is required", error.Message);
     }
 
     [Trait("Feature", "registration")]
     [Fact]
-    public void DefinitionFingerprintIncludesOutcomeLabelsAndErrorPolicies()
+    public void StructureHashIncludesOutcomeLabelsAndErrorPolicies()
     {
         WorkflowDefinition Outcome(string label) => new()
         {
@@ -129,17 +100,17 @@ public class EngineContractRegressionTests
             ]
         };
 
-        Assert.NotEqual(new WorkflowScopeCatalog(Outcome("approve")).Fingerprint,
-            new WorkflowScopeCatalog(Outcome("reject")).Fingerprint);
-        Assert.NotEqual(new WorkflowScopeCatalog(Policy(StepErrorAction.Retry)).Fingerprint,
-            new WorkflowScopeCatalog(Policy(StepErrorAction.Terminate)).Fingerprint);
-        Assert.NotEqual(new WorkflowScopeCatalog(SagaPolicy(SagaContinuationAction.Retry)).Fingerprint,
-            new WorkflowScopeCatalog(SagaPolicy(SagaContinuationAction.Terminate)).Fingerprint);
+        Assert.NotEqual(new WorkflowScopeCatalog(Outcome("approve")).StructureHash,
+            new WorkflowScopeCatalog(Outcome("reject")).StructureHash);
+        Assert.NotEqual(new WorkflowScopeCatalog(Policy(StepErrorAction.Retry)).StructureHash,
+            new WorkflowScopeCatalog(Policy(StepErrorAction.Terminate)).StructureHash);
+        Assert.NotEqual(new WorkflowScopeCatalog(SagaPolicy(SagaContinuationAction.Retry)).StructureHash,
+            new WorkflowScopeCatalog(SagaPolicy(SagaContinuationAction.Terminate)).StructureHash);
     }
 
     [Trait("Feature", "registration")]
     [Fact]
-    public void DefinitionFingerprintChangesWhenOnlyConditionChanges()
+    public void StructureHashChangesWhenOnlyConditionChanges()
     {
         var always = Workflow.Create<RegressionData>("ChangedCondition")
             .Step<MarkChildActivity>()
@@ -150,13 +121,13 @@ public class EngineContractRegressionTests
             .If(ctx => false, then => then.Step<MarkChildActivity>())
             .Build();
 
-        Assert.NotEqual(new WorkflowScopeCatalog(always).Fingerprint,
-            new WorkflowScopeCatalog(never).Fingerprint);
+        Assert.NotEqual(new WorkflowScopeCatalog(always).StructureHash,
+            new WorkflowScopeCatalog(never).StructureHash);
     }
 
     [Trait("Feature", "registration")]
     [Fact]
-    public void DefinitionFingerprintChangesWhenInputMappingChanges()
+    public void StructureHashChangesWhenInputMappingChanges()
     {
         var fromData = Workflow.Create<RegressionData>("ChangedMapping")
             .Step<MarkChildActivity>(step => step
@@ -167,39 +138,39 @@ public class EngineContractRegressionTests
                 .Input(activity => activity.Value).From(ctx => "fixed"))
             .Build();
 
-        Assert.NotEqual(new WorkflowScopeCatalog(fromData).Fingerprint,
-            new WorkflowScopeCatalog(fromLiteral).Fingerprint);
+        Assert.NotEqual(new WorkflowScopeCatalog(fromData).StructureHash,
+            new WorkflowScopeCatalog(fromLiteral).StructureHash);
     }
 
     [Trait("Feature", "registration")]
     [Fact]
-    public void DefinitionFingerprintChangesWhenCapturedConditionValueChanges()
+    public void StructureHashIsUnchangedWhenCapturedConditionValueChanges()
     {
         WorkflowDefinition Build(bool allow) => Workflow.Create<RegressionData>("CapturedCondition")
             .Step<MarkChildActivity>()
             .If(ctx => allow, then => then.Step<MarkChildActivity>())
             .Build();
 
-        Assert.NotEqual(new WorkflowScopeCatalog(Build(true)).Fingerprint,
-            new WorkflowScopeCatalog(Build(false)).Fingerprint);
+        Assert.Equal(new WorkflowScopeCatalog(Build(true)).StructureHash,
+            new WorkflowScopeCatalog(Build(false)).StructureHash);
     }
 
     [Trait("Feature", "registration")]
     [Fact]
-    public void DefinitionFingerprintChangesWhenCapturedMappingValueChanges()
+    public void StructureHashIsUnchangedWhenCapturedMappingValueChanges()
     {
         WorkflowDefinition Build(string value) => Workflow.Create<RegressionData>("CapturedMapping")
             .Step<MarkChildActivity>(step => step
                 .Input(activity => activity.Value).From(ctx => value))
             .Build();
 
-        Assert.NotEqual(new WorkflowScopeCatalog(Build("one")).Fingerprint,
-            new WorkflowScopeCatalog(Build("two")).Fingerprint);
+        Assert.Equal(new WorkflowScopeCatalog(Build("one")).StructureHash,
+            new WorkflowScopeCatalog(Build("two")).StructureHash);
     }
 
     [Trait("Feature", "registration")]
     [Fact]
-    public void DefinitionFingerprintChangesWhenCapturedObjectStateChanges()
+    public void StructureHashIsUnchangedWhenCapturedObjectStateChanges()
     {
         WorkflowDefinition Build(bool enabled)
         {
@@ -211,23 +182,21 @@ public class EngineContractRegressionTests
                 .Build();
         }
 
-        Assert.NotEqual(new WorkflowScopeCatalog(Build(true)).Fingerprint,
-            new WorkflowScopeCatalog(Build(false)).Fingerprint);
+        Assert.Equal(new WorkflowScopeCatalog(Build(true)).StructureHash,
+            new WorkflowScopeCatalog(Build(false)).StructureHash);
     }
 
     [Trait("Feature", "registration")]
     [Fact]
-    public void DurableConditionRejectsAnUnfingerprintableCapture()
+    public void DurableConditionAcceptsAnObjectCapture()
     {
         using var source = new CancellationTokenSource();
-
-        var error = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () =>
-            Workflow.Create<RegressionData>("UnsafeCapture")
-                .Step<MarkChildActivity>()
-                .If(ctx => source.IsCancellationRequested,
-                    then => then.Step<MarkChildActivity>()));
-
-        Assert.Contains("cannot be fingerprinted", error.Message);
+        WorkflowDefinition Define() => Workflow.Create<RegressionData>("Captured cancellation")
+            .Step<MarkChildActivity>()
+            .If(ctx => source.IsCancellationRequested, then => then.Step<MarkChildActivity>()).Build();
+        var before = new WorkflowScopeCatalog(Define()).StructureHash;
+        source.Cancel();
+        Assert.Equal(before, new WorkflowScopeCatalog(Define()).StructureHash);
     }
 
     private sealed class DecisionRule
@@ -883,7 +852,11 @@ public class EngineContractRegressionTests
         var original = new WorkflowDefinition { Name = "Order", Version = 1, Description = "published" };
         await registry.RegisterWorkflowAsync(original);
 
-        var replacement = new WorkflowDefinition { Name = "Order", Version = 1, Description = "different graph" };
+        var reworded = new WorkflowDefinition { Name = "Order", Version = 1, Description = "reworded" };
+        await registry.RegisterWorkflowAsync(reworded);
+        Assert.Same(original, await registry.GetWorkflowDefinitionAsync("Order", 1));
+        Assert.Equal("published", original.Description);
+        var replacement = Workflow.Create<RegressionData>("Order", 1).Step<MarkChildActivity>().Build();
         await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest,
             () => registry.RegisterWorkflowAsync(replacement));
 

@@ -24,7 +24,8 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
             ["host"] = settings.Id.ToString("D")
         };
         foreach (var definition in await registry.GetWorkflowDefinitionsAsync())
-            capabilities.Add($"workflow:{definition.Name}@{definition.Version}", new WorkflowScopeCatalog(definition).Fingerprint);
+            if (await registry.GetWorkflowStructureHashAsync(definition.Name, definition.Version) is { } hash)
+                capabilities.Add($"workflow:{definition.Name}@{definition.Version}", hash);
         return capabilities;
     }
 

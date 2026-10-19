@@ -134,8 +134,8 @@ public sealed partial class WorkflowHost
                     "The registered workflow definition is unavailable");
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
-            if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
-                return Rejected(instanceId, "The registered workflow definition differs from the saved version");
+            if (checkpoint.StructureHash != scopes.StructureHash)
+                return Rejected(instanceId, scopes.Mismatch(definition, checkpoint.StructureHash));
             if (checkpoint.OperatorStop is { } stop)
                 return Rejected(instanceId, stop.Describe());
             var continuation = checkpoint.Continuations.SingleOrDefault(item =>
@@ -200,9 +200,9 @@ public sealed partial class WorkflowHost
                     "The registered workflow definition is unavailable");
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
-            if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
+            if (checkpoint.StructureHash != scopes.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    "The registered workflow definition differs from the saved version");
+                    scopes.Mismatch(definition, checkpoint.StructureHash));
             var pendingActivities = new List<PendingActivityInfo>();
             foreach (var continuation in checkpoint.Continuations.Where(item =>
                          item.Status == ContinuationStatus.WaitingResolution &&
@@ -253,9 +253,9 @@ public sealed partial class WorkflowHost
                     "The registered workflow definition is unavailable");
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
-            if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
+            if (checkpoint.StructureHash != scopes.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    "The registered workflow definition differs from the saved version");
+                    scopes.Mismatch(definition, checkpoint.StructureHash));
             return ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
         }
 
@@ -406,7 +406,6 @@ public sealed partial class WorkflowHost
             NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now)
         {
             WorkflowDefinitionValidator.Validate(definition);
-            WorkflowDefinitionIdentity.AssignImplicitName(definition);
             var instance = new WorkflowInstance
             {
                 InstanceId = options.InstanceId ?? Guid.NewGuid().ToString("N"),
@@ -425,7 +424,7 @@ public sealed partial class WorkflowHost
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = new ExecutionCheckpoint
             {
-                DefinitionFingerprint = scopes.Fingerprint,
+                StructureHash = scopes.StructureHash,
                 // The store stamps the execution deadline when the start is committed (D-35).
                 ExecutionTimeout = options.ExecutionTimeout,
                 ExecutionTimerId = options.ExecutionTimeout != null ? Guid.NewGuid().ToString("N") : null,
@@ -567,6 +566,16 @@ public sealed partial class WorkflowHost
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null)
                 await RefuseRemovedAsync(instanceId);
+            // Even an idle recovery must refuse a different loaded structure before answering
+            // from saved positions. Read the schema envelope before interpreting its state.
+            var checkedCheckpoint = HasStructuredCheckpoint(instance)
+                ? ExecutionCheckpoint.Read(instance.ExecutionStateJson) : null;
+            var checkedDefinition = checkedCheckpoint == null ? null
+                : await registry.GetWorkflowDefinitionAsync(instance!.WorkflowName, instance.WorkflowVersion);
+            var checkedScopes = checkedDefinition == null ? null
+                : WorkflowDefinitionValidator.ForExecution(checkedDefinition);
+            if (checkedScopes != null && checkedCheckpoint!.StructureHash != checkedScopes.StructureHash)
+                return Rejected(instanceId, checkedScopes.Mismatch(checkedDefinition!, checkedCheckpoint.StructureHash));
             // Recovery repeats a finished instance's saved result, as starting it again does.
             if (!release && !forEvent && instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
                 return ReadResult(instance);
@@ -580,7 +589,7 @@ public sealed partial class WorkflowHost
                     : Rejected(instanceId, release
                         ? "The workflow instance is not stopped for an operator"
                         : "The workflow instance has no interrupted execution to recover");
-            var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+            var checkpoint = checkedCheckpoint!;
             if (release && checkpoint.OperatorStop == null)
                 return Rejected(instanceId, "The workflow instance is not stopped for an operator");
             // A request already applied is being unwound; only a new one changes what the run does.
@@ -592,12 +601,10 @@ public sealed partial class WorkflowHost
             if (checkpoint.OperatorStop is { } held && !release && !newCancellation)
                 return Stopped(instance, held);
 
-            var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion);
+            var definition = checkedDefinition;
             if (definition == null)
                 return Rejected(instanceId, "The registered workflow definition is unavailable");
-            var scopes = WorkflowDefinitionValidator.ForExecution(definition);
-            if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
-                return Rejected(instanceId, "The registered workflow definition differs from the saved version");
+            var scopes = checkedScopes!;
             // Ownership comes before the workflow data is read, so an instance whose data or code kills
             // its host is still counted by the next claim, and quarantined (B-08).
             await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
@@ -676,10 +683,12 @@ public sealed partial class WorkflowHost
             WorkflowScopeCatalog scopes)
         {
             var checkpoint = ExecutionCheckpoint.ReadTrunk(existing.ExecutionStateJson);
-            if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version ||
-                checkpoint.DefinitionFingerprint != scopes.Fingerprint)
+            if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"Workflow instance '{existing.InstanceId}' belongs to a different definition");
+            if (checkpoint.StructureHash != scopes.StructureHash)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    scopes.Mismatch(definition, checkpoint.StructureHash));
             // A stopped instance is answered without reading its data, which may be what stopped it.
             return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : ExistingResult(existing);
         }

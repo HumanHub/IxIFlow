@@ -68,11 +68,11 @@ public sealed class WaitDefaultPayloadTests : IClassFixture<SqliteTestDatabase<W
     }
 
     [Fact]
-    public void DefaultPayloadsDoNotChangeTheFingerprint()
+    public void DefaultPayloadsDoNotChangeTheStructureHash()
     {
-        var absent = new WorkflowScopeCatalog(Define(null)).Fingerprint;
-        Assert.Equal(absent, new WorkflowScopeCatalog(Define(new Approval { Approved = true })).Fingerprint);
-        Assert.Equal(absent, new WorkflowScopeCatalog(Define(new Approval { Approved = false })).Fingerprint);
+        var absent = new WorkflowScopeCatalog(Define(null)).StructureHash;
+        Assert.Equal(absent, new WorkflowScopeCatalog(Define(new Approval { Approved = true })).StructureHash);
+        Assert.Equal(absent, new WorkflowScopeCatalog(Define(new Approval { Approved = false })).StructureHash);
     }
 
     [Fact]

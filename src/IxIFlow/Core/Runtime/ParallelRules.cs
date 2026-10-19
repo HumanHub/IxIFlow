@@ -139,6 +139,6 @@ internal static class ParallelRules
         }
     }
 
-    /// <summary>The combiners a data type declares where a join uses them, for the fingerprint.</summary>
+    /// <summary>The combiners a data type declares where a join uses them, for the structure hash.</summary>
     public static string CombinerSignature(Type? dataType) => BranchData.CombinerSignature(dataType);
 }

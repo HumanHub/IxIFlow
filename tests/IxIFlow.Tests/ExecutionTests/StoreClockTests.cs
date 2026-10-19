@@ -835,7 +835,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         };
         var checkpoint = new ExecutionCheckpoint
         {
-            DefinitionFingerprint = new WorkflowScopeCatalog(definition).Fingerprint,
+            StructureHash = new WorkflowScopeCatalog(definition).StructureHash,
             ExecutionTimeout = executionTimeout,
             ExecutionTimerId = executionTimeout != null ? "execution" : null,
             ExecutionDeadlineUtc = now + executionTimeout,
