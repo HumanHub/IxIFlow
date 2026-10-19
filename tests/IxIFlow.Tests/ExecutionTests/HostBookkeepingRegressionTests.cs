@@ -39,7 +39,7 @@ public sealed class HostBookkeepingRegressionTests
                     (await host.Endpoint.CheckpointAsync(new(run.Identity, first))).Kind);
             }
 
-            var receipt = Receipts(host).Values.Cast<object>().Single();
+            var receipt = Receipts(host).Single();
             Assert.Equal(reply.Revision, Field<WorkflowInstance>(receipt, "Instance").Revision);
             Assert.Equal(run.Instance.WorkflowDataJson, Field<WorkflowInstance>(receipt, "Instance").WorkflowDataJson);
             // With tracing disabled, no receipt collection may grow with the number of Acks.
@@ -71,7 +71,7 @@ public sealed class HostBookkeepingRegressionTests
                 Assert.Equal(CheckpointReplyKind.Ack,
                     (await host.Endpoint.CheckpointAsync(new(run.Identity, commit))).Kind);
 
-        var receipt = Receipts(host).Values.Cast<object>().Single();
+        var receipt = Receipts(host).Single();
         Assert.Equal(["0", "1"], Field<List<ExecutionTraceEntry>>(receipt, "Trace").Select(entry => entry.TraceId));
         Assert.Equal(run.Instance.Revision, Field<WorkflowInstance>(receipt, "Instance").Revision);
         Assert.Equal(run.Instance.WorkflowDataJson, Field<WorkflowInstance>(receipt, "Instance").WorkflowDataJson);
@@ -178,7 +178,8 @@ public sealed class HostBookkeepingRegressionTests
 
     private static T Field<T>(object target, string name) =>
         (T)target.GetType().GetField(name, Fields)!.GetValue(target)!;
-    private static IDictionary Receipts(Harness host) => Field<IDictionary>(host.Operations, "_receipts");
+    private static IEnumerable<object> Receipts(Harness host) => Field<IDictionary>(host.Operations, "_assignments")
+        .Values.Cast<object>().Select(run => Field<object>(run, "Receipt"));
 
     private sealed class Harness : IAsyncDisposable
     {
