@@ -34,9 +34,8 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
     public IParallelBuilder<TWorkflowData, TPreviousStepData> WaitConditionally(
         Expression<Func<TWorkflowData, bool>> completeWhenExpression)
     {
-        var expression = WorkflowExpressionSignature.Checked(completeWhenExpression);
         var result = WaitConditionally(completeWhenExpression.Compile());
-        _step.ParallelCompletionExpression = expression;
+        _step.ParallelCompletionExpression = completeWhenExpression;
         return result;
     }
 

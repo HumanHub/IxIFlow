@@ -36,6 +36,9 @@ internal sealed class WorkflowExecutor
         CancellationToken cancellationToken)
     {
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
+        if (checkpoint.StructureHash != scopes.StructureHash)
+            return await StopForOperatorAsync(definition, instance, checkpoint, workflowData, host,
+                OperatorStopKind.Verification, scopes.Mismatch(definition, checkpoint.StructureHash));
         checkpoint.Trace.Configure(instance, checkpoint, host.Limits, _time, scopes);
         checkpoint.ResultTrace ??= [];
         // Everything logged during the run carries its instance (G-03).
@@ -70,9 +73,6 @@ internal sealed class WorkflowExecutor
         var drainRequested = host.Drain.CanBeCanceled ? drainWake.Task : null;
         try
         {
-            if (checkpoint.StructureHash != scopes.StructureHash)
-                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    scopes.Mismatch(definition, checkpoint.StructureHash));
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -719,7 +719,8 @@ internal sealed class WorkflowExecutor
         // The stop saves the last committed checkpoint plus a small marker, so it is not held to the
         // limit; otherwise a checkpoint just under the limit could never stop.
         await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData,
-            WorkflowDefinitionValidator.ForExecution(definition), Now, preserveSavedWorkflowData: true, enforceLimit: false);
+            WorkflowDefinitionValidator.ForExecution(definition), Now, preserveSavedWorkflowData: true, enforceLimit: false,
+            preserveContinuationState: true);
         return new WorkflowExecutionResult
         {
             InstanceId = instance.InstanceId,

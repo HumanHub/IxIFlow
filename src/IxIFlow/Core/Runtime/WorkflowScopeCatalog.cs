@@ -179,8 +179,8 @@ internal sealed class WorkflowScopeCatalog
                             Previous = WorkflowTypeIdentity.StableName(activity.PreviousChainActivityType),
                             Reply = WorkflowTypeIdentity.StableName(activity.ReplyType)
                         }),
-                    Inputs = step.InputMappings.Select(MappingSignature).Order(StringComparer.Ordinal),
-                    Outputs = step.OutputMappings.Select(MappingSignature).Order(StringComparer.Ordinal),
+                    Inputs = step.InputMappings.Select(MappingSignature),
+                    Outputs = step.OutputMappings.Select(MappingSignature),
                     step.RequestName,
                     Reply = WorkflowTypeIdentity.StableName(step.ReplyType), step.ReplyToRequest,
                     Subject = Shape(step.RequestSubjectExpression),

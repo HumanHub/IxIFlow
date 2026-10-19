@@ -94,9 +94,8 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         Expression<Func<WorkflowContext<TWorkflowData>, string>>? subjectExpression = null)
         where TActivity : class, IAsyncActivity
     {
-        var expression = subjectExpression == null ? null : WorkflowExpressionSignature.Checked(subjectExpression);
         var result = Request<TActivity>(name, configure, subjectExpression?.Compile());
-        _steps[^1].RequestSubjectExpression = expression;
+        _steps[^1].RequestSubjectExpression = subjectExpression;
         return result;
     }
 
@@ -196,9 +195,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null)
         where TActivity : class, IAsyncActivity
     {
-        var expression = subjectExpression == null ? null : WorkflowExpressionSignature.Checked(subjectExpression);
         var result = Request<TActivity>(name, configure, subjectExpression?.Compile());
-        _steps[^1].RequestSubjectExpression = expression;
+        _steps[^1].RequestSubjectExpression = subjectExpression;
         return result;
     }
 
@@ -331,7 +329,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             CompiledCondition = conditionWrapper,
-            ConditionExpression = Core.Runtime.WorkflowExpressionSignature.Checked(condition),
+            ConditionExpression = condition,
             Order = _steps.Count
         };
 
@@ -446,9 +444,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
         where TEvent : class
     {
-        var expression = matchesExpression == null ? null : WorkflowExpressionSignature.Checked(matchesExpression);
         var result = WaitFor<TEvent>(key, matchesExpression?.Compile(), configure);
-        _steps[^1].ConditionExpression = expression;
+        _steps[^1].ConditionExpression = matchesExpression;
         return result;
     }
 
@@ -477,9 +474,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
         where TResumeEvent : class
     {
-        var expression = resumeExpression == null ? null : WorkflowExpressionSignature.Checked(resumeExpression);
         var result = Suspend<TResumeEvent>(suspendReason, resumeExpression?.Compile(), configure);
-        _steps[^1].ConditionExpression = expression;
+        _steps[^1].ConditionExpression = resumeExpression;
         return result;
     }
 
@@ -549,9 +545,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression)
     {
-        var expression = WorkflowExpressionSignature.Checked(conditionExpression);
         var result = DoWhile(configure, conditionExpression.Compile());
-        _steps[^1].ConditionExpression = expression;
+        _steps[^1].ConditionExpression = conditionExpression;
         return result;
     }
 
@@ -596,9 +591,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
-        var expression = WorkflowExpressionSignature.Checked(conditionExpression);
         var result = WhileDo(conditionExpression.Compile(), configure);
-        _steps[^1].ConditionExpression = expression;
+        _steps[^1].ConditionExpression = conditionExpression;
         return result;
     }
 
@@ -644,9 +638,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         Action<IForEachSetup<TWorkflowData>>? setup = null)
     {
         ArgumentNullException.ThrowIfNull(itemsExpression);
-        var expression = Core.Runtime.WorkflowExpressionSignature.Checked(itemsExpression);
         var result = ForEach(itemsExpression.Compile(), body, setup);
-        _steps[^1].ForEachItemsExpression = expression;
+        _steps[^1].ForEachItemsExpression = itemsExpression;
         return result;
     }
 
@@ -655,9 +648,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult>> valueExpression)
     {
         ArgumentNullException.ThrowIfNull(valueExpression);
-        var expression = Core.Runtime.WorkflowExpressionSignature.Checked(valueExpression);
         var result = Result(valueExpression.Compile());
-        _steps[^1].ResultExpression = expression;
+        _steps[^1].ResultExpression = valueExpression;
         return result;
     }
 

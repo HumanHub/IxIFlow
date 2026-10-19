@@ -902,9 +902,18 @@ public interface IWorkflowVersionRegistry
 }
 
 /// <summary>
+/// Exposes the structure hash recorded when a workflow was registered. Typed child resolution
+/// requires this contract so it can verify a DI-built definition against the published structure.
+/// </summary>
+public interface IWorkflowStructureRegistry : IWorkflowVersionRegistry
+{
+    Task<string?> GetWorkflowStructureHashAsync(string name, int version);
+}
+
+/// <summary>
 ///     Concrete implementation of workflow version registry
 /// </summary>
-public class WorkflowVersionRegistry : IWorkflowVersionRegistry
+public class WorkflowVersionRegistry : IWorkflowStructureRegistry
 {
     private sealed record Registration(WorkflowDefinition Definition, string StructureHash);
     private readonly ConcurrentDictionary<(string Name, int Version), Registration> _workflows = new();
@@ -943,6 +952,12 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
         var key = (name, version);
         _workflows.TryGetValue(key, out var registration);
         return Task.FromResult(registration?.Definition);
+    }
+
+    public Task<string?> GetWorkflowStructureHashAsync(string name, int version)
+    {
+        _workflows.TryGetValue((name, version), out var registration);
+        return Task.FromResult(registration?.StructureHash);
     }
 
     public Task DeactivateWorkflowVersionAsync(string name, int version)
