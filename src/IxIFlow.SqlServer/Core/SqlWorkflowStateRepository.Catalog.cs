@@ -41,6 +41,16 @@ public sealed partial class SqlWorkflowStateRepository
         Statement.CatalogVersions => """
             SELECT MetadataJson AS MetadataJson, State AS State FROM dbo.IxIFlowWorkflowVersions
             """,
+        Statement.CatalogNamedVersions => """
+            SELECT MetadataJson AS MetadataJson, State AS State FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name
+            """,
+        Statement.CatalogVersion => """
+            SELECT MetadataJson AS MetadataJson, State AS State FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name AND Version=@Version
+            """,
+        Statement.CatalogUnfinishedCallers => """
+            SELECT WorkflowName AS Name, CAST(JSON_VALUE(StateJson, '$.WorkflowVersion') AS int) AS Version FROM dbo.IxIFlowWorkflowInstances
+            WHERE WorkflowName IN @Names AND Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
+            """,
         Statement.CatalogVersionInsert => """
             INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson)
             """,
@@ -51,16 +61,19 @@ public sealed partial class SqlWorkflowStateRepository
             SELECT Name AS Name, Version AS Version, Kind AS Kind, Source AS Source, Revision AS Revision FROM dbo.IxIFlowDefinitions WHERE Name=@Name AND Version=@Version
             """,
         Statement.CatalogDefinitionInsert => """
-            INSERT INTO dbo.IxIFlowDefinitions (Name, Version, Kind, Source, Revision, State) VALUES (@Name, @Version, @Kind, @Source, @Revision, 'Draft')
+            INSERT INTO dbo.IxIFlowDefinitions (Name, Version, Kind, Source, Revision, State) SELECT @Name, @Version, @Kind, @Source, @Revision, 'Draft' WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDefinitions WITH (UPDLOCK,HOLDLOCK) WHERE Name=@Name AND Version=@Version)
             """,
         Statement.CatalogDefinitionUpdate => """
-            UPDATE dbo.IxIFlowDefinitions SET Kind=@Kind, Source=@Source, Revision=@Revision WHERE Name=@Name AND Version=@Version
+            UPDATE dbo.IxIFlowDefinitions SET Kind=@Kind, Source=@Source, Revision=@Revision WHERE Name=@Name AND Version=@Version AND Revision=@ExpectedRevision
             """,
         Statement.CatalogDefinitionDelete => """
             DELETE FROM dbo.IxIFlowDefinitions WHERE Name=@Name AND Version=@Version AND Revision=@Revision
             """,
         Statement.ArtifactPut => """
-            INSERT INTO dbo.IxIFlowArtifacts (Digest, Kind, Content, CreatedAtUtc) SELECT @Digest,@Kind,@Content,@Now WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowArtifacts WITH (UPDLOCK,HOLDLOCK) WHERE Digest=@Digest)
+            MERGE dbo.IxIFlowArtifacts WITH (HOLDLOCK) AS target
+            USING (SELECT @Digest AS Digest) AS source ON target.Digest=source.Digest
+            WHEN MATCHED THEN UPDATE SET CreatedAtUtc=@Now
+            WHEN NOT MATCHED THEN INSERT (Digest, Kind, Content, CreatedAtUtc) VALUES (@Digest,@Kind,@Content,@Now);
             """,
         Statement.ArtifactRead => """
             SELECT Content FROM dbo.IxIFlowArtifacts WHERE Digest=@Digest
@@ -71,8 +84,11 @@ public sealed partial class SqlWorkflowStateRepository
         Statement.ArtifactDelete => """
             DELETE FROM dbo.IxIFlowArtifacts WHERE Digest=@Digest
             """,
+        Statement.ArtifactDeleteOld => """
+            DELETE FROM dbo.IxIFlowArtifacts WHERE Digest=@Digest AND CreatedAtUtc < @Cutoff
+            """,
         Statement.ArtifactCandidates => """
-            SELECT Digest FROM dbo.IxIFlowArtifacts WHERE CreatedAtUtc < @Cutoff ORDER BY CreatedAtUtc, Digest
+            SELECT TOP (@Limit) Digest FROM dbo.IxIFlowArtifacts WHERE CreatedAtUtc < @Cutoff AND Digest NOT IN (SELECT value FROM OPENJSON(@References)) ORDER BY CreatedAtUtc, Digest
             """,
         _ => null
     };

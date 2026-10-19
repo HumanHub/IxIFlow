@@ -425,7 +425,7 @@ public sealed class CatalogArtifactContractTests
         await Refused(() => store.SeedAsync(late), WorkflowErrorKind.ArtifactUnavailable);
     }
 
-    private sealed class RetentionBarrier : IArtifactStore, IArtifactRetentionStore
+    private sealed class RetentionBarrier : IArtifactStore
     {
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

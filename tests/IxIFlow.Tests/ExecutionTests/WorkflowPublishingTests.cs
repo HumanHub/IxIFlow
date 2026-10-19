@@ -356,6 +356,8 @@ public sealed class WorkflowPublishingTests
         }
         public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => store.OpenAsync(digest, cancellationToken);
         public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => store.ExistsAsync(digest, cancellationToken);
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+            store.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
         public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => store.DeleteAsync(digest, cancellationToken);
     }
 }

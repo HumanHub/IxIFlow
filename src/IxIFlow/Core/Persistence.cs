@@ -448,7 +448,16 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         return Commit(commit, null);
     }
 
-    private Task<WorkflowCommitResult> Commit(CheckpointCommit commit, WorkflowAdmission? admission)
+    private async Task<WorkflowCommitResult> Commit(CheckpointCommit commit, WorkflowAdmission? admission)
+    {
+        ArgumentNullException.ThrowIfNull(commit);
+        var catalogStart = commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0;
+        if (catalogStart) await _catalogLock.WaitAsync();
+        try { return await CommitUnderClaimLock(commit, admission); }
+        finally { if (catalogStart) _catalogLock.Release(); }
+    }
+
+    private Task<WorkflowCommitResult> CommitUnderClaimLock(CheckpointCommit commit, WorkflowAdmission? admission)
     {
         ArgumentNullException.ThrowIfNull(commit);
         var snapshot = commit.ReadTrunk();
