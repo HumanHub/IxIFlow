@@ -87,6 +87,10 @@ The recovery service checks every `UnschedulableScanInterval` (30 seconds by def
 
 These reads take no execution slot and expose no HTTP endpoint. Applications decide which callers can resolve and use the operator service.
 
-## Planned hosting work
+## Coordinators and deployment
 
-The optional [coordinator package](coordinators.md) provides matching, host discovery, prompt cross-host wakes and awaits, and polling fallback for local loopback links. Remote authenticated links remain planned. Demands, claim filtering, affinity and visibility of unschedulable work continue to run in the stores and host recovery service independently of coordinators. Process slots and isolation, the executor message protocol and pipe transport remain planned for 1.0. See the [roadmap](roadmap.md).
+The optional [coordinator package](coordinators.md) provides matching, registry discovery, prompt cross-host wakes and awaits, authenticated HTTPS links with mutual TLS or shared keys, and polling fallback. Configure explicit coordinator certificate identities on every host. Plaintext requires an explicit local loopback development option. SQLite accepts no coordinators.
+
+SQL Server and PostgreSQL support zero, one or several coordinators. Hosts connect to every live coordinator and writers send a hint through one available link. Losing the last link immediately restores ordinary polling. Demands, claim filtering, affinity and visibility of unschedulable work run in the stores and host recovery service independently of coordinators. A woken host that dies before claiming leaves its instance runnable; competing coordinator and poll claims are settled by the same fenced lease.
+
+Process slots and isolation, the executor message protocol and pipe transport remain planned for 1.0. See the [roadmap](roadmap.md).

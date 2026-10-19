@@ -5,6 +5,8 @@ description: Authenticate coordinator links, configure discovery, and understand
 
 Install `IxIFlow.Coordinator` in the application that runs the matching service and in each application that links to it. The package requires the ASP.NET Core runtime. The engine itself has no gRPC dependency.
 
+SQL Server and PostgreSQL deployments can run with zero, one or several coordinators. With zero, hosts claim directly from the store through polling, with PostgreSQL also supplying store notifications. Adding coordinators improves wake and await latency and reduces polling load. Hosts discover and connect to every live coordinator; each coordinator remains stateless, so adding a second requires no shared matching state or leader election.
+
 Links require TLS and either mutual TLS or a shared bearer key. Every HTTPS endpoint also needs a configured coordinator identity: a leaf certificate pin, or a dedicated private CA together with coordinator certificate names. Ordinary public CA validation alone is never sufficient. This policy applies equally to discovered and static endpoints, and prevents a forged registry row or a reused address from receiving credentials. SQLite refuses either coordinator role at startup.
 
 ## Shared keys over TLS
@@ -148,6 +150,8 @@ Both ends send application heartbeats every `LinkHeartbeatInterval` (five second
 While any usable link remains, recovery and awaits use `CoordinatedPollInterval` (ten seconds), and the store wake source is paused. On PostgreSQL this closes the LISTEN connection. When the last link disappears, recovery scans immediately, store listening resumes, and ordinary `PollInterval` recovery and one-second await reads return. Losing one of several links keeps coordinated polling in effect.
 
 Polling always remains finite: a process can commit and crash before sending its notice. Local runnable timers continue to work. Coordinator restart loses only hints; rows and leases remain authoritative in the store.
+
+If a woken host dies before claiming, the instance remains runnable and another host's poll can claim it. If a woken host and a polling host try together, the store grants one execution lease. Duplicate hints and concurrent scans use that same claim path. A wake never reserves work or bypasses its demands, runnable time or ownership checks.
 
 `SendQueueCapacity` bounds each stream's outgoing queue (256 messages). Full queues drop hints; a control message that cannot be queued closes the link so subscriptions can be replayed safely. Post-commit notification delivery also retains the engine's bounded queue and timeout, so neither slow streams nor full queues delay a commit acknowledgement.
 
