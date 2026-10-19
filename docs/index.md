@@ -22,7 +22,7 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Incoming webhooks](incoming-webhooks.md) | Authorized triggers, atomic idempotency, CloudEvents and public status |
 | [Outbox and publishers](outbox-and-publishers.md) | Completion delivery, custom publishers, outgoing webhooks and templates |
 | [Retention and tombstones](retention-and-tombstones.md) | Retained results, cleanup and removed instance IDs |
-| [Pausing and continuing](debugging.md) | Authorized pauses, durable commands and continuing on another host |
+| [Pausing, breakpoints and stepping](debugging.md) | Authorized pauses, durable commands and isolated branch stepping |
 | [Tracing and observability](observability.md) | Committed history, snapshots, OpenTelemetry and logging |
 | [Architecture](architecture.md) | Runtime boundaries and packages |
 | [Engine capabilities](engine-capabilities.md) | A compact guide to available behavior |

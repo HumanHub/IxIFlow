@@ -23,6 +23,8 @@ namespace IxIFlow.Core;
 [JsonSerializable(typeof(BreakpointSource))]
 [JsonSerializable(typeof(BreakpointStop))]
 [JsonSerializable(typeof(BreakpointHitTrace))]
+[JsonSerializable(typeof(DebugStepPosition))]
+[JsonSerializable(typeof(DebugStepping))]
 [JsonSerializable(typeof(BreakpointEvaluation))]
 [JsonSerializable(typeof(BreakpointConditionDiagnostic))]
 [JsonSerializable(typeof(RecoveryPreparation))]

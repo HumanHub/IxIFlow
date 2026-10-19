@@ -1,9 +1,9 @@
 ---
-title: Pausing and breakpoints
-description: Pause durable workflow instances, set breakpoints, and continue on an enabled host.
+title: Pausing, breakpoints and stepping
+description: Pause durable workflow instances, set breakpoints, and step through individual branches.
 ---
 
-# Pausing and breakpoints
+# Pausing, breakpoints and stepping
 
 Enable debugging on hosts that will accept operator commands:
 
@@ -30,6 +30,33 @@ A committed pause has no runnable time and releases its lease. Commands live out
 Events for existing waits are appended while paused and remain pending until continue. Normal arrival validation still applies. Timers keep advancing; due deadlines are handled when execution continues. Pausing a parent does not pause its children.
 
 `WorkflowDefinition.StepTable` lists each executable step's catalog ID, author ID, name, kind, scope path and source location. Builder calls capture their file and line automatically. Source locations do not affect the workflow structure hash. Snapshot pointers expose the catalog address as `StepId` and the author identity as `AuthorStepId`; frames include loop iteration and ForEach item index. Activity trace entries expose the catalog address as `StepId`.
+
+## Stepping
+
+Choose a live continuation from `IWorkflowClient.GetSnapshotAsync`: its `ExecutionPointer.PointerId` is the continuation ID. A committed pause is required. The application authorizes the instance and operation before issuing the command.
+
+<!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#step -->
+```csharp
+await operations.StepAsync(instanceId, continuationId, DebugStepKind.Over,
+    actor: "operator@example.com");
+```
+
+| Kind | Stop |
+| --- | --- |
+| `Over` | Complete the current step, including its nested scopes and every branch it forks through the join; stop before the selected continuation's next step in the same or an outer scope. |
+| `Into` | Stop before the selected continuation's next step at any depth, or the first step in a branch it forks. |
+| `Out` | Leave the current scope occurrence, then stop before the selected continuation's next step. A new loop iteration or item is a different occurrence. Leaving the root completes the workflow. |
+| `Run` | Run the selected continuation and its newly forked branches until a breakpoint. |
+
+Breakpoints remain active during every kind of step. A step from a breakpoint skips that stopped occurrence once. A step can reach workflow completion without another pick to stop at. Stepping over a loop or ForEach at its entry runs that whole step; stepping out of its body stops at the parent's next pick, which may be the loop guard or ForEach cursor.
+
+Only the selected continuation and branches created during that step may advance. Other branches keep their positions, events remain queued for their waits, their deadlines are deferred, their joins stay open, and their queued ForEach items are not admitted. The workflow execution deadline is also deferred while stepping. Timers still advance on the store clock; Continue processes due work normally.
+
+When selected work cannot advance without waiting for an event, retry, child, or a join involving branches outside the step, the run commits `Paused` with stop reason `Blocked` and releases its lease. Continue resumes all branches. Child workflows run independently; stepping does not enter or pause them.
+
+Step is an ordered command with the current pause generation and an acknowledgement. A fresh lease commits its origin, progress marker and eligible continuations before dispatch. Intermediate commits preserve that state, so recovery resumes the same step after a crash. An incapable host leaves a pending Step or Continue unacknowledged; a host with debugging disabled, or without the condition compiler when conditions are stored, also holds a step interrupted by a crash. Ownership loss always takes precedence over committing a pause.
+
+Snapshot frame names include loop iteration numbers and zero-based ForEach item indices. Frame state carries those numbers and the continuation, parent join, branch sequence and fork activation. Pointers expose `ParentPointerId`, `ParentJoinId`, `Sequence` and `ForkActivationId`; each fork inside a new loop iteration has a distinct activation, so its branches have distinct thread identities.
 
 ## Breakpoints
 

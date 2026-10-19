@@ -133,6 +133,7 @@ internal static class ForEachTransitions
             Previous = parent.RuntimePrevious != null ? SerializedValue.From(parent.RuntimePrevious) : parent.Previous,
             Stack = [new ScopePosition { ScopeId = scopes.ForEachScope(step), ForEachIndex = index }]
         };
+        SteppingPolicy.Forked(checkpoint, parent, child);
         join.ChildContinuationIds.Add(child.Id);
         checkpoint.Continuations.Add(child);
         checkpoint.Trace.Record(TraceEntryType.BranchStarted, step, child, index, child.Stack[0].ScopeId, join.Id);
@@ -169,7 +170,7 @@ internal static class ForEachTransitions
     public static bool Admit(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, int maxActiveBranches)
     {
         var admitted = false;
-        foreach (var join in checkpoint.Joins.Where(item => !item.IsCompleting).ToList())
+        foreach (var join in checkpoint.Joins.Where(item => !item.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, item)).ToList())
         {
             if (scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
                 continue;
@@ -195,7 +196,7 @@ internal static class ForEachTransitions
     /// not done yet, though no continuation is active.
     /// </summary>
     public static bool MayAdmit(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint) =>
-        checkpoint.Joins.Where(item => !item.IsCompleting).Any(join =>
+        checkpoint.Joins.Where(item => !item.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, item)).Any(join =>
         {
             if (scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
                 return false;

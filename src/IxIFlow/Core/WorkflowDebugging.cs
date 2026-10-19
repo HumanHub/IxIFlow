@@ -1,15 +1,26 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 namespace IxIFlow.Core;
 
-public enum DebugCommandKind { Pause, Continue, SetBreakpoints }
+public enum DebugCommandKind { Pause, Continue, SetBreakpoints, Step }
+public enum DebugStepKind { Over, Into, Out, Run }
+
+/// <summary>A pick occurrence, including progress through repeated loop and item visits.</summary>
+public sealed record DebugStepPosition(string ActivationId, int StepIndex, int Iteration,
+    int ItemCursor, bool ItemsJoined);
+
+/// <summary>The durable origin and the continuations admitted by one isolated step.</summary>
+public sealed record DebugStepping(string ContinuationId, DebugStepKind Kind, DebugStepPosition Origin,
+    IReadOnlyList<string> OriginScopes, IReadOnlyList<string> EligibleContinuations,
+    string CommandId, string Actor, bool Started = false);
 public enum DebugCommandStatus { Accepted, AlreadyAccepted, StaleGeneration, InvalidState, NotFound }
 
 /// <summary>A durable ordered command. Acknowledgement is the revision that applied it.</summary>
 public sealed record DebugCommand(string Id, long Order, DebugCommandKind Kind,
     long PauseGeneration, string Actor, long? AcknowledgedRevision = null,
-    IReadOnlyList<Breakpoint>? Breakpoints = null);
+    IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null);
 public sealed record DebugCommandRequest(string Id, DebugCommandKind Kind, long PauseGeneration, string Actor,
-    IReadOnlyList<Breakpoint>? Breakpoints = null);
+    IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null);
 public sealed record DebugCommandResult(DebugCommandStatus Status, DebugCommand? Command = null);
 
 /// <summary>Versioned commands outside the checkpoint. Version is the last allocated order.</summary>
@@ -24,6 +35,8 @@ public sealed record DebugCheckpoint(long PauseGeneration = 0, long AppliedOrder
     public BreakpointStop? Stop { get; init; }
     public BreakpointEvaluation? Evaluation { get; init; }
     public IReadOnlyList<BreakpointStop> SkipOnce { get; init; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DebugStepping? Stepping { get; init; }
 }
 
 /// <summary>Command storage, serialized with instance commits, event appends and deletion.</summary>
@@ -45,6 +58,9 @@ public interface IWorkflowOperations
     Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
     /// <summary>Continues a pause under a fresh lease on this host.</summary>
     Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
+    /// <summary>Runs only the selected continuation and branches it creates, under a fresh lease.</summary>
+    Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
+        string actor, CancellationToken cancellationToken = default);
     /// <summary>Replaces the instance's breakpoint set and returns the resolved addresses.</summary>
     Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
         string actor, CancellationToken cancellationToken = default);
@@ -75,6 +91,7 @@ public static class WorkflowDebugRules
         if (commands.FirstOrDefault(c => c.Id == request.Id) is { } existing)
         {
             if (existing.Kind != request.Kind || existing.Actor != request.Actor || existing.PauseGeneration != request.PauseGeneration ||
+                existing.ContinuationId != request.ContinuationId || existing.StepKind != request.StepKind ||
                 JsonSerializer.Serialize(existing.Breakpoints) != JsonSerializer.Serialize(request.Breakpoints))
                 throw new ArgumentException("A debug command ID cannot be reused with different fields");
             return new(DebugCommandStatus.AlreadyAccepted, existing);
@@ -82,6 +99,14 @@ public static class WorkflowDebugRules
         if (instance == null) return new(DebugCommandStatus.NotFound);
         if (WorkflowStoreRules.IsTerminal(instance.Status)) return new(DebugCommandStatus.InvalidState);
         var checkpoint = Checkpoint(instance);
+        if (request.Kind == DebugCommandKind.Step)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(request.ContinuationId);
+            if (request.StepKind == null || !Enum.IsDefined(request.StepKind.Value))
+                throw new ArgumentException("Step requires a valid kind");
+        }
+        else if (request.ContinuationId != null || request.StepKind != null)
+            throw new ArgumentException("Only Step carries a continuation and step kind");
         if (request.Kind == DebugCommandKind.SetBreakpoints)
         {
             ArgumentNullException.ThrowIfNull(request.Breakpoints);
@@ -97,17 +122,20 @@ public static class WorkflowDebugRules
         var pendingPause = commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause);
         var generation = checkpoint.PauseGeneration + (request.Kind != DebugCommandKind.Pause &&
             instance.Status != WorkflowStatus.Paused && pendingPause ? 1 : 0);
-        if (request.Kind == DebugCommandKind.Continue && instance.Status != WorkflowStatus.Paused &&
+        if (request.Kind is DebugCommandKind.Continue or DebugCommandKind.Step && instance.Status != WorkflowStatus.Paused &&
             !pendingPause && checkpoint.Stop != null) generation++;
         if (request.PauseGeneration != generation) return new(DebugCommandStatus.StaleGeneration);
-        if (request.Kind != DebugCommandKind.SetBreakpoints && commands.Any(c => c.AcknowledgedRevision == null && c.Kind == request.Kind))
+        if (request.Kind != DebugCommandKind.SetBreakpoints && commands.Any(c => c.AcknowledgedRevision == null &&
+            (c.Kind == request.Kind || request.Kind is DebugCommandKind.Continue or DebugCommandKind.Step &&
+                c.Kind is DebugCommandKind.Continue or DebugCommandKind.Step)))
             return new(DebugCommandStatus.InvalidState);
-        if (request.Kind == DebugCommandKind.Continue && instance.Status != WorkflowStatus.Paused && !pendingPause && checkpoint.Stop == null ||
+        if (request.Kind is DebugCommandKind.Continue or DebugCommandKind.Step && instance.Status != WorkflowStatus.Paused && !pendingPause && checkpoint.Stop == null ||
             request.Kind == DebugCommandKind.Pause && instance.Status == WorkflowStatus.Paused)
             return new(DebugCommandStatus.InvalidState);
         return new(DebugCommandStatus.Accepted, new(request.Id,
             commands.Count == 0 ? 1 : checked(commands.Max(c => c.Order) + 1),
-            request.Kind, request.PauseGeneration, request.Actor, Breakpoints: request.Breakpoints?.ToArray()));
+            request.Kind, request.PauseGeneration, request.Actor, Breakpoints: request.Breakpoints?.ToArray(),
+            ContinuationId: request.ContinuationId, StepKind: request.StepKind));
     }
 
     public static IReadOnlyList<DebugCommand> Acknowledge(WorkflowInstance? previous, WorkflowInstance next,
@@ -120,8 +148,17 @@ public static class WorkflowDebugRules
             command.Kind == DebugCommandKind.Pause && command.PauseGeneration == before.PauseGeneration - 1;
         if (applied.Count(c => c.Kind != DebugCommandKind.SetBreakpoints && !AlreadyPaused(c)) > 1)
             throw new InvalidOperationException("A pause and its continue require separate lease assignments");
-        if (applied.Any(c => c.Kind == DebugCommandKind.Continue) && previous?.Status != WorkflowStatus.Paused)
+        if (applied.Any(c => c.Kind is DebugCommandKind.Continue or DebugCommandKind.Step) && previous?.Status != WorkflowStatus.Paused)
             throw new InvalidOperationException("Continue requires a committed pause");
+        foreach (var resume in applied.Where(c => c.Kind is DebugCommandKind.Step or DebugCommandKind.Continue))
+        {
+            if (resume.Kind == DebugCommandKind.Step
+                ? after.Stepping is not { Started: false } step || step.ContinuationId != resume.ContinuationId ||
+                    step.Kind != resume.StepKind || step.CommandId != resume.Id || step.Actor != resume.Actor ||
+                    !step.EligibleContinuations.SequenceEqual([resume.ContinuationId!])
+                : after.Stepping != null)
+                throw new InvalidOperationException("Resume must durably record its stepping state before dispatch");
+        }
         var generation = before.PauseGeneration;
         foreach (var command in applied)
         {

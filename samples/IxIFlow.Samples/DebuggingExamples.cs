@@ -6,6 +6,14 @@ namespace IxIFlow.Samples;
 
 public static class DebuggingExamples
 {
+    public static async Task StepAsync(IWorkflowOperations operations, string instanceId, string continuationId)
+    {
+        // snippet: step
+        await operations.StepAsync(instanceId, continuationId, DebugStepKind.Over,
+            actor: "operator@example.com");
+        // end-snippet: step
+    }
+
     public static void ConfigureConditions(IServiceCollection services)
     {
         // snippet: configure-conditions

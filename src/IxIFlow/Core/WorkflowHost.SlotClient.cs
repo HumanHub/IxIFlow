@@ -125,6 +125,10 @@ public sealed partial class WorkflowHost
         public Task<WorkflowExecutionResult> RequestDebugAsync(string id, DebugCommandKind kind, string actor, CancellationToken token) =>
             _runner.RequestDebugAsync(id, kind, actor, token);
 
+        public Task<WorkflowExecutionResult> RequestStepAsync(string id, string continuationId, DebugStepKind kind,
+            string actor, CancellationToken token) =>
+            _runner.RequestDebugAsync(id, DebugCommandKind.Step, actor, token, continuationId, kind);
+
         public Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string id, IReadOnlyList<Breakpoint> breakpoints, string actor, CancellationToken token) =>
             _runner.SetBreakpointsAsync(id, breakpoints, actor, token);
         public Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string id, CancellationToken token) =>
