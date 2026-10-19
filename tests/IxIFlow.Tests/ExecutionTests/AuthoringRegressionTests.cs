@@ -1,9 +1,9 @@
 using IxIFlow.Builders;
-using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
-using IxIFlow.Dsl.Compilation;
+using IxIFlow.Core;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Extensions;
+using IxIFlow.Generators;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using static IxIFlow.Tests.ExecutionTests.WorkflowRegistrationTests;
@@ -194,11 +194,10 @@ public sealed class AuthoringRegressionTests
             Into = new() { Path = "workflow.Results" },
             Steps = [new ActivityStepDocument { Id = "body", Activity = "missing" }]
         };
-        var registry = new DocumentRegistry();
-        var result = await new WorkflowDocumentValidator().ValidateAsync(new()
+        var result = await YamlTestContracts.ValidateAsync(new()
         {
             Workflow = new() { Name = "Each", DataType = "data" }, Definitions = [each]
-        }, new WorkflowValidationContext(registry, registry, registry, registry, registry));
+        }, YamlTestContracts.Create(("data", typeof(ItemData))));
         Assert.False(result.IsValid);
         Assert.Contains(result.Diagnostics, item => item.Path!.StartsWith("definitions[0]."));
         Assert.Contains(result.Diagnostics, item => item.Code == "STEP003" && item.Path == "definitions[0].steps[0].activity");
@@ -211,7 +210,6 @@ public sealed class AuthoringRegressionTests
     [InlineData(true)]
     public async Task DocumentValidationAcceptsForEachItemAliases(bool asset)
     {
-        var registry = new DocumentRegistry();
         var document = new WorkflowDocument
         {
             Workflow = new() { Name = "Each", DataType = "data" },
@@ -231,8 +229,8 @@ public sealed class AuthoringRegressionTests
                 }
             }]
         };
-        var result = await new WorkflowDocumentValidator().ValidateAsync(document,
-            new WorkflowValidationContext(registry, registry, registry, registry, registry));
+        var result = await YamlTestContracts.ValidateAsync(document,
+            YamlTestContracts.Create(("data", typeof(ItemData))));
         Assert.True(result.IsValid, string.Join(", ", result.Diagnostics));
     }
 
@@ -345,21 +343,15 @@ public sealed class AuthoringRegressionTests
     [Fact]
     public async Task YamlCompilationRejectsActivityVersionBeforeEmission()
     {
-        var registry = new DocumentRegistry();
         var document = new WorkflowDocument
         {
             Workflow = new() { Name = "Version", DataType = "data" },
             Definitions = [new ActivityStepDocument { Activity = "mapping", ActivityVersion = "2.0" }]
         };
-        var context = new WorkflowValidationContext(new VersionedActivityRegistry(), registry, registry, registry, registry);
-        var error = await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => YamlTestCompilation.BuildAsync(document, context));
+        var options = YamlTestContracts.Create(("data", typeof(ItemData)), ("mapping", typeof(YamlMappingActivity)));
+        options.Activities["mapping"] = new("mapping", "1.0");
+        var error = await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => YamlTestCompilation.BuildAsync(document, options));
         Assert.Contains("requires version '1.0'", error.Message);
-    }
-
-    private sealed class VersionedActivityRegistry : IActivityRegistry
-    {
-        public ValueTask<ActivityDescriptor?> FindAsync(string key, CancellationToken token) =>
-            ValueTask.FromResult<ActivityDescriptor?>(new() { Key = key, Version = "1.0", ActivityType = typeof(YamlMappingActivity) });
     }
 
     public sealed class ItemData
@@ -371,14 +363,5 @@ public sealed class AuthoringRegressionTests
     public sealed class QuestionActivity : IAsyncActivity, IRequestActivity<RegistrationEvent>
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
-    }
-
-    private sealed class DocumentRegistry : IActivityRegistry, IWorkflowCatalog, IEventRegistry, IDataTypeRegistry, IStepTemplateRegistry
-    {
-        ValueTask<ActivityDescriptor?> IActivityRegistry.FindAsync(string key, CancellationToken token) => ValueTask.FromResult<ActivityDescriptor?>(null);
-        ValueTask<WorkflowDescriptor?> IWorkflowCatalog.FindAsync(string key, int? version, CancellationToken token) => ValueTask.FromResult<WorkflowDescriptor?>(null);
-        ValueTask<EventDescriptor?> IEventRegistry.FindAsync(string key, CancellationToken token) => ValueTask.FromResult<EventDescriptor?>(null);
-        ValueTask<DataTypeDescriptor?> IDataTypeRegistry.FindAsync(string key, CancellationToken token) => ValueTask.FromResult<DataTypeDescriptor?>(new() { Key = key, ClrType = typeof(ItemData) });
-        ValueTask<StepTemplateDescriptor?> IStepTemplateRegistry.FindAsync(string key, CancellationToken token) => ValueTask.FromResult<StepTemplateDescriptor?>(null);
     }
 }
