@@ -101,7 +101,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
             };
             Assert.Equal(WorkflowCommitStatus.Applied,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, first!.Epoch, 0))).Status);
-            Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "first"));
+            Assert.True((await repository.ReleaseExecutionLeaseAsync(instanceId, "first")).Released);
 
             // A released lease keeps its epoch, so the next owner is always newer.
             var second = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));

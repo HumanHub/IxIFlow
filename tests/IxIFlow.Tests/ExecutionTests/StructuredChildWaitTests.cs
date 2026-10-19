@@ -170,7 +170,7 @@ public sealed class StructuredChildWaitTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, waiting.Status);
         Assert.Null((await repository.GetWorkflowInstanceAsync(started.InstanceId))!.RunnableAtUtc);
         Assert.NotNull(await repository.GetCancellationRequestAsync(childId));
-        Assert.True(await repository.ReleaseExecutionLeaseAsync(childId, foreignToken));
+        Assert.True((await repository.ReleaseExecutionLeaseAsync(childId, foreignToken)).Released);
         // The host that was told the child is runnable may already be running it.
         await engine.RecoverAsync(childId);
         Assert.Equal(WorkflowExecutionStatus.Cancelled, (await FinishedAsync(engine, childId)).Status);
@@ -804,9 +804,9 @@ public sealed class StructuredChildWaitTests
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(started.InstanceId, "elsewhere",
             TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)));
         Assert.Equal(WorkflowExecutionStatus.Success, (await engine.ResumeAsync(childId, "approval", new Approval())).Status);
-        Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
-            new CancellationReason { ReasonCode = "operator" }));
-        Assert.True(await repository.ReleaseExecutionLeaseAsync(started.InstanceId, "elsewhere"));
+        Assert.True((await repository.RequestCancellationAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "operator" })).Accepted);
+        Assert.True((await repository.ReleaseExecutionLeaseAsync(started.InstanceId, "elsewhere")).Released);
         await engine.RecoverAsync(started.InstanceId);
         var cancelled = await FinishedAsync(engine, started.InstanceId);
 

@@ -681,7 +681,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             var started = await store.CommitWorkflowInstanceAsync(start);
 
             Assert.Equal(WorkflowCommitStatus.Applied, started.Status);
-            Assert.Equal([childId], started.MadeRunnable);
+            Assert.Equal([childId], started.MadeRunnable.Select(notice => notice.InstanceId));
             var child = (await store.GetWorkflowInstanceAsync(childId))!;
             Assert.Equal((1L, WorkflowStatus.Running, parentId, wait),
                 (child.Revision, child.Status, child.ParentInstanceId, child.ParentWaitId));
@@ -713,7 +713,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
                 parentNotice: new ParentNotice(parentId, wait, $"completed-{childId}", "IxIFlow.ChildCompleted",
                     "{\"Status\":\"Completed\"}")));
             Assert.Equal(WorkflowCommitStatus.Applied, completed.Status);
-            Assert.Equal([parentId], completed.MadeRunnable);
+            Assert.Equal([parentId], completed.MadeRunnable.Select(notice => notice.InstanceId));
             var notice = (await inbox.GetEventAsync(parentId, $"completed-{childId}"))!;
             Assert.Equal((EventOutcome.Pending, wait), (notice.Outcome, notice.TargetWaitId));
             Assert.Contains(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == parentId);

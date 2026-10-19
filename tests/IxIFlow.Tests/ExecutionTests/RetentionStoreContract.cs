@@ -541,7 +541,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var current = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "current", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         Assert.True(current.Epoch > previous.Epoch);
         Assert.NotEqual(instance.Incarnation, replacement.Incarnation);
-        Assert.False(await store.ReleaseExecutionLeaseAsync(instance.InstanceId, "previous"));
+        Assert.False((await store.ReleaseExecutionLeaseAsync(instance.InstanceId, "previous")).Released);
         Assert.False(await store.RenewExecutionLeaseAsync(instance.InstanceId, "previous", TimeSpan.FromMinutes(1)));
         Assert.Equal(WorkflowCommitStatus.StaleEpoch, (await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, previous.Epoch, instance.Revision))).Status);

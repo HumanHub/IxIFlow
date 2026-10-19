@@ -153,18 +153,18 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
                 new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.NotNull(dueClaim);
             Assert.Equal(0, dueClaim.CrashCount);
-            Assert.True(await store.ReleaseExecutionLeaseAsync(parkedId, "next"));
+            Assert.True((await store.ReleaseExecutionLeaseAsync(parkedId, "next")).Released);
 
             // A cancellation waiting to be taken up keeps the owner and makes the instance due now.
             var cancelled = await RunningInstanceAsync(store, cancelledId);
-            Assert.True(await store.RequestCancellationAsync(cancelledId,
-                new CancellationReason { ReasonCode = "operator" }));
+            Assert.True((await store.RequestCancellationAsync(cancelledId,
+                new CancellationReason { ReasonCode = "operator" })).Accepted);
             var refused = await store.CommitWorkflowInstanceAsync(Park(cancelled.Instance, cancelled.Grant));
             Assert.Equal(WorkflowCommitStatus.Applied, refused.Status);
             Assert.False(refused.Parked);
             Assert.Equal("operator", refused.PendingCancellation?.ReasonCode);
             Assert.Null(await store.TryAcquireExecutionLeaseAsync(cancelledId, "next", TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
-            Assert.True(await store.ReleaseExecutionLeaseAsync(cancelledId, "owner"));
+            Assert.True((await store.ReleaseExecutionLeaseAsync(cancelledId, "owner")).Released);
             Assert.Contains(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == cancelledId);
         }
         finally
@@ -251,7 +251,7 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
             Assert.Equal([ids[2], ids[1], ids[0]], await Ours(store, ids));
 
             // A cancellation request makes an idle instance runnable in the same step.
-            Assert.True(await store.RequestCancellationAsync(ids[3], new CancellationReason { ReasonCode = "stop" }));
+            Assert.True((await store.RequestCancellationAsync(ids[3], new CancellationReason { ReasonCode = "stop" })).Accepted);
             Assert.Contains(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == ids[3]);
 
             // An owned instance is not offered, however due.

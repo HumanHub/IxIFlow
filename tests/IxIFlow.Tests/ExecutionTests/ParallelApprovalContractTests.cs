@@ -331,7 +331,7 @@ public class ParallelApprovalContractTests
         Assert.False(sent.IsCompleted);
 
         // The owner goes, and the next one takes the event at its first pass.
-        Assert.True(await repository.ReleaseExecutionLeaseAsync(started.InstanceId, "other-host"));
+        Assert.True((await repository.ReleaseExecutionLeaseAsync(started.InstanceId, "other-host")).Released);
         await engine.RecoverAsync(started.InstanceId);
         var resumed = await sent.WaitAsync(TimeSpan.FromSeconds(10));
         EventAssert.Consumed(resumed);
@@ -1712,7 +1712,7 @@ public class ParallelApprovalContractTests
             _inner.GetOpenWaitsAsync(query);
 
         private readonly InMemoryWorkflowStateRepository _inner = new();
-        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
+        public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
             _inner.RequestCancellationAsync(instanceId, reason);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
@@ -1722,7 +1722,7 @@ public class ParallelApprovalContractTests
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
-        public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
 
         public WorkflowInstance? Initial { get; private set; }

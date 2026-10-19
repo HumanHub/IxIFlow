@@ -76,13 +76,13 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
             Assert.Equal(2, third.CrashCount);
 
             // A released lease is not a crash.
-            Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "third"));
+            Assert.True((await repository.ReleaseExecutionLeaseAsync(instanceId, "third")).Released);
             var fourth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.Equal(2, fourth.CrashCount);
 
             // Progress clears the count.
             await CommitAsync(repository, instance, fourth, clearsCrashCount: true);
-            Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "fourth"));
+            Assert.True((await repository.ReleaseExecutionLeaseAsync(instanceId, "fourth")).Released);
             var fifth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fifth", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.Equal(0, fifth.CrashCount);
 

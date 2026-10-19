@@ -157,8 +157,8 @@ public sealed class WorkflowRecoveryServiceTests
         var started = await provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new RecoveryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
-            new CancellationReason { ReasonCode = "withdrawn" }));
+        Assert.True((await repository.RequestCancellationAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -186,8 +186,8 @@ public sealed class WorkflowRecoveryServiceTests
             .Build();
         var started = await provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new RecoveryData());
-        Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
-            new CancellationReason { ReasonCode = "withdrawn" }));
+        Assert.True((await repository.RequestCancellationAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -224,8 +224,8 @@ public sealed class WorkflowRecoveryServiceTests
         await engine.RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowStatus.NeedsResolution,
             (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
-        Assert.True(await repository.RequestCancellationAsync(saved.InstanceId,
-            new CancellationReason { ReasonCode = "withdrawn" }));
+        Assert.True((await repository.RequestCancellationAsync(saved.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
