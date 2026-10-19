@@ -21,6 +21,7 @@ public sealed partial class SqliteWorkflowStateRepository
             instance_id TEXT COLLATE BINARY NOT NULL,
             sender TEXT COLLATE BINARY NOT NULL,
             trigger_id TEXT COLLATE BINARY NOT NULL,
+            owner_kind INTEGER NOT NULL,
             owner_id TEXT COLLATE BINARY NOT NULL,
             tenant TEXT COLLATE BINARY NULL,
             PRIMARY KEY (instance_id)
@@ -51,10 +52,10 @@ public sealed partial class SqliteWorkflowStateRepository
             DELETE FROM ixiflow_workflow_ownership WHERE instance_id=@InstanceId
             """,
         Statement.OwnershipInsert => """
-            INSERT INTO ixiflow_workflow_ownership (incarnation, instance_id, sender, trigger_id, owner_id, tenant) VALUES (@Incarnation, @InstanceId, @Sender, @Trigger, @Owner, @Tenant)
+            INSERT INTO ixiflow_workflow_ownership (incarnation, instance_id, sender, trigger_id, owner_id, tenant, owner_kind) VALUES (@Incarnation, @InstanceId, @Sender, @Trigger, @Owner, @Tenant, @OwnerKind)
             """,
         Statement.OwnershipRead => """
-            SELECT instance_id AS "InstanceId", sender AS "Sender", trigger_id AS "Trigger", owner_id AS "Owner", tenant AS "Tenant", incarnation AS "Incarnation" FROM ixiflow_workflow_ownership o WHERE o.instance_id=@InstanceId AND (EXISTS (SELECT 1 FROM ixiflow_workflow_instances i WHERE i.instance_id=o.instance_id AND i.incarnation=o.incarnation) OR EXISTS (SELECT 1 FROM ixiflow_workflow_tombstones t WHERE t.instance_id=o.instance_id AND t.expires_at_utc>@Now))
+            SELECT instance_id AS "InstanceId", sender AS "Sender", trigger_id AS "Trigger", owner_id AS "Owner", tenant AS "Tenant", incarnation AS "Incarnation", owner_kind AS "OwnerKind" FROM ixiflow_workflow_ownership o WHERE o.instance_id=@InstanceId AND (EXISTS (SELECT 1 FROM ixiflow_workflow_instances i WHERE i.instance_id=o.instance_id AND i.incarnation=o.incarnation) OR EXISTS (SELECT 1 FROM ixiflow_workflow_tombstones t WHERE t.instance_id=o.instance_id AND t.expires_at_utc>@Now))
             """,
         Statement.AdmissionExpire => """
             DELETE FROM ixiflow_workflow_admissions WHERE (sender, trigger_id, request_key) IN (SELECT sender, trigger_id, request_key FROM ixiflow_workflow_admissions WHERE expires_at_utc<=@Now ORDER BY expires_at_utc LIMIT @Limit)

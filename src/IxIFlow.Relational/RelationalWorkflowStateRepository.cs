@@ -813,7 +813,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             }, ("ExpiresAtUtc", admitted.ExpiresAtUtc)), transaction);
             await connection.ExecuteAsync(RequiredSql(Statement.OwnershipDelete), new { commit.InstanceId }, transaction);
             await connection.ExecuteAsync(RequiredSql(Statement.OwnershipInsert),
-                new { commit.InstanceId, commit.Incarnation, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant }, transaction);
+                new { commit.InstanceId, commit.Incarnation, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, admission.OwnerKind }, transaction);
         }
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,

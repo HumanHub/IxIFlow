@@ -53,7 +53,15 @@ public static class WorkflowTriggerExtensions
                 throw new InvalidOperationException("Start triggers require typed FromBody mapping");
             if (registration.Events && registration.EventTypes.Count == 0)
                 throw new InvalidOperationException("Event triggers require an explicit CloudEvents type allowlist");
+            if (registration.SignedSender != null && !registration.Events && !registration.Status && registration.Retention < registration.Tolerance)
+                throw new InvalidOperationException("Signed start idempotency retention must be at least the timestamp tolerance");
         }
+        var signingKeys = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var registration in all)
+            foreach (var secret in registration.Secrets)
+                if (signingKeys.TryGetValue(Convert.ToBase64String(secret), out var trigger) && trigger != registration.Id)
+                    throw new InvalidOperationException("A signing secret cannot be shared by two workflow triggers");
+                else signingKeys[Convert.ToBase64String(secret)] = registration.Id;
         if (all.GroupBy(r => r.Id, StringComparer.Ordinal).Any(g => g.Count() > 1))
             throw new InvalidOperationException("Workflow trigger identities must be unique");
         if (all.GroupBy(r => r.Method + " " + Shape(r.Pattern), StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1))
@@ -70,41 +78,51 @@ public static class WorkflowTriggerExtensions
             route.AddEndpointFilter(new IngressFilter(registration));
             if (registration.Status) route.WithName(StatusName);
         }
-        endpoints.DataSources.Add(new RegistrationValidator(endpoints));
+        if (!endpoints.DataSources.OfType<RegistrationValidator>().Any())
+        {
+            var validator = new RegistrationValidator(endpoints);
+            endpoints.DataSources.Add(validator);
+            endpoints.ServiceProvider.GetRequiredService<WorkflowHost>().RegisterStartupValidation(validator.Validate);
+        }
         return endpoints;
     }
 
     private static string Shape(string route) => Regex.Replace(route.TrimEnd('/'), @"\{(\*{0,2})[^}:?=]+([^}]*)\}", "{$1$2}");
 
-    // Endpoint materialization happens at startup, after the application has mapped all its routes.
+    // The host also forces this after every hosted service has started and all routes have been mapped.
     private sealed class RegistrationValidator(IEndpointRouteBuilder endpoints) : EndpointDataSource
     {
+        private readonly object _gate = new();
         private bool _checking;
+        public void Validate() => _ = Endpoints;
         public override IReadOnlyList<Endpoint> Endpoints
         {
             get
             {
-                if (_checking) return [];
-                _checking = true;
-                try
+                lock (_gate)
                 {
-                    var routes = endpoints.DataSources.Where(s => s is not RegistrationValidator)
-                        .SelectMany(s => s.Endpoints).OfType<RouteEndpoint>().ToArray();
-                    if (routes.Select(r => r.Metadata.GetMetadata<WorkflowRoute>()).OfType<WorkflowRoute>()
-                        .GroupBy(r => r.Identity, StringComparer.Ordinal).Any(g => g.Count() > 1))
-                        throw new InvalidOperationException("Workflow trigger identities must be unique");
-                    foreach (var group in routes.GroupBy(r => Shape(r.RoutePattern.RawText ?? ""), StringComparer.OrdinalIgnoreCase))
+                    if (_checking) return [];
+                    _checking = true;
+                    try
                     {
-                        if (!group.Any(r => r.Metadata.GetMetadata<WorkflowRoute>() != null)) continue;
-                        var verbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        foreach (var route in group)
-                            foreach (var method in route.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods ?? ["*"])
-                                if (!verbs.Add(method) || method == "*" && verbs.Count > 1 || method != "*" && verbs.Contains("*"))
-                                    throw new InvalidOperationException("Conflicting routes at " + group.Key);
+                        var routes = endpoints.DataSources.Where(s => s is not RegistrationValidator)
+                            .SelectMany(s => s.Endpoints).OfType<RouteEndpoint>().ToArray();
+                        if (routes.Select(r => r.Metadata.GetMetadata<WorkflowRoute>()).OfType<WorkflowRoute>()
+                            .GroupBy(r => r.Identity, StringComparer.Ordinal).Any(g => g.Count() > 1))
+                            throw new InvalidOperationException("Workflow trigger identities must be unique");
+                        foreach (var group in routes.GroupBy(r => Shape(r.RoutePattern.RawText ?? ""), StringComparer.OrdinalIgnoreCase))
+                        {
+                            if (!group.Any(r => r.Metadata.GetMetadata<WorkflowRoute>() != null)) continue;
+                            var verbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            foreach (var route in group)
+                                foreach (var method in route.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods ?? ["*"])
+                                    if (!verbs.Add(method) || method == "*" && verbs.Count > 1 || method != "*" && verbs.Contains("*"))
+                                        throw new InvalidOperationException("Conflicting routes at " + group.Key);
+                        }
+                        return [];
                     }
-                    return [];
+                    finally { _checking = false; }
                 }
-                finally { _checking = false; }
             }
         }
         public override IChangeToken GetChangeToken() => new CancellationChangeToken(CancellationToken.None);
@@ -213,9 +231,10 @@ public static class WorkflowTriggerExtensions
             var id = http.Request.RouteValues["id"]!.ToString()!;
             var ownership = await ingress.GetOwnershipAsync(id);
             if (ownership == null) return Results.Problem(statusCode: 404, title: "Unknown workflow");
-            if (!(await http.RequestServices.GetRequiredService<IAuthorizationService>()
+            var ownerKind = registration.SignedSender != null ? WorkflowOwnerKind.SignedSender : WorkflowOwnerKind.Principal;
+            if (ownership.OwnerKind != ownerKind || !(await http.RequestServices.GetRequiredService<IAuthorizationService>()
                     .AuthorizeAsync(http.User, ownership, registration.InstancePolicy!)).Succeeded)
-                return Results.Problem(statusCode: 403, title: "Workflow access denied");
+                return Results.Problem(statusCode: 404, title: "Unknown workflow");
             if (registration.Status) return await StatusAsync(http, client, id, ownership, catalog);
             if (await client.GetStatusAsync(id) == WorkflowExecutionStatus.Removed)
                 return Results.Problem(statusCode: 409, title: "Event refused", detail: "InstanceRemoved");
@@ -229,17 +248,20 @@ public static class WorkflowTriggerExtensions
         var principalId = http.User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrWhiteSpace(principalId)) return Results.Problem(statusCode: 403, title: "A stable sender identity is required");
         // An issuer and subject form the authenticated sender namespace. Signed senders have an explicit stable name.
-        var sender = registration.SignedSender ?? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            JsonSerializer.Serialize(new[] { http.User.FindFirst(ClaimTypes.NameIdentifier)!.Issuer, principalId, http.User.FindFirstValue("tenant") }))));
+        var sender = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
+            registration.SignedSender != null ? new[] { "sender", registration.SignedSender }
+                : new[] { "principal", http.User.FindFirst(ClaimTypes.NameIdentifier)!.Issuer, principalId, http.User.FindFirstValue("tenant") }))));
         var key = http.Items.TryGetValue(WebhookIdKey, out var signedId) ? (string)signedId! : SingleHeader(http, "Idempotency-Key");
         if (string.IsNullOrEmpty(key)) key = Guid.NewGuid().ToString("N");
         var (owner, tenant) = registration.Ownership?.Invoke(http) ?? (principalId, http.User.FindFirstValue("tenant"));
-        var admission = new WorkflowAdmission(sender, registration.Id, key, fingerprint, owner!, tenant, registration.Retention);
+        var admission = new WorkflowAdmission(sender, registration.Id, key, fingerprint, owner!, tenant, registration.Retention,
+            registration.SignedSender != null ? WorkflowOwnerKind.SignedSender : WorkflowOwnerKind.Principal);
         admission.Validate();
         var winner = await registration.Start!(http, parsed, admission);
         if (!string.Equals(winner.Fingerprint, fingerprint, StringComparison.Ordinal))
             return Results.Problem(statusCode: 409, title: "Idempotency key was used for a different request");
-        if ((await ingress.GetOwnershipAsync(winner.InstanceId))?.Incarnation != winner.Incarnation)
+        if ((await ingress.GetOwnershipAsync(winner.InstanceId))?.Incarnation != winner.Incarnation ||
+            await client.GetStatusAsync(winner.InstanceId) == WorkflowExecutionStatus.Removed)
             return Results.Problem(statusCode: 410, title: "The admitted workflow was removed");
         var location = http.RequestServices.GetRequiredService<LinkGenerator>()
             .GetPathByName(http, StatusName, new { id = winner.InstanceId })
@@ -251,15 +273,18 @@ public static class WorkflowTriggerExtensions
             try
             {
                 var result = await client.AwaitAsync(winner.InstanceId, WorkflowAwaitCondition.Finished, waiting.Token);
-                if ((await ingress.GetOwnershipAsync(winner.InstanceId))?.Incarnation != winner.Incarnation)
+                if (result.Status == WorkflowExecutionStatus.Removed ||
+                    (await ingress.GetOwnershipAsync(winner.InstanceId))?.Incarnation != winner.Incarnation)
                     return Results.Problem(statusCode: 410, title: "The admitted workflow was removed");
                 var projection = catalog.Registrations.Single(r => r.Id == winner.Trigger).Projection;
                 return Results.Ok(PublicResult(result, projection));
             }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested && !http.RequestAborted.IsCancellationRequested) { }
         }
-        return Results.Accepted(location, new WorkflowStatusResponse(winner.InstanceId,
-            PublicStatus(await client.GetStatusAsync(winner.InstanceId))));
+        var status = await client.GetStatusAsync(winner.InstanceId);
+        if (status == WorkflowExecutionStatus.Removed)
+            return Results.Problem(statusCode: 410, title: "The admitted workflow was removed");
+        return Results.Accepted(location, new WorkflowStatusResponse(winner.InstanceId, PublicStatus(status)));
     }
 
     private static async Task<IResult> StatusAsync(HttpContext http, IWorkflowClient client, string id, WorkflowOwnership ownership, Catalog catalog)
@@ -314,7 +339,7 @@ public static class WorkflowTriggerExtensions
             DeliveryIdentity: http.Items.TryGetValue(WebhookIdKey, out var webhookId)
                 ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
                     new[] { registration.SignedSender, registration.Id, (string)webhookId! })))) : null,
-            RequestFingerprint: Fingerprint(http.Request, body, parsed.Binary)), http.RequestAborted);
+            Source: envelope.Source, DeliveryRetention: registration.Retention), http.RequestAborted);
         if (receipt.Status == EventAppendStatus.Duplicate)
         {
             if (receipt.Rejection != null)

@@ -6,10 +6,19 @@ using System.Text.Json;
 namespace IxIFlow.AspNetCore;
 
 /// <summary>Trusted request context available to a typed body mapping.</summary>
-public sealed record WorkflowTriggerContext(HttpContext HttpContext, CloudEventEnvelope? CloudEvent)
+public sealed class WorkflowTriggerContext
 {
-    public string? Route(string name) => HttpContext.Request.RouteValues.GetValueOrDefault(name)?.ToString();
-    public string? Query(string name) => HttpContext.Request.Query[name].FirstOrDefault();
+    private readonly Dictionary<string, string?> _route;
+    private readonly Dictionary<string, string?> _query;
+    internal WorkflowTriggerContext(HttpContext http, CloudEventEnvelope? cloudEvent)
+    {
+        CloudEvent = cloudEvent;
+        _route = http.Request.RouteValues.ToDictionary(p => p.Key, p => p.Value?.ToString(), StringComparer.OrdinalIgnoreCase);
+        _query = http.Request.Query.ToDictionary(p => p.Key, p => p.Value.FirstOrDefault(), StringComparer.OrdinalIgnoreCase);
+    }
+    public CloudEventEnvelope? CloudEvent { get; }
+    public string? Route(string name) => _route.GetValueOrDefault(name);
+    public string? Query(string name) => _query.GetValueOrDefault(name);
 }
 
 public sealed record WorkflowStatusResponse(string Id, string Status, object? Result = null);
@@ -133,6 +142,14 @@ public sealed class WorkflowStartTriggerBuilder<TData> : WorkflowEndpointBuilder
 public sealed class WorkflowEventTriggerBuilder : WorkflowEndpointBuilder<WorkflowEventTriggerBuilder>
 {
     internal WorkflowEventTriggerBuilder(TriggerRegistration registration) : base(registration) { }
+
+    /// <summary>How long signed delivery receipts are retained; defaults to 24 hours.</summary>
+    public WorkflowEventTriggerBuilder DeliveryRetention(TimeSpan retention)
+    {
+        if (retention <= TimeSpan.Zero || retention > CheckpointCommit.MaxDuration) throw new ArgumentOutOfRangeException(nameof(retention));
+        Registration.Retention = retention;
+        return this;
+    }
 
     public WorkflowEventTriggerBuilder Allow<TEvent>(string type) where TEvent : class
     {

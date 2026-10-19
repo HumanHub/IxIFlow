@@ -598,7 +598,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             if (admitted != null)
             {
                 _admissions[(admission!.Sender, admission.Trigger, admission.Key)] = admitted;
-                _ownership[commit.InstanceId] = (commit.Incarnation, new(commit.InstanceId, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, commit.Incarnation));
+                _ownership[commit.InstanceId] = (commit.Incarnation, new(commit.InstanceId, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, commit.Incarnation, admission.OwnerKind));
             }
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
                 PendingCancellation(commit.InstanceId), parked, unread, madeRunnable) { Admission = admitted });
@@ -624,7 +624,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             var hash = workflowEvent.ContentHash();
             if (workflowEvent.DeliveryIdentity is { } identity && _webhookDeliveries.TryGetValue(identity, out var saved) && saved.Expires > now)
                 return Task.FromResult(saved.Hash.SequenceEqual(hash)
-                    ? saved.Receipt with { Status = EventAppendStatus.Duplicate }
+                    ? saved.Receipt with { Status = EventAppendStatus.Duplicate, MadeRunnable = false }
                     : new EventAppendResult(EventAppendStatus.Conflict));
             var receipt = Append(workflowEvent, now);
             if (workflowEvent.DeliveryIdentity is { } key && receipt.Status is EventAppendStatus.Stored or EventAppendStatus.Duplicate or EventAppendStatus.Rejected)

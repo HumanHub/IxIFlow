@@ -587,6 +587,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'ixiflow_workflow_instances')",
             transaction: transaction))
     {
+        await ValidateCurrentSchemaAsync(connection, transaction);
         await transaction.CommitAsync();
         return;
     }

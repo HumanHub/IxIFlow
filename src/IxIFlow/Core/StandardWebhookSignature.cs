@@ -25,7 +25,7 @@ public static class StandardWebhookSignature
     public static bool Verify(IEnumerable<byte[]> secrets, string id, string timestamp, string signatures,
         ReadOnlySpan<byte> body, DateTimeOffset now, TimeSpan tolerance)
     {
-        if (string.IsNullOrWhiteSpace(id) || id.Length > 200 || signatures.Length > 4096 ||
+        if (string.IsNullOrWhiteSpace(id) || id.Length > WorkflowAdmission.MaxKeyLength || id != id.Trim() || signatures.Length > 4096 ||
             !long.TryParse(timestamp, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds) ||
             tolerance <= TimeSpan.Zero || Math.Abs((double)now.ToUnixTimeSeconds() - seconds) > tolerance.TotalSeconds)
             return false;

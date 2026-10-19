@@ -50,6 +50,17 @@ public abstract partial class RelationalWorkflowStateRepository
         public DateTime ExpiresAtUtc { get; set; }
     }
 
+    private sealed class OwnershipRow
+    {
+        public string InstanceId { get; set; } = "";
+        public string Sender { get; set; } = "";
+        public string Trigger { get; set; } = "";
+        public string Owner { get; set; } = "";
+        public string? Tenant { get; set; }
+        public Guid Incarnation { get; set; }
+        public WorkflowOwnerKind OwnerKind { get; set; }
+    }
+
     public async Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission)
     {
         admission.ValidateCommit(commit);
@@ -87,8 +98,10 @@ public abstract partial class RelationalWorkflowStateRepository
         return await ExecuteOperationAsync(Operation.Read, async () =>
         {
             await using var connection = await OpenConnectionAsync();
-            return await connection.QuerySingleOrDefaultAsync<WorkflowOwnership>(RequiredSql(Statement.OwnershipRead),
+            var row = await connection.QuerySingleOrDefaultAsync<OwnershipRow>(RequiredSql(Statement.OwnershipRead),
                 WithTimes(new { InstanceId = instanceId }, ("Now", await OutboxNowAsync(connection, null))));
+            return row == null ? null : new WorkflowOwnership(row.InstanceId, row.Sender, row.Trigger, row.Owner,
+                row.Tenant, row.Incarnation, row.OwnerKind);
         });
     }
 }
