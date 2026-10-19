@@ -2,7 +2,7 @@ using System.Text.Json;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
-using IxIFlow.Dsl.Compilation;
+using IxIFlow.Generators;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
@@ -135,28 +135,6 @@ public class EngineContractRegressionTests
             new WorkflowScopeCatalog(Policy(StepErrorAction.Terminate)).Fingerprint);
         Assert.NotEqual(new WorkflowScopeCatalog(SagaPolicy(SagaContinuationAction.Retry)).Fingerprint,
             new WorkflowScopeCatalog(SagaPolicy(SagaContinuationAction.Terminate)).Fingerprint);
-    }
-
-    [Trait("Feature", "registration")]
-    [Fact]
-    public async Task UnsupportedExecutionOptionsFailBeforeAnInstanceStarts()
-    {
-        using var provider = new ServiceCollection()
-            .AddLogging()
-            .AddIxIFlow().Services
-            .BuildServiceProvider();
-        var engine = provider.GetRequiredService<IWorkflowClient>();
-        var definition = Workflow.Create<RegressionData>("OptionsMustBeHonest")
-            .Step<MarkChildActivity>().Build();
-
-        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
-            engine.RunAsync(definition, new RegressionData(),
-                new WorkflowOptions { EnableDebugging = true }));
-        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest, () =>
-            engine.RunAsync(definition, new RegressionData(),
-                new WorkflowOptions { WorkflowRetryPolicy = new RetryPolicy(2) }));
-        Assert.Empty(await provider.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstancesByNameAsync(definition.Name));
     }
 
     [Trait("Feature", "registration")]
@@ -838,7 +816,7 @@ public class EngineContractRegressionTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
         // While the parallel step is open, the branches' work is read from their saved changes (D-14).
         var repository = scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>();
-        var suspendedData = await BranchProgress.ViewAsync<RegressionData>(repository, suspended.InstanceId);
+        var suspendedData = await BranchProgress.ReadAsync<RegressionData>(repository, suspended.InstanceId, 0);
         Assert.Equal(1, suspendedData.ParallelCompletedBranchCount);
         Assert.False(suspendedData.AfterTryExecuted);
 
@@ -846,9 +824,10 @@ public class EngineContractRegressionTests
             new RegressionApprovalEvent { Approved = true });
         Assert.True(resumed.Status == WorkflowExecutionStatus.Suspended,
             $"Expected a second parallel wait, got {resumed.Status}: {resumed.ErrorMessage}");
-        var data = await BranchProgress.ViewAsync<RegressionData>(repository, resumed.InstanceId);
+        var data = await BranchProgress.ReadAsync<RegressionData>(repository, resumed.InstanceId, 0);
         Assert.Equal(1, data.ParallelCompletedBranchCount);
-        Assert.True(data.ParallelWaitBranchCompleted);
+        Assert.True((await BranchProgress.ReadAsync<RegressionData>(repository, resumed.InstanceId, 1))
+            .ParallelWaitBranchCompleted);
         Assert.False(data.AfterTryExecuted);
 
         var completed = await engine.ResumeAsync(suspended.InstanceId,
@@ -922,7 +901,7 @@ public class EngineContractRegressionTests
             Then = [new ActivityStepDocument { Id = "yes", Activity = "Mark" }]
         });
 
-        var definition = await YamlTestCompilation.BuildAsync(document, Registry());
+        var definition = await YamlTestCompilation.BuildAsync(document, ResolvedContracts());
         Assert.Single(definition.Steps);
         Assert.Equal(WorkflowStepType.Conditional, definition.Steps[0].StepType);
         Assert.Single(definition.Steps[0].ThenSteps);
@@ -933,7 +912,7 @@ public class EngineContractRegressionTests
     public async Task GeneratedYaml_RejectsExternalStepReferences()
     {
         var document = Document(new StepReferenceStepDocument { Id = "external", Ref = "SharedSequence" });
-        await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => YamlTestCompilation.BuildAsync(document, Registry()));
+        await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => YamlTestCompilation.BuildAsync(document, ResolvedContracts()));
     }
 
     [Trait("Feature", "documents")]
@@ -956,8 +935,7 @@ public class EngineContractRegressionTests
             }]
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, Registry(),
-            new Dictionary<string, Type> { ["Mark"] = typeof(YamlMappingActivity) })).Steps);
+        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts(typeof(YamlMappingActivity)))).Steps);
         var data = new RegressionData { Value = "input" };
         var context = new WorkflowContext<RegressionData> { WorkflowData = data };
 
@@ -986,8 +964,7 @@ public class EngineContractRegressionTests
             }]
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, Registry(),
-            new Dictionary<string, Type> { ["Mark"] = typeof(YamlMappingActivity) })).Steps);
+        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts(typeof(YamlMappingActivity)))).Steps);
         Assert.Equal(true, Assert.Single(step.InputMappings).SourceFunction(new WorkflowContext<RegressionData>
         {
             WorkflowData = new RegressionData()
@@ -1009,8 +986,9 @@ public class EngineContractRegressionTests
             }]
         });
 
-        var result = await new WorkflowDocumentValidator().ValidateAsync(document, Registry());
+        var result = await YamlTestContracts.ValidateAsync(document, ResolvedContracts());
         Assert.False(result.IsValid);
+        Assert.Contains(result.Diagnostics, item => item.Code == "EXPR003" && item.Path == "definitions[0].input[0].from.function");
     }
 
     [Trait("Feature", "documents")]
@@ -1024,7 +1002,7 @@ public class EngineContractRegressionTests
             ResumeCondition = new PathExpressionDocument { Path = "event.Approved" }
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, Registry())).Steps);
+        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts())).Steps);
         Assert.NotNull(step.CompiledCondition);
         Assert.False(step.CompiledCondition(new ResumeEventContext<RegressionData, RegressionApprovalEvent>
         {
@@ -1046,7 +1024,7 @@ public class EngineContractRegressionTests
             Workflow = new WorkflowReferenceDocument { Name = "Child", Version = 1 }
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, Registry())).Steps);
+        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts())).Steps);
         Assert.Null(step.WorkflowType);
         Assert.Equal("Child", step.WorkflowName);
     }
@@ -1077,7 +1055,7 @@ public class EngineContractRegressionTests
         var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
             .RunToEndAsync(parent, new RegressionData { Value = "input" });
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);
     }
 
@@ -1111,7 +1089,7 @@ public class EngineContractRegressionTests
                 .Build());
         var result = await engine.FinishedAsync(await engine.RecoverAsync(saved.InstanceId));
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.True(((RegressionData)result.WorkflowData!).ChildExecuted);
     }
 
@@ -1121,43 +1099,14 @@ public class EngineContractRegressionTests
         Definitions = [step]
     };
 
-    private static WorkflowValidationContext Registry()
+    private static WorkflowSourceOptions ResolvedContracts(Type? activityType = null)
     {
-        var registry = new RegressionRegistry();
-        return new WorkflowValidationContext(registry, registry, registry, registry, registry);
-    }
-
-    private sealed class RegressionRegistry : IActivityRegistry, IWorkflowCatalog, IEventRegistry,
-        IDataTypeRegistry, IStepTemplateRegistry
-    {
-        ValueTask<ActivityDescriptor?> IActivityRegistry.FindAsync(string activityKey, CancellationToken cancellationToken) =>
-            ValueTask.FromResult<ActivityDescriptor?>(activityKey == "Mark"
-                ? new ActivityDescriptor { Key = activityKey, ActivityType = typeof(MarkChildActivity) }
-                : null);
-
-        ValueTask<WorkflowDescriptor?> IWorkflowCatalog.FindAsync(string workflowName, int? version, CancellationToken cancellationToken) =>
-            ValueTask.FromResult<WorkflowDescriptor?>(workflowName == "Child"
-                ? new WorkflowDescriptor
-                {
-                    Name = "Child", Version = 1,
-                    RuntimeDefinition = new WorkflowDefinition { Name = "Child", Version = 1, WorkflowDataType = typeof(ChildData) }
-                }
-                : null);
-
-        ValueTask<EventDescriptor?> IEventRegistry.FindAsync(string eventKey, CancellationToken cancellationToken) =>
-            ValueTask.FromResult<EventDescriptor?>(eventKey == "Approval"
-                ? new EventDescriptor { Key = eventKey, EventType = typeof(RegressionApprovalEvent) }
-                : null);
-
-        ValueTask<DataTypeDescriptor?> IDataTypeRegistry.FindAsync(string typeKey, CancellationToken cancellationToken) =>
-            ValueTask.FromResult<DataTypeDescriptor?>(typeKey == "RegressionData"
-                ? new DataTypeDescriptor { Key = typeKey, ClrType = typeof(RegressionData) }
-                : null);
-
-        ValueTask<StepTemplateDescriptor?> IStepTemplateRegistry.FindAsync(string templateKey, CancellationToken cancellationToken) =>
-            ValueTask.FromResult<StepTemplateDescriptor?>(templateKey == "SharedSequence"
-                ? new StepTemplateDescriptor { Key = templateKey }
-                : null);
+        var options = YamlTestContracts.Create(
+            ("RegressionData", typeof(RegressionData)),
+            ("Mark", activityType ?? typeof(MarkChildActivity)),
+            ("Approval", typeof(RegressionApprovalEvent)));
+        options.Workflows["Child@1"] = new(YamlTestContracts.Name(typeof(ChildData)), 1);
+        return options;
     }
 }
 

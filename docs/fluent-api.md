@@ -3,7 +3,7 @@ title: Fluent C# API
 description: Build typed workflows, mappings and control flow.
 ---
 
-`Workflow.Create<TData>(name, version)` and `Workflow.Build<TData>(configure, name, version)` produce a `WorkflowDefinition`. `Build()` validates contracts and structure; `WorkflowDefinitionValidator.Validate` also exposes validation to applications.
+Start with `Workflow.Create<TData>(name, version)`, configure the fluent graph, then call its instance `Build()` to produce a `WorkflowDefinition`. `Build()` validates contracts and structure; `WorkflowDefinitionValidator.Validate` also exposes validation to applications.
 
 An unnamed direct definition receives a stable derived name when registered or started. Use an explicit name and version for durable deployments and named child invocations.
 
@@ -25,6 +25,8 @@ It compiles and executes in [ReadmeExamples.cs](../tests/IxIFlow.Samples.Tests/R
 
 Mapped activity inputs and declared defaults are serialized before invocation; property initializers alone are not frozen inputs. Each attempt receives copies of that saved input; mutating an input object does not mutate workflow data through a shared reference. Outputs explicitly map results back to data after execution. `ctx.PreviousStep` is the typed preceding result in that builder scope; do not rely on it retaining a DI service's dependencies after recovery.
 
+Mapping contexts expose workflow data, typed previous results, loop items and the engine clock. Resume contexts add the accepted event; compensation contexts add the saved activity and, for requests, its reply. Read execution identity and attempt metadata from `IActivityContext`.
+
 The activity context also exposes live `WorkflowData` and `PreviousStepData` objects. Direct changes there participate in the next commit. Prefer declared mappings for reusable contracts and clear data flow. Within a parallel branch, that live data is the branch's isolated copy.
 
 ## Control-flow reference
@@ -45,6 +47,8 @@ The continuation builder exposes these families. The root builder exposes initia
 | `WaitFor<TEvent>`, `Suspend<TEvent>` | Save an event/reply wait, predicate, output mappings, default suggestion and timeout path; [Review](../samples/IxIFlow.Samples/Review.cs) |
 | `Delay` | Durable positive duration, retaining the preceding value; [Reminder](../samples/IxIFlow.Samples/Reminder.cs) |
 | `Invoke<TWorkflow,TChildData>`, `Invoke<TChildData>(name, version)` | Independent child instance with mapped input/output; [Review](../samples/IxIFlow.Samples/Review.cs) |
+
+Typed children require `services.RegisterWorkflow<TWorkflow>()` before building the service provider; the class supplies its version, and registration preserves an optional custom name. Named children require their exact name and version in `IWorkflowVersionRegistry`. Both invocation forms execute the registered definition. Every process that can resume the parent or child must load the same definitions.
 
 ## Parallel work and lists
 

@@ -18,7 +18,7 @@ public class LoopsSyntaxTests
     public void Build_DoWhileLoop_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that DoWhile loop syntax compiles correctly
-        var definition = Workflow.Build<BatchWorkflowData>(builder => builder
+        var definition = Workflow.Create<BatchWorkflowData>("DoWhileLoopTest")
                 .Step<InitializeBatchAsyncActivity>(setup => setup
                     .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
                     .Output(act => act.BatchItems).To(ctx => ctx.WorkflowData.RemainingItems)
@@ -36,8 +36,8 @@ public class LoopsSyntaxTests
                     },
                     condition =>
                         condition.PreviousStep.RemainingItems.Count > 0 // ProcessBatchItemAsyncActivity.RemainingItems
-                ),
-            "DoWhileLoopTest");
+                )
+            .Build();
 
         // Assert - Verify workflow definition was created successfully
         Assert.NotNull(definition);
@@ -51,7 +51,7 @@ public class LoopsSyntaxTests
     public void Build_WhileDoLoop_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that WhileDo loop syntax compiles correctly
-        var definition = Workflow.Build<BatchWorkflowData>(builder => builder
+        var definition = Workflow.Create<BatchWorkflowData>("WhileDoLoopTest")
                 .Step<InitializeBatchAsyncActivity>(setup => setup
                     .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
                     .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems)
@@ -69,8 +69,8 @@ public class LoopsSyntaxTests
                             .Output(act => act.ProcessedItems).To(ctx => ctx.WorkflowData.ProcessedCount)
                             .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
                     }
-                ),
-            "WhileDoLoopTest");
+                )
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -81,7 +81,7 @@ public class LoopsSyntaxTests
     public void Build_LoopWithMultipleSteps_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that loops with multiple steps compile correctly
-        var definition = Workflow.Build<BatchWorkflowData>(builder => builder
+        var definition = Workflow.Create<BatchWorkflowData>("LoopWithMultipleStepsTest")
                 .Step<InitializeBatchAsyncActivity>(setup => setup
                     .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
                     .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
@@ -99,8 +99,8 @@ public class LoopsSyntaxTests
                                 .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus));
                     },
                     condition => condition.WorkflowData.RemainingItems.Count > 0
-                ),
-            "LoopWithMultipleStepsTest");
+                )
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -111,7 +111,7 @@ public class LoopsSyntaxTests
     public void Build_NestedLoops_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that nested loops compile correctly
-        var definition = Workflow.Build<BatchWorkflowData>(builder => builder
+        var definition = Workflow.Create<BatchWorkflowData>("NestedLoopsTest")
                 .Step<InitializeBatchAsyncActivity>(setup => setup
                     .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
                     .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
@@ -129,8 +129,8 @@ public class LoopsSyntaxTests
                         );
                     },
                     condition => condition.WorkflowData.RemainingItems.Count > 0 // Outer condition
-                ),
-            "NestedLoopsTest");
+                )
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -141,7 +141,7 @@ public class LoopsSyntaxTests
     public void Build_LoopStructure_ShouldHaveCorrectStepTypes()
     {
         // Arrange & Act
-        var definition = Workflow.Build<BatchWorkflowData>(builder => builder
+        var definition = Workflow.Create<BatchWorkflowData>("LoopStructureTest")
                 .Step<InitializeBatchAsyncActivity>(setup => setup
                     .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput))
                 .DoWhile(
@@ -151,8 +151,8 @@ public class LoopsSyntaxTests
                             .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems));
                     },
                     condition => condition.WorkflowData.RemainingItems.Count > 0
-                ),
-            "LoopStructureTest");
+                )
+            .Build();
 
         // Assert - Verify step types and structure
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
@@ -167,7 +167,7 @@ public class LoopsSyntaxTests
     public void Build_WhileDoStructure_ShouldHaveCorrectStepTypes()
     {
         // Arrange & Act
-        var definition = Workflow.Build<BatchWorkflowData>(builder => builder
+        var definition = Workflow.Create<BatchWorkflowData>("WhileDoStructureTest")
                 .Step<InitializeBatchAsyncActivity>(setup => setup
                     .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput))
                 .WhileDo(
@@ -177,8 +177,8 @@ public class LoopsSyntaxTests
                         loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
                             .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems));
                     }
-                ),
-            "WhileDoStructureTest");
+                )
+            .Build();
 
         // Assert - Verify step types and structure
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
@@ -193,7 +193,7 @@ public class LoopsSyntaxTests
     public void Build_StepAfterLoop_ShouldAccessLoopResult()
     {
         // Arrange & Act - Test that step after loop can access loop results
-        var definition = Workflow.Build<BatchWorkflowData>(builder => builder
+        var definition = Workflow.Create<BatchWorkflowData>("StepAfterLoopTest")
                 .Step<InitializeBatchAsyncActivity>(setup => setup
                     .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
                     .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
@@ -210,8 +210,8 @@ public class LoopsSyntaxTests
                 .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.ProcessedCount.ToString())
                     .Input(act => act.Success).From(ctx => ctx.PreviousStep.ProcessedItems > 0) // Access loop result
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus)),
-            "StepAfterLoopTest");
+                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -224,7 +224,7 @@ public class LoopsSyntaxTests
     public void Build_LoopConditionComplexity_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that complex loop conditions compile correctly
-        var definition = Workflow.Build<BatchWorkflowData>(builder => builder
+        var definition = Workflow.Create<BatchWorkflowData>("LoopConditionComplexityTest")
                 .Step<InitializeBatchAsyncActivity>(setup => setup
                     .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
                     .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems)
@@ -238,8 +238,8 @@ public class LoopsSyntaxTests
                     },
                     condition => condition.PreviousStep.RemainingItems.Count > 0 &&
                                  condition.WorkflowData.ProcessedCount < 100 // Complex condition
-                ),
-            "LoopConditionComplexityTest");
+                )
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -251,7 +251,7 @@ public class LoopsSyntaxTests
     public void Build_EmptyLoopBody_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that loop with minimal body compiles
-        var definition = Workflow.Build<BatchWorkflowData>(builder => builder
+        var definition = Workflow.Create<BatchWorkflowData>("EmptyLoopBodyTest")
                 .Step<InitializeBatchAsyncActivity>(setup => setup
                     .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
                     .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
@@ -262,8 +262,8 @@ public class LoopsSyntaxTests
                             .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems));
                     },
                     condition => false // Loop will not execute
-                ),
-            "EmptyLoopBodyTest");
+                )
+            .Build();
 
         // Assert
         Assert.NotNull(definition);

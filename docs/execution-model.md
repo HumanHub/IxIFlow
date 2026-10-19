@@ -15,7 +15,7 @@ Each immutable commit includes an execution epoch, commit ID, expected revision 
 
 Conditions, mappings, wait predicates, result/outcome selectors and combiners must be pure. Read workflow time through `ctx.UtcNow`. Memory and SQLite use the registered `TimeProvider`; SQL Server and PostgreSQL use database time for deadlines and event ordering. Purity validation and analyzers cover supported patterns, not arbitrary external code.
 
-`WorkflowOptions.PersistState = false` skips saved instances for single-call execution. Waits, delays and child invocations are rejected in that mode.
+Every execution acquires a lease and saves its state through fenced commits, including local and single-call execution. Waits, delays and child invocations use the same durable path.
 
 ## Leases and recovery
 
@@ -89,7 +89,7 @@ Both typed and name/version `Invoke` forms create an independent persisted child
 
 The default `CancelWithParent` behavior cancels the child and waits for it to settle when the invoking branch is cancelled. A child awaiting resolution can hold a cancelling parent. With `CancelWithParent(false)`, cancellation closes the parent's child wait and the invoking branch gives up the result and unwinds immediately; an already started child continues. A detached child whose start was never committed is not started; a default child is started and cancelled in the same commit. Child business failures follow the parent's error handling; infrastructure failures leave work recoverable. Cancellation, timeout or termination raises `ChildWorkflowEndedException` at the invocation. Deleting a child, or cancelling a missing child, atomically sends a terminated-child notice to a waiting parent. Missing child data cannot silently skip declared outputs.
 
-Named invocations resolve a pinned definition from the host's registry. Typed invocations can build an installed `IWorkflow<T>` class and register its definition; an existing name/version must have the same fingerprint. Deactivated definitions refuse new child starts. See [Review.cs](../samples/IxIFlow.Samples/Review.cs) for a pinned child. Child placement demands are planned.
+Named invocations resolve a pinned definition from the host's registry. Typed invocations resolve an `IWorkflow<T>` class registered with `services.RegisterWorkflow<TWorkflow>()` before building the service provider. Registration supplies its declared version and optional custom name; its definition must match the registry fingerprint. Deactivated definitions refuse new child starts. See [Review.cs](../samples/IxIFlow.Samples/Review.cs) for a pinned child. Child placement demands are planned.
 
 ## Parallel data and joins
 

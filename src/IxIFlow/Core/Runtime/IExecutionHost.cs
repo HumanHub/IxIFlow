@@ -7,9 +7,6 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal interface IExecutionHost
 {
-    /// <summary>False for a run that keeps no saved state; nothing is committed.</summary>
-    bool PersistsState { get; }
-
     /// <summary>
     /// Cancelled when the host is stopping: start no new steps, let running activities finish and
     /// be committed, then return. The instance continues on recovery.

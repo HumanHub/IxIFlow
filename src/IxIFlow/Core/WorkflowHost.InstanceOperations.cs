@@ -186,7 +186,7 @@ public sealed partial class WorkflowHost
                 OperatorTrace.ApplyCancellation(instance, checkpoint, cancellationReason, Now);
             await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
             return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-                true, owner, cancellationToken);
+                owner, cancellationToken);
         }
 
         public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId)
@@ -346,24 +346,12 @@ public sealed partial class WorkflowHost
             CancellationToken cancellationToken)
             where TData : class
         {
-            if (options.EnableDebugging)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                    "Workflow debugging is not implemented");
-            if (options.WorkflowRetryPolicy != null)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                    "Workflow-wide retry is not supported; configure retry on a saga or activity step");
             if (options.InstanceId != null && string.IsNullOrWhiteSpace(options.InstanceId))
                 throw new ArgumentException("An explicit workflow instance ID cannot be empty", nameof(options));
             if (options.ExecutionTimeout is { } executionTimeout && executionTimeout <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(options),
                     "Execution timeout must be positive");
-            if (options.InstanceId != null && !options.PersistState)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                    "An explicit workflow instance ID requires state persistence");
             var (instance, checkpoint, scopes) = NewInstance(definition, workflowData, options, Now);
-            if (!options.PersistState && scopes.RequiresPersistence)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                    "A workflow with waits or child workflows requires state persistence");
 
             try
             {
@@ -375,14 +363,12 @@ public sealed partial class WorkflowHost
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } started)
                     return ExistingStart(started, definition, scopes);
-                await using var owner = options.PersistState
-                    ? await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, _time)
+                await using var owner = await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, _time)
                         ?? (options.InstanceId == null
                             ? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
                                 "The new workflow instance could not acquire execution ownership")
-                            : null)
-                    : null;
-                if (options.PersistState && owner == null)
+                            : null);
+                if (owner == null)
                     return WorkflowExecutor.Busy(instance.InstanceId);
                 // Another start may have saved the instance since the first read.
                 if (options.InstanceId != null &&
@@ -394,15 +380,12 @@ public sealed partial class WorkflowHost
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                         $"Workflow {definition.Name} v{definition.Version} is deactivated");
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-                if (options.PersistState)
-                {
-                    await registry.RegisterWorkflowAsync(definition);
-                    await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
-                    // The start is durable from here; a caller waiting only for acceptance continues.
-                    _control.Accept(instance.InstanceId);
-                }
+                await registry.RegisterWorkflowAsync(definition);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
+                // The start is durable from here; a caller waiting only for acceptance continues.
+                _control.Accept(instance.InstanceId);
                 return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-                    options.PersistState, owner, cancellationToken);
+                    owner, cancellationToken);
             }
             catch (ExecutionOwnershipLostException)
             {
@@ -436,7 +419,6 @@ public sealed partial class WorkflowHost
                 ParentInstanceId = options.ParentInstanceId,
                 CreatedAt = now,
                 StartedAt = now,
-                TotalSteps = definition.Steps.Count,
                 TracingEnabled = options.EnableTracing,
                 Properties = new Dictionary<string, object>(options.Properties)
             };
@@ -444,8 +426,7 @@ public sealed partial class WorkflowHost
             var checkpoint = new ExecutionCheckpoint
             {
                 DefinitionFingerprint = scopes.Fingerprint,
-                // The store stamps the execution deadline when the start is committed (D-35); a run that
-                // saves nothing keeps its own.
+                // The store stamps the execution deadline when the start is committed (D-35).
                 ExecutionTimeout = options.ExecutionTimeout,
                 ExecutionTimerId = options.ExecutionTimeout != null ? Guid.NewGuid().ToString("N") : null,
                 ExecutionDeadlineUtc = instance.StartedAt + options.ExecutionTimeout,
@@ -662,7 +643,7 @@ public sealed partial class WorkflowHost
                 // Leaving a stop is saved before any workflow code runs, so a crash after it is counted
                 // and a cancellation is not left waiting. It saves the stopped checkpoint without its
                 // marker, so no limit applies; a run that still exceeds a limit stops again at its next commit.
-                await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner, true), instance,
+                await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner), instance,
                     checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
             }
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
@@ -671,7 +652,7 @@ public sealed partial class WorkflowHost
             var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
             return await RunAndSaveAsync(definition, instance, checkpoint,
-                workflowData, true, owner, cancellationToken);
+                workflowData, owner, cancellationToken);
         }
 
         // An idle instance has work when an event waits for it or the store finds one of its deadlines due
@@ -739,21 +720,21 @@ public sealed partial class WorkflowHost
         private int _runDepth;
 
         private async Task<WorkflowExecutionResult> RunAndSaveAsync(WorkflowDefinition definition,
-            WorkflowInstance instance, ExecutionCheckpoint checkpoint, object workflowData, bool persistState,
-            WorkflowExecutionLease? owner, CancellationToken cancellationToken)
+            WorkflowInstance instance, ExecutionCheckpoint checkpoint, object workflowData,
+            WorkflowExecutionLease owner, CancellationToken cancellationToken)
         {
             var depth = Interlocked.Increment(ref _runDepth);
             try
             {
                 var result = await _executor.RunAsync(definition, instance, checkpoint, workflowData,
-                    new HostedRun(this, instance, owner, persistState, canPark: depth == 1), cancellationToken);
+                    new HostedRun(this, instance, owner, canPark: depth == 1), cancellationToken);
                 // The host resumes what it saved with a runnable time, on time (C-12), and forgets
                 // what has finished.
-                if (persistState && checkpoint.LocalWakeUtc is { } due &&
+                if (checkpoint.LocalWakeUtc is { } due &&
                     result.Status is WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended or
                         WorkflowExecutionStatus.NeedsResolution)
                     _control.Schedule(instance.InstanceId, due);
-                else if (persistState && WorkflowStoreRules.IsTerminal(instance.Status))
+                else if (WorkflowStoreRules.IsTerminal(instance.Status))
                     _control.Unschedule(instance.InstanceId);
                 return result;
             }
@@ -765,11 +746,11 @@ public sealed partial class WorkflowHost
 
         // A request whose checkpoint would exceed a limit is refused; the instance keeps its saved state.
         private async Task PersistAsync(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
-            object workflowData, WorkflowScopeCatalog scopes, WorkflowExecutionLease? owner)
+            object workflowData, WorkflowScopeCatalog scopes, WorkflowExecutionLease owner)
         {
             try
             {
-                await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner, true), instance,
+                await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner), instance,
                     checkpoint, workflowData, scopes, Now);
             }
             catch (CheckpointLimitExceededException error)
@@ -859,34 +840,33 @@ public sealed partial class WorkflowHost
             instance.LastError = stop.Reason;
             instance.LastErrorStackTrace = null;
             // Like the resource stop, this saves the last checkpoint plus a marker, so no limit applies.
-            await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner, true), instance,
+            await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner), instance,
                 checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
             return Stopped(instance, stop);
         }
 
         /// <summary>The host side of one run: the instance's lease, its saved state and its children.</summary>
-        private sealed class HostedRun(InstanceOperations operations, WorkflowInstance instance, WorkflowExecutionLease? owner,
-            bool persistState, bool canPark = false) : IExecutionHost
+        private sealed class HostedRun(InstanceOperations operations, WorkflowInstance instance, WorkflowExecutionLease owner,
+            bool canPark = false) : IExecutionHost
         {
-            public bool PersistsState => persistState;
-            public bool CanPark => canPark && persistState && owner != null;
+            public bool CanPark => canPark;
             public CancellationToken Drain => operations._control.Drain;
-            public long Epoch => owner?.Epoch ?? 0;
+            public long Epoch => owner.Epoch;
             public ExecutionLimits Limits => operations._limits;
-            public Task? OwnershipLoss => owner?.Loss;
-            public Task<CancellationReason>? CancellationSignal => owner?.Cancellation;
-            public long ObservedInboxSequence => owner?.InboxSequence ?? 0;
-            public Task? InboxChanged => owner?.InboxChanged;
+            public Task? OwnershipLoss => owner.Loss;
+            public Task<CancellationReason>? CancellationSignal => owner.Cancellation;
+            public long ObservedInboxSequence => owner.InboxSequence;
+            public Task? InboxChanged => owner.InboxChanged;
 
             public CancellationReason? ObservedCancellation =>
-                owner?.Cancellation.IsCompletedSuccessfully == true ? owner.Cancellation.Result : null;
+                owner.Cancellation.IsCompletedSuccessfully ? owner.Cancellation.Result : null;
 
-            public void ThrowIfOwnershipLost() => owner?.ThrowIfLost();
+            public void ThrowIfOwnershipLost() => owner.ThrowIfLost();
 
             public Task<CheckpointReply> CommitAsync(CheckpointCommit commit) =>
                 operations.CommitAsync(instance, commit, Epoch);
 
-            public void ObserveCancellation(CancellationReason reason) => owner?.ObserveCancellation(reason);
+            public void ObserveCancellation(CancellationReason reason) => owner.ObserveCancellation(reason);
 
             public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) =>
                 operations._children.ResolveAsync(step, starting);

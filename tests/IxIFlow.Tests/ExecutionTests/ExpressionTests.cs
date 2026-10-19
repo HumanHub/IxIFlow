@@ -63,7 +63,7 @@ public class ExpressionTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExpressionTestData)result.WorkflowData;
@@ -111,7 +111,7 @@ public class ExpressionTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExpressionTestData)result.WorkflowData;
@@ -165,7 +165,7 @@ public class ExpressionTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (ExpressionTestData)result.WorkflowData;

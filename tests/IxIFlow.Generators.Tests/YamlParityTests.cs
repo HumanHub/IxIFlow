@@ -493,18 +493,16 @@ public sealed partial class YamlParityTests
         collection.AddTransient<ParityFlaky>();
         collection.AddTransient<ParityPolicyPath>();
         collection.AddIxIFlow();
+        collection.RegisterWorkflow<ParityChildWorkflow>();
         await using var services = collection.BuildServiceProvider();
         await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Workflow_child.Build());
-        var typedBuilder = new WorkflowBuilder<FlowData>(nameof(ParityChildWorkflow), 3);
-        new ParityChildWorkflow().Build(typedBuilder);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(typedBuilder.Build());
         var client = services.GetRequiredService<IWorkflowClient>();
         var result = await client.RunAsync(definition, data?.Invoke() ?? new ParityData { Values = [4, 6] });
         if (idle != null) result = await idle(services, result);
         if (result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
             result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
         verifyProbe?.Invoke(services.GetRequiredService<ParityProbe>());
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
         return (Assert.IsType<ParityData>(result.WorkflowData), checkpoint.RootElement.GetProperty("DefinitionFingerprint").GetString()!);

@@ -54,7 +54,6 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
             Version = workflowVersion,
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
-            EstimatedStepCount = _steps.Count,
             Steps = _steps
         };
         WorkflowDefinitionValidator.Apply(definition);
@@ -725,7 +724,6 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             Version = workflowVersion,
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
-            EstimatedStepCount = _steps.Count,
             Steps = _steps
         };
         WorkflowDefinitionValidator.Apply(definition);

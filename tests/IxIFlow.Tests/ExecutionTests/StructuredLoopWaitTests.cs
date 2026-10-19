@@ -28,8 +28,7 @@ public class StructuredLoopWaitTests
             .Build();
 
         var result = await services.GetRequiredService<IWorkflowClient>()
-            .RunAsync(definition, new LoopData(),
-                new WorkflowOptions { PersistState = false });
+            .RunAsync(definition, new LoopData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(1001, Data(result).Count);

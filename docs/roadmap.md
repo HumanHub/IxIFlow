@@ -26,7 +26,7 @@ Completion outbox publishers and outgoing signed webhooks are implemented, as ar
 | Editor and debugger | Visual editor, breakpoints, all-stop pause, stepping through loops, paused timer rules, audited data edits, Debug Adapter Protocol and inspection/replay tooling |
 | Management and operations | Management API/operator listings, unused bundle retention, large-payload storage, residency policies and redaction |
 
-The outgoing `IxIFlow.Webhooks` publisher does not provide incoming trigger endpoints. Instance retention is complete; bundle retention depends on the publishing work. The current in-memory version registry supports registration, lookup/listing, deactivation and default metadata for installed definitions; the durable publishing lifecycle remains planned.
+The outgoing `IxIFlow.Webhooks` publisher does not provide incoming trigger endpoints. Instance retention is complete; bundle retention depends on the publishing work. The current in-memory version registry supports registration, exact name/version lookup and deactivation for installed definitions; the durable publishing lifecycle remains planned.
 
 ## After 1.0
 

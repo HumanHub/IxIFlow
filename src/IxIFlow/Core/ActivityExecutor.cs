@@ -102,21 +102,6 @@ public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
 }
 
 /// <summary>
-/// Enhanced activity execution result with typed output
-/// </summary>
-public class TypedActivityExecutionResult<TOutput>
-{
-    public bool IsSuccess { get; set; }
-    public TOutput? OutputData { get; set; }
-    public Exception? Exception { get; set; }
-    public string? ErrorMessage { get; set; }
-    public string? ErrorStackTrace { get; set; }
-    public TimeSpan ExecutionTime { get; set; }
-    public List<PropertyMappingTrace> InputTraces { get; set; } = new();
-    public List<PropertyMappingTrace> OutputTraces { get; set; } = new();
-}
-
-/// <summary>
 /// An activity whose inputs and execution context have been prepared before invocation.
 /// </summary>
 public sealed class PreparedActivity
@@ -153,19 +138,6 @@ public sealed class PreparedActivity
 }
 
 /// <summary>
-///     Tracing information for property mappings
-/// </summary>
-public class PropertyMappingTrace
-{
-    public string PropertyName { get; set; } = string.Empty;
-    public object? SourceValue { get; set; }
-    public object? TargetValue { get; set; }
-    public string? SourceExpression { get; set; }
-    public bool IsSuccess { get; set; }
-    public string? ErrorMessage { get; set; }
-}
-
-/// <summary>
 /// Enhanced activity executor that centralizes activity execution logic
 /// and supports typed workflow and previous step data
 /// </summary>
@@ -181,18 +153,6 @@ public interface IActivityExecutor
         string invocationId,
         string attemptId,
         IReadOnlyCollection<string>? codeInputs = null);
-
-    /// <summary>
-    /// Creates a typed activity execution context
-    /// </summary>
-    TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> CreateTypedActivityContext<TWorkflowData, TPreviousStepData>(
-        StepExecutionContext<TWorkflowData> stepContext,
-        TPreviousStepData? previousStepData,
-        WorkflowStep step,
-        IDictionary<string, object>? metadata = null,
-        CancellationToken cancellationToken = default);
-
-
 }
 
 /// <summary>
@@ -222,7 +182,7 @@ public class ActivityExecutor : IActivityExecutor
         IReadOnlyCollection<string>? codeInputs = null)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var activity = CreateActivityInstance(request.ActivityType);
+        var activity = Runtime.ActivityActivation.Create(request.ActivityType, _serviceProvider);
         var context = new TypedActivityExecutionContext<TWorkflowData, TPreviousStepData>(
             _serviceProvider,
             request.ExecutionContext.WorkflowInstance.InstanceId,
@@ -239,14 +199,13 @@ public class ActivityExecutor : IActivityExecutor
             invocationId,
             attemptId);
 
-        var mappingResult = new TypedActivityExecutionResult<object>();
         var inputs = new Runtime.ActivityInputSnapshot();
         if (applyInputMappings || codeInputs is { Count: > 0 })
             await ApplyTypedInputMappingsAsync(activity, inputs,
                 applyInputMappings ? request.InputMappings : request.InputMappings
                     .Where(mapping => codeInputs!.Contains(mapping.TargetProperty)).ToList(),
                 request.WorkflowData,
-                request.PreviousStepData, request.CatchFault, mappingResult,
+                request.PreviousStepData, request.CatchFault,
                 request.Step.Runtime?.Context, request.CompensationPreviousStepData,
                 request.CompensationPreviousChainData, request.Items, request.CompensationReply,
                 request.CompensationAnswered);
@@ -268,60 +227,11 @@ public class ActivityExecutor : IActivityExecutor
         return new PreparedActivity(activity, context,
             () => ApplyTypedOutputMappingsAsync(activity, request.OutputMappings,
                 request.WorkflowData, request.PreviousStepData, request.CatchFault,
-                new TypedActivityExecutionResult<object>(), request.Items),
+                request.Items),
             state => context.RecoveryState = state,
             reply => context.Reply = reply,
             attempt => context.Attempt = attempt,
             inputs);
-    }
-
-    public TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> CreateTypedActivityContext<TWorkflowData, TPreviousStepData>(
-        StepExecutionContext<TWorkflowData> stepContext,
-        TPreviousStepData? previousStepData,
-        WorkflowStep step,
-        IDictionary<string, object>? metadata = null,
-        CancellationToken cancellationToken = default)
-    {
-        return new TypedActivityExecutionContext<TWorkflowData, TPreviousStepData>(
-            _serviceProvider,
-            stepContext.WorkflowInstance.InstanceId,
-            stepContext.WorkflowInstance.CorrelationId,
-            step.ActivityType?.Name ?? "Unknown",
-            stepContext.WorkflowInstance.CurrentStepNumber,
-            stepContext.WorkflowDefinition.Name,
-            stepContext.WorkflowDefinition.Version,
-            _time.GetUtcNow().UtcDateTime,
-            stepContext.WorkflowData,
-            previousStepData,
-            metadata: metadata,
-            logger: _logger
-        );
-    }
-
-    private IAsyncActivity CreateActivityInstance(Type activityType)
-    {
-        try
-        {
-            // Try to create via DI first
-            var activity = _serviceProvider.GetService(activityType) as IAsyncActivity;
-            if (activity != null)
-            {
-                _logger.LogTrace("Created activity {ActivityType} via dependency injection", activityType.Name);
-                return activity;
-            }
-
-            // Fall back to Activator.CreateInstance
-            activity = (IAsyncActivity)Activator.CreateInstance(activityType)!;
-
-            _logger.LogTrace("Created activity {ActivityType} via Activator.CreateInstance", activityType.Name);
-            return activity;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to create activity instance of type {ActivityType}", activityType.Name);
-            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                $"Activity '{activityType.Name}' cannot be created in this host: {ex.Message}", ex);
-        }
     }
 
     private async Task ApplyTypedInputMappingsAsync<TWorkflowData, TPreviousStepData>(
@@ -331,7 +241,6 @@ public class ActivityExecutor : IActivityExecutor
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
         object? catchFault,
-        TypedActivityExecutionResult<object> result,
         Func<Runtime.MappingContextValues, object>? defaultContext = null,
         object? compensationPreviousStep = null,
         object? compensationPreviousChain = null,
@@ -347,11 +256,6 @@ public class ActivityExecutor : IActivityExecutor
 
         foreach (var mapping in inputMappings.Where(m => m.Direction == PropertyMappingDirection.Input))
         {
-            var trace = new PropertyMappingTrace
-            {
-                PropertyName = mapping.TargetProperty
-            };
-
             try
             {
                 var evaluationContext = mapping.CompensationSource switch
@@ -377,7 +281,6 @@ public class ActivityExecutor : IActivityExecutor
 
                 // Execute the compiled source function
                 var sourceValue = mapping.SourceFunction(evaluationContext);
-                trace.SourceValue = sourceValue;
 
                 // Set target property on activity
                 var targetProperty = activity.GetType().GetProperty(mapping.TargetProperty);
@@ -388,8 +291,6 @@ public class ActivityExecutor : IActivityExecutor
                         ConvertValue(sourceValue, activity.GetType(), targetProperty), _serviceProvider);
                     inputs.Properties[targetProperty.Name] = saved;
                     targetProperty.SetValue(activity, convertedValue);
-                    trace.TargetValue = convertedValue;
-                    trace.IsSuccess = true;
 
                     _logger.LogTrace("Applied typed input mapping: {Property} = {Value}",
                         mapping.TargetProperty, convertedValue);
@@ -402,14 +303,10 @@ public class ActivityExecutor : IActivityExecutor
             }
             catch (Exception ex)
             {
-                trace.IsSuccess = false;
-                trace.ErrorMessage = ex.Message;
                 _logger.LogError(ex, "Failed to apply typed input mapping for property {Property}",
                     mapping.TargetProperty);
                 throw;
             }
-
-            result.InputTraces.Add(trace);
         }
     }
 
@@ -419,7 +316,6 @@ public class ActivityExecutor : IActivityExecutor
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
         object? catchFault,
-        TypedActivityExecutionResult<object> result,
         ItemValues? items = null)
     {
         _logger.LogDebug("Applying {Count} typed output mappings from activity {ActivityType}",
@@ -427,11 +323,6 @@ public class ActivityExecutor : IActivityExecutor
 
         foreach (var mapping in outputMappings.Where(m => m.Direction == PropertyMappingDirection.Output))
         {
-            var trace = new PropertyMappingTrace
-            {
-                PropertyName = mapping.TargetProperty
-            };
-
             try
             {
                 // Get value from activity property
@@ -439,7 +330,6 @@ public class ActivityExecutor : IActivityExecutor
                 if (sourceProperty != null && sourceProperty.CanRead)
                 {
                     var sourceValue = sourceProperty.GetValue(activity);
-                    trace.SourceValue = sourceValue;
 
                     var evaluationContext = mapping.ContextFactory!(
                         new Runtime.MappingContextValues(workflowData, previousStepData, catchFault));
@@ -449,8 +339,6 @@ public class ActivityExecutor : IActivityExecutor
                     if (mapping.TargetAssignmentFunction != null)
                     {
                         mapping.TargetAssignmentFunction(evaluationContext, sourceValue);
-                        trace.TargetValue = sourceValue;
-                        trace.IsSuccess = true;
 
                         _logger.LogTrace("Applied typed output mapping: {Property} = {Value}",
                             mapping.TargetProperty, sourceValue);
@@ -469,14 +357,10 @@ public class ActivityExecutor : IActivityExecutor
             }
             catch (Exception ex)
             {
-                trace.IsSuccess = false;
-                trace.ErrorMessage = ex.Message;
                 _logger.LogError(ex, "Failed to apply typed output mapping for property {Property}",
                     mapping.TargetProperty);
                 throw;
             }
-
-            result.OutputTraces.Add(trace);
         }
     }
 

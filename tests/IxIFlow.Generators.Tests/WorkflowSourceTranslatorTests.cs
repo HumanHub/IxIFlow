@@ -237,7 +237,7 @@ public sealed class WorkflowSourceTranslatorTests
         var rejected = await client.ResumeAsync(started.InstanceId, "answer", new Answer { Value = 6 });
         Assert.Equal(WorkflowExecutionStatus.Suspended, rejected.Status);
         var result = await client.ResumeAsync(started.InstanceId, "answer", new Answer { Value = 7 });
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(7, Assert.IsAssignableFrom<FlowData>(result.WorkflowData).Result);
     }
 

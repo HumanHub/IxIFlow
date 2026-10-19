@@ -179,7 +179,6 @@ public sealed class WorkflowExecutorHostTests
         public int LoseOwnershipAtCommit { get; init; }
         public Func<bool> CancellationWhen { get; init; } = () => false;
 
-        public bool PersistsState => true;
         public CancellationTokenSource Draining { get; } = new();
         public CancellationToken Drain => Draining.Token;
         public long Epoch => 1;

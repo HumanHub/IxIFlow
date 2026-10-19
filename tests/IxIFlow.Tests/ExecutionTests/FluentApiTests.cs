@@ -153,7 +153,7 @@ public class FluentApiTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (OrderWorkflowData)result.WorkflowData;
@@ -196,7 +196,7 @@ public class FluentApiTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (OrderWorkflowData)result.WorkflowData;

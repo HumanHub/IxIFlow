@@ -4,19 +4,22 @@ using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Tests.Infrastructure;
 
-/// <summary>
-/// What a parallel step's branches have committed so far, as one view of the workflow data. Under
-/// D-14 the saved data and run results show the instance's data only until the join; branches keep
-/// their own copies, saved as changes. Tests that prove a branch committed while a sibling still waits
-/// read this view of the saved state instead.
-/// </summary>
+/// <summary>Reads one saved branch copy, following branch indexes from the root through open joins.</summary>
 public static class BranchProgress
 {
-    public static async Task<T> ViewAsync<T>(IWorkflowStateRepository repository, string instanceId)
+    public static async Task<T> ReadAsync<T>(IWorkflowStateRepository repository, string instanceId,
+        params int[] branchPath)
     {
         var saved = await repository.GetWorkflowInstanceAsync(instanceId)
             ?? throw new InvalidOperationException($"Instance '{instanceId}' was not saved");
-        var data = JsonSerializer.Deserialize<T>(saved.WorkflowDataJson)!;
-        return (T)BranchData.Overlay(data, ExecutionCheckpoint.Read(saved.ExecutionStateJson));
+        var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
+        checkpoint.RootData = JsonSerializer.Deserialize<T>(saved.WorkflowDataJson)!;
+        var continuation = checkpoint.Continuations.Single(item => item.ParentJoinId == null);
+        foreach (var index in branchPath)
+        {
+            var join = checkpoint.Joins.Single(item => item.ParentContinuationId == continuation.Id);
+            continuation = checkpoint.BranchesOf(join)[index];
+        }
+        return (T)checkpoint.DataOf(continuation);
     }
 }

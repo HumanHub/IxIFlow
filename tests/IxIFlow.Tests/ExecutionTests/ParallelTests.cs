@@ -116,7 +116,7 @@ namespace IxIFlow.Tests.ExecutionTests
             var result = await _workflowEngine.RunAsync(definition, workflowData);
 
             // Assert
-            Assert.True(result.IsSuccess);
+            Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
             Assert.NotNull(result.WorkflowData);
             var finalData = (ParallelTestData)result.WorkflowData;
             Assert.Equal(80, finalData.FinalResult); // 10*2 + 20*3 = 20+60=80
@@ -155,7 +155,7 @@ namespace IxIFlow.Tests.ExecutionTests
             var result = await _workflowEngine.RunAsync(definition, workflowData);
 
             // Assert
-            Assert.False(result.IsSuccess);
+            Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
             // Check both possible error messages
             Assert.True(
                 result.ErrorMessage.Contains("Simulated failure") ||
@@ -218,7 +218,7 @@ namespace IxIFlow.Tests.ExecutionTests
             var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
 
             // Assert
-            Assert.True(result.IsSuccess);
+            Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
             var finalData = (ParallelTestData)result.WorkflowData;
             Assert.Equal(80, finalData.FinalResult); // 10*2 + 20*3 = 20+60=80
         }
