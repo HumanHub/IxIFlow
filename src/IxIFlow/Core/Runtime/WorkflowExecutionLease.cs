@@ -19,7 +19,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
         string token, ExecutionLeaseGrant grant, DateTime requestedAtUtc, ExecutionLeaseSettings settings,
         TimeProvider time, CancellationWatch watch, Action<Exception> lost,
-        Action<CancellationReason> cancellation, Action<long> arrivals)
+        Action<CancellationReason> cancellation, Action<long> arrivals, Action<WorkflowDebugState>? debug)
     {
         _lost = lost;
         _ = _cancellation.Task.ContinueWith(task =>
@@ -40,6 +40,9 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
             Lose, settings.Duration, settings.RenewalInterval, sequence =>
             {
                 if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested) arrivals(sequence);
+            }, state =>
+            {
+                if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested) debug?.Invoke(state);
             });
     }
 
@@ -64,7 +67,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     public static async Task<WorkflowExecutionLease?> TryAcquireAsync(
         IWorkflowStateRepository repository, WorkflowInstance instance,
         ExecutionLeaseSettings settings, CancellationWatch watch, Action<Exception> lost,
-        Action<CancellationReason> cancellation, Action<long> arrivals, TimeProvider? time = null)
+        Action<CancellationReason> cancellation, Action<long> arrivals, TimeProvider? time = null, Action<WorkflowDebugState>? debug = null)
     {
         if (settings.Duration <= TimeSpan.Zero || settings.RenewalInterval <= TimeSpan.Zero ||
             settings.RenewalInterval >= settings.Duration)
@@ -79,7 +82,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                 settings.Duration) is not { } grant)
             return null;
         return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, requestedAtUtc, settings,
-            time, watch, lost, cancellation, arrivals);
+            time, watch, lost, cancellation, arrivals, debug);
     }
 
     /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>

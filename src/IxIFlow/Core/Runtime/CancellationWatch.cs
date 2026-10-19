@@ -4,8 +4,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// One cancellation watch for every instance this host runs: it reads the cancellation
-/// requests of all watched instances in one store call per interval and tells each lease whose
+/// One control watch for every instance this host runs: it reads cancellation and debug
+/// requests of all watched instances in one batched store call per interval and tells each lease whose
 /// instance has a request. Instances do not poll for cancellation individually; a run also learns
 /// of a request from its own commit replies. With the requests it reads the inbox sequences of the
 /// instances whose leases asked, so a busy owner learns that events arrived. The watch needs a
@@ -27,7 +27,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     private Task? _loop;
     // A read past its deadline keeps running in the store; the next pass waits for it again instead
     // of queuing another call behind it.
-    private (Task<IReadOnlyDictionary<string, CancellationReason>> Task, string[] InstanceIds, DateTime SentAtUtc)?
+    private (Task<(IReadOnlyDictionary<string, CancellationReason> Cancellations, IReadOnlyDictionary<string, WorkflowDebugState> Debug)> Task, string[] InstanceIds, DateTime SentAtUtc)?
         _read;
 
     public CancellationWatch(IWorkflowStateRepository store, TimeProvider? time = null,
@@ -48,10 +48,10 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     /// failed read never outlasts a lease renewal.
     /// </summary>
     public IDisposable Watch(string instanceId, TaskCompletionSource<CancellationReason> cancellation,
-        Action<Exception> lost, TimeSpan tolerance, TimeSpan interval, Action<long>? arrivals = null)
+        Action<Exception> lost, TimeSpan tolerance, TimeSpan interval, Action<long>? arrivals = null, Action<WorkflowDebugState>? debug = null)
     {
         var subscriber = new Subscriber(this, instanceId, cancellation, lost, tolerance,
-            interval < MaximumInterval ? interval : MaximumInterval, Now, arrivals);
+            interval < MaximumInterval ? interval : MaximumInterval, Now, arrivals, debug);
         lock (_lock)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -116,15 +116,26 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         }
     }
 
+    private async Task<(IReadOnlyDictionary<string, CancellationReason>, IReadOnlyDictionary<string, WorkflowDebugState>)> ReadControlsAsync(string[] ids)
+    {
+        if (_store is GuardedStateRepository { SupportsDebugging: true } capable)
+        {
+            var controls = await capable.GetControlRequestsAsync(ids);
+            return (controls.Cancellations, controls.DebugStates);
+        }
+        return (await _store.GetCancellationRequestsAsync(ids), new Dictionary<string, WorkflowDebugState>());
+    }
+
     private async Task ReadAsync(string[] watchedIds)
     {
-        _read ??= (TrackRead(_store.GetCancellationRequestsAsync(watchedIds),
+        _read ??= (TrackRead(ReadControlsAsync(watchedIds),
             $"cancellation requests for {string.Join(", ", watchedIds)}"), watchedIds, Now);
         var (read, instanceIds, readAt) = _read.Value;
         IReadOnlyDictionary<string, CancellationReason> requests;
+        IReadOnlyDictionary<string, WorkflowDebugState> debug;
         try
         {
-            requests = await read.WaitAsync(ReadTimeout, _time, _stop.Token);
+            (requests, debug) = await read.WaitAsync(ReadTimeout, _time, _stop.Token);
             _read = null;
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested)
@@ -148,6 +159,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         }
         foreach (var subscriber in Subscribers(instanceIds))
         {
+            if (debug.TryGetValue(subscriber.InstanceId, out var state)) subscriber.Debug?.Invoke(state);
             if (requests.TryGetValue(subscriber.InstanceId, out var reason))
             {
                 // A delivered request ends the watch; a later outage must not end ownership.
@@ -260,8 +272,9 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
 
     private sealed class Subscriber(CancellationWatch watch, string instanceId,
         TaskCompletionSource<CancellationReason> cancellation, Action<Exception> lost, TimeSpan tolerance,
-        TimeSpan interval, DateTime subscribedAtUtc, Action<long>? arrivals) : IDisposable
+        TimeSpan interval, DateTime subscribedAtUtc, Action<long>? arrivals, Action<WorkflowDebugState>? debug) : IDisposable
     {
+        public Action<WorkflowDebugState>? Debug { get; } = debug;
         public Action<long>? Arrivals { get; } = arrivals;
         public string InstanceId { get; } = instanceId;
         public TaskCompletionSource<CancellationReason> Cancellation { get; } = cancellation;

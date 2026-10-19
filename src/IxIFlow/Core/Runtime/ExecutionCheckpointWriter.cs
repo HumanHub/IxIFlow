@@ -57,7 +57,7 @@ internal static class ExecutionCheckpointWriter
             clearsCrashCount: clearsCrashCount, parks: parkFor != null,
             settlements: checkpoint.Inbox.Settlements, inboxReadThrough: checkpoint.Inbox.ReadThrough,
             openedWaits: opened, closedWaits: closed, armedWaits: armed, wakeAfter: parkFor,
-            stopped: checkpoint.OperatorStop != null, childStarts: checkpoint.ChildStarts.ToArray(),
+            stopped: checkpoint.OperatorStop != null || instance.Status == WorkflowStatus.Paused, childStarts: checkpoint.ChildStarts.ToArray(),
             childCancellations: checkpoint.ChildCancellations.ToArray(),
             parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: checkpoint.Trace.Pending);
         using var span = Telemetry.Source.StartActivity("commit");

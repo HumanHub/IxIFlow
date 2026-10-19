@@ -5,7 +5,7 @@ namespace IxIFlow.Core.Runtime;
 /// <see cref="WorkflowErrorKind.Infrastructure"/> engine failure, so it interrupts the
 /// instance instead of being handled as a workflow failure.
 /// </summary>
-internal sealed class GuardedStateRepository : IWorkflowStateRepository
+internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkflowDebugStore
 {
     public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
         Guard(() => _store.RegisterMemberAsync(member, cancellationToken), "Registering store member");
@@ -32,6 +32,13 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
         Guard(() => _store.GetPublisherAsync(publisherName), "Accessing workflow outbox");
 
+    internal bool SupportsDebugging => _store is IWorkflowDebugStore;
+    public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> ids) =>
+        Guard(() => ((IWorkflowDebugStore)_store).GetControlRequestsAsync(ids), "Reading execution controls");
+    public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+        Guard(() => ((IWorkflowDebugStore)_store).RequestDebugCommandAsync(instanceId, command), "Requesting debug command");
+    public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> ids) =>
+        Guard(() => ((IWorkflowDebugStore)_store).GetDebugStatesAsync(ids), "Reading debug commands");
     private readonly IWorkflowStateRepository _store;
 
     private GuardedStateRepository(IWorkflowStateRepository store) => _store = store;

@@ -81,6 +81,8 @@ internal sealed class ExecutionCheckpoint
     /// </summary>
     public OperatorStopState? OperatorStop { get; set; }
 
+    public DebugCheckpoint Debug { get; set; } = new();
+
     [JsonIgnore]
     public Exception? RuntimeUnhandledError { get; set; }
 

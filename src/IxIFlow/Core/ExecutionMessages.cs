@@ -9,6 +9,8 @@ public sealed record Assign(Guid AssignmentId, WorkflowInstance Instance,
 {
     // Incarnation is deliberately excluded from the stored instance JSON, but must cross this boundary.
     public Guid Incarnation { get; init; } = Instance.Incarnation;
+    public WorkflowDebugState? DebugState { get; init; }
+    public bool DebuggingEnabled { get; init; }
 }
 public sealed record Breakpoint(string StepId, string? Condition = null, int? HitCount = null);
 public sealed record RecoveryPreparation(IReadOnlyList<string> ReactivatedContinuations,
@@ -22,6 +24,7 @@ public enum CancelKind { Workflow, Run, Ownership }
 
 // A fresh ID is allocated before acquiring the lease, including for nested runs in one slot.
 public sealed record Cancel(Guid AssignmentId, CancelKind Kind, CancellationReason? Reason = null);
+public sealed record DebugCommands(Guid AssignmentId, WorkflowDebugState State);
 public sealed record Arrivals(Guid AssignmentId, long InboxSequence);
 public sealed record Recycle(Guid AssignmentId);
 

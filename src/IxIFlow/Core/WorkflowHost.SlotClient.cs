@@ -122,6 +122,9 @@ public sealed partial class WorkflowHost
 
         public Task<WorkflowExecutionStatus?> ReadStatusAsync(string instanceId) => _runner.ReadStatusAsync(instanceId);
 
+        public Task<WorkflowExecutionResult> RequestDebugAsync(string id, DebugCommandKind kind, string actor, CancellationToken token) =>
+            _runner.RequestDebugAsync(id, kind, actor, token);
+
         public Task<WorkflowExecutionResult> ResolveAsync(
             string instanceId, string invocationId, ActivityResolution resolution,
             CancellationToken cancellationToken = default) =>

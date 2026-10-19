@@ -17,7 +17,7 @@ public interface IWorkflowBuilder<TWorkflowData>
     IWorkflowBuilder<TWorkflowData> Named(string name);
 
     /// <summary>Wait for a duration without requiring a resume event.</summary>
-    IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration);
+    IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Adds a step to the workflow that executes the specified activity
@@ -26,7 +26,7 @@ public interface IWorkflowBuilder<TWorkflowData>
     /// <param name="configure">Optional configuration for the activity</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null)
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -34,7 +34,7 @@ public interface IWorkflowBuilder<TWorkflowData>
     IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
         string name,
         Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null,
-        Expression<Func<WorkflowContext<TWorkflowData>, string>>? subjectExpression = null)
+        Expression<Func<WorkflowContext<TWorkflowData>, string>>? subjectExpression = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
@@ -47,7 +47,7 @@ public interface IWorkflowBuilder<TWorkflowData>
     IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
         string name,
         Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null,
-        Func<WorkflowContext<TWorkflowData>, string>? subject = null)
+        Func<WorkflowContext<TWorkflowData>, string>? subject = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
@@ -73,7 +73,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name);
 
     /// <summary>Wait for a duration and retain the previous step value.</summary>
-    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration);
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Adds a step to the workflow with access to previous step data
@@ -82,7 +82,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the activity</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -90,7 +90,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
         string name,
         Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
-        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null)
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
@@ -103,7 +103,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
         string name,
         Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
-        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
@@ -114,7 +114,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the workflow invocation</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TWorkflow, TInvokedData>(
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TWorkflow : IWorkflow<TInvokedData> 
         where TInvokedData : class;
 
@@ -127,7 +127,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the workflow invocation</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version,
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TInvokedData : class;
 
     /// <summary>
@@ -136,7 +136,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the sequence</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Sequence(
-        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure);
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Creates a conditional branch in the workflow
@@ -148,7 +148,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> If(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> condition,
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> then,
-        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>>? @else = null);
+        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>>? @else = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Executes workflow branches in parallel
@@ -156,13 +156,13 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for parallel execution</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Parallel(
-        Action<IParallelBuilder<TWorkflowData, TPreviousStepData>> configure);
+        Action<IParallelBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
     [OverloadResolutionPriority(-1)]
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> DoWhile(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
-        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression);
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Executes a loop with condition check after each iteration
@@ -172,13 +172,13 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> DoWhile(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
-        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition);
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
     [OverloadResolutionPriority(-1)]
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> WhileDo(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression,
-        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure);
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Executes a loop with condition check before each iteration
@@ -188,7 +188,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> WhileDo(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition,
-        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure);
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Runs <paramref name="body"/> once per item of the list <paramref name="items"/> gives when the step
@@ -205,17 +205,17 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?>> itemsExpression,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
-        Action<IForEachSetup<TWorkflowData>>? setup = null);
+        Action<IForEachSetup<TWorkflowData>>? setup = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Captures the result selector as an expression.</summary>
     [OverloadResolutionPriority(-1)]
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
-        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult>> valueExpression);
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult>> valueExpression, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
-        Action<IForEachSetup<TWorkflowData>>? setup = null);
+        Action<IForEachSetup<TWorkflowData>>? setup = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Ends a <c>ForEach</c> body with the value it gives for its item, which the step's
@@ -224,7 +224,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// in the body, or directly in such a branch.
     /// </summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
-        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult> value);
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult> value, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Defines a try-catch block for error handling
@@ -232,7 +232,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the try block</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     ITryBuilder<TWorkflowData, TPreviousStepData> Try(
-        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure);
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Defines a saga for distributed transactions
@@ -240,14 +240,14 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the saga</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     ISagaContainerBuilder<TWorkflowData, TPreviousStepData> Saga(
-        Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure);
+        Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
     [OverloadResolutionPriority(-1)]
     IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>>? resumeExpression = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class;
 
     /// <summary>
@@ -261,7 +261,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>? resumeCondition = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class;
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -269,7 +269,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(
         string key,
         Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TEvent : class;
 
     /// <summary>
@@ -278,7 +278,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(
         string key,
         Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TEvent : class;
 
     /// <summary>

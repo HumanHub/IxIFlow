@@ -112,7 +112,7 @@ internal sealed class WorkflowRecoveryService(
                     logger.LogWarning("Workflow {InstanceId} needs an operator: {Reason}",
                         instance.InstanceId, result.ErrorMessage);
                 // A row this host rejected, or left stopped, may still be due; let others go first.
-                if (result.Status is WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.NeedsResolution)
+                if (result.Status is WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.NeedsResolution or WorkflowExecutionStatus.Paused)
                     Defer(instance.InstanceId);
                 else
                     lock (_lock)

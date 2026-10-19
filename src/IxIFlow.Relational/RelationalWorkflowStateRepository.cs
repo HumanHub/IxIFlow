@@ -8,7 +8,7 @@ namespace IxIFlow.Relational;
 
 /// <summary>Runs the relational store protocol. Providers supply SQL and database behavior.</summary>
 public abstract partial class RelationalWorkflowStateRepository :
-    IWorkflowStateRepository
+    IWorkflowStateRepository, IWorkflowDebugStore
 {
     // Only first-party friend assemblies can construct or derive from this protocol.
     internal RelationalWorkflowStateRepository(OutboxSettings? outboxSettings = null, PayloadStoreSettings? payloadSettings = null)
@@ -716,10 +716,14 @@ public abstract partial class RelationalWorkflowStateRepository :
             return new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, currentRevision,
                 RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
+        var debugCommands = await ReadDebugCommandsAsync(connection, transaction, commit.InstanceId);
+        var previousDebugInstance = current?.StateJson == null ? null : JsonSerializer.Deserialize<WorkflowInstance>(current.StateJson);
+        var acknowledgedDebug = WorkflowDebugRules.Acknowledge(previousDebugInstance, commit.ReadTrunk(), debugCommands, revision);
+        var debugWake = WorkflowDebugRules.NeedsWake(snapshot.Status, acknowledgedDebug);
         var unacknowledged = current is { CancellationJson: not null, CancellationAcknowledged: false };
         // A run that has not read every arrival neither parks nor goes idle out of reach.
         var unread = commit.InboxReadThrough is { } readThrough && current?.InboxSequence > readThrough;
-        var parked = commit.Parks && !unacknowledged && !unread;
+        var parked = commit.Parks && !unacknowledged && !unread && !debugWake;
         foreach (var batch in commit.OpenedWaits.Chunk(StatementBatchSize))
             await InsertWaitsAsync(connection, transaction, commit.InstanceId, batch, current?.InboxSequence ?? 0, now);
         foreach (var batch in commit.ArmedWaits.Chunk(StatementBatchSize))
@@ -727,7 +731,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         foreach (var batch in commit.ClosedWaits.Chunk(StatementBatchSize))
             await CloseWaitsAsync(connection, transaction, commit.InstanceId, batch, now);
         // An idle instance is next due at the earliest deadline of its open waits (D-31, D-35).
-        var runnableNow = (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
+        var runnableNow = debugWake || (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
             WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.AcknowledgesCancellation, unacknowledged);
         var earliestDeadline = !runnableNow && !commit.Stopped &&
                                snapshot.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution
@@ -756,6 +760,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         await connection.ExecuteAsync(current == null
             ? RequiredSql(Statement.InsertCommit)
             : RequiredSql(Statement.UpdateCommit), values, transaction);
+        await WriteDebugAcknowledgementsAsync(connection, transaction, commit.InstanceId, debugCommands, acknowledgedDebug);
         await ApplyPartsAsync(connection, transaction, commit);
         await RecordCompletionAsync(connection, transaction, WorkflowStoreRules.IsTerminal(snapshot.Status) ? commit.ReadTrunk() : null, revision, now);
         if (commit.TraceEntries.Count > 0)
@@ -1108,6 +1113,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     internal sealed class CommitState
     {
+        public string? StateJson { get; set; }
         public DateTime? RunnableAtUtc { get; set; }
         public Guid Incarnation { get; set; }
         public long Revision { get; set; }

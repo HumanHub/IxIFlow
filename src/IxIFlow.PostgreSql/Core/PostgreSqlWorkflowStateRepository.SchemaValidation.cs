@@ -12,6 +12,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
+                SELECT instance_id, command_id, command_order, command_json FROM ixiflow_workflow_debug_commands WHERE 1=0;
                 SELECT digest, bytes, generation, body, state_json, created_at_utc FROM ixiflow_workflow_payloads WHERE 1=0;
                 SELECT digest, owner_kind, owner_id FROM ixiflow_workflow_payload_refs WHERE 1=0;
                 SELECT instance_id, workflow_name, status, correlation_id, runnable_at_utc, ended_at_utc, state_json, cancellation_json, cancellation_acknowledged, revision, inbox_sequence, inbox_read_through, incarnation, parent_instance_id FROM ixiflow_workflow_instances WHERE 1=0;

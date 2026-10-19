@@ -24,6 +24,7 @@ public static class ServiceCollectionExtensions
     public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services)
     {
         // Core workflow services
+        services.TryAddSingleton<IWorkflowOperations>(provider => (IWorkflowOperations)provider.GetRequiredService<IWorkflowClient>());
         services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
         services.TryAddSingleton(RetentionSettings.Default);
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
@@ -123,7 +124,7 @@ public static class ServiceCollectionExtensions
         var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
         services.Replace(ServiceDescriptor.Singleton<HostSettings>(_ =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
-            { HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes }));
+            { Debugging = options.Debugging, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes }));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
 
@@ -303,6 +304,9 @@ public class IxIFlowOptions
     /// lease, before the instance is quarantined at NeedsResolution. No host runs a quarantined
     /// instance until an operator releases it. Progress resets the count.
     /// </summary>
+    /// <summary>Enables authorized pause and continue operations on this host. Off by default.</summary>
+    public bool Debugging { get; set; }
+
     public int MaxCrashes { get; set; } = HostSettings.DefaultMaxCrashes;
 
     /// <summary>

@@ -44,7 +44,7 @@ public static class WorkflowStoreRules
     public static bool UnwindsNow(WorkflowStatus status, bool acknowledgesCancellation,
         bool unacknowledgedCancellation) =>
         unacknowledgedCancellation && !acknowledgesCancellation &&
-        status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
+        status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution or WorkflowStatus.Paused;
 
     /// <summary>
     /// When a committed instance becomes runnable, in the store's clock: now when
@@ -57,7 +57,7 @@ public static class WorkflowStoreRules
     {
         if (runnableNow)
             return now;
-        if (commit.Stopped)
+        if (commit.Stopped || status == WorkflowStatus.Paused)
             return null;
         return status switch
         {
@@ -275,7 +275,7 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWo
 /// <summary>
 ///     In-memory implementation of workflow state repository
 /// </summary>
-public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
+public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkflowDebugStore
 {
     private readonly TimeProvider _time;
     private readonly TimeSpan _retryHorizon;
@@ -326,8 +326,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private bool RequestCancellation(string instanceId, CancellationReason reason, DateTime now)
     {
         if (!_instances.TryGetValue(instanceId, out var instance) ||
-            instance.Status is not (WorkflowStatus.Running or WorkflowStatus.Suspended or
-                WorkflowStatus.NeedsResolution))
+            instance.Status is not (WorkflowStatus.Ready or WorkflowStatus.Running or WorkflowStatus.Suspended or
+                WorkflowStatus.NeedsResolution or WorkflowStatus.Paused))
             return false;
         if (!_cancellations.ContainsKey(instanceId))
         {
@@ -415,7 +415,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         }
     }
 
-    public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
+    public virtual Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration)
     {
         ValidateLeaseArguments(instanceId, token, duration);
@@ -444,7 +444,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         }
     }
 
-    public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+    public virtual Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
         return Commit(commit, null);
     }
@@ -514,11 +514,13 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     $"Child workflow '{taken.ChildInstanceId}' cannot start: an instance with its ID exists");
             // One store time for the whole commit: its deadlines, its runnable time and its records (D-35).
             var now = Now;
+            var debugCommands = WorkflowDebugRules.Acknowledge(stored, snapshot, CommandsOf(commit.InstanceId), snapshot.Revision);
+            var debugWake = WorkflowDebugRules.NeedsWake(snapshot.Status, debugCommands);
             var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
                 !_acknowledgedCancellations.Contains(commit.InstanceId);
             // A run that has not read every arrival neither parks nor goes idle out of reach.
             var unread = Unread(commit);
-            var parked = commit.Parks && !unacknowledged && !unread;
+            var parked = commit.Parks && !unacknowledged && !unread && !debugWake;
             foreach (var settlement in commit.Settlements)
             {
                 var settled = _events[(commit.InstanceId, settlement.EventId)];
@@ -547,7 +549,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             foreach (var closed in commit.ClosedWaits)
                 CloseWait(commit.InstanceId, closed.WaitId, closed.Reason, now);
             snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit,
-                (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
+                debugWake || (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
                 WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.CancellationReason != null, unacknowledged),
                 now, OpenWaits(commit.InstanceId).Min(open => open.DeadlineUtc));
             // A finished instance takes no more events; those still pending are closed, and so are its waits.
@@ -572,6 +574,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 parts[part.Key] = part.Json;
             snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
             _instances[commit.InstanceId] = snapshot;
+            if (debugCommands.Count > 0) _debugCommands[commit.InstanceId] = debugCommands.ToList();
             RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (commit.TraceEntries.Count > 0)
@@ -903,6 +906,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         _leases.Remove(instanceId);
         _endedAt.Remove(instanceId);
         _cancellations.Remove(instanceId);
+        _debugCommands.Remove(instanceId);
         _acknowledgedCancellations.Remove(instanceId);
         DeleteOutbox(instanceId);
         foreach (var key in _events.Keys.Where(key => key.InstanceId == instanceId).ToArray())
