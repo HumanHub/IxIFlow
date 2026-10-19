@@ -72,7 +72,9 @@ public sealed class UnschedulableTests
         {
             var missing = await Add([new("gpu"), new("region", "eu"), new("obsolete", "x", DateTime.UnixEpoch)]);
             var matched = await Add([new("region", "eu")]);
-            var deadPin = new WorkflowDemand("host", Guid.NewGuid().ToString("D"), DateTime.UtcNow.AddHours(1));
+            // Whole seconds: PostgreSQL keeps microseconds, not .NET ticks.
+            var deadPin = new WorkflowDemand("host", Guid.NewGuid().ToString("D"),
+                DateTime.UnixEpoch.AddSeconds(Math.Floor((DateTime.UtcNow.AddHours(1) - DateTime.UnixEpoch).TotalSeconds)));
             var pinned = await Add([new("region", "eu"), deadPin]);
             var expired = await Add([new("region", "eu"), deadPin with { ExpiresAtUtc = DateTime.UnixEpoch }]);
             var future = await Add([new("future-only")], TimeSpan.FromHours(1));
