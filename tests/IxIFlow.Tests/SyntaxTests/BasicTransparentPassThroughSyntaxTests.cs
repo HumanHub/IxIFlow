@@ -14,7 +14,7 @@ public class BasicTransparentPassThroughSyntaxTests
     public void Build_BasicTransparentPassThroughWorkflow_ShouldCompileSuccessfully()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("BasicTransparentPassThroughTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
@@ -46,8 +46,8 @@ public class BasicTransparentPassThroughSyntaxTests
                 .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Success).From(ctx => !string.IsNullOrEmpty(ctx.PreviousStep.TransactionId))
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus)),
-            "BasicTransparentPassThroughTest");
+                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -61,7 +61,7 @@ public class BasicTransparentPassThroughSyntaxTests
     public void Build_ConditionalWorkflow_ShouldHaveCorrectStepStructure()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("ConditionalWorkflowTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
@@ -86,8 +86,8 @@ public class BasicTransparentPassThroughSyntaxTests
                 .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null)
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus)),
-            "ConditionalWorkflowTest");
+                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Build();
 
         // Assert
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
@@ -107,11 +107,11 @@ public class BasicTransparentPassThroughSyntaxTests
     public void Build_WorkflowDataAccess_ShouldCompileCorrectly()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("WorkflowDataAccessTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)),
-            "WorkflowDataAccessTest");
+                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -122,13 +122,13 @@ public class BasicTransparentPassThroughSyntaxTests
     public void Build_PreviousStepAccess_ShouldCompileCorrectly()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("PreviousStepAccessTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
                 .Step<CheckInventoryAsyncActivity>(setup => setup
-                    .Input(act => act.IsOrderValid).From(ctx => ctx.PreviousStep.IsValid)),
-            "PreviousStepAccessTest");
+                    .Input(act => act.IsOrderValid).From(ctx => ctx.PreviousStep.IsValid))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -139,7 +139,7 @@ public class BasicTransparentPassThroughSyntaxTests
     public void Build_SequenceWithTransparentPassThrough_ShouldCompileCorrectly()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SequenceTransparencyTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Sequence(seq => seq
@@ -148,8 +148,8 @@ public class BasicTransparentPassThroughSyntaxTests
                     .Step<ReserveInventoryAsyncActivity>(setup => setup
                         .Input(act => act.InStock).From(ctx => ctx.PreviousStep.InStock)))
                 .Step<ProcessPaymentAsyncActivity>(setup => setup
-                    .Input(act => act.Amount).From(ctx => ctx.PreviousStep.Amount)),
-            "SequenceTransparencyTest");
+                    .Input(act => act.Amount).From(ctx => ctx.PreviousStep.Amount))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);

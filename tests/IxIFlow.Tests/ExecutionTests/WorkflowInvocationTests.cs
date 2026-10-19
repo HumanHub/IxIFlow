@@ -20,6 +20,7 @@ public class WorkflowInvocationTests
         var services = new ServiceCollection();
         services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
         services.AddIxIFlow();
+        services.RegisterWorkflow<ChildWorkflow>();
 
         _serviceProvider = services.BuildServiceProvider();
         _workflowEngine = _serviceProvider.GetRequiredService<IWorkflowClient>();
@@ -31,6 +32,7 @@ public class WorkflowInvocationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
+        services.RegisterWorkflow<ChildWorkflow>();
         using var provider = services.BuildServiceProvider();
         var builder = new WorkflowBuilder<ParentWorkflowData>("InvocationTrace");
         new ParentWorkflow().Build(builder);

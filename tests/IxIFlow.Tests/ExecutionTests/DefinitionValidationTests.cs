@@ -152,11 +152,7 @@ public sealed class DefinitionValidationTests
     {
         public Task RegisterWorkflowAsync(WorkflowDefinition value) => Task.CompletedTask;
         public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version) => Task.FromResult<WorkflowDefinition?>(definition);
-        public Task<WorkflowDefinition?> GetLatestWorkflowDefinitionAsync(string name) => Task.FromResult<WorkflowDefinition?>(definition);
-        public Task<IEnumerable<WorkflowDefinition>> GetWorkflowVersionsAsync(string name) => Task.FromResult<IEnumerable<WorkflowDefinition>>([definition]);
-        public Task<IEnumerable<WorkflowDefinition>> GetAllWorkflowDefinitionsAsync() => Task.FromResult<IEnumerable<WorkflowDefinition>>([definition]);
         public Task DeactivateWorkflowVersionAsync(string name, int version) => throw new NotSupportedException();
-        public Task SetDefaultWorkflowVersionAsync(string name, int version) => throw new NotSupportedException();
     }
 
     [Fact]

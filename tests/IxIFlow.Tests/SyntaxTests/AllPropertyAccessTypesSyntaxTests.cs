@@ -21,7 +21,7 @@ public class AllPropertyAccessTypesSyntaxTests
     [Fact]
     public void Build_AllConstructsAllAccessTypes_ShouldCompileSuccessfully()
     {
-        var definition = Workflow.Build<RootWorkflowData>(builder => builder
+        var definition = Workflow.Create<RootWorkflowData>("AllPropertyAccessTypesTest")
 
             // ===== STEP 1: BASIC STEP =====
             .Step<Level1Activity>(setup => setup
@@ -173,9 +173,8 @@ public class AllPropertyAccessTypesSyntaxTests
             .Step<Level1Activity>(setup => setup
                 // === 3. PREVIOUS STEP ACCESS (workflow result) ===
                 .Input(act => act.Level1Input).From(ctx => ctx.PreviousStep.WorkflowOutput)
-                .Output(act => act.Level1Output).To(ctx => ctx.WorkflowData.RootOutput)),
-
-            "AllPropertyAccessTypesTest");
+                .Output(act => act.Level1Output).To(ctx => ctx.WorkflowData.RootOutput))
+            .Build();
 
         Assert.NotNull(definition);
         Assert.True(definition.Steps.Count > 0);
