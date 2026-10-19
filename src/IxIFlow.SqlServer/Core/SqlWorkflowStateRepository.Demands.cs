@@ -21,7 +21,13 @@ public sealed partial class SqlWorkflowStateRepository
         );
         """;
 
-    internal override string DemandSetsLockSql => """
+    internal override string CreateDemandSetsLockSql => """
+        DECLARE @r INT;
+        EXEC @r = sys.sp_getapplock @Resource=N'IxIFlow.DemandSets', @LockMode=N'Shared', @LockOwner=N'Transaction', @LockTimeout=30000;
+        IF @r < 0 THROW 51000, 'Could not lock demand sets', 1;
+        """;
+
+    internal override string CollectDemandSetsLockSql => """
         DECLARE @r INT;
         EXEC @r = sys.sp_getapplock @Resource=N'IxIFlow.DemandSets', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=30000;
         IF @r < 0 THROW 51000, 'Could not lock demand sets', 1;
@@ -41,8 +47,22 @@ public sealed partial class SqlWorkflowStateRepository
         FROM dbo.IxIFlowDemandSetRows WHERE DemandSetId = @DemandSetId
         """;
 
-    internal override string FindDemandSetSql => "SELECT DemandSetId FROM dbo.IxIFlowDemandSets WHERE DemandSetId = @DemandSetId";
-    internal override string InsertDemandSetSql => "INSERT INTO dbo.IxIFlowDemandSets (DemandSetId) VALUES (@DemandSetId)";
+    // A key-range lock on an absent header can also cover other, different new keys.
+    // Use the digest as the lock resource instead, and avoid a transaction-long lock for
+    // committed sets. Collection cannot remove a header while the shared lifecycle lock is held.
+    internal override string InsertDemandSetSql => """
+        IF NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDemandSets WHERE DemandSetId = CONVERT(VARCHAR(64), @DemandSetId))
+        BEGIN
+            DECLARE @r INT, @resource NVARCHAR(255) = N'IxIFlow.DemandSet:' + @DemandSetId;
+            EXEC @r = sys.sp_getapplock @Resource=@resource, @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=30000;
+            IF @r = -3 THROW 51001, 'Demand set lock deadlock', 1;
+            IF @r < 0 THROW 51000, 'Could not lock demand set', 1;
+            INSERT INTO dbo.IxIFlowDemandSets (DemandSetId)
+            OUTPUT inserted.DemandSetId
+            SELECT @DemandSetId
+            WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDemandSets WHERE DemandSetId = CONVERT(VARCHAR(64), @DemandSetId));
+        END;
+        """;
     internal override string InsertDemandSql => """
         INSERT INTO dbo.IxIFlowDemandSetRows (DemandSetId, DemandKey, DemandValue, ExpiresAtUtc, Inherit)
         VALUES (@DemandSetId, @Key, @Value, @ExpiresAtUtc, @Inherit)

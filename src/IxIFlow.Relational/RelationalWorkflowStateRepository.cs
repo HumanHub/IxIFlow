@@ -190,15 +190,15 @@ public abstract partial class RelationalWorkflowStateRepository :
         string instanceId, IReadOnlyList<string> entries);
     internal static string StampStartPayload(string payload, DateTime now) => WorkflowDemands.StampStartPayload(payload, now);
 
-    // Called only by a creating transaction holding DemandSetsLockSql, also used by collection.
+    // The shared lifecycle lock excludes collection. The header insert arbitrates creators of
+    // this set, and only its winner writes rows, in the same transaction as the instance reference.
     private async Task<DynamicParameters> InternDemandsAsync(DbConnection connection, DbTransaction transaction, string payload)
     {
         var instance = JsonSerializer.Deserialize<WorkflowInstance>(payload)!;
         var set = DemandSet.Create(WorkflowDemands.Saved(instance));
         var identity = new { DemandSetId = set.Id };
-        if (await connection.ExecuteScalarAsync<string?>(FindDemandSetSql, identity, transaction) == null)
+        if (await connection.ExecuteScalarAsync<string?>(InsertDemandSetSql, identity, transaction) != null)
         {
-            await connection.ExecuteAsync(InsertDemandSetSql, identity, transaction);
             foreach (var demand in set.Rows)
                 await connection.ExecuteAsync(InsertDemandSql, WithTimes(new
                 {
@@ -239,8 +239,9 @@ public abstract partial class RelationalWorkflowStateRepository :
             .OrderBy(demand => demand.Key, StringComparer.Ordinal).ToArray();
     }
 
-    internal abstract string DemandSetsLockSql { get; }
-    internal abstract string FindDemandSetSql { get; }
+    internal abstract string CreateDemandSetsLockSql { get; }
+    internal abstract string CollectDemandSetsLockSql { get; }
+    // Returns the set ID only when this transaction inserted the header.
     internal abstract string InsertDemandSetSql { get; }
     internal abstract string CollectDemandSetsSql { get; }
     internal abstract string ReadDemandSetSql { get; }
@@ -703,7 +704,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (await BeginTransactionAsync(connection, Operation.Commit))!;
         if (commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0)
-            await connection.ExecuteAsync(DemandSetsLockSql, transaction: transaction);
+            await connection.ExecuteAsync(CreateDemandSetsLockSql, transaction: transaction);
         WorkflowAdmissionRecord? admitted = null;
         if (admission != null)
         {
