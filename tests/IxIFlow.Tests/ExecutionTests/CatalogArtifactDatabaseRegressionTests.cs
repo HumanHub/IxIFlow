@@ -36,6 +36,7 @@ public sealed class CatalogArtifactDatabaseRegressionTests
         var child = Instance(name);
         child.ParentInstanceId = parent.InstanceId;
         child.ParentWaitId = "child";
+        child.Status = WorkflowStatus.Running;
         await store.SeedAsync(ordinary);
         await store.SeedAsync(parent);
         var ordinaryLease = await StoreTestSupport.LeaseAsync(store, ordinary.InstanceId);
