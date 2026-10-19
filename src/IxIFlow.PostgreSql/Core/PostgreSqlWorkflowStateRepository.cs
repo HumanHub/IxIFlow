@@ -631,7 +631,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         Statement.Diagnostics => "SELECT diagnostic_json FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId ORDER BY diagnostic_id",
         Statement.DiagnosticIds => "SELECT diagnostic_id FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId",
         Statement.InsertDiagnostic => "INSERT INTO ixiflow_workflow_diagnostics (instance_id, diagnostic_id, diagnostic_json) VALUES (@InstanceId, @DiagnosticId, @DiagnosticJson)",
-        Statement.DeleteDiagnostics => "DELETE FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId AND diagnostic_id IN @Ids",
+        Statement.DeleteDiagnostics => "DELETE FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId AND diagnostic_id = ANY(@Ids)",
         Statement.Trace => """
             SELECT sequence, entry_json FROM ixiflow_workflow_traces
             WHERE instance_id = @InstanceId AND sequence > @AfterSequence
