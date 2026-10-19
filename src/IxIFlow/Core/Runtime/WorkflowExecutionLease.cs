@@ -92,6 +92,8 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
     public void ThrowIfLost()
     {
+        if (_stop.IsCancellationRequested)
+            throw new ExecutionOwnershipLostException(new InvalidOperationException("The execution lease was released"));
         if (Now.Ticks >= Interlocked.Read(ref _expiresAtUtcTicks))
             Lose(new TimeoutException($"Execution lease for workflow instance '{_instanceId}' expired"));
         if (Volatile.Read(ref _loss) is { } error)

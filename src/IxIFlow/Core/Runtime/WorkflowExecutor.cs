@@ -16,55 +16,117 @@ internal sealed class WorkflowExecutor
     private readonly EventIntake _intake;
     private readonly ILogger _logger;
 
-    public WorkflowExecutor(IServiceProvider services, IActivityExecutor activityExecutor, TimeProvider time)
+    private readonly IExecutionHost _host;
+    private readonly IWorkflowDefinitionSource _definitions;
+
+    public WorkflowExecutor(IServiceProvider services, IExecutionHost host)
     {
+        _host = host;
+        _definitions = (IWorkflowDefinitionSource)services.GetService(typeof(IWorkflowDefinitionSource))!;
+        var activityExecutor = (IActivityExecutor)services.GetService(typeof(IActivityExecutor))!;
+        var time = (TimeProvider)services.GetService(typeof(TimeProvider))!;
         _time = time;
         _logger = LogScope.Logger(services);
         _transitions = new ContinuationTransitions(services, time);
-        _attempts = new ActivityAttempts(services, activityExecutor, _transitions, time);
+        _attempts = new ActivityAttempts(services, activityExecutor, _transitions, time, _definitions);
         _intake = new EventIntake(services, time);
     }
 
     private readonly ConcurrentDictionary<Guid, ExecutionSignals> _runs = new();
 
-    public ExecutionSignals OpenRun()
-    {
-        var signals = new ExecutionSignals(Guid.NewGuid(), CloseRun);
-        _runs[signals.RunId] = signals;
-        return signals;
-    }
+    internal ExecutionSignals PrepareAssignment(Guid identity) =>
+        _runs.GetOrAdd(identity, id => new ExecutionSignals(id, CloseRun));
 
-    public void CloseRun(Guid runId) => _runs.TryRemove(runId, out _);
+    private void CloseRun(Guid runId) => _runs.TryRemove(runId, out _);
     public void Deliver(Cancel message)
     {
-        if (_runs.TryGetValue(message.RunId, out var signals)) signals.Deliver(message);
+        if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
     }
     public void Deliver(Arrivals message)
     {
-        if (_runs.TryGetValue(message.RunId, out var signals)) signals.Deliver(message);
+        if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
     }
     public void Deliver(Recycle message)
     {
-        if (_runs.TryGetValue(message.RunId, out var signals)) signals.Deliver(message);
+        if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
     }
 
-    public async Task<AssignmentOutcome> RunAsync(WorkflowDefinition definition, WorkflowInstance instance,
-        ExecutionCheckpoint checkpoint, object workflowData, IExecutionHost host, Guid runId)
+    public async Task<Ready> ExecuteAsync(Assign assign, CancellationToken stop)
     {
-        var signals = _runs[runId];
-        checkpoint.Signals = signals;
+        var signals = PrepareAssignment(assign.AssignmentId);
+        var session = new ExecutionSession(_host, assign.AssignmentId, assign.Instance.InstanceId,
+            assign.Epoch, assign.Limits, assign.CanPark);
+        using var stopping = stop.Register(() => Deliver(new Cancel(assign.AssignmentId, CancelKind.Run)));
         try
         {
-            return await RunCoreAsync(definition, instance, checkpoint, workflowData, host, signals);
+            if (assign.Breakpoints.Count != 0)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                    "Breakpoints are not supported until G-04");
+            signals.ThrowIfOwnershipLost();
+            var definition = await _definitions.GetWorkflowDefinitionAsync(assign.Instance.WorkflowName,
+                assign.Instance.WorkflowVersion) ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    "The assigned workflow definition is unavailable");
+            _ = WorkflowDefinitionValidator.ForExecution(definition);
+            if (definition.Name != assign.Instance.WorkflowName || definition.Version != assign.Instance.WorkflowVersion)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    "The definition source returned a different workflow identity");
+            // Assignment input is saved state. Never execute against a host-owned instance or data object.
+            var instance = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
+                System.Text.Json.JsonSerializer.Serialize(assign.Instance))!;
+            instance.Incarnation = assign.Instance.Incarnation;
+            if (assign.Parts != null) instance.Saved(new Dictionary<string, string>(assign.Parts), instance.Revision);
+            instance.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
+            var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+            checkpoint.Signals = signals;
+            if (checkpoint.StructureHash != assign.StructureHash)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    "The assignment structure hash differs from its checkpoint");
+            var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
+            var data = System.Text.Json.JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
+            signals.Deliver(new Arrivals(assign.AssignmentId, assign.InboxSequence));
+            if (checkpoint.StructureHash == WorkflowDefinitionValidator.ForExecution(definition).StructureHash &&
+                assign.Recovery is { } preparation)
+            {
+                var scopes = WorkflowDefinitionValidator.ForExecution(definition);
+                checkpoint.Trace.Configure(instance, checkpoint, assign.Limits, _time, scopes);
+                if (preparation.ClearOperatorStop)
+                {
+                    checkpoint.OperatorStop = null;
+                    instance.LastError = null;
+                    instance.LastErrorStackTrace = null;
+                    if (preparation.Released) OperatorTrace.Released(checkpoint, preparation.Actor, Now);
+                }
+                foreach (var continuation in checkpoint.Continuations.Where(item =>
+                             preparation.ReactivatedContinuations.Contains(item.Id)))
+                {
+                    checkpoint.Touch(continuation);
+                    continuation.Status = ContinuationStatus.Active;
+                }
+                instance.Status = WorkflowStatus.Running;
+                if (preparation.PendingCancellation is { } reason && !checkpoint.CancellationRequested &&
+                    checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
+                    OperatorTrace.ApplyCancellation(instance, checkpoint, reason, Now);
+                if (preparation.ClearOperatorStop)
+                    await ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, null, scopes, Now,
+                        preserveSavedWorkflowData: true, enforceLimit: false);
+            }
+            var outcome = await RunCoreAsync(definition, instance, checkpoint, data, session, signals);
+            return new(assign.AssignmentId, outcome, session.LastAcknowledgedCommit);
         }
         catch (ExecutionOwnershipLostException)
         {
-            return new(AssignmentOutcomeKind.OwnershipLost);
+            return new(assign.AssignmentId, new(AssignmentOutcomeKind.OwnershipLost), session.LastAcknowledgedCommit);
+        }
+        catch (CheckpointInterruptedException error)
+        {
+            return new(assign.AssignmentId, new(AssignmentOutcomeKind.Interrupted, error.Message), session.LastAcknowledgedCommit);
         }
         finally
         {
-            CloseRun(runId);
-            checkpoint.Signals = null;
+            CloseRun(assign.AssignmentId);
         }
     }
 
@@ -75,7 +137,7 @@ internal sealed class WorkflowExecutor
         WorkflowInstance instance,
         ExecutionCheckpoint checkpoint,
         object workflowData,
-        IExecutionHost host,
+        ExecutionSession host,
         ExecutionSignals signals)
     {
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
@@ -446,6 +508,11 @@ internal sealed class WorkflowExecutor
             await AbandonInFlightAsync(inFlight);
             return new(AssignmentOutcomeKind.OwnershipLost);
         }
+        catch (CheckpointInterruptedException error)
+        {
+            await AbandonInFlightAsync(inFlight);
+            return new(AssignmentOutcomeKind.Interrupted, error.Message);
+        }
         catch (RunCancelledException)
         {
             foreach (var activity in inFlight.Values)
@@ -543,7 +610,7 @@ internal sealed class WorkflowExecutor
 
     private async Task<bool> ApplyCancellationRequestAsync(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes,
-        IExecutionHost host, CancellationReason? observedReason = null)
+        ExecutionSession host, CancellationReason? observedReason = null)
     {
         // A run learns of requests from the host's cancellation watch and from its own commit
         // replies (B-10); it never reads them itself.
@@ -562,13 +629,14 @@ internal sealed class WorkflowExecutor
     private static void AttachStep(Exception error, WorkflowInstance instance, string stepId,
         ActivityInvocationState? pending)
     {
+        if (error is CheckpointInterruptedException { InnerException: { } cause }) error = cause;
         if (WorkflowEngineException.IsEngineFailure(error))
             ((WorkflowEngineException)error).At(instance.InstanceId, stepId, pending?.Attempts.LastOrDefault()?.Id);
     }
 
     // The caller cancelled the run: activities that finished are settled and saved before it stops.
     private async Task SettleCancelledRunAsync(WorkflowDefinition definition, WorkflowInstance instance,
-        ExecutionCheckpoint checkpoint, object workflowData, IExecutionHost host,
+        ExecutionCheckpoint checkpoint, object workflowData, ExecutionSession host,
         Dictionary<string, RunningActivity> inFlight, UncommittedBoundary uncommitted)
     {
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
@@ -638,7 +706,7 @@ internal sealed class WorkflowExecutor
     // Telling a running activity to stop is visible outside the instance, so the decision that
     // cancels its branch is committed first.
     private async Task SignalCancellationsAsync(Dictionary<string, RunningActivity> inFlight,
-        UncommittedBoundary uncommitted, IExecutionHost host, WorkflowInstance instance,
+        UncommittedBoundary uncommitted, ExecutionSession host, WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes)
     {
         var cancelled = inFlight.Values.Where(item => item.Continuation.Status == ContinuationStatus.Cancelling &&
@@ -688,7 +756,7 @@ internal sealed class WorkflowExecutor
     // A checkpoint over the limit, or one that fails verification, is never saved. The instance keeps its last
     // checkpoint and stops at NeedsResolution until an operator releases it, or cancels it (D-28, A-08).
     private async Task<AssignmentOutcome> StopForOperatorAsync(WorkflowDefinition definition,
-        WorkflowInstance instance, ExecutionCheckpoint abandoned, object workflowData, IExecutionHost host, OperatorStopKind kind, string reason)
+        WorkflowInstance instance, ExecutionCheckpoint abandoned, object workflowData, ExecutionSession host, OperatorStopKind kind, string reason)
     {
         var checkpoint = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
         abandoned.Trace.DiscardPending();
@@ -716,7 +784,7 @@ internal sealed class WorkflowExecutor
     // consistent and within limits, so it is saved with the stop. If it no longer fits, the commit
     // throws and the byte limit's stop keeps the last checkpoint instead.
     private async Task<AssignmentOutcome> StopForLimitAsync(WorkflowInstance instance,
-        ExecutionCheckpoint checkpoint, object workflowData, IExecutionHost host, WorkflowScopeCatalog scopes,
+        ExecutionCheckpoint checkpoint, object workflowData, ExecutionSession host, WorkflowScopeCatalog scopes,
         string reason)
     {
         checkpoint.OperatorStop = new OperatorStopState

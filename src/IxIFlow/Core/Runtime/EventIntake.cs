@@ -22,7 +22,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     /// event is decided, and the events stay unread until the run has applied it.
     /// </summary>
     public async Task<bool> TakeAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        IExecutionHost host, WorkflowInstance instance)
+        ExecutionSession host, WorkflowInstance instance)
     {
         var inbox = checkpoint.Inbox;
         if (!inbox.MayHaveUnread)
@@ -62,7 +62,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     }
 
     private async Task DecideAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        IExecutionHost host, StoredWorkflowEvent stored, InboxPage page, WorkflowInstance instance)
+        ExecutionSession host, StoredWorkflowEvent stored, InboxPage page, WorkflowInstance instance)
     {
         var payload = Read(stored);
         if (payload == null)
@@ -95,6 +95,13 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         var matching = aboutIt.Where(wait => Accepts(scopes, checkpoint, wait, payload)).ToList();
         if (matching.Count == 1)
         {
+            if (payload is ChildCompleted)
+            {
+                var invocation = checkpoint.Continuations.Single(item => item.Id == matching[0].ContinuationId).PendingActivity;
+                if (WorkflowTypeIdentity.Resolve(invocation?.ChildDataType ?? "") == null)
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                        $"Child data type '{invocation?.ChildDataType}' is unavailable");
+            }
             Consume(scopes, checkpoint, stored, matching[0], payload);
             Record(instance, checkpoint, stored, matching[0], null);
             return;
@@ -213,7 +220,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
 
     // The named wait is gone: closed by this run, or before the event was read.
     private static async Task<EventRejection> ClosedTargetAsync(ExecutionCheckpoint checkpoint,
-        IExecutionHost host, string waitId)
+        ExecutionSession host, string waitId)
     {
         if (checkpoint.Inbox.ClosureOf(waitId) is { } reason)
             return reason.Rejection();

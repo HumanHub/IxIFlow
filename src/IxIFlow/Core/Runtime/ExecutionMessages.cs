@@ -1,19 +1,29 @@
 namespace IxIFlow.Core.Runtime;
 
+internal sealed record Assign(Guid AssignmentId, WorkflowInstance Instance,
+    IReadOnlyDictionary<string, string>? Parts, string StructureHash, long Epoch, long InboxSequence,
+    ExecutionLimits Limits, bool CanPark, IReadOnlyList<Breakpoint> Breakpoints,
+    RecoveryPreparation? Recovery = null);
+internal sealed record Breakpoint(string StepId, string? Condition = null, int? HitCount = null);
+internal sealed record RecoveryPreparation(IReadOnlyList<string> ReactivatedContinuations,
+    CancellationReason? PendingCancellation, bool ClearOperatorStop = false, bool Released = false, string? Actor = null);
+internal sealed record AcknowledgedCommit(string CommitId, long Revision);
+internal sealed record Ready(Guid AssignmentId, AssignmentOutcome Outcome, AcknowledgedCommit? LastAcknowledgedCommit);
+
 internal enum CancelKind { Workflow, Run, Ownership }
 
 // A fresh ID is allocated before acquiring the lease, including for nested runs in one slot.
-internal sealed record Cancel(Guid RunId, CancelKind Kind, CancellationReason? Reason = null);
-internal sealed record Arrivals(Guid RunId, long InboxSequence);
-internal sealed record Recycle(Guid RunId);
+internal sealed record Cancel(Guid AssignmentId, CancelKind Kind, CancellationReason? Reason = null);
+internal sealed record Arrivals(Guid AssignmentId, long InboxSequence);
+internal sealed record Recycle(Guid AssignmentId);
 
-internal enum AssignmentOutcomeKind { Idle, Drained, Parked, OwnershipLost, RunCancelled }
+internal enum AssignmentOutcomeKind { Idle, Drained, Parked, OwnershipLost, RunCancelled, Interrupted }
 
 internal sealed record AssignmentOutcome(AssignmentOutcomeKind Kind,
     string? ErrorMessage = null, string? ErrorType = null, string? ErrorStackTrace = null);
 
 /// <summary>One run's coalesced messages. Delivery only uses atomic operations and asynchronous wakes.</summary>
-internal sealed class ExecutionSignals(Guid runId, Action<Guid> close) : IDisposable
+internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : IDisposable
 {
     private TaskCompletionSource _changed = NewSignal();
     private CancellationReason? _cancellation;
@@ -22,8 +32,8 @@ internal sealed class ExecutionSignals(Guid runId, Action<Guid> close) : IDispos
     private int _ownershipLost;
     private int _recycle;
 
-    public Guid RunId { get; } = runId;
-    public void Dispose() => close(RunId);
+    public Guid AssignmentId { get; } = assignmentId;
+    public void Dispose() => close(AssignmentId);
     public Task Changed => Volatile.Read(ref _changed).Task;
     public CancellationReason? Cancellation => Volatile.Read(ref _cancellation);
     public long InboxSequence => Interlocked.Read(ref _sequence);
@@ -32,6 +42,7 @@ internal sealed class ExecutionSignals(Guid runId, Action<Guid> close) : IDispos
 
     public void Deliver(Cancel message)
     {
+        if (message.AssignmentId != AssignmentId) return;
         var changed = message.Kind switch
         {
             CancelKind.Ownership => Interlocked.Exchange(ref _ownershipLost, 1) == 0,
@@ -45,6 +56,7 @@ internal sealed class ExecutionSignals(Guid runId, Action<Guid> close) : IDispos
 
     public void Deliver(Arrivals message)
     {
+        if (message.AssignmentId != AssignmentId) return;
         while (true)
         {
             var previous = InboxSequence;
@@ -57,6 +69,7 @@ internal sealed class ExecutionSignals(Guid runId, Action<Guid> close) : IDispos
 
     public void Deliver(Recycle message)
     {
+        if (message.AssignmentId != AssignmentId) return;
         if (Interlocked.Exchange(ref _recycle, 1) == 0) Pulse();
     }
 

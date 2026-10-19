@@ -15,7 +15,7 @@ internal static class ExecutionCheckpointWriter
     /// commit that records no progress, such as claiming an activity before it starts. With <paramref name="parkFor"/> the run stops that long and the
     /// store releases its lease; returns true when it did. <paramref name="now"/> is the host's time.
     /// </summary>
-    public static async Task<bool> CommitAsync(IExecutionHost host, WorkflowInstance instance,
+    public static async Task<bool> CommitAsync(ExecutionSession host, WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object? workflowData, WorkflowScopeCatalog scopes, DateTime now,
         bool preserveSavedWorkflowData = false, bool enforceLimit = true, bool clearsCrashCount = true,
         TimeSpan? parkFor = null, bool preserveContinuationState = false)
@@ -66,10 +66,10 @@ internal static class ExecutionCheckpointWriter
         for (var attempt = 1; ; attempt++)
         {
             checkpoint.Signals?.ThrowIfOwnershipLost();
-            var reply = await host.CommitAsync(commit);
+            var reply = await host.CheckpointAsync(commit);
             switch (reply.Kind)
             {
-                case CheckpointReplyKind.Acknowledged:
+                case CheckpointReplyKind.Ack:
                     var tags = Telemetry.Workflow(instance);
                     Telemetry.CommitDuration.Record(
                         System.Diagnostics.Stopwatch.GetElapsedTime(startedAt).TotalSeconds, tags);
@@ -82,16 +82,16 @@ internal static class ExecutionCheckpointWriter
                     checkpoint.Inbox.Acknowledged(checkpoint, reply.UnreadEvents);
                     EstimateDeadlines(checkpoint, opened, armed, now);
                     if (reply.PendingCancellation != null && checkpoint.Signals is { } signals)
-                        signals.Deliver(new Cancel(signals.RunId, CancelKind.Workflow, reply.PendingCancellation));
+                        signals.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reply.PendingCancellation));
                     return reply.Parked;
                 // Only the owner settles its pending events, so a settled one means another owner ran.
-                case CheckpointReplyKind.Conflict or CheckpointReplyKind.EventsChanged:
+                case CheckpointReplyKind.Conflict:
                     throw new ExecutionOwnershipLostException(reply.Error!);
                 case CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown when attempt < MaxAttempts:
                     // The commit is immutable, so sending it again cannot apply a different payload.
                     continue;
                 default:
-                    throw reply.Error!;
+                    throw new CheckpointInterruptedException(reply.Error);
             }
         }
     }
