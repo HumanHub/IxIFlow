@@ -256,7 +256,10 @@ public sealed partial class WorkflowHost
             if (checkpoint.StructureHash != scopes.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     scopes.Mismatch(definition, checkpoint.StructureHash));
-            return ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
+            var snapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
+            snapshot.Data = JsonSerializer.Deserialize<JsonElement>(new RedactingJson(services).Serialize(
+                instance.WorkflowDataJson, instance.WorkflowDataType));
+            return snapshot;
         }
 
         private static bool ChildIsActive(WorkflowInstance? child) =>
@@ -501,7 +504,15 @@ public sealed partial class WorkflowHost
             await _store.GetEventAsync(instanceId, eventId) is { } stored ? EventReceipt.Of(stored) : null;
 
         /// <summary>Open waits that match the query, across instances.</summary>
-        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) => _store.GetOpenWaitsAsync(query);
+        public async Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
+        {
+            var waits = await _store.GetOpenWaitsAsync(query);
+            var projection = new RedactingJson(services);
+            return waits.Select(wait => wait.DefaultPayloadJson == null ? wait : wait with
+            {
+                DefaultPayloadJson = projection.Serialize(wait.DefaultPayloadJson, wait.EventType)
+            }).ToArray();
+        }
 
         /// <summary>
         /// Stores a reply addressed to one wait by its token's wait ID, with the token's subject,
