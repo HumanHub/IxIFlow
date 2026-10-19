@@ -27,7 +27,7 @@ public sealed class OperationalMetricsTests
         services.AddLogging();
         services.AddSingleton<TimeProvider>(time);
         services.AddSingleton<IWorkflowStateRepository>(store);
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         await using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
         var definition = Workflow.Create<Data>("Backlog-" + Guid.NewGuid().ToString("N"), 7)

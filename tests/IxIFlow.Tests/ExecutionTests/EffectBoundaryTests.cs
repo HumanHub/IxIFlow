@@ -126,7 +126,7 @@ public sealed class EffectBoundaryTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.AddSingleton<BoundaryProbe>();
         services.AddTransient<RecordActivity>();
         services.AddTransient<BlockingActivity>();

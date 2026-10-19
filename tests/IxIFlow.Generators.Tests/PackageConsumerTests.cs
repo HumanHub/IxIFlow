@@ -162,7 +162,7 @@ public sealed class PackageConsumerTests
             throw new Exception("Docker Compose was generated");
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = new ReplyTokenKeyRing(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
         await using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
         async Task<int> Execute(WorkflowDefinition definition)

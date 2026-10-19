@@ -447,7 +447,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         services.AddSingleton(repository);
         if (time != null)
             services.AddSingleton(time);
-        services.AddIxIFlow(options => options.Slots = slots);
+        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.Slots = slots; });
         services.AddSingleton<ActivityGate>();
         services.AddSingleton<HostProbe>();
         services.AddScoped<RunScope>();

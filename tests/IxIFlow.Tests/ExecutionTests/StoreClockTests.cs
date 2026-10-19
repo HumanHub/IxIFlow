@@ -409,7 +409,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         services.AddLogging();
         services.AddSingleton(time);
         services.AddSingleton(repository);
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.AddSingleton(failures);
         services.AddTransient<NoopActivity>();
         services.AddTransient<FailOnceActivity>();
@@ -784,9 +784,9 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         services.AddSingleton<TimeProvider>(clocks.Host);
         services.AddSingleton<IWorkflowStateRepository>(new InMemoryWorkflowStateRepository(clocks.Store));
         if (slots is { } count)
-            services.AddIxIFlow(options => options.Slots = count);
+            services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.Slots = count; });
         else
-            services.AddIxIFlow();
+            services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.AddSingleton<Gate>();
         services.AddTransient<NoopActivity>();
         services.AddTransient<MarkActivity>();

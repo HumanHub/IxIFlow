@@ -15,4 +15,7 @@
     <Compile Include="../IxIFlow.Tests/Infrastructure/FaultInjectingRepository.cs" Link="Infrastructure/FaultInjectingRepository.cs" />
     <Compile Include="../IxIFlow.Tests/Infrastructure/TimerRecordingClock.cs" Link="Infrastructure/TimerRecordingClock.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../TestReplyKeys.cs" Link="TestReplyKeys.cs" />
+  </ItemGroup>
 </Project>

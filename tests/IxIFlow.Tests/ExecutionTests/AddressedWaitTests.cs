@@ -30,7 +30,7 @@ public sealed class AddressedWaitTests
         Assert.Equal(WorkflowTypeIdentity.StableName(typeof(Approval)), wait.EventType);
         Assert.Contains("\"Approved\"", wait.EventSchema);
         Assert.NotNull(wait.DeadlineUtc);
-        Assert.True(ReplyToken.TryRead(wait.Token, out var instanceId, out var waitId, out _));
+        Assert.True(ReplyToken.TryVerify(TestReplyKeys.Ring, wait.Token, out var instanceId, out var waitId, out _));
         Assert.Equal((started.InstanceId, wait.WaitId), (instanceId, waitId));
         // Other instances' waits are listed by key too, and a key nobody waits for lists nothing.
         Assert.Contains(await engine.GetOpenWaitsAsync(new WaitQuery(Key: "approval")),
@@ -207,7 +207,7 @@ public sealed class AddressedWaitTests
 
         await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest,
             () => engine.ReplyAsync("not-a-token", new Approval()));
-        var unknown = ReplyToken.Create(Guid.NewGuid().ToString("N"), "wait");
+        var unknown = ReplyToken.Sign(TestReplyKeys.Ring, Guid.NewGuid().ToString("N"), "wait");
         await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest,
             () => engine.ReplyAsync(unknown, new Approval()));
     }
@@ -220,7 +220,7 @@ public sealed class AddressedWaitTests
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(ApprovalWorkflow("UnknownWait", null), new LoopData());
 
-        var forged = await engine.ReplyAsync(ReplyToken.Create(started.InstanceId, Guid.NewGuid().ToString("N")),
+        var forged = await engine.ReplyAsync(ReplyToken.Sign(TestReplyKeys.Ring, started.InstanceId, Guid.NewGuid().ToString("N")),
             new Approval { Approved = true });
 
         EventAssert.Rejected(forged, EventRejection.UnknownWait);
@@ -297,7 +297,7 @@ public sealed class AddressedWaitTests
             services.AddSingleton(time);
         services.AddSingleton<StepGate>();
         services.AddTransient<GatedActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 

@@ -81,7 +81,7 @@ public class EventManagementTests
         services.AddLogging();
         services.AddSingleton<BusyGate>();
         services.AddTransient<BlockingActivity>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 

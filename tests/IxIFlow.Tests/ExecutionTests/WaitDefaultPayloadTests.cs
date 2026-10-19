@@ -104,7 +104,7 @@ public sealed class WaitDefaultPayloadTests : IClassFixture<SqliteTestDatabase<W
     private static ServiceProvider Services(bool sqlite = false)
     {
         var services = new ServiceCollection().AddLogging();
-        var builder = services.AddIxIFlow();
+        var builder = services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         if (sqlite) builder.UseSqlite(SqliteTestDatabase<WaitDefaultPayloadTests>.ConnectionString);
         return services.BuildServiceProvider();
     }

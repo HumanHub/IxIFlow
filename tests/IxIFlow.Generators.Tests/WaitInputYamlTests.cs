@@ -62,7 +62,7 @@ public sealed class WaitInputYamlTests
 
         async Task<string> Suggestion(WorkflowDefinition definition)
         {
-            await using var services = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
+            await using var services = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
             var client = services.GetRequiredService<IWorkflowClient>();
             var started = await client.RunAsync(definition, new FlowData { Value = 5 });
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);

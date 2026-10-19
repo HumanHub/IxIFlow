@@ -69,7 +69,7 @@ namespace IxIFlow.Tests.ExecutionTests
             // Setup DI container
             var services = new ServiceCollection();
             services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
-            services.AddIxIFlow();
+            services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
             services.AddSingleton<BranchGate>();
             services.AddTransient<GatedBranchActivity>();
 

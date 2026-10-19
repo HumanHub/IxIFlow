@@ -182,7 +182,7 @@ public sealed class OutboxServiceTests
             published.TrySetResult();
             return Task.FromResult(OutboxPublishResult.Delivered());
         });
-        services.AddIxIFlow().AddOutboxPublisher(_ => publisher)
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).AddOutboxPublisher(_ => publisher)
             .ReplayRetainedOutboxEvents(publisher.Name).UnregisterOutboxPublisher("retired");
         await using var provider = services.BuildServiceProvider();
         var store = provider.GetRequiredService<IWorkflowStateRepository>();

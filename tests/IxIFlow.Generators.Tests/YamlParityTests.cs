@@ -445,7 +445,7 @@ public sealed partial class YamlParityTests
         var result = await Match(fluent, generated, timeout ? Advance : async (services, result) =>
         {
             var token = Assert.Single(services.GetRequiredService<ParityProbe>().Tokens);
-            Assert.True(ReplyToken.TryRead(token, out _, out _, out var digest));
+            Assert.True(ReplyToken.TryVerify(TestReplyKeys.Ring, token, out _, out _, out var digest));
             Assert.Equal(ReplyToken.Digest("order-1"), digest);
             var client = services.GetRequiredService<IWorkflowClient>();
             var rejected = await client.ReplyAsync(token, new Answer { Value = 0 });
@@ -492,7 +492,7 @@ public sealed partial class YamlParityTests
         collection.AddTransient<ParityRequest>();
         collection.AddTransient<ParityFlaky>();
         collection.AddTransient<ParityPolicyPath>();
-        collection.AddIxIFlow();
+        collection.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         collection.RegisterWorkflow<ParityChildWorkflow>();
         await using var services = collection.BuildServiceProvider();
         await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Workflow_child.Build());

@@ -23,7 +23,7 @@ public sealed class UnclaimedDeliveryHorizonTests
         var time = new FakeTimeProvider();
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton<TimeProvider>(time);
-        var builder = services.AddIxIFlow();
+        var builder = services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         if (horizonDays is { } days) builder.ConfigureOutbox(retryHorizon: TimeSpan.FromDays(days));
         await using var provider = services.BuildServiceProvider();
         await OutboxStoreContract.VerifyUnclaimedHorizonAsync(provider.GetRequiredService<IWorkflowStateRepository>(),
@@ -42,7 +42,7 @@ public sealed class UnclaimedDeliveryHorizonTests
         Directory.CreateDirectory(folder);
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton<TimeProvider>(time);
-        var builder = services.AddIxIFlow().UseSqlite("Data Source=" + Path.Combine(folder, "outbox.db"));
+        var builder = services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).UseSqlite("Data Source=" + Path.Combine(folder, "outbox.db"));
         if (horizonDays is { } days) builder.ConfigureOutbox(retryHorizon: TimeSpan.FromDays(days));
         await using var provider = services.BuildServiceProvider();
         await OutboxStoreContract.VerifyUnclaimedHorizonAsync(provider.GetRequiredService<IWorkflowStateRepository>(),
@@ -57,7 +57,7 @@ public sealed class UnclaimedDeliveryHorizonTests
         var connectionString = SqlTestDatabase<UnclaimedDeliveryHorizonTests>.ConnectionString;
         foreach (var horizonDays in new int?[] { null, 2 })
         {
-            var builder = new ServiceCollection().AddLogging().AddIxIFlow().UseSqlServer(connectionString);
+            var builder = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).UseSqlServer(connectionString);
             if (horizonDays is { } days) builder.ConfigureOutbox(retryHorizon: TimeSpan.FromDays(days));
             await using var provider = builder.Services.BuildServiceProvider();
             await OutboxStoreContract.VerifyUnclaimedHorizonAsync(provider.GetRequiredService<IWorkflowStateRepository>(),
@@ -73,7 +73,7 @@ public sealed class UnclaimedDeliveryHorizonTests
         var connectionString = PostgreSqlTestDatabase<UnclaimedDeliveryHorizonTests>.ConnectionString;
         foreach (var horizonDays in new int?[] { null, 2 })
         {
-            var builder = new ServiceCollection().AddLogging().AddIxIFlow().UsePostgreSql(connectionString);
+            var builder = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).UsePostgreSql(connectionString);
             if (horizonDays is { } days) builder.ConfigureOutbox(retryHorizon: TimeSpan.FromDays(days));
             await using var provider = builder.Services.BuildServiceProvider();
             Assert.Same(provider.GetRequiredService<IWorkflowStateRepository>(), provider.GetRequiredService<IRunnableWakeSource>());

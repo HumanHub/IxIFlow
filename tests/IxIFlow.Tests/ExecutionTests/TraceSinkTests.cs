@@ -166,8 +166,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
-        services.AddIxIFlow(options =>
-        {
+        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring;
             if (maxCheckpointBytes is { } limit)
                 options.MaxCheckpointBytes = limit;
         });

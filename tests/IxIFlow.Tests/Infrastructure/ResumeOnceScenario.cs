@@ -55,7 +55,7 @@ internal static class ResumeOnceScenario
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         services.Replace(ServiceDescriptor.Singleton(repository));
         services.Replace(ServiceDescriptor.Singleton(registry));
         services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));

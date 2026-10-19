@@ -531,7 +531,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         Assert.Equal(1_000, new IxIFlowOptions().MaxTraceEntriesPerCommit);
         foreach (var limit in new[] { 0, -1 })
             Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection()
-                .AddIxIFlow(options => options.MaxTraceEntriesPerCommit = limit));
+                .AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.MaxTraceEntriesPerCommit = limit; }));
     }
 
     [Fact]
@@ -568,7 +568,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         services.AddSingleton<TimeProvider>(time);
         services.AddSingleton(store);
         services.AddTransient<AdvanceClock>();
-        services.AddIxIFlow(options => { options.MaxTraceEntriesPerCommit = limit; options.Actor = actor; });
+        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.MaxTraceEntriesPerCommit = limit; options.Actor = actor; });
         return services.BuildServiceProvider();
     }
 

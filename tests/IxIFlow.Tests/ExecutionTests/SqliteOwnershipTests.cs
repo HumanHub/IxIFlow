@@ -18,7 +18,7 @@ public sealed class SqliteOwnershipTests : IClassFixture<SqliteTestDatabase<Sqli
     {
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton<TimeProvider>(new FakeTimeProvider());
-        services.AddIxIFlow().UseSqlite(connectionString);
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).UseSqlite(connectionString);
         return new TestHost(services.BuildServiceProvider());
     }
 
@@ -143,10 +143,10 @@ public sealed class SqliteOwnershipTests : IClassFixture<SqliteTestDatabase<Sqli
     [Trait("Spec", "C-11")]
     public void ASecondStoreChoiceIsRefused()
     {
-        var builder = new ServiceCollection().AddLogging().AddIxIFlow().UseSqlite(ConnectionString);
+        var builder = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).UseSqlite(ConnectionString);
         Assert.Contains("choose one store", Assert.Throws<InvalidOperationException>(() =>
             builder.UseSqlite(ConnectionString)).Message);
-        var other = new ServiceCollection().AddLogging().AddIxIFlow().UsePostgreSql("Host=unused");
+        var other = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).UsePostgreSql("Host=unused");
         Assert.Contains("choose one store", Assert.Throws<InvalidOperationException>(() =>
             other.UseSqlite(ConnectionString)).Message);
     }

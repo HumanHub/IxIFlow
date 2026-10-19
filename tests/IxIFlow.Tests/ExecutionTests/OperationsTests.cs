@@ -19,7 +19,7 @@ public sealed class OperationsTests
         services.AddSingleton(store);
         services.AddSingleton(probe ?? new Probe());
         services.AddTransient<Noop>(); services.AddTransient<Block>(); services.AddTransient<FailPrivate>();
-        services.AddIxIFlow(options => options.Actor = "default-operator");
+        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.Actor = "default-operator"; });
         services.AddSingleton(new InProcessInstanceGate());
         if (shortLease) services.AddSingleton(new ExecutionLeaseSettings(TimeSpan.FromMilliseconds(400), TimeSpan.FromMilliseconds(100)));
         return services.BuildServiceProvider();

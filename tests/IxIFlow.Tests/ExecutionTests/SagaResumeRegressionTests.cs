@@ -144,7 +144,7 @@ public class SagaResumeRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 }

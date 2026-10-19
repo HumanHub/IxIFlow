@@ -1082,7 +1082,7 @@ public sealed class StructuredChildWaitTests
             registrations.AddSingleton(activeChildProbe);
             registrations.AddTransient<ActiveChildActivity>();
         }
-        registrations.AddIxIFlow();
+        registrations.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         if (repository != null)
             registrations.AddSingleton(repository);
         return registrations.BuildServiceProvider();

@@ -179,7 +179,7 @@ public sealed class CheckpointLimitTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
-        services.AddIxIFlow(options => options.MaxCheckpointBytes = maxCheckpointBytes);
+        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.MaxCheckpointBytes = maxCheckpointBytes; });
         services.AddTransient<NoopActivity>();
         services.AddTransient<GrowActivity>();
         return services.BuildServiceProvider();

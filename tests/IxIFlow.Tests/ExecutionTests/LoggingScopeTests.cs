@@ -22,7 +22,7 @@ public sealed class LoggingScopeTests
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(capture));
         services.AddTransient<LogsItsName>();
         services.AddSingleton<BothBranches>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<ScopeData>("LoggingScopes")
             .Step<LogsItsName>(step => step.Input(activity => activity.Name).From(_ => "first"))

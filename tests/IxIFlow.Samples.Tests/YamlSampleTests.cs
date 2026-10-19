@@ -131,7 +131,7 @@ public sealed class YamlSampleTests
             Assert.Equal("manager", request.Approver);
             Assert.Equal("order-1", request.OrderId);
             Assert.Equal(40m, request.Amount);
-            Assert.True(ReplyToken.TryRead(request.ReplyToken, out _, out _, out var digest));
+            Assert.True(ReplyToken.TryVerify(services.GetRequiredService<ReplyTokenKeyRing>(), request.ReplyToken, out _, out _, out var digest));
             Assert.Equal(ReplyToken.Digest("order-1:40"), digest);
             WorkflowExecutionResult result;
             if (answer == "timeout")

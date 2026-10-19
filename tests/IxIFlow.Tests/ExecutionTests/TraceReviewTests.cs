@@ -271,9 +271,9 @@ public sealed class TraceReviewTests
         Assert.Null(new IxIFlowOptions().MaxTraceEntriesPerInstance);
         foreach (var budget in new long[] { 0, -1 })
             Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection()
-                .AddIxIFlow(options => options.MaxTraceEntriesPerInstance = budget));
+                .AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.MaxTraceEntriesPerInstance = budget; }));
         Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection()
-            .AddIxIFlow(options => options.TraceDetail = (TraceDetail)42));
+            .AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.TraceDetail = (TraceDetail)42; }));
     }
 
     [Fact]
@@ -373,7 +373,7 @@ public sealed class TraceReviewTests
         services.AddLogging();
         services.AddSingleton<TimeProvider>(time);
         services.AddSingleton<IWorkflowStateRepository>(store ?? new InMemoryWorkflowStateRepository(time));
-        services.AddIxIFlow(configure ?? (_ => { }));
+        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; (configure ?? (_ => { }))(options); });
         return services.BuildServiceProvider();
     }
 

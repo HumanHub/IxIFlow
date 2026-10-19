@@ -206,7 +206,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.VerifyCheckpointParts = true);
+        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.VerifyCheckpointParts = true; });
         using var provider = services.BuildServiceProvider();
 
         Assert.True(provider.GetRequiredService<ExecutionLimits>().VerifyCheckpointParts);
@@ -436,7 +436,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         services.AddSingleton(store);
         services.AddSingleton(outbox);
         services.AddTransient<Ask>();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         return services.BuildServiceProvider();
     }
 

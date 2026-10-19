@@ -17,7 +17,7 @@ public static class TemplateFixtures
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
         if (store != null)
             services.Replace(ServiceDescriptor.Singleton(store));
         var templates = services.AddIxIFlowTemplates();

@@ -26,7 +26,7 @@ public class SuspendResumeExecutionTests
         services.AddSingleton<IWorkflowStateRepository, MockWorkflowStateRepository>();
 
         // Register IxIFlow
-        services.AddIxIFlow();
+        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
 
         services.AddLogging();
 
