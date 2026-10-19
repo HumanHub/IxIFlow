@@ -75,7 +75,7 @@ All steps accept `id`; `name` is accepted only in workflow-scope bodies. A name 
 | `waitFor` | Required `key` and `event`; plain event wait or the paired request's reply wait |
 | `suspend` | Required `event`, optional `reason` key (step ID fallback) |
 | `invokeWorkflow` | `workflow: { name, version }`, `input`, `output`, optional `cancelWithParent` (true by default); the source generator requires an explicit `version` because it registers only `name@version` references |
-| `invokeWorkflowType` | `workflowType`, optional `dataType` fallback, mappings and `cancelWithParent`; resolves an `IWorkflow<T>` class |
+| `invokeWorkflowType` | `workflowType`, optional `dataType` fallback, mappings and `cancelWithParent`; resolves an `IWorkflow<T>` class registered with `services.RegisterWorkflow<TWorkflow>()` before building the service provider |
 
 The schema describes possible nodes; shared builder rules also enforce where constructs are legal. Saga bodies accept activities/references, requests, waits and outcomes. Saga handlers accept ordinary activities/references and `waitFor`; catch bodies exclude requests, delays, results and outcomes. Timeout paths and result-producing lists retain the fluent API's scope restrictions. Use `name` for a step label; descriptions belong to the workflow.
 
