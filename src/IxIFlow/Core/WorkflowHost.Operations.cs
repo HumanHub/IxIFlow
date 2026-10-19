@@ -22,12 +22,12 @@ public sealed partial class WorkflowHost
         public Task<IReadOnlyList<StoredTraceEntry>> GetTracePageAsync(string instanceId, long after, int limit) =>
             _store.GetTraceAsync(instanceId, after, limit);
 
-        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, string reasonCode, string? description, string? actor) =>
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, string reasonCode, string? description, string? actor, Guid? expectedIncarnation = null) =>
             _store.RequestTerminationAsync(instanceId, new CancellationReason
             {
                 Mode = WorkflowControlMode.Terminate, ReasonCode = reasonCode, Description = description ?? "",
                 RequestedBy = actor ?? _defaultActor ?? "", RequestedAt = Now
-            });
+            }, expectedIncarnation);
 
         // Also used by recovery before looking up a definition or deserializing user data. A remote owner
         // stops renewing after termination, so an activity that hangs cannot keep its lease indefinitely.
@@ -35,15 +35,17 @@ public sealed partial class WorkflowHost
         {
             var reason = await _store.GetCancellationRequestAsync(instanceId);
             if (reason?.Mode != WorkflowControlMode.Terminate) return false;
-            var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+            var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             if (instance == null || expectedIncarnation is { } identity && instance.Incarnation != identity ||
                 WorkflowStoreRules.IsTerminal(instance.Status)) return false;
+            var prepared = await PrepareTerminationAsync(instance);
+            if (prepared == null) return false;
             using var signals = Executor.PrepareAssignment(Guid.NewGuid());
-            await using var owner = await AcquireAsync(instance, signals);
+            using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
+            await using var owner = await AcquireAsync(prepared.Saved, signals);
             if (owner == null) return false;
-            using var assignment = Admit(instance, owner, signals.AssignmentId);
-            var commit = await PrepareTerminationAsync(instance, owner.Epoch);
-            if (commit == null) return false;
+            using var assignment = Admit(prepared.Saved, owner, signals.AssignmentId);
+            var commit = prepared.Commit(owner.Epoch);
             for (var attempt = 1; ; attempt++)
             {
                 var reply = await assignment.CheckpointAsync(new(signals.AssignmentId, commit));
@@ -59,7 +61,9 @@ public sealed partial class WorkflowHost
 
         // Called inside the assignment's commit queue. Only saved state is used: termination does
         // not require a loaded definition or deserializable user data.
-        private async Task<CheckpointCommit?> PrepareTerminationAsync(WorkflowInstance assigned, long epoch)
+        private sealed record TerminationPreparation(WorkflowInstance Saved, Func<long, CheckpointCommit> Commit);
+
+        private async Task<TerminationPreparation?> PrepareTerminationAsync(WorkflowInstance assigned)
         {
             var instanceId = assigned.InstanceId;
             var reason = await _store.GetCancellationRequestAsync(instanceId);
@@ -89,13 +93,14 @@ public sealed partial class WorkflowHost
                             parents.Enqueue(child.InstanceId);
                             continue;
                         }
-                        var saved = await _store.GetWorkflowInstanceSummaryAsync(child.InstanceId);
-                        if (saved != null)
-                            children.Add(new ChildCancellation(child.InstanceId, reason, saved.ParentWaitId));
+                        children.Add(new ChildCancellation(child.InstanceId, reason, child.ParentWaitId));
                     }
                     after = page.NextCursor;
                 } while (after != null);
             }
+            var saved = instance;
+            instance = saved.AsTrunk(saved.ExecutionStateJson);
+            instance.WorkflowDataJson = saved.WorkflowDataJson;
             instance.Status = WorkflowStatus.Terminated;
             instance.CompletedAt = Now;
             instance.CancellationReason = reason;
@@ -111,8 +116,8 @@ public sealed partial class WorkflowHost
                 Payload = new CancellationTrace(reason.RequestedBy, reason.RequestedAt, reason.ReasonCode)
             };
             var checkpoint = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
-            return CheckpointCommit.Create(instance, epoch, instance.Revision,
-                childCancellations: children, parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: [trace]);
+            return new(saved, epoch => CheckpointCommit.Create(instance, epoch, instance.Revision,
+                childCancellations: children, parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: [trace]));
         }
     }
 }

@@ -117,8 +117,8 @@ public class FaultInjectingRepository : IWorkflowStateRepository
         throw new IOException($"Injected commit failure for '{instance.InstanceId}'");
     }
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
-        _inner.RequestCancellationAsync(instanceId, reason);
+    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
     public virtual Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         _inner.GetCancellationRequestAsync(instanceId);
     public virtual Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
@@ -136,8 +136,8 @@ public class FaultInjectingRepository : IWorkflowStateRepository
     public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
         _inner.QueryInstancesAsync(query);
 
-    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason) =>
-        _inner.RequestTerminationAsync(instanceId, reason);
+    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
         int limit = 1000) =>
         _inner.GetTraceAsync(instanceId, afterSequence, limit);

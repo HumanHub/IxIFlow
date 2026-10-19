@@ -50,13 +50,13 @@ public partial class InMemoryWorkflowStateRepository
                     d.FirstAttemptAtUtc == null && _instances.TryGetValue(d.Event.InstanceId, out var instance) &&
                     WorkflowStoreRules.IsTerminal(instance.Status) &&
                     _endedAt.TryGetValue(instance.InstanceId, out var ended) && now - ended >= finishedRetention &&
-                    !_instances.Values.Any(child => child.ParentInstanceId == instance.InstanceId && !WorkflowStoreRules.IsTerminal(child.Status)))
+                    !_instances.Values.Any(child => child.ParentInstanceId == instance.InstanceId))
                 .GroupBy(d => d.PublisherName, StringComparer.Ordinal)
                 .ToDictionary(g => g.Key, g => g.Select(d => d.Event.InstanceId).Distinct(StringComparer.Ordinal).Count(), StringComparer.Ordinal);
             var candidates = _instances.Values.Where(i => WorkflowStoreRules.IsTerminal(i.Status) &&
                     _endedAt.TryGetValue(i.InstanceId, out var ended) && now - ended >= finishedRetention &&
                     !_deliveries.Values.Any(d => d.Event.InstanceId == i.InstanceId && d.Status == OutboxDeliveryStatus.Pending) &&
-                    !_instances.Values.Any(child => child.ParentInstanceId == i.InstanceId && !WorkflowStoreRules.IsTerminal(child.Status)))
+                    !_instances.Values.Any(child => child.ParentInstanceId == i.InstanceId))
                 .OrderBy(i => _endedAt[i.InstanceId]).ThenBy(i => i.InstanceId, StringComparer.Ordinal)
                 .Take(batchSize).Select(i => i.InstanceId).ToArray();
             foreach (var id in candidates)

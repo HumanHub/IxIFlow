@@ -5,10 +5,10 @@ namespace IxIFlow.Core;
 /// <summary>Operator access on the host pipeline. Applications enforce authorization at their boundary.</summary>
 public interface IWorkflowOperations
 {
-    Task<WorkflowOperation> SubmitResolutionAsync(string instanceId, string invocationId, ActivityResolution resolution);
-    Task<WorkflowOperation> SubmitReleaseAsync(string instanceId, string actor);
-    Task<WorkflowOperation> SubmitCancellationAsync(string instanceId, CancellationReason reason);
-    Task<WorkflowOperation> SubmitTerminationAsync(string instanceId, string reasonCode, string? description, string actor);
+    Task<WorkflowOperation> SubmitResolutionAsync(string instanceId, string invocationId, ActivityResolution resolution, Guid? expectedIncarnation = null);
+    Task<WorkflowOperation> SubmitReleaseAsync(string instanceId, string actor, Guid? expectedIncarnation = null);
+    Task<WorkflowOperation> SubmitCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null);
+    Task<WorkflowOperation> SubmitTerminationAsync(string instanceId, string reasonCode, string? description, string actor, Guid? expectedIncarnation = null);
     Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default);
     Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query, string actor, CancellationToken cancellationToken = default);
     Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default);
@@ -113,7 +113,8 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
         cancellationToken.ThrowIfCancellationRequested();
-        var accepted = await host.ReadAsync(client => client.RequestTerminationAsync(instanceId, reasonCode, description, actor));
+        var incarnation = await IncarnationAsync(instanceId, null);
+        var accepted = await host.ReadAsync(client => client.RequestTerminationAsync(instanceId, reasonCode, description, actor, incarnation));
         if (!accepted.Accepted)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Termination lost: workflow instance '{instanceId}' is absent or already finished");
@@ -126,7 +127,7 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await host.ReadAsync(client => client.FinishTerminationAsync(instanceId, incarnation));
+            await host.RunAsync(null, (client, _, _) => client.FinishTerminationAsync(instanceId, incarnation), cancellationToken);
             var current = await GetAsync(instanceId, cancellationToken)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The terminated instance was removed");
             if (current.Incarnation != incarnation)

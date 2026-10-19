@@ -63,6 +63,9 @@ public sealed record InstanceSummary(string InstanceId, string WorkflowName, int
     string? ParentInstanceId, DateTime CreatedAtUtc, DateTime? EndedAtUtc, DateTime? RunnableAtUtc,
     long Revision, Guid Incarnation)
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? ParentWaitId { get; init; }
+
     internal static InstanceSummary Of(WorkflowInstance instance)
     {
         var checkpoint = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
@@ -78,7 +81,7 @@ public sealed record InstanceSummary(string InstanceId, string WorkflowName, int
         return new(instance.InstanceId, instance.WorkflowName, instance.WorkflowVersion, instance.Status,
             kind, kind == WorkflowStopKind.Quarantine ? checkpoint.OperatorStop?.CrashCount : null,
             instance.CorrelationId, instance.ParentInstanceId, instance.CreatedAt, instance.CompletedAt,
-            instance.RunnableAtUtc, instance.Revision, instance.Incarnation);
+            instance.RunnableAtUtc, instance.Revision, instance.Incarnation) { ParentWaitId = instance.ParentWaitId };
     }
 }
 

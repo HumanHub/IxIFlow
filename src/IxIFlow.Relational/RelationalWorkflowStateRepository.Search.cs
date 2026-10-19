@@ -37,9 +37,9 @@ public abstract partial class RelationalWorkflowStateRepository
             filters.Add($"({SearchColumn("created_at_utc")} < @CursorCreated OR ({SearchColumn("created_at_utc")} = @CursorCreated AND {SearchColumn("instance_id")} > @CursorId))");
         }
         string[] columns = ["instance_id", "workflow_name", "workflow_version", "status", "stop_kind", "stop_crash_count",
-            "correlation_id", "parent_instance_id", "created_at_utc", "ended_at_utc", "runnable_at_utc", "revision", "incarnation"];
+            "correlation_id", "parent_instance_id", "created_at_utc", "ended_at_utc", "runnable_at_utc", "revision", "incarnation", "parent_wait_id"];
         string[] aliases = ["InstanceId", "WorkflowName", "WorkflowVersion", "Status", "StopKind", "CrashCount", "CorrelationId",
-            "ParentInstanceId", "CreatedAtUtc", "EndedAtUtc", "RunnableAtUtc", "Revision", "Incarnation"];
+            "ParentInstanceId", "CreatedAtUtc", "EndedAtUtc", "RunnableAtUtc", "Revision", "Incarnation", "ParentWaitId"];
         var projection = string.Join(", ", columns.Select((column, index) => $"{SearchColumn(column)} AS {aliases[index]}"));
         // Predicates are assembled only from internal column/operator names; all caller values are parameters.
         var sql = $"SELECT {SearchLimitPrefix} {projection} FROM {InstanceTable} " +
@@ -62,6 +62,7 @@ public abstract partial class RelationalWorkflowStateRepository
         public int? CrashCount { get; set; }
         public string? CorrelationId { get; set; }
         public string? ParentInstanceId { get; set; }
+        public string? ParentWaitId { get; set; }
         public DateTime CreatedAtUtc { get; set; }
         public DateTime? EndedAtUtc { get; set; }
         public DateTime? RunnableAtUtc { get; set; }
@@ -69,6 +70,6 @@ public abstract partial class RelationalWorkflowStateRepository
         public Guid Incarnation { get; set; }
         public InstanceSummary Read() => new(InstanceId, WorkflowName, WorkflowVersion, Status, StopKind, CrashCount,
             CorrelationId, ParentInstanceId, Utc(CreatedAtUtc), EndedAtUtc is { } end ? Utc(end) : null,
-            RunnableAtUtc is { } run ? Utc(run) : null, Revision, Incarnation);
+            RunnableAtUtc is { } run ? Utc(run) : null, Revision, Incarnation) { ParentWaitId = ParentWaitId };
     }
 }

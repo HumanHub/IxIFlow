@@ -55,15 +55,16 @@ public sealed partial class WorkflowHost
         /// null when the instance is idle and must be recovered to unwind.
         /// </summary>
         public async Task<WorkflowExecutionResult?> RequestCancellationAsync(string instanceId,
-            CancellationReason reason, CancellationToken cancellationToken)
+            CancellationReason reason, CancellationToken cancellationToken, Guid? expectedIncarnation = null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             ArgumentNullException.ThrowIfNull(reason);
             cancellationToken.ThrowIfCancellationRequested();
             reason = OperatorTrace.WithActor(reason, _defaultActor, Now);
-            if (!await _store.RequestCancellationAsync(instanceId, reason))
+            if (!await _store.RequestCancellationAsync(instanceId, reason, expectedIncarnation))
             {
                 var existing = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
+                RequireIncarnation(existing, expectedIncarnation);
                 if (existing == null)
                     await RefuseRemovedAsync(instanceId);
                 if (existing == null)
@@ -119,15 +120,16 @@ public sealed partial class WorkflowHost
         }
 
         public async Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
-            string invocationId, ActivityResolution resolution, CancellationToken cancellationToken)
+            string invocationId, ActivityResolution resolution, CancellationToken cancellationToken, Guid? expectedIncarnation = null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(invocationId);
             ArgumentNullException.ThrowIfNull(resolution);
-            if (await FinishTerminationAsync(instanceId))
+            if (await FinishTerminationAsync(instanceId, expectedIncarnation))
                 return TerminatedResult(instanceId);
             using var lease = await gate.EnterAsync(instanceId, cancellationToken);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+            RequireIncarnation(instance, expectedIncarnation);
             if (instance == null)
                 await RefuseRemovedAsync(instanceId);
             if (instance?.Status != WorkflowStatus.NeedsResolution || !HasStructuredCheckpoint(instance))
@@ -264,6 +266,13 @@ public sealed partial class WorkflowHost
             return ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
         }
 
+        private static void RequireIncarnation(WorkflowInstance? instance, Guid? expected)
+        {
+            if (expected is { } identity && instance?.Incarnation != identity)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                    "The instance was removed or its ID reused before the operation was accepted");
+        }
+
         private static bool ChildIsActive(WorkflowInstance? child) =>
             child != null && child.Status is not (WorkflowStatus.Completed or
                 WorkflowStatus.Failed or WorkflowStatus.Cancelled or
@@ -305,9 +314,21 @@ public sealed partial class WorkflowHost
             if (step.StepType == WorkflowStepType.WorkflowInvocation)
             {
                 var result = resolution.InvocationResult
-                    ?? throw new ArgumentException("Observed child completion requires child workflow data", nameof(resolution));
+                    ?? throw new ArgumentException("A Completed child invocation resolution requires invocationResult containing the child workflow data.", "invocationResult");
+                if (result is JsonElement json)
+                {
+                    try
+                    {
+                        result = json.Deserialize(childDataType!, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                            ?? throw new JsonException();
+                    }
+                    catch (Exception error) when (error is JsonException or NotSupportedException)
+                    {
+                        throw new ArgumentException("invocationResult must be valid JSON for the invoked child workflow's declared data type.", "invocationResult");
+                    }
+                }
                 if (!childDataType!.IsInstanceOfType(result))
-                    throw new ArgumentException("Observed child workflow data has the wrong type", nameof(resolution));
+                    throw new ArgumentException("invocationResult must match the invoked child workflow's declared data type.", "invocationResult");
                 foreach (var mapped in step.OutputMappings.Where(mapping =>
                              mapping.Direction == PropertyMappingDirection.Output))
                 {
@@ -511,26 +532,27 @@ public sealed partial class WorkflowHost
             return result;
         }
 
-        public Task<WorkflowExecutionResult> RecoverAsync(string instanceId, CancellationToken cancellationToken) =>
-            ContinueAsync(instanceId, release: false, cancellationToken);
+        public Task<WorkflowExecutionResult> RecoverAsync(string instanceId, CancellationToken cancellationToken, Guid? expectedIncarnation = null) =>
+            ContinueAsync(instanceId, release: false, cancellationToken, expectedIncarnation: expectedIncarnation);
 
         /// <summary>
         /// Releases an instance stopped for an operator and runs it. Automatic recovery, including a
         /// parent checking its child, never releases a stop.
         /// </summary>
         public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId, string? actor,
-            CancellationToken cancellationToken) =>
-            ContinueAsync(instanceId, release: true, cancellationToken, actor: actor ?? _defaultActor);
+            CancellationToken cancellationToken, Guid? expectedIncarnation = null) =>
+            ContinueAsync(instanceId, release: true, cancellationToken, actor: actor ?? _defaultActor, expectedIncarnation: expectedIncarnation);
 
         // With forEvent, an instance with nothing to run is answered as it is saved: another run took the
         // event already, or it was stored for an instance that is finished or stopped.
         private async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, bool release,
-            CancellationToken cancellationToken, bool forEvent = false, string? actor = null)
+            CancellationToken cancellationToken, bool forEvent = false, string? actor = null, Guid? expectedIncarnation = null)
         {
-            if (await FinishTerminationAsync(instanceId))
+            if (await FinishTerminationAsync(instanceId, expectedIncarnation))
                 return TerminatedResult(instanceId);
             using var lease = await gate.EnterAsync(instanceId, cancellationToken);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+            RequireIncarnation(instance, expectedIncarnation);
             if (instance == null)
                 await RefuseRemovedAsync(instanceId);
             // Even an idle recovery must refuse a different loaded structure before answering
@@ -1137,18 +1159,28 @@ public sealed partial class WorkflowHost
                     }
                 }
                 if (reply.PendingCancellation is { } reason) owner.ObserveCancellation(reason);
-                if (reply.Kind == CheckpointReplyKind.Conflict &&
-                    reply.PendingCancellation?.Mode == WorkflowControlMode.Terminate &&
-                    await operations.PrepareTerminationAsync(instance, owner.Epoch) is { } termination)
+                if (reply.Kind == CheckpointReplyKind.Conflict && commit.Instance.Status != WorkflowStatus.Terminated &&
+                    reply.PendingCancellation?.Mode == WorkflowControlMode.Terminate)
                 {
-                    // We are already inside this run's queue. The host's terminal transition uses
-                    // the same receipt and lease path, without re-enqueuing behind this request.
-                    for (var attempt = 1; ; attempt++)
+                    try
                     {
-                        var ended = await ApplyCommitAsync(termination);
-                        if (ended.Kind == CheckpointReplyKind.Ack ||
-                            ended.Kind is not (CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown) || attempt == 3)
-                            break;
+                        if (await operations.PrepareTerminationAsync(instance) is { } prepared)
+                        {
+                            // Already in the commit queue: preserve the original executor conflict even
+                            // if preparing or committing the host's terminal transition fails.
+                            var termination = prepared.Commit(owner.Epoch);
+                            for (var attempt = 1; ; attempt++)
+                            {
+                                var ended = await ApplyCommitAsync(termination);
+                                if (ended.Kind == CheckpointReplyKind.Ack ||
+                                    ended.Kind is not (CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown) || attempt == 3)
+                                    break;
+                            }
+                        }
+                    }
+                    catch (Exception error)
+                    {
+                        LastCommitError = error;
                     }
                 }
                 return reply;

@@ -99,7 +99,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     }
 
     internal override async Task<CancellationOutcome> RequestCancellationAsync(DbConnection connection,
-        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? now)
+        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? now, Guid? expectedIncarnation = null)
     {
         var row = await connection.QuerySingleOrDefaultAsync<CommitState>("""
             SELECT revision AS Revision, cancellation_json AS CancellationJson,
@@ -113,8 +113,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                     THEN false ELSE cancellation_acknowledged END,
                 runnable_at_utc = CASE WHEN cancellation_json IS NULL OR NOT cancellation_acknowledged
                     THEN @Now ELSE runnable_at_utc END
-            WHERE instance_id = @InstanceId AND status IN ('Running', 'Suspended', 'NeedsResolution')
-            """, new { InstanceId = instanceId, ReasonJson = reasonJson, Now = Timestamp(now) }, transaction);
+            WHERE instance_id = @InstanceId AND (@ExpectedIncarnation IS NULL OR incarnation = @ExpectedIncarnation) AND status IN ('Running', 'Suspended', 'NeedsResolution')
+            """, new { InstanceId = instanceId, ReasonJson = reasonJson, Now = Timestamp(now), ExpectedIncarnation = expectedIncarnation?.ToString() }, transaction);
         return row == null ? CancellationOutcome.Gone : changed == 0 ? CancellationOutcome.Unchanged
             : row.CancellationJson == null || !row.CancellationAcknowledged
                 ? CancellationOutcome.MadeRunnable : CancellationOutcome.Recorded;
@@ -229,8 +229,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_instances
                     (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, runnable_at_utc, state_json, revision,
-                     parent_instance_id)
-                VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @Now, @Payload, 1, @ParentInstanceId)
+                     parent_instance_id, parent_wait_id)
+                VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @Now, @Payload, 1, @ParentInstanceId, @ParentWaitId)
                 """, children.Select(child => new
         {
             child.Instance!.InstanceId,
@@ -244,7 +244,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             child.Instance!.CorrelationId,
             child.Payload,
             Now = Timestamp(now),
-            ParentInstanceId = parentInstanceId
+            ParentInstanceId = parentInstanceId,
+            child.ParentWaitId
         }), transaction);
     }
 
@@ -540,8 +541,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
-              VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
+                  (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, parent_instance_id, parent_wait_id, runnable_at_utc, state_json, revision)
+              VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @ParentWaitId, @RunnableAtUtc, @StateJson, @Revision);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
@@ -549,7 +550,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
               UPDATE ixiflow_workflow_instances SET
                   workflow_name = @WorkflowName, workflow_version = @WorkflowVersion, created_at_utc = @CreatedAtUtc,
                   stop_kind = @StopKind, stop_crash_count = @StopCrashCount, status = @Status,
-                  correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
+                  correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId, parent_wait_id = @ParentWaitId,
                   runnable_at_utc = @RunnableAtUtc,
                   inbox_read_through = COALESCE(@InboxReadThrough, inbox_read_through),
                   state_json = @StateJson, revision = @Revision,
@@ -634,7 +635,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             revision INTEGER NOT NULL,
             inbox_sequence INTEGER NOT NULL DEFAULT 0,
             inbox_read_through INTEGER NOT NULL DEFAULT 0,
-            parent_instance_id TEXT COLLATE BINARY NULL
+            parent_instance_id TEXT COLLATE BINARY NULL,
+            parent_wait_id TEXT COLLATE BINARY NULL
         );
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_creation ON ixiflow_workflow_instances (created_at_utc DESC, instance_id ASC);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_status_creation ON ixiflow_workflow_instances (status, created_at_utc DESC, instance_id ASC);

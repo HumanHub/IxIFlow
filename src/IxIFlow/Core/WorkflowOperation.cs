@@ -20,19 +20,21 @@ public sealed record WorkflowOperationResult(string InstanceId, WorkflowExecutio
 
 internal sealed partial class HostedWorkflowOperations
 {
-    public Task<WorkflowOperation> SubmitResolutionAsync(string instanceId, string invocationId, ActivityResolution resolution)
+    public async Task<WorkflowOperation> SubmitResolutionAsync(string instanceId, string invocationId, ActivityResolution resolution, Guid? expectedIncarnation = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationId);
         ArgumentNullException.ThrowIfNull(resolution);
-        return SubmitRunAsync(instanceId, (client, token) => client.ResolveAsync(instanceId, invocationId, resolution, token));
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        return await SubmitRunAsync(instanceId, (client, token) => client.ResolveAsync(instanceId, invocationId, resolution, token, incarnation));
     }
 
-    public Task<WorkflowOperation> SubmitReleaseAsync(string instanceId, string actor)
+    public async Task<WorkflowOperation> SubmitReleaseAsync(string instanceId, string actor, Guid? expectedIncarnation = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
-        return SubmitRunAsync(instanceId, (client, token) => client.ReleaseAsync(instanceId, actor, token));
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        return await SubmitRunAsync(instanceId, (client, token) => client.ReleaseAsync(instanceId, actor, token, incarnation));
     }
 
     private async Task<WorkflowOperation> SubmitRunAsync(string instanceId,
@@ -53,23 +55,25 @@ internal sealed partial class HostedWorkflowOperations
         return new WorkflowOperation(CompleteAsync(run));
     }
 
-    public async Task<WorkflowOperation> SubmitCancellationAsync(string instanceId, CancellationReason reason)
+    public async Task<WorkflowOperation> SubmitCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
-        var requested = await host.ReadAsync(client => client.RequestCancellationAsync(instanceId, reason, CancellationToken.None));
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        var requested = await host.ReadAsync(client => client.RequestCancellationAsync(instanceId, reason, CancellationToken.None, incarnation));
         if (requested?.Status == WorkflowExecutionStatus.Running) host.WakeNow(instanceId);
         return new WorkflowOperation(CompleteAsync(requested == null
-            ? host.RunAsync(instanceId, (client, _, token) => client.RecoverAsync(instanceId, token), CancellationToken.None)
+            ? host.RunAsync(instanceId, (client, _, token) => client.RecoverAsync(instanceId, token, incarnation), CancellationToken.None)
             : Task.FromResult(requested)));
     }
 
-    public async Task<WorkflowOperation> SubmitTerminationAsync(string instanceId, string reasonCode, string? description, string actor)
+    public async Task<WorkflowOperation> SubmitTerminationAsync(string instanceId, string reasonCode, string? description, string actor, Guid? expectedIncarnation = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
-        var accepted = await host.ReadAsync(client => client.RequestTerminationAsync(instanceId, reasonCode, description, actor));
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        var accepted = await host.ReadAsync(client => client.RequestTerminationAsync(instanceId, reasonCode, description, actor, incarnation));
         if (!accepted.Accepted)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Termination was not accepted");
         return new WorkflowOperation(FinishAsync());
@@ -80,6 +84,10 @@ internal sealed partial class HostedWorkflowOperations
             return new(summary.InstanceId, WorkflowExecutionStatus.Terminated);
         }
     }
+
+    private async Task<Guid> IncarnationAsync(string instanceId, Guid? expected) => expected ??
+        (await GetAsync(instanceId))?.Incarnation ?? throw new WorkflowEngineException(
+            WorkflowErrorKind.InvalidState, "The workflow instance does not exist");
 
     private async Task<WorkflowOperationResult> CompleteAsync(Task<WorkflowExecutionResult> run)
     {

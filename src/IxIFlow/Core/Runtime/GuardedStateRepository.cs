@@ -82,8 +82,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
         Guard(() => _store.GetTombstoneAsync(instanceId), $"Reading retention tombstone for '{instanceId}'");
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
-        Guard(() => _store.RequestCancellationAsync(instanceId, reason),
+    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        Guard(() => _store.RequestCancellationAsync(instanceId, reason, expectedIncarnation),
             $"Requesting cancellation of workflow instance '{instanceId}'");
 
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
@@ -164,8 +164,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
         Guard(() => _store.QueryInstancesAsync(query), "Searching workflow instances");
 
-    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason) =>
-        Guard(() => _store.RequestTerminationAsync(instanceId, reason), "Requesting workflow termination");
+    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        Guard(() => _store.RequestTerminationAsync(instanceId, reason, expectedIncarnation), "Requesting workflow termination");
 
 
 

@@ -41,7 +41,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         Statement.RetentionCandidates => """
             SELECT i.instance_id FROM ixiflow_workflow_instances i WHERE i.ended_at_utc <= @Cutoff AND i.status IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
               AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_events e JOIN ixiflow_outbox_deliveries d ON d.event_id=e.event_id WHERE e.instance_id=i.instance_id AND d.status=0)
-              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id AND c.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
+              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id)
             ORDER BY i.ended_at_utc, i.instance_id LIMIT @Limit
             """,
         Statement.RetentionBlockedPublishers => """
@@ -51,13 +51,13 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             JOIN ixiflow_outbox_deliveries d ON d.event_id=e.event_id
             WHERE i.ended_at_utc<=@Cutoff AND i.status IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
               AND d.status=0 AND d.first_attempt_at_utc IS NULL
-              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id AND c.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
+              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id)
             GROUP BY d.publisher_name
             """,
         Statement.RetentionEligible => """
             SELECT count(*) FROM ixiflow_workflow_instances i WHERE i.instance_id=@InstanceId AND i.ended_at_utc <= @Cutoff AND i.status IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
               AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_events e JOIN ixiflow_outbox_deliveries d ON d.event_id=e.event_id WHERE e.instance_id=i.instance_id AND d.status=0)
-              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id AND c.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
+              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id)
             """,
         Statement.ExpireTombstones => """
             DELETE FROM ixiflow_workflow_tombstones WHERE instance_id IN

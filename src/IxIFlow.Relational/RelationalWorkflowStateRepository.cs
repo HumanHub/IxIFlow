@@ -184,7 +184,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>Publishes a transactional wake-up when this provider supports runnable notifications.</summary>
     internal virtual Task NotifyRunnableAsync(DbConnection connection, DbTransaction? transaction) => Task.CompletedTask;
     internal abstract Task<CancellationOutcome> RequestCancellationAsync(DbConnection connection,
-        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? now);
+        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? now, Guid? expectedIncarnation = null);
     internal abstract Task<int> SettleAsync(DbConnection connection, DbTransaction transaction,
         string instanceId, IReadOnlyList<EventSettlement> settlements, DateTime now);
     internal abstract Task InsertWaitsAsync(DbConnection connection, DbTransaction transaction,
@@ -255,7 +255,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         return (row, now);
     }
 
-    public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
+    public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
@@ -265,7 +265,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             await using var connection = await OpenConnectionAsync(ownership: true);
             await using var transaction = await BeginTransactionAsync(connection, Operation.CancellationRequest);
             var outcome = await RequestCancellationAsync(connection, transaction, instanceId,
-                JsonSerializer.Serialize(reason), UsesLocalClock ? LocalNow() : null);
+                JsonSerializer.Serialize(reason), UsesLocalClock ? LocalNow() : null, expectedIncarnation);
             if (outcome == CancellationOutcome.MadeRunnable)
                 await NotifyRunnableAsync(connection, transaction);
             await CompleteAsync(transaction);
@@ -774,6 +774,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             snapshot.WorkflowVersion,
             snapshot.CorrelationId,
             snapshot.ParentInstanceId,
+            snapshot.ParentWaitId,
             commit.Incarnation,
             Status = snapshot.Status.ToString(),
             commit.InboxReadThrough,
