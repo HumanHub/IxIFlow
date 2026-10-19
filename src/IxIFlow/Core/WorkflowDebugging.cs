@@ -209,8 +209,8 @@ public static class WorkflowDebugRules
                 .Where(e => e.EntryType == TraceEntryType.DataEdited).ToArray();
             if (audits.Length != 1 || audits[0].Payload is not DataEditedTrace audit || audit.EditId != edit.Id ||
                 audit.Actor != edit.Actor || audit.Target != edit.Edit.Target || audit.Revision != revision ||
-                audit.Changes.Count != edit.Edit.Patches.Count || audit.Changes.Where((c, i) =>
-                    !c.Path.SequenceEqual(edit.Edit.Patches[i].Path) || c.BeforeDigest.Length != 64 || c.AfterDigest.Length != 64).Any())
+                audit.Paths.Count != edit.Edit.Patches.Count || audit.Paths.Where((path, i) =>
+                    !path.SequenceEqual(edit.Edit.Patches[i].Path)).Any())
                 throw new InvalidOperationException("An edit requires its complete mandatory audit in the same commit");
         }
         var generation = before.PauseGeneration;

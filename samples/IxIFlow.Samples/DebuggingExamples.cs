@@ -6,13 +6,12 @@ namespace IxIFlow.Samples;
 
 public static class DebuggingExamples
 {
-    public static void ConfigureEdits(IServiceCollection services, byte[] auditKey)
+    public static void ConfigureEdits(IServiceCollection services)
     {
         // snippet: edit-host
         services.AddIxIFlow(options =>
         {
             options.Debugging = true;
-            options.DataEditAuditKey = auditKey;
         });
         // end-snippet: edit-host
     }

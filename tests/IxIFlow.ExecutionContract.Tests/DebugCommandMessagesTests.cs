@@ -27,12 +27,12 @@ public sealed class DebugCommandMessagesTests
             Assert.Equal(["Value"], crossed.Edit.Patches[0].Path); Assert.Equal(7, crossed.Edit.Patches[0].Value.GetInt32());
             Assert.True(crossed.Edit.Patches[1].Remove);
         }
-        var audit = new DataEditedTrace("editor", "edit", edit.Target, 6, [new(["Value"], new string('A', 64), new string('B', 64))]);
+        var audit = new DataEditedTrace("editor", "edit", edit.Target, 6, [["Value"], ["Name"]]);
         var json = JsonSerializer.Serialize(audit, ExecutionMessageContext.Default.DataEditedTrace);
         var read = JsonSerializer.Deserialize(json, ExecutionMessageContext.Default.DataEditedTrace)!;
         Assert.Equal(audit.EditId, read.EditId); Assert.Equal(audit.Target, read.Target);
-        Assert.Equal(audit.Changes[0].Path, read.Changes[0].Path);
-        Assert.Equal(audit.Changes[0].AfterDigest, read.Changes[0].AfterDigest);
+        Assert.Equal(audit.Actor, read.Actor); Assert.Equal(audit.Revision, read.Revision);
+        Assert.Collection(read.Paths, path => Assert.Equal(["Value"], path), path => Assert.Equal(["Name"], path));
     }
 
     [Theory]

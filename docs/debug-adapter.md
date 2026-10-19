@@ -7,7 +7,6 @@ The application hosts the adapter in its own process. Enable engine debugging an
 services.AddIxIFlow(o =>
 {
     o.Debugging = true;
-    o.DataEditAuditKey = auditKey;
 }).AddDebugging(o =>
 {
     o.NamedPipe("ixiflow-debug");
@@ -17,7 +16,7 @@ services.AddIxIFlow(o =>
 });
 ```
 
-`policy`, `auditKey`, and the policy's `ValueTask<bool>` implementation belong to the application. Registration requires an authorizer. Authorize inspection, pause and step, edits, breakpoint changes, and launches separately. The authorizer runs again on each operation, including inspection refreshes. Pipe connections are restricted by the OS to the application's current user. The authenticated OS user supplies the audit actor.
+`policy` and its `ValueTask<bool>` implementation belong to the application. Registration requires an authorizer. Authorize inspection, pause and step, edits, breakpoint changes, and launches separately. The authorizer runs again on each operation, including inspection refreshes. Pipe connections are restricted by the OS to the application's current user. The authenticated OS user supplies the audit actor.
 
 For TCP, replace `NamedPipe` with `o.Tcp(IPAddress.Loopback, 4711, sessionToken, "developer-session")`. Supply a randomly generated token with at least 32 bytes, for example `Convert.ToHexString(RandomNumberGenerator.GetBytes(32))`. The application sets the actor associated with that token. A request's `actor` field has no effect. TCP accepts loopback addresses only and checks the token with a constant-time digest comparison.
 

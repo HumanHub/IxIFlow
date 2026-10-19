@@ -3,7 +3,7 @@ namespace IxIFlow.Core;
 /// <summary>The host and executor must use the same message contract.</summary>
 public static class ExecutionContract
 {
-    public const int Version = 10;
+    public const int Version = 11;
 
     public static void RequireVersion(int version)
     {
