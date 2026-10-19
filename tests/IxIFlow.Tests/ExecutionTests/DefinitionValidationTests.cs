@@ -1,4 +1,5 @@
 using IxIFlow.Tests.Infrastructure;
+using System.Text.Json;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
@@ -91,23 +92,43 @@ public sealed class DefinitionValidationTests
     [InlineData(true)]
     public async Task ChildResolutionRequiresValidationEvenWhenRegistrationIsSkipped(bool starting)
     {
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var built = Workflow.Create<RegistrationData>("Child source").Step<RegistrationActivity>().Build();
         var definition = new WorkflowDefinition
         {
             Version = 1,
             Name = "Unchecked child", WorkflowDataType = typeof(RegistrationData), Steps = built.Steps
         };
-        var children = new ChildWorkflows(provider, new UncheckedRegistry(definition), TimeProvider.System);
-        var invocation = new WorkflowStep { WorkflowName = definition.Name, WorkflowVersion = definition.Version };
+        var builder = Workflow.Create<RegistrationData>("Validation parent").Step<RegistrationActivity>();
+        var parent = starting
+            ? builder.Invoke<RegistrationData>(definition.Name, definition.Version).Build()
+            : builder.WaitFor<RegistrationData>("invoke")
+                .Invoke<RegistrationData>(definition.Name, definition.Version).Build();
+        var registry = new UncheckedRegistry(definition, parent);
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services
+            .AddSingleton<IWorkflowCatalog>(registry).BuildServiceProvider();
+        var client = provider.GetRequiredService<IWorkflowClient>();
         Assert.NotEmpty(new WorkflowScopeCatalog(definition).StructureHash);
 
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => children.ResolveAsync(invocation, starting));
+        var refused = await InvokeChild();
+        Assert.Equal(WorkflowExecutionStatus.Faulted, refused.Status);
+        // The client reports definition errors as faults; compare the validator's classified refusal.
+        var error = Assert.Throws<WorkflowEngineException>(() => WorkflowDefinitionValidator.ForExecution(definition));
 
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains("has not been validated", error.Message);
+        Assert.Equal(typeof(WorkflowEngineException).FullName, refused.ErrorType);
+        Assert.StartsWith(error.Message, refused.ErrorMessage);
         WorkflowDefinitionValidator.Validate(definition);
-        Assert.Same(definition, await children.ResolveAsync(invocation, starting));
+        Assert.Same(definition, await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version));
+        Assert.Equal(WorkflowExecutionStatus.Success, (await client.FinishedAsync(await InvokeChild())).Status);
+
+        async Task<WorkflowExecutionResult> InvokeChild()
+        {
+            var result = await client.RunAsync(parent, new RegistrationData());
+            if (starting) return result;
+            Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
+            return await client.ResumeAsync(result.InstanceId, "invoke", new RegistrationData());
+        }
     }
 
     [Fact]
@@ -152,14 +173,15 @@ public sealed class DefinitionValidationTests
     }
 
     // Models a custom registry that returns definitions without invoking the engine validator.
-    private sealed class UncheckedRegistry(WorkflowDefinition definition) : IWorkflowCatalog
+    private sealed class UncheckedRegistry(params WorkflowDefinition[] definitions) : IWorkflowCatalog
     {
-        private readonly WorkflowCatalog _catalog = UncheckedCatalog(definition);
-        private static WorkflowCatalog UncheckedCatalog(WorkflowDefinition definition)
+        private readonly WorkflowCatalog _catalog = UncheckedCatalog(definitions);
+        private static WorkflowCatalog UncheckedCatalog(WorkflowDefinition[] definitions)
         {
             var store = new InMemoryWorkflowStateRepository();
-            store.RegisterWorkflowVersionAsync(new(definition.Name, definition.Version,
-                new WorkflowScopeCatalog(definition).StructureHash)).GetAwaiter().GetResult();
+            foreach (var definition in definitions)
+                store.RegisterWorkflowVersionAsync(new(definition.Name, definition.Version,
+                    new WorkflowScopeCatalog(definition).StructureHash)).GetAwaiter().GetResult();
             return new WorkflowCatalog(store);
         }
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _catalog.GetDefinitionAsync(name, version);
@@ -171,12 +193,14 @@ public sealed class DefinitionValidationTests
         public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _catalog.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
         public Task<WorkflowVersion?> GetLatestWorkflowVersionAsync(string name) => _catalog.GetLatestWorkflowVersionAsync(name);
         public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
-            Task.FromResult<IReadOnlyList<WorkflowDefinition>>([definition]);
+            Task.FromResult<IReadOnlyList<WorkflowDefinition>>(definitions);
         public Task RegisterWorkflowAsync(WorkflowDefinition value) => Task.CompletedTask;
-        public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version) => Task.FromResult<WorkflowDefinition?>(definition);
+        public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version) =>
+            Task.FromResult(definitions.FirstOrDefault(definition => definition.Name == name && definition.Version == version));
         // Computed without validation, as the rest of this registry is.
-        public Task<string?> GetWorkflowStructureHashAsync(string name, int version) =>
-            Task.FromResult<string?>(new WorkflowScopeCatalog(definition).StructureHash);
+        public async Task<string?> GetWorkflowStructureHashAsync(string name, int version) =>
+            await GetWorkflowDefinitionAsync(name, version) is { } definition
+                ? new WorkflowScopeCatalog(definition).StructureHash : null;
         public Task RetireWorkflowVersionAsync(string name, int version) => throw new NotSupportedException();
     }
 
@@ -192,10 +216,14 @@ public sealed class DefinitionValidationTests
         };
         var data = new RegistrationData();
         var checkpoint = new ExecutionCheckpoint { StructureHash = new WorkflowScopeCatalog(definition).StructureHash };
-        var executor = new WorkflowExecutor(provider, provider.GetRequiredService<IActivityExecutor>(), TimeProvider.System);
-
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => executor.RunAsync(definition,
-            new WorkflowInstance(), checkpoint, data, null!, CancellationToken.None));
+        using var uncheckedProvider = new ServiceCollection().AddLogging().AddIxIFlow().Services
+            .AddSingleton<IWorkflowDefinitionSource>(new UncheckedRegistry(definition)).BuildServiceProvider();
+        var executor = new WorkflowExecutor(uncheckedProvider, null!);
+        var instance = new WorkflowInstance { WorkflowName = definition.Name, WorkflowVersion = definition.Version,
+            WorkflowDataType = typeof(RegistrationData).AssemblyQualifiedName!, WorkflowDataJson = JsonSerializer.Serialize(data),
+            ExecutionStateJson = JsonSerializer.Serialize(checkpoint) };
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => executor.ExecuteAsync(new(Guid.NewGuid(),
+            instance, null, checkpoint.StructureHash, 1, 0, ExecutionLimits.Default, false, []), CancellationToken.None));
 
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains("has not been validated", error.Message);

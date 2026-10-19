@@ -75,7 +75,7 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             return existing;
         }
         var now = time.GetUtcNow().UtcDateTime;
-        var (instance, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(definition, data, new(), now);
+        var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, data, new(), now);
         var prepared = ExecutionCheckpointWriter.Prepare(instance, checkpoint, data, scopes, now,
             verify: limits.VerifyCheckpointParts);
         if (prepared.Bytes > limits.MaxCheckpointBytes)

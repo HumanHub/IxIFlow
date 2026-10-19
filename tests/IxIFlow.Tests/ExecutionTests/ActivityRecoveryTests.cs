@@ -119,7 +119,7 @@ public sealed class ActivityRecoveryTests
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.True(ledger.SawCommittedStart);
         Assert.Equal(1, ledger.ChargeCount);
-        Assert.NotNull(data.ChargeId);
+        Assert.NotNull(Assert.IsType<ChargeData>(result.WorkflowData).ChargeId);
     }
 
     [Fact]
