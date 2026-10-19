@@ -457,6 +457,7 @@ public sealed class ResourceLimitTests
                 InstanceId = instanceId, WorkflowName = "PoolReservation", Status = WorkflowStatus.Running,
                 WorkflowDataJson = "{}"
             }, (await StoreTestSupport.LeaseAsync(store, instanceId)).Epoch, 0))).Status);
+        Assert.True(await StoreTestSupport.ReleaseAsync(store, instanceId));
 
         await using (var hog = newConnection(connectionString))
         {
