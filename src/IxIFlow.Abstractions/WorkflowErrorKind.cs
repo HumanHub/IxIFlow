@@ -19,6 +19,7 @@ public enum WorkflowErrorKind
     /// The instance stays recoverable until the artifact is deployed.
     /// </summary>
     ArtifactUnavailable,
+    ArtifactMismatch,
 
     /// <summary>The state store or another dependency failed. The instance stays recoverable.</summary>
     Infrastructure,

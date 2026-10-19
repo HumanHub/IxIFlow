@@ -20,6 +20,8 @@ public class FaultInjectingRepository : IWorkflowStateRepository
         _inner.GetWorkflowVersionsAsync(name);
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
         _inner.SetWorkflowVersionStateAsync(name, version, state, artifacts);
+    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) =>
+        _inner.PublishDefinitionAsync(draftId, version, artifacts);
     public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
         _inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
     public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
