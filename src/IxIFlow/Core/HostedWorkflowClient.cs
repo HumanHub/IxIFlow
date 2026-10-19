@@ -8,6 +8,22 @@ namespace IxIFlow.Core;
 /// </summary>
 internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time) : IWorkflowClient, IWorkflowOperations
 {
+    public IDisposable WatchChanges(string instanceId, Action changed) => host.WatchChanges(instanceId, changed);
+    public Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken = default) =>
+        host.ReadAsync(client => client.GetStepTableAsync(instanceId, cancellationToken));
+    public Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries = 10000, CancellationToken cancellationToken = default) =>
+        host.ReadAsync(client => client.OpenReplayAsync(instanceId, maxEntries, cancellationToken));
+    public Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken = default) =>
+        host.ReadAsync(client => client.GetSourceAsync(instanceId, path, cancellationToken));
+    public async Task<string> LaunchAsync(string instanceId, string workflow, int version, System.Text.Json.JsonElement input,
+        bool stopOnEntry, string actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        var (definition, data) = await host.ReadAsync(client => client.PrepareDebugLaunchAsync(workflow, version, input));
+        return await StartAsync(definition, data, new WorkflowOptions
+        { InstanceId = instanceId, DebugStopOnEntryActor = stopOnEntry ? actor : null }, cancellationToken);
+    }
     public Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default) =>
         host.ReadAsync(client => client.InspectAsync(instanceId, cancellationToken));
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000,
@@ -261,6 +277,12 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
     {
         await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor, cancellationToken));
         return await RecoverAsync(instanceId, cancellationToken);
+    }
+
+    public async Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default)
+    {
+        await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor, cancellationToken));
+        host.WakeNow(instanceId);
     }
 
     public async Task<WorkflowExecutionResult> FreezeTimersAsync(string instanceId, string actor, CancellationToken cancellationToken = default)

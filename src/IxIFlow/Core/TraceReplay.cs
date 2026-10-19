@@ -49,6 +49,8 @@ public sealed class TraceReplay
         _data[inspection.Revision] = InspectionPrivacy.Clean(inspection.Data, []);
     }
     public bool CanStepForward => _index + 1 < _positions.Length;
+    /// <summary>The recorded executable step occurrence at this cursor position, if any.</summary>
+    public string? CurrentStepId => _stops[_index];
     public bool CanStepBackward => _index > 0;
     public bool StepForward() { if (!CanStepForward) return false; _index++; return true; }
     public bool StepBackward() { if (!CanStepBackward) return false; _index--; return true; }

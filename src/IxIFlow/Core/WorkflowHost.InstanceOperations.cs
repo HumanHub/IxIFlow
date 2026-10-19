@@ -410,6 +410,21 @@ public sealed partial class WorkflowHost
                     "Execution timeout must be positive");
             var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, workflowData, options, Now);
 
+            if (options.DebugStopOnEntryActor is { } debugActor)
+            {
+                if (!(hostSettings ?? HostSettings.Default).Debugging)
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Debugging is disabled on this host");
+                var branch = checkpoint.Continuations[0];
+                checkpoint.Debug = new(1)
+                {
+                    Stop = new(branch.Id, scopes.StepTable.FirstOrDefault()?.CatalogId ?? "", "",
+                        branch.Stack[0].ActivationId, 0, 0, Now) { Reason = "Pause" }
+                };
+                instance.Status = WorkflowStatus.Paused;
+                checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.Paused,
+                    Payload = new DebugCommandTrace(debugActor, "launch", 1) });
+            }
+
             try
             {
                 using var lease = await gate.EnterAsync(instance.InstanceId, cancellationToken);
@@ -444,6 +459,7 @@ public sealed partial class WorkflowHost
                 await PersistAsync(instance, checkpoint, workflowData, scopes, assignment);
                 // The start is durable from here; a caller waiting only for acceptance continues.
                 _control.Accept(instance.InstanceId);
+                if (instance.Status == WorkflowStatus.Paused) return ExistingResult(instance);
                 return await AssignAsync(instance, owner, signals, cancellationToken);
             }
             catch (ExecutionOwnershipLostException)
@@ -893,6 +909,7 @@ public sealed partial class WorkflowHost
             switch (result.Status)
             {
                 case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
+                    (services.GetService(typeof(WorkflowHost)) as WorkflowHost)?.NotifyChange(instance.InstanceId);
                     var receipt = _receipts.GetOrAdd(instance.InstanceId, _ => new RunReceipt());
                     if (receipt.Commits.Add(commit.CommitId))
                     {

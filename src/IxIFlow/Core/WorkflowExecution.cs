@@ -93,6 +93,7 @@ public class CancellationReason
 /// </summary>
 public class WorkflowOptions
 {
+    internal string? DebugStopOnEntryActor { get; set; }
     /// <summary>Stable instance ID for an idempotent start command.</summary>
     public string? InstanceId { get; set; }
 

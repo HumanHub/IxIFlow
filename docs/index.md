@@ -23,6 +23,7 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Outbox and publishers](outbox-and-publishers.md) | Completion delivery, custom publishers, outgoing webhooks and templates |
 | [Retention and tombstones](retention-and-tombstones.md) | Retained results, cleanup and removed instance IDs |
 | [Pausing, breakpoints, stepping and edits](debugging.md) | Authorized pauses, branch stepping and audited data edits |
+| [VS Code debugger](debug-adapter.md) | Secure local attach, YAML frames, variables and replay |
 | [Inspection and replay](inspection-and-replay.md) | Saved revisions, thread frames, paged traces and read-only replay |
 | [Tracing and observability](observability.md) | Committed history, snapshots, OpenTelemetry and logging |
 | [Architecture](architecture.md) | Runtime boundaries and packages |
