@@ -23,7 +23,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>The connection, transaction and admission policy for a store operation.</summary>
     internal enum Operation
     {
-        Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge,
+        Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge, Registry,
         CancellationRequest, CancellationRead, LeaseClaim, LeaseRenew, LeaseRelease,
         Append, InboxPage, Commit, Delete
     }
@@ -33,6 +33,8 @@ public abstract partial class RelationalWorkflowStateRepository :
     {
         WebhookDeliveryRead, WebhookDeliveryDelete, WebhookDeliveryInsert, WebhookDeliveryExpire,
         AdmissionLock, AdmissionRead, AdmissionDelete, AdmissionInsert, OwnershipRead, OwnershipInsert, OwnershipDelete, AdmissionExpire, OwnershipExpire,
+        RegistryLock, RegisterMember, MemberHeartbeat, UnregisterMember, PruneMembers,
+        Members, MemberCapabilities, DeleteCapabilities, InsertCapability,
         RetentionLock, RetentionCandidates, RetentionBlockedPublishers, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
@@ -137,6 +139,8 @@ public abstract partial class RelationalWorkflowStateRepository :
     internal virtual DateTime ReadTime(DateTime value) => Utc(value);
     /// <summary>The database has no server clock; sample LocalNow only after its write or inbox lock.</summary>
     internal virtual bool UsesLocalClock => false;
+    /// <summary>SQLite's owned repository may advertise one host and no coordinator.</summary>
+    internal virtual bool SingleHostRegistry => false;
     /// <summary>Reads the injected local UTC clock while the operation holds the required lock.</summary>
     internal virtual DateTime LocalNow() => throw new InvalidOperationException("The provider uses its server clock");
     /// <summary>Reads need revision and incarnation rechecks because no transaction snapshot joins trunk and parts.</summary>

@@ -7,6 +7,16 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
+    public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
+        Guard(() => _store.RegisterMemberAsync(member, cancellationToken), "Registering store member");
+    public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => _store.HeartbeatAsync(memberId, capabilities, cancellationToken), "Renewing store member heartbeat");
+    public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
+        Guard(() => _store.UnregisterMemberAsync(memberId, cancellationToken), "Unregistering store member");
+    public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
+        Guard(() => _store.GetLiveMembersAsync(cancellationToken), "Reading live store members");
+
     public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
         Guard(() => _store.RegisterPublisherAsync(name, eventTypes, replayRetained), "Accessing workflow outbox");
     public Task UnregisterPublisherAsync(string name) =>

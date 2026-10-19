@@ -26,6 +26,8 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT [Incarnation], [Sender], [Trigger], [Key], [Fingerprint], [InstanceId], [WorkflowName], [WorkflowVersion], [ExpiresAtUtc] FROM dbo.IxIFlowWorkflowAdmissions WHERE 1=0;
                 SELECT [Incarnation], [InstanceId], [Sender], [Trigger], [OwnerKind], [Owner], [Tenant] FROM dbo.IxIFlowWorkflowOwnership WHERE 1=0;
                 SELECT [DeliveryIdentity], [PayloadHash], [Sequence], [Rejection], [ExpiresAtUtc] FROM dbo.IxIFlowWebhookDeliveries WHERE 1=0;
+                SELECT member_id, kind, name, endpoint, slots, engine_version, heartbeat_interval_ticks, started_at_utc, heartbeat_at_utc FROM dbo.ixiflow_hosts WHERE 1=0;
+                SELECT member_id, capability_key, capability_value FROM dbo.ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
             if (await connection.ExecuteScalarAsync<int>("SELECT CASE WHEN OBJECT_ID(N'dbo.IxIFlowExecutionEpoch', N'SO') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction) != 1)
