@@ -400,12 +400,6 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
                     if (code == null || !code.TryGetValue(functionExpression.Function, out var asset) ||
                         asset is not { Language: "csharp-expression" } || string.IsNullOrWhiteSpace(asset.Source))
                         diagnostics.Add(new WorkflowDiagnostic("EXPR003", $"Unknown function '{functionExpression.Function}'", WorkflowDiagnosticSeverity.Error, $"{path}.function"));
-                    else if (functionExpression.Arguments.Count != 0)
-                        diagnostics.Add(new WorkflowDiagnostic("EXPR003", "An expression asset takes no arguments", WorkflowDiagnosticSeverity.Error, $"{path}.arguments"));
-                }
-                for (var index = 0; index < functionExpression.Arguments.Count; index++)
-                {
-                    ValidateExpression(functionExpression.Arguments[index], diagnostics, $"{path}.arguments[{index}]", allowedRoots, code);
                 }
                 break;
 

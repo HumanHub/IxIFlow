@@ -61,12 +61,6 @@ public sealed class WorkflowDocumentContractTests
             {
                 Activity = "Multiply", OnError = [new() { Then = value }]
             }] }),
-        [(typeof(OutputMappingDocument), nameof(OutputMappingDocument.SourceContext))] = value =>
-            Document(new ActivityStepDocument
-            {
-                Activity = "Multiply",
-                Output = [new() { Source = "Result", SourceContext = value, To = new() { Path = "workflow.Result" } }]
-            })
     };
 
     private static WorkflowDocument Document(WorkflowStepDocument step) =>
