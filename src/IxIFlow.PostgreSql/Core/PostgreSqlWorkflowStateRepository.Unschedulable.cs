@@ -29,16 +29,18 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 ORDER BY instance.runnable_at_utc, instance.instance_id COLLATE "C" LIMIT @Limit) AS candidate
             WHERE sets.failed UNION ALL SELECT candidate.* FROM sets CROSS JOIN LATERAL (
                 SELECT instance.instance_id, instance.runnable_at_utc FROM (
-                    -- Seek both active expiry ranges in the filtered set/pin index.
+                    -- Each arm implies its own partial index predicate. In particular, the null
+                    -- arm must not cost a nullable expiry range against the whole schedulable set.
                     (SELECT instance.instance_id, instance.runnable_at_utc, instance.pinned_host
                     FROM ixiflow_workflow_instances AS instance
                     WHERE instance.demand_set_id = sets.id AND instance.pin_expires_at_utc IS NULL
                       AND instance.pinned_host IS NOT NULL AND instance.runnable_at_utc IS NOT NULL
-                    ORDER BY instance.pin_expires_at_utc, instance.runnable_at_utc, instance.instance_id COLLATE "C" OFFSET 0)
+                    ORDER BY instance.runnable_at_utc, instance.instance_id COLLATE "C" OFFSET 0)
                     UNION ALL
                     (SELECT instance.instance_id, instance.runnable_at_utc, instance.pinned_host
                     FROM ixiflow_workflow_instances AS instance
                     WHERE instance.demand_set_id = sets.id AND instance.pin_expires_at_utc > @Now
+                      AND instance.pin_expires_at_utc IS NOT NULL
                       AND instance.pinned_host IS NOT NULL AND instance.runnable_at_utc IS NOT NULL
                     ORDER BY instance.pin_expires_at_utc, instance.runnable_at_utc, instance.instance_id COLLATE "C" OFFSET 0)
                     -- Keep runnable ordering outside these seeks so LIMIT cannot favor the set/runnable index.
