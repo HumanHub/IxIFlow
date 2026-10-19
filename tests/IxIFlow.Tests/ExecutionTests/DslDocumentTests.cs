@@ -82,7 +82,6 @@ public class DslDocumentTests
             {
                 ["AuditAndNotify"] = new()
                 {
-                    Kind = "sequenceTemplate",
                     Parameters = new Dictionary<string, TemplateParameterDocument>
                     {
                         ["message"] = new() { Type = "string", Required = true }

@@ -23,7 +23,6 @@ steps:
     steps:
       - kind: activity
         name: Scale the supplied value
-        description: Binds typed template arguments.
         activity: test.multiply
         input:
           - target: Value
@@ -42,7 +41,6 @@ definitions:
   - kind: activityRef
     ref: multiply
     name: Use the activity template
-    description: Applies defaults and mappings from the template.
   - kind: stepRef
     ref: scale
     arguments:
@@ -72,7 +70,6 @@ definitions:
             to: {path: workflow.Result}
   - kind: forEach
     name: Sequential results
-    description: Collects a result for each item in order.
     items: {path: workflow.Values}
     as: number
     steps:
@@ -85,7 +82,6 @@ definitions:
     into: {path: workflow.Results}
   - kind: forEach
     name: Parallel results
-    description: Collects results with bounded concurrency.
     items: {path: workflow.Values}
     as: number
     parallel: {maxConcurrency: 2, join: all}

@@ -143,7 +143,7 @@ public sealed class WorkflowDocumentContractTests
             Assert.NotNull(type.GetCustomAttribute<DescriptionAttribute>());
             Assert.All(DocumentModel.GetMembers(type), member => Assert.NotNull(member.GetCustomAttribute<DescriptionAttribute>()));
         }
-        Assert.Equal(new[] { "id", "kind", "name", "description", "ref" },
+        Assert.Equal(new[] { "id", "kind", "name", "ref" },
             DocumentModel.GetMembers(typeof(ActivityReferenceStepDocument)).Select(DocumentModel.GetName));
     }
 }

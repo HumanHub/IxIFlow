@@ -1,63 +1,23 @@
 using System.Reflection;
 using System.Runtime.Loader;
 using IxIFlow.Core;
-using IxIFlow.Dsl.Compilation;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Generators;
-using Microsoft.CodeAnalysis;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
 internal static class YamlTestCompilation
 {
-    public static async Task<WorkflowDefinition> BuildAsync(WorkflowDocument document, WorkflowValidationContext context,
-        IReadOnlyDictionary<string, Type>? activityTypes = null)
+    public static async Task<WorkflowDefinition> BuildAsync(WorkflowDocument document, WorkflowSourceOptions options)
     {
-        var validation = await new WorkflowDocumentValidator().ValidateAsync(document, context);
+        var validation = await YamlTestContracts.ValidateAsync(document, options);
         if (!validation.IsValid)
             throw new WorkflowSourceException(string.Join("; ", validation.Diagnostics.Select(item => item.Message)), "test.yaml", 1, 1);
-        var options = new WorkflowSourceOptions();
-        var data = await context.DataTypeRegistry.FindAsync(document.Workflow.DataType);
-        options.Types[document.Workflow.DataType] = Name(data!.ClrType);
-        foreach (var property in data.ClrType.GetProperties())
-            options.Members[document.Workflow.DataType + "." + char.ToLowerInvariant(property.Name[0]) + property.Name[1..]] = property.Name;
-        foreach (var activity in document.Activities.Values) await Activity(activity.Activity);
-        await Steps(document.Definitions);
-        foreach (var template in document.Steps.Values) await Steps(template.Steps);
         return Build(WorkflowSourceTranslator.Translate(WorkflowYamlSerializer.Write(document), "test.yaml", options));
-
-        async Task Activity(string key)
-        {
-            var descriptor = await context.ActivityRegistry.FindAsync(key);
-            var type = activityTypes?.GetValueOrDefault(key) ?? descriptor?.ActivityType ?? typeof(YamlTestCompilation).Assembly.GetTypes().Single(type => type.Name == key);
-            options.Types[key] = Name(type);
-            if (descriptor != null)
-            {
-                options.ActivityVersions[key] = descriptor.Version;
-                if (descriptor.PackageName.Length != 0 && descriptor.PackageVersion.Length != 0)
-                    options.ResolvedImports.Add(descriptor.PackageName + "@" + descriptor.PackageVersion);
-            }
-        }
-        async Task Steps(IEnumerable<WorkflowStepDocument> steps)
-        {
-            foreach (var step in steps)
-                switch (step)
-                {
-                    case ActivityStepDocument activity: await Activity(activity.Activity); break;
-                    case SequenceStepDocument sequence: await Steps(sequence.Steps); break;
-                    case ConditionalStepDocument condition: await Steps(condition.Then); await Steps(condition.Else); break;
-                    case ForEachStepDocument each: await Steps(each.Steps); break;
-                    case SuspendStepDocument wait:
-                        options.Types[wait.Event] = Name((await context.EventRegistry.FindAsync(wait.Event))!.EventType); break;
-                    case InvokeWorkflowStepDocument invocation:
-                        var child = (await context.WorkflowCatalog.FindAsync(invocation.Workflow.Name, invocation.Workflow.Version))!;
-                        options.Workflows[child.Name + "@" + child.Version] = new(Name(child.RuntimeDefinition!.WorkflowDataType!), child.Version); break;
-                }
-        }
     }
-
-    private static string Name(Type type) => "global::" + type.FullName!.Replace('+', '.');
 
     public static WorkflowDefinition Build(string source)
     {
