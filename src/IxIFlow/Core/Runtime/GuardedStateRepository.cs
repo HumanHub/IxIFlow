@@ -89,6 +89,16 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.CommitWorkflowInstanceAsync(commit),
             $"Saving workflow instance '{commit.InstanceId}'");
 
+    public Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission) =>
+        Guard(() => _store.AdmitWorkflowInstanceAsync(commit, admission),
+            $"Admitting workflow instance '{commit.InstanceId}'");
+
+    public Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId) =>
+        Guard(() => _store.GetWorkflowOwnershipAsync(instanceId), $"Reading ownership of '{instanceId}'");
+
+    public Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key) =>
+        Guard(() => _store.GetWorkflowAdmissionAsync(sender, trigger, key), "Reading workflow admission");
+
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration) =>
         Guard(() => _store.TryAcquireExecutionLeaseAsync(instanceId, token, duration),

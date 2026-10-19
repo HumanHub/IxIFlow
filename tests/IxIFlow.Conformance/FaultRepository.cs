@@ -23,6 +23,12 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
     public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
         inner.GetTombstoneAsync(instanceId);
+    public Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission) =>
+        inner.AdmitWorkflowInstanceAsync(commit, admission);
+    public Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId) =>
+        inner.GetWorkflowOwnershipAsync(instanceId);
+    public Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key) =>
+        inner.GetWorkflowAdmissionAsync(sender, trigger, key);
 
     public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
         inner.RegisterPublisherAsync(name, eventTypes, replayRetained);

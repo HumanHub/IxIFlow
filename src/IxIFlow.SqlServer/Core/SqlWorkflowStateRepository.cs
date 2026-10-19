@@ -649,7 +649,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         Statement.DeleteParts => """
                     DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId AND PartKey IN @Keys
                     """,
-        _ => RegistrySql(statement) ?? RetentionSql(statement)
+        _ => RegistrySql(statement) ?? AdmissionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -669,9 +669,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         throw new InvalidOperationException($"Could not lock the workflow schema ({lockResult})");
     // Creation is atomic. Existing databases are recreated when the schema changes, never upgraded.
     if (await connection.ExecuteScalarAsync<bool>(
-            "SELECT CASE WHEN OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NULL THEN 0 ELSE 1 END",
-            transaction: transaction))
+        "SELECT CASE WHEN OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction))
     {
+        await ValidateCurrentSchemaAsync(connection, transaction);
         await transaction.CommitAsync();
         return;
     }
@@ -789,6 +789,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         """, transaction: transaction);
     await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
+    await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
     await transaction.CommitAsync();
     }
