@@ -598,6 +598,14 @@ public sealed partial class WorkflowHost
                 return ReadResult(instance);
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
             var debugState = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);
+            if (instance?.Status == WorkflowStatus.Paused && cancellationReason == null &&
+                debugState?.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null) is { Kind: DebugCommandKind.EditData, Edit: { } edit } pendingEdit)
+            {
+                if (!(hostSettings ?? HostSettings.Default).Debugging || (hostSettings ?? HostSettings.Default).DataEditAuditKey == null)
+                    return ExistingResult(instance);
+                await EditUnderGateAsync(instanceId, pendingEdit.Id, edit, pendingEdit.Actor, cancellationToken);
+                return ExistingResult((await _store.GetWorkflowInstanceAsync(instanceId))!);
+            }
             var pendingDebug = debugState?.Commands.Any(c => c.AcknowledgedRevision == null) == true;
             var debugCheckpoint = checkedCheckpoint?.Debug ?? new DebugCheckpoint();
             var pendingResume = debugState?.Commands.Any(c => c.AcknowledgedRevision == null &&

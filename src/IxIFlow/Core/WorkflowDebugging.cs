@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 namespace IxIFlow.Core;
 
-public enum DebugCommandKind { Pause, Continue, SetBreakpoints, Step }
+public enum DebugCommandKind { Pause, Continue, SetBreakpoints, Step, EditData }
 public enum DebugStepKind { Over, Into, Out, Run }
 
 /// <summary>A pick occurrence, including progress through repeated loop and item visits.</summary>
@@ -18,9 +18,10 @@ public enum DebugCommandStatus { Accepted, AlreadyAccepted, StaleGeneration, Inv
 /// <summary>A durable ordered command. Acknowledgement is the revision that applied it.</summary>
 public sealed record DebugCommand(string Id, long Order, DebugCommandKind Kind,
     long PauseGeneration, string Actor, long? AcknowledgedRevision = null,
-    IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null);
+    IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null,
+    DataEditRequest? Edit = null, DataEditResult? EditResult = null);
 public sealed record DebugCommandRequest(string Id, DebugCommandKind Kind, long PauseGeneration, string Actor,
-    IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null);
+    IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null, DataEditRequest? Edit = null);
 public sealed record DebugCommandResult(DebugCommandStatus Status, DebugCommand? Command = null);
 
 /// <summary>Versioned commands outside the checkpoint. Version is the last allocated order.</summary>
@@ -61,6 +62,9 @@ public interface IWorkflowOperations
     /// <summary>Runs only the selected continuation and branches it creates, under a fresh lease.</summary>
     Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
         string actor, CancellationToken cancellationToken = default);
+    /// <summary>Edits a paused root or branch view with an immutable, caller-supplied edit ID.</summary>
+    Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
+        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken = default);
     /// <summary>Replaces the instance's breakpoint set and returns the resolved addresses.</summary>
     Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
         string actor, CancellationToken cancellationToken = default);
@@ -92,6 +96,7 @@ public static class WorkflowDebugRules
         {
             if (existing.Kind != request.Kind || existing.Actor != request.Actor || existing.PauseGeneration != request.PauseGeneration ||
                 existing.ContinuationId != request.ContinuationId || existing.StepKind != request.StepKind ||
+                JsonSerializer.Serialize(existing.Edit) != JsonSerializer.Serialize(request.Edit) ||
                 JsonSerializer.Serialize(existing.Breakpoints) != JsonSerializer.Serialize(request.Breakpoints))
                 throw new ArgumentException("A debug command ID cannot be reused with different fields");
             return new(DebugCommandStatus.AlreadyAccepted, existing);
@@ -119,6 +124,18 @@ public static class WorkflowDebugRules
             foreach (var breakpoint in request.Breakpoints) _ = BreakpointResolver.Matches(breakpoint.HitCondition, 1);
         }
         else if (request.Breakpoints != null) throw new ArgumentException("Only SetBreakpoints carries breakpoints");
+        if (request.Kind == DebugCommandKind.EditData)
+        {
+            ArgumentNullException.ThrowIfNull(request.Edit);
+            ArgumentNullException.ThrowIfNull(request.Edit.Target);
+            ArgumentNullException.ThrowIfNull(request.Edit.Patches);
+            if (request.Edit.Patches.Count == 0) throw new ArgumentException("An edit requires at least one patch");
+            if (request.Edit.Target.PauseGeneration != request.PauseGeneration ||
+                request.Edit.ExpectedRevision != instance.Revision || instance.Status != WorkflowStatus.Paused ||
+                commands.Any(c => c.AcknowledgedRevision == null))
+                return new(DebugCommandStatus.InvalidState);
+        }
+        else if (request.Edit != null) throw new ArgumentException("Only EditData carries an edit");
         var pendingPause = commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause);
         var generation = checkpoint.PauseGeneration + (request.Kind != DebugCommandKind.Pause &&
             instance.Status != WorkflowStatus.Paused && pendingPause ? 1 : 0);
@@ -135,11 +152,12 @@ public static class WorkflowDebugRules
         return new(DebugCommandStatus.Accepted, new(request.Id,
             commands.Count == 0 ? 1 : checked(commands.Max(c => c.Order) + 1),
             request.Kind, request.PauseGeneration, request.Actor, Breakpoints: request.Breakpoints?.ToArray(),
-            ContinuationId: request.ContinuationId, StepKind: request.StepKind));
+            ContinuationId: request.ContinuationId, StepKind: request.StepKind,
+            Edit: request.Edit == null ? null : JsonSerializer.Deserialize<DataEditRequest>(JsonSerializer.Serialize(request.Edit))));
     }
 
     public static IReadOnlyList<DebugCommand> Acknowledge(WorkflowInstance? previous, WorkflowInstance next,
-        IReadOnlyList<DebugCommand> commands, long revision)
+        IReadOnlyList<DebugCommand> commands, long revision, IReadOnlyList<string> traceEntries)
     {
         var before = previous == null ? new DebugCheckpoint() : Checkpoint(previous);
         var after = Checkpoint(next);
@@ -159,6 +177,19 @@ public static class WorkflowDebugRules
                 : after.Stepping != null)
                 throw new InvalidOperationException("Resume must durably record its stepping state before dispatch");
         }
+        foreach (var edit in applied.Where(c => c.Kind == DebugCommandKind.EditData))
+        {
+            if (previous?.Status != WorkflowStatus.Paused || next.Status != WorkflowStatus.Paused ||
+                edit.Edit?.ExpectedRevision != previous.Revision || after.PauseGeneration != before.PauseGeneration)
+                throw new InvalidOperationException("Edit requires the expected paused revision and generation");
+            var audits = traceEntries.Select(json => JsonSerializer.Deserialize<ExecutionTraceEntry>(json)!)
+                .Where(e => e.EntryType == TraceEntryType.DataEdited).ToArray();
+            if (audits.Length != 1 || audits[0].Payload is not DataEditedTrace audit || audit.EditId != edit.Id ||
+                audit.Actor != edit.Actor || audit.Target != edit.Edit.Target || audit.Revision != revision ||
+                audit.Changes.Count != edit.Edit.Patches.Count || audit.Changes.Where((c, i) =>
+                    !c.Path.SequenceEqual(edit.Edit.Patches[i].Path) || c.BeforeDigest.Length != 64 || c.AfterDigest.Length != 64).Any())
+                throw new InvalidOperationException("An edit requires its complete mandatory audit in the same commit");
+        }
         var generation = before.PauseGeneration;
         foreach (var command in applied)
         {
@@ -177,10 +208,11 @@ public static class WorkflowDebugRules
             after.AppliedOrder != (applied.LastOrDefault()?.Order ?? before.AppliedOrder))
             throw new InvalidOperationException("Commit does not apply a valid ordered debug command prefix");
         if (applied.LastOrDefault(c => c.Kind != DebugCommandKind.SetBreakpoints) is { } last && !WorkflowStoreRules.IsTerminal(next.Status) &&
-            (last.Kind == DebugCommandKind.Pause) != (next.Status == WorkflowStatus.Paused))
+            (last.Kind is DebugCommandKind.Pause or DebugCommandKind.EditData) != (next.Status == WorkflowStatus.Paused))
             throw new InvalidOperationException("Debug command acknowledgement does not match committed status");
         return commands.Select(c => c.Order <= after.AppliedOrder && c.AcknowledgedRevision == null
-            ? c with { AcknowledgedRevision = revision } : c).ToArray();
+            ? c with { AcknowledgedRevision = revision, EditResult = c.Kind == DebugCommandKind.EditData
+                ? new(next.InstanceId, c.Id, revision, c.Edit!.Target) : null } : c).ToArray();
     }
     public static bool NeedsWake(WorkflowStatus status, IReadOnlyList<DebugCommand> commands) =>
         !WorkflowStoreRules.IsTerminal(status) && commands.Any(c => c.AcknowledgedRevision == null);

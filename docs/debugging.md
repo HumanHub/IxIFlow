@@ -1,9 +1,9 @@
 ---
-title: Pausing, breakpoints and stepping
-description: Pause durable workflow instances, set breakpoints, and step through individual branches.
+title: Pausing, breakpoints, stepping and edits
+description: Pause workflow instances, step through branches, and make validated, audited data edits.
 ---
 
-# Pausing, breakpoints and stepping
+# Pausing, breakpoints, stepping and edits
 
 Enable debugging on hosts that will accept operator commands:
 
@@ -146,3 +146,39 @@ Breakpoint[] examples =
 Everything outside the allowlist is refused, including helper methods, application constructors, mutation, statement lambdas, I/O, reflection, `dynamic`, wall-clock APIs such as `DateTime.Now`, culture-dependent formatting, string interpolation, and implicit culture-sensitive string comparisons or casing. A refusal raises `BreakpointConditionException` with diagnostics containing a code, message, zero-based text span, and one-based line and column. The entire replacement is refused before saving a command, preserving the installed set.
 
 If an owning host encounters a stored condition it cannot handle, it pauses at that breakpoint. The persisted stop and `BreakpointHit` trace contain `ConditionCompilerUnavailable`, `ConditionCompilationFailed` (with diagnostics), or `ConditionEvaluationFailed` (with the exception type). Exception messages and application values are omitted. A failure takes precedence over an ordinary match at the same step. A mixed fleet therefore stops safely when a debugging host lacks the compiler. Correct or remove the condition, then continue; the stopped occurrence is skipped once as with any other breakpoint.
+
+
+## Data edits
+
+The application authorizes each edit and supplies the actor. Editing hosts need a secret audit key of at least 32 bytes, obtained from application secret configuration. Use the same key across hosts that apply edits; keep it out of workflow data and debugger responses. A host without a key refuses edits and leaves pending edits paused.
+
+<!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#edit-host -->
+```csharp
+services.AddIxIFlow(options =>
+{
+    options.Debugging = true;
+    options.DataEditAuditKey = auditKey;
+});
+```
+
+Read the committed paused revision and pause generation together from the application's inspection view. Give each edit a durable ID, retained by the caller across retries:
+
+<!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#edit-data -->
+```csharp
+var receipt = await operations.EditDataAsync(instanceId, editId, pausedRevision,
+    new DataEditTarget(pauseGeneration),
+    [new DataPatch(["Total"], System.Text.Json.JsonSerializer.SerializeToElement(125.50m))],
+    actor: "operator@example.com");
+```
+
+`DataEditTarget(pauseGeneration)` selects root data. Supply a continuation ID as its second argument to select a live branch's copy. Paths are arrays of serialized property names, including any `JsonPropertyName` names. A path must exist and be settable through the data contract. Dictionary keys, collection indices, extension-data entries and traversal through custom converters are refused; replace their containing settable property instead. `DataPatch.Remove` removes a property before reading the candidate back, so removing a required member is refused.
+
+The host checks status, revision, generation and definition structure while holding the execution lease. It applies all patches to a detached copy and reads the entire candidate through the data type's contract, including converters, required members and setters. It also rebuilds and validates descendant branch copies. A refused patch changes no saved data, revision, command or audit. An earlier pending debug command must be acknowledged before a new edit can be accepted. The checkpoint size limit applies.
+
+A branch edit starts with the parent view plus that branch's saved changes and records the new changes against its parent. They merge through the usual join rules. A root edit with live branches changes the fork baseline: every descendant inherits the new baseline, with its own saved changes overlaid. Branch changes continue to win where they already changed a property. Replacing an ancestor with null can prevent a saved descendant path from rebuilding; that refuses the entire edit. **Combiners receive the edited baseline as their original value**, so editing that baseline can change their eventual merge result.
+
+Success returns a receipt with the edit ID, committed revision and target. The instance stays paused and releases the lease; continue separately when ready. Edits use the same ordered command rows as other debugger operations. A continue accepted during the edit keeps its wake and is applied afterward. Recovery can finish an accepted edit on another editing host.
+
+If a response is lost, retry with exactly the same instance ID, edit ID, expected revision, target, patches and actor. The store returns the original receipt, even if another host has since continued or completed the instance. Reusing an ID with different fields is refused. Receipts last with the retained instance and are removed with it.
+
+Each edit atomically records a `DataEdited` trace entry with its actor, edit ID, target, committed revision and paths. Before and after values are represented only by HMAC-SHA-256 digests using the configured key, bound to the instance, edit, path and before/after position. Values and dictionary key values are absent from the audit. This audit is mandatory even with tracing disabled, activity-only tracing, or exhausted trace limits. A digest cannot be checked by hashing guesses without the secret key.

@@ -267,6 +267,10 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
         return await RecoverAsync(instanceId, cancellationToken);
     }
 
+    public Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
+        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken = default) =>
+        host.ReadAsync(client => client.EditDataAsync(instanceId, editId, expectedRevision, target, patches, actor, cancellationToken));
+
     public async Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
         string actor, CancellationToken cancellationToken = default)
     {

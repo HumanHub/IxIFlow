@@ -121,10 +121,13 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The drain timeout cannot be negative");
         if (string.IsNullOrWhiteSpace(options.HostName))
             throw new ArgumentOutOfRangeException(nameof(configure), "The host name cannot be empty");
+        if (options.DataEditAuditKey is { Length: < 32 })
+            throw new ArgumentException("The data edit audit key must contain at least 32 bytes", nameof(configure));
+        var auditKey = options.DataEditAuditKey?.ToArray();
         var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
         services.Replace(ServiceDescriptor.Singleton<HostSettings>(_ =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
-            { Debugging = options.Debugging, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes }));
+            { Debugging = options.Debugging, DataEditAuditKey = auditKey, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes }));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
 
@@ -306,6 +309,9 @@ public class IxIFlowOptions
     /// </summary>
     /// <summary>Enables authorized pause and continue operations on this host. Off by default.</summary>
     public bool Debugging { get; set; }
+
+    /// <summary>Secret HMAC key for mandatory edit audits, at least 32 bytes. Configure the same key on editing hosts.</summary>
+    public byte[]? DataEditAuditKey { get; set; }
 
     public int MaxCrashes { get; set; } = HostSettings.DefaultMaxCrashes;
 

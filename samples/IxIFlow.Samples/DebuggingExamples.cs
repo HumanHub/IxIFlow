@@ -6,6 +6,29 @@ namespace IxIFlow.Samples;
 
 public static class DebuggingExamples
 {
+    public static void ConfigureEdits(IServiceCollection services, byte[] auditKey)
+    {
+        // snippet: edit-host
+        services.AddIxIFlow(options =>
+        {
+            options.Debugging = true;
+            options.DataEditAuditKey = auditKey;
+        });
+        // end-snippet: edit-host
+    }
+
+    public static async Task<DataEditResult> EditAsync(IWorkflowOperations operations, string instanceId,
+        string editId, long pausedRevision, long pauseGeneration)
+    {
+        // snippet: edit-data
+        var receipt = await operations.EditDataAsync(instanceId, editId, pausedRevision,
+            new DataEditTarget(pauseGeneration),
+            [new DataPatch(["Total"], System.Text.Json.JsonSerializer.SerializeToElement(125.50m))],
+            actor: "operator@example.com");
+        // end-snippet: edit-data
+        return receipt;
+    }
+
     public static async Task StepAsync(IWorkflowOperations operations, string instanceId, string continuationId)
     {
         // snippet: step

@@ -48,6 +48,16 @@ internal static class ExecutionCheckpointWriter
             throw new CheckpointLimitExceededException(size, host.Limits.MaxCheckpointBytes);
         }
 
+        return await CommitPreparedAsync(host, instance, checkpoint, stored, now, clearsCrashCount, parkFor);
+    }
+
+    /// <summary>Sends an already validated, prepared checkpoint without serializing its data again.</summary>
+    public static async Task<bool> CommitPreparedAsync(ExecutionSession host, WorkflowInstance instance,
+        ExecutionCheckpoint checkpoint, StoredCheckpoint stored, DateTime now, bool clearsCrashCount = true,
+        TimeSpan? parkFor = null)
+    {
+        checkpoint.Signals?.ThrowIfOwnershipLost();
+        var size = stored.Bytes;
         // The commit carries the run's inbox decisions and the waits it opened, armed and closed (D-33).
         // It says how long, not until when: the store stamps deadlines and the runnable time (D-35).
         var (opened, armed, closed) = checkpoint.Inbox.WaitChanges(checkpoint);
