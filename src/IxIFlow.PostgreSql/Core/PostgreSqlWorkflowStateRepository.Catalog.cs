@@ -51,8 +51,15 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             SELECT metadata_json AS MetadataJson, state AS State FROM ixiflow_workflow_versions WHERE name=@Name AND version=@Version
             """,
         Statement.CatalogUnfinishedCallers => """
-            SELECT workflow_name AS Name, (state_json::jsonb ->> 'WorkflowVersion')::integer AS Version FROM ixiflow_workflow_instances
-            WHERE workflow_name = ANY(@Names) AND status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
+            SELECT caller."Name" AS Name, caller."Version" AS Version
+            FROM jsonb_to_recordset(CAST(@Callers AS jsonb)) AS caller("Name" text, "Version" integer)
+            WHERE EXISTS (
+                SELECT 1 FROM ixiflow_workflow_instances AS instance
+                WHERE instance.workflow_name = caller."Name"
+                AND CASE WHEN instance.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
+                    AND instance.workflow_name = caller."Name"
+                    THEN (instance.state_json::jsonb ->> 'WorkflowVersion')::integer END = caller."Version")
+            LIMIT 1
             """,
         Statement.CatalogVersionInsert => """
             INSERT INTO ixiflow_workflow_versions (name, version, structure_hash, state, artifact_digest, metadata_json) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson)

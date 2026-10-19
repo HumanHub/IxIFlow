@@ -44,8 +44,15 @@ public sealed partial class SqliteWorkflowStateRepository
             SELECT metadata_json AS MetadataJson, state AS State FROM ixiflow_workflow_versions WHERE name=@Name AND version=@Version
             """,
         Statement.CatalogUnfinishedCallers => """
-            SELECT workflow_name AS Name, json_extract(state_json, '$.WorkflowVersion') AS Version FROM ixiflow_workflow_instances
-            WHERE workflow_name IN @Names AND status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
+            SELECT json_extract(caller.value, '$.Name') AS Name, json_extract(caller.value, '$.Version') AS Version
+            FROM json_each(@Callers) AS caller
+            WHERE EXISTS (
+                SELECT 1 FROM ixiflow_workflow_instances AS instance
+                WHERE instance.workflow_name = json_extract(caller.value, '$.Name')
+                AND CASE WHEN instance.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
+                    AND instance.workflow_name = json_extract(caller.value, '$.Name')
+                    THEN json_extract(instance.state_json, '$.WorkflowVersion') END = json_extract(caller.value, '$.Version'))
+            LIMIT 1
             """,
         Statement.CatalogVersionInsert => """
             INSERT INTO ixiflow_workflow_versions (name, version, structure_hash, state, artifact_digest, metadata_json) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson)

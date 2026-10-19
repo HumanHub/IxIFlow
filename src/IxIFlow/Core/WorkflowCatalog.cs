@@ -191,18 +191,18 @@ internal static class WorkflowCatalogRules
                     : $"Workflow {name} v{version} is unavailable for new starts ({row?.State.ToString() ?? "missing"})");
     }
 
-    public static void CheckRetirement(WorkflowVersion target, IReadOnlyList<WorkflowVersion> versions,
-        IEnumerable<WorkflowVersionReference> unfinishedInstances)
+    public static void CheckRetirement(WorkflowVersion target, IReadOnlyList<WorkflowVersion> callers,
+        WorkflowVersionReference? unfinishedCaller)
     {
-        var reference = new WorkflowVersionReference(target.Name, target.Version);
-        var callers = versions.Where(row => (row.Dependencies ?? []).Contains(reference)).ToArray();
-        var callerVersions = callers.Select(row => new WorkflowVersionReference(row.Name, row.Version)).ToHashSet();
         // Published and Deprecated callers both keep their pinned dependencies startable.
-        if (callers.Any(row => (row.Name, row.Version) != (target.Name, target.Version) &&
-                row.State is WorkflowVersionState.Published or WorkflowVersionState.Deprecated) ||
-            unfinishedInstances.Any(callerVersions.Contains))
+        var caller = callers.FirstOrDefault(row => (row.Name, row.Version) != (target.Name, target.Version) &&
+            row.State is WorkflowVersionState.Published or WorkflowVersionState.Deprecated);
+        if (caller != null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                $"Workflow {target.Name} v{target.Version} is required by a caller or unfinished parent");
+                $"Workflow {target.Name} v{target.Version} is required by caller {caller.Name} v{caller.Version}");
+        if (unfinishedCaller != null)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"Workflow {target.Name} v{target.Version} has unfinished parent instances of {unfinishedCaller.Name} v{unfinishedCaller.Version}");
     }
 
     public static IReadOnlySet<ArtifactDigest> ArtifactReferences(IEnumerable<WorkflowVersion> rows) =>

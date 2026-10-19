@@ -170,16 +170,15 @@ public abstract partial class RelationalWorkflowStateRepository
             if (state == WorkflowVersionState.Retired)
             {
                 var reference = new WorkflowVersionReference(name, version);
-                var names = versions.Where(caller => (caller.Dependencies ?? []).Contains(reference))
-                    .Select(caller => caller.Name).Distinct(StringComparer.Ordinal).ToArray();
-                // Leave ample space below SQL Server's 2,100-parameter limit.
-                WorkflowCatalogRules.CheckRetirement(row, versions, []);
-                foreach (var chunk in names.Chunk(1000))
+                var callers = versions.Where(caller => (caller.Dependencies ?? []).Contains(reference)).ToArray();
+                WorkflowCatalogRules.CheckRetirement(row, callers, null);
+                if (callers.Length != 0)
                 {
-                    var parents = await connection.QueryAsync<UnfinishedCallerRow>(RequiredSql(Statement.CatalogUnfinishedCallers),
-                        new { Names = chunk }, transaction);
-                    WorkflowCatalogRules.CheckRetirement(row, versions,
-                        parents.Select(parent => new WorkflowVersionReference(parent.Name, parent.Version)));
+                    var pairs = callers.Select(caller => new WorkflowVersionReference(caller.Name, caller.Version));
+                    var parent = await connection.QuerySingleOrDefaultAsync<UnfinishedCallerRow>(
+                        RequiredSql(Statement.CatalogUnfinishedCallers), new { Callers = JsonSerializer.Serialize(pairs) }, transaction);
+                    WorkflowCatalogRules.CheckRetirement(row, callers,
+                        parent == null ? null : new WorkflowVersionReference(parent.Name, parent.Version));
                 }
             }
             if (state == WorkflowVersionState.Published)
