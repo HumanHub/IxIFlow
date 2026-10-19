@@ -157,6 +157,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             var behind = await store.CommitWorkflowInstanceAsync(behindCommit);
             Assert.Equal(WorkflowCommitStatus.Applied, behind.Status);
             Assert.True(behind.UnreadEvents);
+            await StoreTestSupport.ReleaseAsync(store, saved.InstanceId);
             Assert.Contains(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == instanceId);
             // The same commit sent again gets the same answer.
             Assert.True((await store.CommitWorkflowInstanceAsync(behindCommit)).UnreadEvents);

@@ -207,7 +207,9 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
                 entry => entry.EntryType == TraceEntryType.DelayFired).Payload).WaitRef);
 
         var stored = await store.GetTraceAsync(started.InstanceId);
-        var commit = CheckpointCommit.Create(new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = started.InstanceId }, 0, 0,
+        var serializationStore = new InMemoryWorkflowStateRepository();
+        var commit = CheckpointCommit.Create(new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = started.InstanceId },
+            (await StoreTestSupport.LeaseAsync(serializationStore, started.InstanceId)).Epoch, 0,
             traceEntries: trace);
         var results = new[] { started, refused, taken, closed, timedOut, expired, recovered, finished };
         var copies = trace.Concat(stored.Select(entry => entry.Entry)).Concat(commit.ReadTraceEntries())

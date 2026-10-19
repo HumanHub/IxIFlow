@@ -252,11 +252,9 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         }
         try
         {
-            // Saves of a running instance and of an idle one whose time has passed.
-            await notifications.ExpectAsync(() => repository.SeedAsync(Instance(WorkflowStatus.Running)));
+            // A commit whose suspended checkpoint is due wakes a scanner.
             var due = Instance(WorkflowStatus.Suspended);
-            due.RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1);
-            await notifications.ExpectAsync(() => repository.SeedAsync(due));
+            await notifications.ExpectAsync(() => repository.SeedAsync(due, TimeSpan.Zero));
 
             // A cancellation request and an event for idle instances.
             var idle = Instance(WorkflowStatus.Suspended);
@@ -269,13 +267,12 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
             await notifications.ExpectAsync(() => repository.AppendEventAsync(
                 new WorkflowEvent(waiting.InstanceId, "event-1", "Approval", "{}", Key: "approval")));
 
-            // A running instance committed without a lease, and the release of a lease on a due instance.
-            var unleased = Instance(WorkflowStatus.Running);
-            await notifications.ExpectAsync(async () => await repository.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(unleased, (await StoreTestSupport.LeaseAsync(repository, unleased.InstanceId)).Epoch, 0)));
-            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(unleased.InstanceId, "owner",
-                TimeSpan.FromMinutes(1)));
-            await notifications.ExpectAsync(() => repository.ReleaseExecutionLeaseAsync(unleased.InstanceId, "owner"));
+            // Releasing the active lease on a due running instance wakes a scanner.
+            var running = Instance(WorkflowStatus.Running);
+            var runningGrant = (await repository.TryAcquireExecutionLeaseAsync(running.InstanceId, "owner",
+                TimeSpan.FromMinutes(1)))!;
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(running, runningGrant.Epoch, 0));
+            await notifications.ExpectAsync(() => repository.ReleaseExecutionLeaseAsync(running.InstanceId, "owner"));
 
             // A child's start, then its completion, which wakes its parent.
             var parent = Instance(WorkflowStatus.Suspended);
@@ -323,6 +320,8 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         };
         // The schema is made first, so only the lock can hold the store up.
         await repository.GetWorkflowInstanceAsync(instance.InstanceId);
+        var grant = await StoreTestSupport.LeaseAsync(repository, instance.InstanceId);
+        var transition = CheckpointCommit.Create(instance, grant.Epoch, 0);
         try
         {
             Task<WorkflowCommitResult> commit;
@@ -330,17 +329,17 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
             await using (var holder = await holdIdentity(instance.InstanceId))
             {
                 commit = repository is SqliteWorkflowStateRepository
-                    ? Task.Run(async () => await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0)))
-                    : repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0));
+                    ? Task.Run(() => repository.CommitWorkflowInstanceAsync(transition))
+                    : repository.CommitWorkflowInstanceAsync(transition);
                 claim = repository is SqliteWorkflowStateRepository
                     ? Task.Run(() => repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1)))
                     : repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1));
                 await Task.Delay(TimeSpan.FromMilliseconds(500));
                 Assert.False(commit.IsCompleted || claim.IsCompleted);
             }
-            // Whichever went first, the other saw it: a commit after the claim is refused, one before it is not.
-            Assert.NotNull(await claim);
-            Assert.Contains((await commit).Status, new[] { WorkflowCommitStatus.Applied, WorkflowCommitStatus.StaleEpoch });
+            // The granted owner commits; the contending claim cannot replace its active lease.
+            Assert.Null(await claim);
+            Assert.Equal(WorkflowCommitStatus.Applied, (await commit).Status);
 
             Task deleting;
             await using (var holder = await holdIdentity(instance.InstanceId))

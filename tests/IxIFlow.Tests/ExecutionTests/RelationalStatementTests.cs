@@ -18,12 +18,12 @@ public class RelationalStatementTests
         var provider = publicStore.Assembly.GetTypes().Single(type =>
             type.BaseType?.Name == "RelationalWorkflowStateRepository");
         var protocol = provider.BaseType!;
-        var statement = Enum.Parse(protocol.GetNestedType("Statement", BindingFlags.NonPublic)!, "Save");
+        var statement = Enum.Parse(protocol.GetNestedType("Statement", BindingFlags.NonPublic)!, "InsertCommit");
         var require = protocol.GetMethod("RequireSql", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var store = RuntimeHelpers.GetUninitializedObject(provider);
 
         var invocation = Assert.Throws<TargetInvocationException>(() => require.Invoke(store, [statement, sql]));
         var error = Assert.IsType<InvalidOperationException>(invocation.InnerException);
-        Assert.Equal($"Relational provider '{provider.FullName}' is missing required statement 'Save'.", error.Message);
+        Assert.Equal($"Relational provider '{provider.FullName}' is missing required statement 'InsertCommit'.", error.Message);
     }
 }

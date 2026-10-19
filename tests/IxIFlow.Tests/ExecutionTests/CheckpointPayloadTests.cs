@@ -29,6 +29,34 @@ public sealed class CheckpointPayloadTests
     }
 
     [Theory]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    [InlineData("42")]
+    [InlineData("\"escaped\"")]
+    public async Task PersistenceRejectsNonCheckpointState(string state)
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        var instance = new WorkflowInstance { InstanceId = "invalid", ExecutionStateJson = state };
+        var grant = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
+
+        Assert.ThrowsAny<JsonException>(() => CheckpointCommit.Create(instance, grant.Epoch, 0));
+        Assert.ThrowsAny<JsonException>(() => JsonSerializer.Serialize(instance));
+        Assert.ThrowsAny<JsonException>(() => JsonSerializer.Deserialize<WorkflowInstance>(
+            "{\"ExecutionStateJson\":" + state + "}"));
+        Assert.Null(await store.GetWorkflowInstanceAsync(instance.InstanceId));
+    }
+
+    [Fact]
+    public void EveryCommitRequiresAPositiveEpoch()
+    {
+        var instance = new WorkflowInstance
+        {
+            InstanceId = "unleased", ExecutionStateJson = StoreTestSupport.CheckpointJson
+        };
+        Assert.Throws<ArgumentOutOfRangeException>(() => CheckpointCommit.Create(instance, 0, 0));
+    }
+
+    [Theory]
     [Trait("Spec", "A-08")]
     [InlineData(63, true)]
     [InlineData(64, false)]
@@ -54,7 +82,20 @@ public sealed class CheckpointPayloadTests
     public async Task ALargeStateRoundTripsThroughACommit()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var checkpoint = new ExecutionCheckpoint { DefinitionFingerprint = new string('x', 1_100_000) };
+        var checkpoint = new ExecutionCheckpoint
+        {
+            DefinitionFingerprint = "large",
+            Continuations = [new ContinuationState
+            {
+                Id = "root", Stack = [new ScopePosition
+                {
+                    ScopeId = "root", ForEach = new ForEachState
+                    {
+                        Items = Enumerable.Range(0, 100_000).Select(index => $"{{\"Id\":\"item-{index}\"}}").ToList()
+                    }
+                }]
+            }]
+        };
         var instance = new WorkflowInstance
         {
             InstanceId = "large", WorkflowName = "Large", ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
@@ -62,7 +103,11 @@ public sealed class CheckpointPayloadTests
 
         var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0);
 
-        Assert.True(commit.Payload.Length > 1_000_000);
+        Assert.True(commit.Payload.Length + commit.Parts.Sum(part => part.Json.Length) > 1_000_000);
+        Assert.True(commit.Payload.Length < 10_000);
+        Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
+        Assert.Equal(instance.ExecutionStateJson,
+            (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.ExecutionStateJson);
         Assert.Equal(instance.ExecutionStateJson, commit.ReadInstance().ExecutionStateJson);
     }
 

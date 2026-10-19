@@ -307,7 +307,7 @@ public sealed class ResourceLimitTests
 
         // The hanging renewal was sent one second in, while the lease ran until three.
         Assert.True(time.GetUtcNow() - started <= TimeSpan.FromSeconds(3.5));
-        Assert.IsType<TimeoutException>(((Task<Exception>)lease.Loss).Result);
+        Assert.IsType<TimeoutException>(await (Task<Exception>)lease.Loss);
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository store, Action<IxIFlowOptions> configure)
@@ -456,7 +456,7 @@ public sealed class ResourceLimitTests
             { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "PoolReservation", Status = WorkflowStatus.Running,
                 WorkflowDataJson = "{}"
-            }, 0, 0))).Status);
+            }, (await StoreTestSupport.LeaseAsync(store, instanceId)).Epoch, 0))).Status);
 
         await using (var hog = newConnection(connectionString))
         {

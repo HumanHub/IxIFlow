@@ -26,6 +26,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
     private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
     private static readonly TimeSpan Tombstones = TimeSpan.FromDays(90);
     private readonly List<string> _ids = [];
+    private readonly Dictionary<string, long> _epochs = [];
     private readonly List<string> _publishers = [];
     private Task RegisterPublisher(string name)
     {
@@ -50,6 +51,8 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var result = await store.CommitWorkflowInstanceAsync(commit);
         Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
         instance.Revision = result.Revision;
+        _epochs[instance.InstanceId] = commit.Epoch;
+        await StoreTestSupport.ReleaseAsync(store, instance.InstanceId);
         return commit;
     }
     private async Task<WorkflowInstance> Complete()
@@ -182,7 +185,9 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         }
         await Advance(Tombstones);
         await Purge();
-        // Reusing the old commit ID must apply from revision zero, proving its receipt was removed too.
+        // Reusing the old commit ID under a new granted epoch proves its receipt was removed too.
+        first = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch,
+            0, first.CommitId, openedWaits: first.OpenedWaits, traceEntries: first.ReadTraceEntries());
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(first)).Status);
         var recreated = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         Assert.Equal(1, recreated.Revision);
@@ -195,11 +200,11 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         await Advance(TimeSpan.FromDays(31));
         await Purge();
         var exception = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(InstanceWithId(instance.InstanceId), 0, 0)));
+            store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(InstanceWithId(instance.InstanceId), _epochs[instance.InstanceId], 0)));
         Assert.Equal(WorkflowErrorKind.InstanceRemoved, exception.Kind);
         var saved = InstanceWithId(instance.InstanceId);
         Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            store.SeedAsync(saved))).Kind);
+            store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, _epochs[instance.InstanceId], instance.Revision)))).Kind);
         foreach (var target in new string?[] { null, "old-wait" })
             Assert.Equal(EventAppendStatus.Closed, (await store.AppendEventAsync(
                 new WorkflowEvent(instance.InstanceId, Guid.NewGuid().ToString("N"), "event", "{}", TargetWaitId: target))).Status);
@@ -468,7 +473,8 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
             await store.DeleteWorkflowInstanceAsync(instance.InstanceId, period);
             Assert.Equal(beforeRepeat, await store.GetTombstoneAsync(instance.InstanceId));
             Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-                store.SeedAsync(InstanceWithId(instance.InstanceId)))).Kind);
+                store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(InstanceWithId(instance.InstanceId),
+                    _epochs[instance.InstanceId], 0)))).Kind);
             Assert.Equal(EventAppendStatus.Closed, (await store.AppendEventAsync(
                 new WorkflowEvent(instance.InstanceId, "late", "type", "{}"))).Status);
             await Advance(period);
@@ -556,7 +562,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
                 return;
             }
             var replacement = InstanceWithId(removed.InstanceId);
-            var commit = CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(store, replacement.InstanceId)).Epoch, 0);
+            var commit = CheckpointCommit.Create(replacement, _epochs[removed.InstanceId], 0);
             if (scenario == RetentionScenario.PurgeMeetsChildStart)
             {
                 replacement.ParentInstanceId = parent.InstanceId;

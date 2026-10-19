@@ -1516,6 +1516,7 @@ public class StructuredTryWaitTests
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = System.Text.Json.JsonSerializer.Serialize(checkpoint);
         await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
+        await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
 
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
