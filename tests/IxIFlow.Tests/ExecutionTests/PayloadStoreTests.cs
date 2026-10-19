@@ -115,7 +115,7 @@ public sealed class PayloadStoreTests
         var services = new ServiceCollection();
         var builder = services.AddIxIFlow(options => options.MaxPayloadBytes = 17);
         using var provider = services.BuildServiceProvider();
-        Assert.Equal(0, provider.GetRequiredService<PayloadStoreSettings>().PayloadThresholdBytes);
+        Assert.Equal(256 * 1024, provider.GetRequiredService<PayloadStoreSettings>().PayloadThresholdBytes);
         Assert.Equal(17, provider.GetRequiredService<PayloadStoreSettings>().MaxPayloadBytes);
         Assert.Same(((IPayloadStoreProvider)provider.GetRequiredService<IWorkflowStateRepository>()).PayloadStore,
             provider.GetRequiredService<IPayloadStore>());

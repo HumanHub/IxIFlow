@@ -160,9 +160,10 @@ internal sealed class PayloadStoreContract(IPayloadStore store,
         // Fixtures configure a 1 KiB put limit, so the boundary is cheap on every backend.
         var body = Enumerable.Repeat((byte)' ', 1024).ToArray();
         Assert.Equal(1024, (await store.PutAsync(body)).Bytes);
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => store.PutAsync(new byte[1025]).AsTask());
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => store.ReserveAsync(
-            PayloadReference.Of(new byte[1025]), TimeSpan.FromMinutes(1)).AsTask());
+        Assert.Equal(WorkflowErrorKind.ResourceExhausted, (await Assert.ThrowsAsync<WorkflowEngineException>(
+            () => store.PutAsync(new byte[1025]).AsTask())).Kind);
+        Assert.Equal(WorkflowErrorKind.ResourceExhausted, (await Assert.ThrowsAsync<WorkflowEngineException>(
+            () => store.ReserveAsync(PayloadReference.Of(new byte[1025]), TimeSpan.FromMinutes(1)).AsTask())).Kind);
     }
 
     private async Task Corruption()
