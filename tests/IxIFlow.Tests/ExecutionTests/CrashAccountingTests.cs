@@ -57,7 +57,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
     {
         var instanceId = Guid.NewGuid().ToString("N");
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "CrashCounting", Status = WorkflowStatus.Running,
             WorkflowDataJson = "{}"
         };
@@ -127,15 +127,15 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
     {
         var repository = new InMemoryWorkflowStateRepository();
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "CrashCountReplay",
             Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
         };
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(instance, 0, 0, "same", clearsCrashCount: true))).Status);
+            CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "same", clearsCrashCount: true))).Status);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(instance, 0, 0, "same", clearsCrashCount: false)));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await repository.CommitWorkflowInstanceAsync(
+            CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "same", clearsCrashCount: false)));
     }
 
     [Fact]

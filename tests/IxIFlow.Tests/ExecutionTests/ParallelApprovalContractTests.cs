@@ -313,8 +313,9 @@ public class ParallelApprovalContractTests
         var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         saved.Status = WorkflowStatus.Running;
         var claimed = await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(saved, 0, saved.Revision, Guid.NewGuid().ToString("N")));
+            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, claimed.Status);
+        await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(started.InstanceId, "other-host",
             TimeSpan.FromMinutes(1)));
 
@@ -469,7 +470,8 @@ public class ParallelApprovalContractTests
         Assert.Equal(WorkflowStatus.Running, saved.Status);
 
         var recoveredRepository = new InMemoryWorkflowStateRepository();
-        await recoveredRepository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, 0, 0, Guid.NewGuid().ToString("N")));
+        await recoveredRepository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(recoveredRepository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
+        await StoreTestSupport.ReleaseAsync(recoveredRepository, saved.InstanceId);
         using var secondProvider = CreateServices(recoveredRepository);
         var rebuilt = CreateRecoverWorkflow();
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(rebuilt);
@@ -518,7 +520,8 @@ public class ParallelApprovalContractTests
 
         var saved = recording.Initial!;
         var repository = new InMemoryWorkflowStateRepository();
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, 0, 0, Guid.NewGuid().ToString("N")));
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
+        await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
         using (var wrongProvider = CreateServices(repository))
         {
             var changed = Workflow.Create<ApprovalData>("RecoverApproval")
@@ -1688,12 +1691,6 @@ public class ParallelApprovalContractTests
         public WorkflowInstance? AfterFinance { get; private set; }
         public int FailOnFinanceStartCount { get; set; }
 
-        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
-        {
-            ObserveSave(instance);
-            return _inner.SaveWorkflowInstanceAsync(instance);
-        }
-
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
             // The whole instance the commit saves: the commit applied to the instance it was based on.
@@ -1720,6 +1717,14 @@ public class ParallelApprovalContractTests
                     AfterFinance ??= copy;
             }
         }
+
+        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
+            _inner.GetWorkflowInstanceSummaryAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
+            _inner.GetChildInstancesAsync(parentInstanceId);
+        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+            IReadOnlyCollection<string> instanceIds) =>
+            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
 
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);

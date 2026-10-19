@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
@@ -133,7 +134,7 @@ public sealed class DefinitionValidationTests
             InstanceId = "unchecked-recovery", WorkflowName = definition.Name, WorkflowVersion = definition.Version,
             Status = WorkflowStatus.Running, ExecutionStateJson = System.Text.Json.JsonSerializer.Serialize(checkpoint)
         };
-        await repository.SaveWorkflowInstanceAsync(instance);
+        await repository.SeedAsync(instance);
         var operations = new WorkflowHost.InstanceOperations(provider, provider.GetRequiredService<IActivityExecutor>(),
             repository, new UncheckedRegistry(definition), new InProcessInstanceGate());
 

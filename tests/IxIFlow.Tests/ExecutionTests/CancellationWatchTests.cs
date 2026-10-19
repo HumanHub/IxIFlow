@@ -138,7 +138,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
 
     [Fact]
     [Trait("Spec", "B-10")]
-    public async Task TheDefaultBatchReadReportsTheInstancesItCouldRead()
+    public async Task TheBatchReadReportsTheInstancesItCouldRead()
     {
         IWorkflowStateRepository store = new SingleReadStore
         {
@@ -150,6 +150,46 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
 
         Assert.Equal("a", Assert.Single(requests).Value.ReasonCode);
         await Assert.ThrowsAsync<AggregateException>(() => store.GetCancellationRequestsAsync(["broken"]));
+    }
+
+    [Fact]
+    [Trait("Spec", "B-10")]
+    [Trait("Category", "SqliteIntegration")]
+    public async Task SqliteBatchReadReportsTheInstancesItCouldRead()
+    {
+        var connectionString = SqliteTestDatabase<CancellationWatchTests>.ConnectionString;
+        await using var store = new SqliteWorkflowStateRepository(connectionString);
+        var readable = Guid.NewGuid().ToString("N");
+        var broken = Guid.NewGuid().ToString("N");
+        try
+        {
+            foreach (var id in new[] { readable, broken })
+            {
+                await store.SeedAsync(new WorkflowInstance
+                {
+                    InstanceId = id, Status = WorkflowStatus.Running,
+                    ExecutionStateJson = StoreTestSupport.CheckpointJson
+                });
+                Assert.True(await store.RequestCancellationAsync(id, new CancellationReason { ReasonCode = id }));
+            }
+            await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE ixiflow_workflow_instances SET cancellation_json = 'invalid' WHERE instance_id = @Id";
+                command.Parameters.AddWithValue("@Id", broken);
+                Assert.Equal(1, await command.ExecuteNonQueryAsync());
+            }
+            var requests = await store.GetCancellationRequestsAsync([readable, broken, "quiet", readable]);
+            Assert.Equal(readable, Assert.Single(requests).Value.ReasonCode);
+            await Assert.ThrowsAsync<AggregateException>(() => store.GetCancellationRequestsAsync([broken, broken]));
+            Assert.Empty(await store.GetCancellationRequestsAsync([]));
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(readable);
+            await store.DeleteWorkflowInstanceAsync(broken);
+        }
     }
 
     [Fact]
@@ -182,19 +222,19 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
     private static async Task VerifyCommitReportsPendingCancellation(IWorkflowStateRepository repository)
     {
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "CommitCancellation",
             Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
         };
         try
         {
-            var first = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0));
+            var first = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0));
             Assert.Equal(WorkflowCommitStatus.Applied, first.Status);
             Assert.Null(first.PendingCancellation);
 
             Assert.True(await repository.RequestCancellationAsync(instance.InstanceId,
                 new CancellationReason { ReasonCode = "pending" }));
-            var commit = CheckpointCommit.Create(instance, 0, first.Revision);
+            var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, first.Revision);
             var applied = await repository.CommitWorkflowInstanceAsync(commit);
             var repeated = await repository.CommitWorkflowInstanceAsync(commit);
 
@@ -276,76 +316,15 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         }
     }
 
-    /// <summary>A store that leaves the batch read to the interface's fallback.</summary>
-    private sealed class SingleReadStore : IWorkflowStateRepository
+    /// <summary>Injects failures in individual reads of the explicit memory batch operation.</summary>
+    private sealed class SingleReadStore : InMemoryWorkflowStateRepository
     {
-        public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
-            throw new NotSupportedException();
-
-        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
-            throw new NotSupportedException();
-        public Task UnregisterPublisherAsync(string name) => throw new NotSupportedException();
-        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
-            throw new NotSupportedException();
-        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
-            throw new NotSupportedException();
-        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result) =>
-            throw new NotSupportedException();
-        public Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName) =>
-            throw new NotSupportedException();
-        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
-            throw new NotSupportedException();
-
-        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
-            throw new NotSupportedException();
-        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
-            throw new NotSupportedException();
-        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
-            throw new NotSupportedException();
-        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
-            throw new NotSupportedException();
-        public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            throw new NotSupportedException();
-        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
-            throw new NotSupportedException();
-
         public Dictionary<string, CancellationReason> Requests { get; } = new(StringComparer.Ordinal);
         public HashSet<string> Failing { get; } = new(StringComparer.Ordinal);
-
-        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
+        public override Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             Failing.Contains(instanceId)
                 ? Task.FromException<CancellationReason?>(new IOException($"Cannot read {instanceId}"))
                 : Task.FromResult(Requests.GetValueOrDefault(instanceId));
-
-        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
-            throw new NotSupportedException();
-        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
-            throw new NotSupportedException();
-        public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit) =>
-            throw new NotSupportedException();
-        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            throw new NotSupportedException();
-        public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            throw new NotSupportedException();
-        public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
-            throw new NotSupportedException();
-        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) => throw new NotSupportedException();
-        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
-            throw new NotSupportedException();
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
-            throw new NotSupportedException();
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
-            throw new NotSupportedException();
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
-            throw new NotSupportedException();
-        public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
-            int limit = 1000) =>
-            throw new NotSupportedException();
-        public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) => throw new NotSupportedException();
     }
     [Theory]
     [InlineData(false)]

@@ -153,7 +153,7 @@ public sealed class CheckpointCommit
     /// </summary>
     public IReadOnlyList<string> TraceEntries { get; }
 
-    /// <summary>The execution epoch granted with the owner's lease; zero for an unleased commit.</summary>
+    /// <summary>The positive execution epoch granted with the owner's lease.</summary>
     public long Epoch { get; }
 
     /// <summary>The incarnation chosen for a first insert, or read by the executor for a later commit.</summary>
@@ -244,7 +244,7 @@ public sealed class CheckpointCommit
     {
         ArgumentNullException.ThrowIfNull(instance);
         ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
-        ArgumentOutOfRangeException.ThrowIfNegative(epoch);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(epoch);
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         commitId ??= Guid.NewGuid().ToString("N");
         ArgumentException.ThrowIfNullOrWhiteSpace(commitId);

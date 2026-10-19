@@ -110,8 +110,8 @@ public sealed class RetentionStoreTests
             "Data Source=" + Path.Combine(folder, "boundaries.db"), time) : new InMemoryWorkflowStateRepository(time);
         try
         {
-            var instance = new WorkflowInstance { InstanceId = "boundary", WorkflowName = "Boundary", Status = WorkflowStatus.Completed };
-            await store.SaveWorkflowInstanceAsync(instance);
+            var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "boundary", WorkflowName = "Boundary", Status = WorkflowStatus.Completed };
+            await store.SeedAsync(instance);
             var retention = store;
             time.Advance(TimeSpan.FromDays(30) - TimeSpan.FromTicks(1));
             Assert.Equal(0, (await retention.PurgeAsync(TimeSpan.FromDays(30), TimeSpan.FromDays(90), 1)).InstancesRemoved);

@@ -132,8 +132,8 @@ public sealed class SqliteOwnershipTests : IClassFixture<SqliteTestDatabase<Sqli
         await using var host = Host(ConnectionString);
         var store = host.GetRequiredService<IWorkflowStateRepository>();
         var time = host.GetRequiredService<TimeProvider>();
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), Status = WorkflowStatus.Suspended };
-        await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), Status = WorkflowStatus.Suspended };
+        await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0,
             openedWaits: [new OpenedWait("delay", WaitKind.Delay, "", "", TimeSpan.FromMinutes(1))]));
         Assert.Equal(time.GetUtcNow().UtcDateTime.AddMinutes(1),
             (await store.GetWaitAsync(instance.InstanceId, "delay"))!.DeadlineUtc);
@@ -156,8 +156,8 @@ public sealed class SqliteOwnershipTests : IClassFixture<SqliteTestDatabase<Sqli
     public async Task WalPersistsAcrossConnections()
     {
         await using var store = new SqliteWorkflowStateRepository(ConnectionString, new FakeTimeProvider());
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N") };
-        await store.SaveWorkflowInstanceAsync(instance);
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
+        await store.SeedAsync(instance);
         await using var connection = new Microsoft.Data.Sqlite.SqliteConnection(ConnectionString);
         await connection.OpenAsync();
         await using var mode = new Microsoft.Data.Sqlite.SqliteCommand("PRAGMA journal_mode", connection);
@@ -172,11 +172,11 @@ public sealed class SqliteOwnershipTests : IClassFixture<SqliteTestDatabase<Sqli
         var repository = host.GetRequiredService<IWorkflowStateRepository>();
         Assert.IsType<SqliteWorkflowStateRepository>(repository);
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SQLiteRegistration",
             Status = WorkflowStatus.Suspended, WorkflowDataJson = "{}"
         };
-        await repository.SaveWorkflowInstanceAsync(instance);
+        await repository.SeedAsync(instance);
 
         await host.DisposeAsync();
         await using var reopened = new SqliteWorkflowStateRepository(ConnectionString);

@@ -29,7 +29,7 @@ internal sealed class StoredCheckpoint
     /// <summary>The marks the split wrote by; a commit that is not saved gives them back.</summary>
     public PartMarks Marks { get; }
 
-    /// <summary>The execution state's trunk, as JSON; for a state that is not structured, the state itself.</summary>
+    /// <summary>The validated execution checkpoint's trunk, as JSON.</summary>
     public string Trunk { get; }
 
     /// <summary>Every part by key, the workflow data's included.</summary>
@@ -131,12 +131,6 @@ internal sealed class StoredCheckpoint
         if (instance.Stored is { } stored && ReferenceEquals(stored.Trunk, instance.ExecutionStateJson) &&
             ReferenceEquals(stored.Parts[CheckpointParts.DataKey], instance.WorkflowDataJson))
             return stored;
-        var state = instance.ExecutionStateJson;
-        if (!ExecutionCheckpoint.IsStructured(state))
-            return new StoredCheckpoint(state, new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                [CheckpointParts.DataKey] = instance.WorkflowDataJson
-            }, PartMarks.All);
         return Split(ExecutionCheckpoint.Read(WholeState(instance)), instance.WorkflowDataJson);
     }
 
@@ -145,18 +139,18 @@ internal sealed class StoredCheckpoint
     /// after a commit and the parts that commit stored.
     /// </summary>
     public static string WholeState(WorkflowInstance instance) =>
-        !ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) || !IsTrunk(instance.ExecutionStateJson)
+        !IsTrunk(instance.ExecutionStateJson)
             ? instance.ExecutionStateJson
         : AssembleState(instance.ExecutionStateJson, instance.PartsAt(instance.Revision) ??
             throw new InvalidOperationException(
                 "The instance holds the trunk of its state without the parts it was saved with"));
 
     /// <summary>
-    /// The whole execution state from its trunk and parts. A state that was not split is returned as it is.
+    /// The whole checkpoint from its trunk and parts. A whole schema-3 checkpoint is returned as it is.
     /// </summary>
     public static string AssembleState(string trunkJson, IReadOnlyDictionary<string, string> parts)
     {
-        if (!ExecutionCheckpoint.IsStructured(trunkJson) || !IsTrunk(trunkJson))
+        if (!IsTrunk(trunkJson))
             return trunkJson;
         var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(trunkJson, Stored)!;
         // Branches take their places in the order they started, which is the order they were saved in.
@@ -195,6 +189,7 @@ internal sealed class StoredCheckpoint
 
     private static bool IsTrunk(string structuredJson)
     {
+        _ = ExecutionCheckpoint.ReadTrunk(structuredJson);
         using var document = JsonDocument.Parse(structuredJson);
         return document.RootElement.TryGetProperty(nameof(ExecutionCheckpoint.StoredTrunk), out var trunk) &&
                trunk.ValueKind == JsonValueKind.True;

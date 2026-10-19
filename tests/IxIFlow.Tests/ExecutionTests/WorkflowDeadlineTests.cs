@@ -218,12 +218,12 @@ public sealed class WorkflowDeadlineTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"),
             Status = WorkflowStatus.NeedsResolution,
             RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1)
         };
-        await repository.SaveWorkflowInstanceAsync(instance);
+        await repository.SeedAsync(instance, TimeSpan.Zero);
 
         Assert.Contains(await repository.GetRunnableInstancesAsync(100),
             candidate => candidate.InstanceId == instance.InstanceId);
@@ -491,8 +491,15 @@ public sealed class WorkflowDeadlineTests
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
-        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
-            _inner.SaveWorkflowInstanceAsync(instance);
+
+        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
+            _inner.GetWorkflowInstanceSummaryAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
+            _inner.GetChildInstancesAsync(parentInstanceId);
+        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+            IReadOnlyCollection<string> instanceIds) =>
+            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>

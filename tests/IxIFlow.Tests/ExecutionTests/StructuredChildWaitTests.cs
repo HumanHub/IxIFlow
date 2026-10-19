@@ -97,7 +97,7 @@ public sealed class StructuredChildWaitTests
         var savedChild = (await repository.GetWorkflowInstanceAsync(childId))!;
         savedChild.Status = WorkflowStatus.NeedsResolution;
         Assert.Equal(WorkflowCommitStatus.Applied,
-            (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(savedChild, 0, savedChild.Revision,
+            (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(savedChild, (await StoreTestSupport.LeaseAsync(repository, savedChild.InstanceId)).Epoch, savedChild.Revision,
                 Guid.NewGuid().ToString("N")))).Status);
 
         // The child sends nothing until an operator moves it; the parent stays at its wait, with nothing to

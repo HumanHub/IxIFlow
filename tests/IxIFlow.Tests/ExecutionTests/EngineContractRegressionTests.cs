@@ -311,13 +311,19 @@ public class EngineContractRegressionTests
         services.AddLogging();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
-        var instance = new WorkflowInstance
-        {
-            InstanceId = Guid.NewGuid().ToString("N"),
-            Status = WorkflowStatus.Terminated
-        };
-        await provider.GetRequiredService<IWorkflowStateRepository>()
-            .SaveWorkflowInstanceAsync(instance);
+        var definition = Workflow.Create<RegressionData>("TerminatedBeforeCancel")
+            .Step<MarkChildActivity>()
+            .Suspend<RegressionApprovalEvent>("termination")
+            .Build();
+        var instance = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, new RegressionData());
+        var store = provider.GetRequiredService<IWorkflowStateRepository>();
+        var checkpoint = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
+        checkpoint.Status = WorkflowStatus.Terminated;
+        var grant = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
+        Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
+            CheckpointCommit.Create(checkpoint, grant.Epoch, checkpoint.Revision))).Status);
+        Assert.Equal(WorkflowStatus.Terminated,
+            (await store.GetWorkflowInstanceAsync(instance.InstanceId))!.Status);
 
         var result = await provider.GetRequiredService<IWorkflowClient>()
             .CancelAsync(instance.InstanceId,
@@ -370,11 +376,12 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
 
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString() };
+        WorkflowExecutionResult instance;
         using (var firstScope = provider.CreateScope())
         {
-            await firstScope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>()
-                .SaveWorkflowInstanceAsync(instance);
+            instance = await firstScope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(Workflow.Create<RegressionData>("AcrossScopes").Step<MarkChildActivity>().Build(),
+                    new RegressionData());
         }
 
         using var secondScope = provider.CreateScope();

@@ -324,12 +324,14 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var inner = new InMemoryWorkflowStateRepository();
         var instanceId = Guid.NewGuid().ToString("N");
-        await inner.SaveWorkflowInstanceAsync(new WorkflowInstance
+        using (var setup = CreateHost(inner, new WorkflowVersionRegistry(), new ActivityProbe()))
         {
-            InstanceId = instanceId,
-            WorkflowName = "CompletionRace",
-            Status = WorkflowStatus.Running
-        });
+            var started = await setup.GetRequiredService<IWorkflowClient>().RunAsync(
+                Workflow.Create<LeaseData>("CompletionRace").Step<NoopActivity>()
+                    .Suspend<LeaseEvent>("completion").Build(), new LeaseData(),
+                new WorkflowOptions { InstanceId = instanceId });
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        }
         var repository = new PausedReadRepository(inner)
         {
             PauseFirstRead = false,
@@ -467,8 +469,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var owner = Guid.NewGuid().ToString("N");
         try
         {
-            await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
-            {
+            await repository.SeedAsync(new WorkflowInstance
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "CancellationCommitFence",
                 Status = WorkflowStatus.Running
@@ -478,7 +480,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             Assert.NotNull(epoch);
             var active = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(active, epoch.Epoch, 0,
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(active, epoch.Epoch, active.Revision,
                     Guid.NewGuid().ToString("N")))).Status);
             Assert.True(await repository.RequestCancellationAsync(instanceId,
                 new CancellationReason { ReasonCode = "operator" }));
@@ -1086,7 +1088,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             var firstEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease);
             Assert.NotNull(firstEpoch);
             var oldOwner = new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "LeaseFencing",
                 Status = WorkflowStatus.Running,
@@ -1148,7 +1150,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 TimeSpan.FromSeconds(1));
             Assert.NotNull(formerEpoch);
             var formerOwner = new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "ReceiptFencing",
                 Status = WorkflowStatus.Running,
@@ -1200,8 +1202,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
-            {
+            await repository.SeedAsync(new WorkflowInstance
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "RecoveryQuery",
                 Status = WorkflowStatus.Running
@@ -1353,7 +1355,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             {
                 var instance = (await inner.GetWorkflowInstanceAsync(instanceId))!;
                 instance.Status = WorkflowStatus.Completed;
-                await inner.SaveWorkflowInstanceAsync(instance);
+                await inner.SeedAsync(instance);
             }
             return accepted;
         }
@@ -1395,6 +1397,14 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Continue { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
+            inner.GetWorkflowInstanceSummaryAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
+            inner.GetChildInstancesAsync(parentInstanceId);
+        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+            IReadOnlyCollection<string> instanceIds) =>
+            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
 
         public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
         {
@@ -1439,8 +1449,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                     new CancellationReason { ReasonCode = "operator" });
             return await inner.CommitWorkflowInstanceAsync(commit);
         }
-        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
-            inner.SaveWorkflowInstanceAsync(instance);
+
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string name) =>
             inner.GetWorkflowInstancesByNameAsync(name);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>

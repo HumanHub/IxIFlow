@@ -97,7 +97,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
 
     private static DateTimeOffset? Timestamp(DateTime? value) => value is { } time ? Timestamp(time) : null;
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.Save or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
+        operation is Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
             or Operation.CancellationRequest or Operation.LeaseRelease
             ? await connection.BeginTransactionAsync() : null;
 
@@ -581,7 +581,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
-                  incarnation = CASE WHEN @ExpectedRevision = 0 THEN @Incarnation ELSE incarnation END,
                   workflow_name = @WorkflowName, status = @Status,
                   correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
                   runnable_at_utc = @RunnableAtUtc,
@@ -605,22 +604,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                     crash_count = CASE WHEN @ClearsCrashCount THEN 0 ELSE crash_count END
                 WHERE instance_id = @InstanceId
                 """,
-        Statement.SaveParts => """
-            DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId
-                AND EXISTS (SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId AND revision = 0)
-            """,
-        Statement.Save => """
-            INSERT INTO ixiflow_workflow_instances AS target
-                (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json)
-            VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
-                CASE WHEN @RunnableNow THEN clock_timestamp() ELSE @RunnableAtUtc END, @StateJson)
-            ON CONFLICT (instance_id) DO UPDATE
-            SET workflow_name = excluded.workflow_name, status = excluded.status,
-                correlation_id = excluded.correlation_id, parent_instance_id = excluded.parent_instance_id, runnable_at_utc = excluded.runnable_at_utc,
-                state_json = excluded.state_json
-            WHERE target.revision = 0
-            RETURNING COALESCE(runnable_at_utc <= clock_timestamp(), false)
-            """,
         Statement.ReadParts => """
             SELECT instance_id AS InstanceId, part_key AS PartKey, json AS Json FROM ixiflow_workflow_parts
             WHERE instance_id = ANY(@Ids);
@@ -693,7 +676,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             state_json text NOT NULL,
             cancellation_json text NULL,
             cancellation_acknowledged boolean NOT NULL DEFAULT false,
-            revision bigint NOT NULL DEFAULT 0,
+            revision bigint NOT NULL,
             inbox_sequence bigint NOT NULL DEFAULT 0,
             inbox_read_through bigint NOT NULL DEFAULT 0,
             incarnation uuid NOT NULL DEFAULT gen_random_uuid(),

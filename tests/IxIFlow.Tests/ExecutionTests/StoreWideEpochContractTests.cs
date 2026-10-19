@@ -345,16 +345,16 @@ public sealed class StoreWideEpochContractTests
             var original = Instance(id, "old");
             original.Status = WorkflowStatus.Suspended;
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(original, 0, 0))).Status);
+                CheckpointCommit.Create(original, (await StoreTestSupport.LeaseAsync(store, original.InstanceId)).Epoch, 0))).Status);
             original = (await store.GetWorkflowInstanceAsync(id))!.CopyForResume();
             original.Status = WorkflowStatus.Completed;
-            var late = CheckpointCommit.Create(original, 0, original.Revision);
+            var late = CheckpointCommit.Create(original, (await StoreTestSupport.LeaseAsync(store, original.InstanceId)).Epoch, original.Revision);
             await store.DeleteWorkflowInstanceAsync(id, Tombstones);
             await expire(id);
             var replacement = Instance(id, "replacement");
             replacement.Status = WorkflowStatus.Suspended;
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(replacement, 0, 0))).Status);
+                CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(store, replacement.InstanceId)).Epoch, 0))).Status);
             replacement = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.Equal(late.ExpectedRevision, replacement.Revision);
             Assert.NotEqual(late.Incarnation, replacement.Incarnation);
@@ -367,7 +367,7 @@ public sealed class StoreWideEpochContractTests
             Assert.Equal(WorkflowStatus.Suspended, unchanged.Status);
             Assert.Equal(replacement.WorkflowDataJson, unchanged.WorkflowDataJson);
             Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 2),
-                await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(unchanged, 0, unchanged.Revision)));
+                await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(unchanged, (await StoreTestSupport.LeaseAsync(store, unchanged.InstanceId)).Epoch, unchanged.Revision)));
         }
         finally { await store.DeleteWorkflowInstanceAsync(id); }
     }
@@ -416,7 +416,7 @@ public sealed class StoreWideEpochContractTests
     }
 
     private static WorkflowInstance Instance(string id, string owner = "first") => new()
-    {
+    { ExecutionStateJson = StoreTestSupport.CheckpointJson,
         InstanceId = id, WorkflowName = "StoreWideEpoch", Status = WorkflowStatus.Running,
         WorkflowDataJson = "{\"owner\":\"" + owner + "\"}"
     };

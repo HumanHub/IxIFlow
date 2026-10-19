@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using IxIFlow.Core;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -189,9 +190,9 @@ internal static class OutboxStoreContract
 
     internal static async Task<WorkflowInstance> CompleteAsync(IWorkflowStateRepository store)
     {
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"),
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = "OutboxContract", WorkflowVersion = 1, Status = WorkflowStatus.Completed };
-        var commit = CheckpointCommit.Create(instance, 0, 0, Guid.NewGuid().ToString("N"));
+        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N"));
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
         return instance;
@@ -277,17 +278,24 @@ internal static class OutboxStoreContract
     internal static async Task PendingDeliveriesSurviveDeletionAndRecreation(IWorkflowStateRepository repository,
         IWorkflowOutbox store, Func<string, Task> expireTombstone)
     {
-        var original = await CompleteAsync(repository);
+        var original = new WorkflowInstance
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"),
+            WorkflowName = "Outbox", Status = WorkflowStatus.Completed
+        };
+        var grant = await StoreTestSupport.LeaseAsync(repository, original.InstanceId);
+        Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
+            CheckpointCommit.Create(original, grant.Epoch, 0))).Status);
         await repository.DeleteWorkflowInstanceAsync(original.InstanceId);
-        var replacement = new WorkflowInstance { InstanceId = original.InstanceId,
+        var replacement = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = original.InstanceId,
             WorkflowName = "Replacement", Status = WorkflowStatus.Completed };
         Assert.NotNull(await repository.GetTombstoneAsync(original.InstanceId));
-        Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(replacement, 0, 0)))).Kind);
+        Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(async () =>
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(replacement, grant.Epoch, 0)))).Kind);
         await expireTombstone(original.InstanceId);
         Assert.Null(await repository.GetTombstoneAsync(original.InstanceId));
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(replacement, 0, 0, Guid.NewGuid().ToString("N")))).Status);
+            CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(repository, replacement.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")))).Status);
         foreach (var name in new[] { "primary", "secondary" })
         {
             var pending = await store.ClaimDeliveriesAsync(name, "owner", TimeSpan.FromSeconds(30), 10);

@@ -18,7 +18,7 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
     {
         var repository = new InMemoryWorkflowStateRepository();
         var instance = CreateInstance();
-        var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
+        var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first"));
         Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1), result);
         Assert.Equal(0, instance.Revision);
         instance.WorkflowDataJson = "changed";
@@ -49,11 +49,11 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         var first = CreateInstance();
         try
         {
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, 0, 0, "first"));
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, (await StoreTestSupport.LeaseAsync(repository, first.InstanceId)).Epoch, 0, "first"));
             var second = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
             second.WorkflowDataJson = "next";
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(second, 0, 1, "second"));
-            var repeated = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, 0, 0, "first"));
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(second, (await StoreTestSupport.LeaseAsync(repository, second.InstanceId)).Epoch, 1, "second"));
+            var repeated = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, (await StoreTestSupport.LeaseAsync(repository, first.InstanceId)).Epoch, 0, "first"));
             Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 1), repeated);
             Assert.Equal("next", (await repository.GetWorkflowInstanceAsync(first.InstanceId))!.WorkflowDataJson);
         }
@@ -68,16 +68,13 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         var instance = CreateInstance();
         try
         {
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first"));
             instance.WorkflowDataJson = "different";
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first")));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first")));
         }
         finally { await repository.DeleteWorkflowInstanceAsync(instance.InstanceId); }
     }
-
-    [Fact]
-    public Task LegacySaveCannotOverwriteRevisionedState() => VerifyLegacySave(new InMemoryWorkflowStateRepository());
 
     [Theory]
     [InlineData(false)]
@@ -95,7 +92,7 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         var checkpoint = new ExecutionCheckpoint { DefinitionFingerprint = "receipt-parts",
             Continuations = [root, branch], Joins = [join] };
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-        var original = CheckpointCommit.Create(instance, 0, 0, "first");
+        var original = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first");
         try
         {
             await repository.CommitWorkflowInstanceAsync(original);
@@ -104,7 +101,7 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
                 branch.Status = ContinuationStatus.Completed;
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
             }
-            var changed = CheckpointCommit.Create(instance, 0, 0, "first", clearsCrashCount: !metadata);
+            var changed = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first", clearsCrashCount: !metadata);
             Assert.Equal(original.Payload, changed.Payload);
             if (metadata)
                 Assert.Equal(original.Parts, changed.Parts);
@@ -116,25 +113,13 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         finally { await repository.DeleteWorkflowInstanceAsync(instance.InstanceId); }
     }
 
-    private static async Task VerifyLegacySave(IWorkflowStateRepository repository)
-    {
-        var instance = CreateInstance();
-        try
-        {
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
-            await Assert.ThrowsAsync<InvalidOperationException>(() => repository.SaveWorkflowInstanceAsync(instance));
-            Assert.Equal(1, (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.Revision);
-        }
-        finally { await repository.DeleteWorkflowInstanceAsync(instance.InstanceId); }
-    }
-
     [Fact]
     public async Task ConcurrentWritersHaveOneWinner()
     {
         var repository = new InMemoryWorkflowStateRepository();
         var instance = CreateInstance();
-        var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(index => Task.Run(() =>
-            repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, index.ToString())))));
+        var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(index => Task.Run(async () =>
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, index.ToString())))));
         Assert.Single(results, result => result.Status == WorkflowCommitStatus.Applied);
         Assert.Equal(7, results.Count(result => result.Status == WorkflowCommitStatus.Conflict));
     }
@@ -171,11 +156,6 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
     public Task SqlCommitIdCannotNameDifferentPayload() =>
         VerifyDifferentPayload(new SqlWorkflowStateRepository(SqlTestDatabase<WorkflowCommitTests>.ConnectionString));
 
-    [SqlServerFact]
-    [Trait("Category", "SqlIntegration")]
-    public Task SqlLegacySaveCannotOverwriteRevisionedState() =>
-        VerifyLegacySave(new SqlWorkflowStateRepository(SqlTestDatabase<WorkflowCommitTests>.ConnectionString));
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -192,11 +172,6 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
     [Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSqlCommitIdCannotNameDifferentPayload() =>
         VerifyDifferentPayload(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<WorkflowCommitTests>.ConnectionString));
-
-    [PostgreSqlFact]
-    [Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlLegacySaveCannotOverwriteRevisionedState() =>
-        VerifyLegacySave(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<WorkflowCommitTests>.ConnectionString));
 
     [Theory]
     [InlineData(false)]
@@ -221,14 +196,6 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         await VerifyDifferentPayload(repository);
     }
 
-    [Fact]
-    [Trait("Category", "SqliteIntegration")]
-    public async Task SqliteLegacySaveCannotOverwriteRevisionedState()
-    {
-        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<WorkflowCommitTests>.ConnectionString);
-        await VerifyLegacySave(repository);
-    }
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -243,7 +210,7 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         Func<DbConnection>? connect = null, CommitFailureClock? clock = null)
     {
         var instance = CreateInstance();
-        var commit = CheckpointCommit.Create(instance, 0, 0, "first");
+        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first");
         try
         {
             if (connect == null)
@@ -326,11 +293,11 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         {
             async Task LoseAcknowledgment()
             {
-                await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
+                await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first"));
                 throw new IOException("The commit succeeded but its acknowledgment was lost");
             }
             await Assert.ThrowsAsync<IOException>(LoseAcknowledgment);
-            var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "first"));
+            var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first"));
             Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 1), result);
             Assert.Equal(1, (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.Revision);
         }
@@ -345,9 +312,9 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         var instance = CreateInstance();
         try
         {
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "winner"));
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "winner"));
             instance.WorkflowDataJson = "stale";
-            var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0, "loser"));
+            var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "loser"));
             Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1), result);
             Assert.Equal("{}", (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.WorkflowDataJson);
         }
@@ -358,7 +325,7 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
     }
 
     private static WorkflowInstance CreateInstance() => new()
-    {
+    { ExecutionStateJson = StoreTestSupport.CheckpointJson,
         InstanceId = Guid.NewGuid().ToString("N"),
         WorkflowName = "commit-tests",
         WorkflowDataJson = "{}",

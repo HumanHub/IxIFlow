@@ -633,8 +633,9 @@ public sealed class ActivityRecoveryTests
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var committed = await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(saved, 0, saved.Revision, Guid.NewGuid().ToString("N")));
+            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
+        await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
 
         var recovered = await engine.RecoverAsync(started.InstanceId);
 
@@ -949,8 +950,14 @@ public sealed class ActivityRecoveryTests
             return result;
         }
 
-        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
-            _inner.SaveWorkflowInstanceAsync(instance);
+        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
+            _inner.GetWorkflowInstanceSummaryAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
+            _inner.GetChildInstancesAsync(parentInstanceId);
+        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+            IReadOnlyCollection<string> instanceIds) =>
+            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
