@@ -1,5 +1,7 @@
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using IxIFlow.Tests.Infrastructure;
+using System.Text.Json;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -43,7 +45,8 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
     {
         var inbox = (IWorkflowInbox)store;
         var instance = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
-        var stopped = await IdleInstanceAsync(store, WorkflowStatus.NeedsResolution);
+        var stopped = await IdleInstanceAsync(store, WorkflowStatus.NeedsResolution, operatorStop: true);
+        var unresolved = await IdleInstanceAsync(store, WorkflowStatus.NeedsResolution);
         try
         {
             var first = await inbox.AppendEventAsync(Event(instance, "e1", "{\"n\":1}"));
@@ -75,11 +78,42 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             Assert.Equal(EventAppendStatus.Stored, held.Status);
             Assert.False(held.MadeRunnable);
             Assert.DoesNotContain(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == stopped);
+            Assert.Equal(EventOutcome.Pending, (await inbox.GetEventAsync(stopped, "s1"))!.Outcome);
+
+            // An unresolved activity in one branch does not hold another branch's open wait.
+            var resolution = (await store.GetWorkflowInstanceAsync(unresolved))!;
+            var checkpoint = ExecutionCheckpoint.Read(resolution.ExecutionStateJson);
+            var pending = checkpoint.Continuations[0].PendingActivity!.Id;
+            Assert.Null(checkpoint.OperatorStop);
+            var arrival = await inbox.AppendEventAsync(Event(unresolved, "r1", "{}"));
+            Assert.Equal(EventAppendStatus.Stored, arrival.Status);
+            Assert.True(arrival.MadeRunnable);
+            Assert.Contains(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)),
+                item => item.InstanceId == unresolved);
+            var page = await inbox.GetPendingEventsAsync(unresolved, 0, 10);
+            Assert.Equal("r1", Assert.Single(page.Events).EventId);
+            checkpoint.Continuations[1].Status = ContinuationStatus.Completed;
+            checkpoint.Waits.Clear();
+            resolution.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+            var consumed = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(resolution,
+                (await StoreTestSupport.LeaseAsync(store, unresolved)).Epoch, resolution.Revision,
+                settlements: [new EventSettlement("r1", EventOutcome.Consumed, ApprovalWait(unresolved))],
+                closedWaits: [new ClosedWait(ApprovalWait(unresolved), WaitCloseReason.Answered)],
+                inboxReadThrough: page.ReadThrough));
+            Assert.Equal(WorkflowCommitStatus.Applied, consumed.Status);
+            Assert.Equal(EventOutcome.Consumed, (await inbox.GetEventAsync(unresolved, "r1"))!.Outcome);
+            Assert.Empty((await inbox.GetPendingEventsAsync(unresolved, 0, 10)).Events);
+            var stillUnresolved = (await store.GetWorkflowInstanceAsync(unresolved))!;
+            Assert.Equal(WorkflowStatus.NeedsResolution, stillUnresolved.Status);
+            var retained = ExecutionCheckpoint.Read(stillUnresolved.ExecutionStateJson).Continuations[0];
+            Assert.Equal(ContinuationStatus.WaitingResolution, retained.Status);
+            Assert.Equal(pending, retained.PendingActivity!.Id);
         }
         finally
         {
             await store.DeleteWorkflowInstanceAsync(instance);
             await store.DeleteWorkflowInstanceAsync(stopped);
+            await store.DeleteWorkflowInstanceAsync(unresolved);
         }
         Assert.Null(await inbox.GetEventAsync(instance, "e1"));
         Assert.Null(await inbox.GetWaitAsync(instance, ApprovalWait(instance)));
@@ -821,13 +855,32 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
         new(ApprovalWait(instanceId), WaitKind.Event, "approval", "Approval", null);
 
     // An idle instance with an open "approval" wait.
-    private static async Task<string> IdleInstanceAsync(IWorkflowStateRepository store, WorkflowStatus status)
+    private static async Task<string> IdleInstanceAsync(IWorkflowStateRepository store, WorkflowStatus status,
+        bool operatorStop = false)
     {
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Inbox", Status = status,
             WorkflowDataJson = "{}"
         };
+        if (status == WorkflowStatus.NeedsResolution)
+        {
+            var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+            if (operatorStop)
+                checkpoint.OperatorStop = new OperatorStopState
+                    { Kind = OperatorStopKind.ResourceLimit, Reason = "test limit", StoppedAtUtc = DateTime.UtcNow };
+            else
+            {
+                checkpoint.Continuations[0].Status = ContinuationStatus.WaitingResolution;
+                checkpoint.Continuations[0].PendingActivity = new ActivityInvocationState
+                    { StepId = "unconfirmed", ResolutionReason = "An ordinary activity has no confirmed end" };
+                checkpoint.Continuations.Add(new ContinuationState { Id = "waiting", Status = ContinuationStatus.Waiting,
+                    Stack = [new ScopePosition { ScopeId = "other-branch" }] });
+                checkpoint.Waits.Add(new WaitState { Id = ApprovalWait(instance.InstanceId), ContinuationId = "waiting",
+                    StepId = "approval", Key = "approval", EventType = "Approval" });
+            }
+            instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+        }
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0, openedWaits: [OpenApproval(instance.InstanceId)]))).Status);
         return instance.InstanceId;

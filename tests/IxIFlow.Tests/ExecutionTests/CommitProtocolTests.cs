@@ -115,10 +115,9 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
             instance.Status = WorkflowStatus.Completed;
             Assert.Equal(WorkflowCommitStatus.Applied,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, second!.Epoch, 1))).Status);
-            // A terminal commit releases the lease but not the epoch.
+            // A terminal commit releases the lease; terminal work cannot be claimed again.
             var third = await repository.TryAcquireExecutionLeaseAsync(instanceId, "third", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
-            Assert.True(third?.Epoch > second!.Epoch);
-            Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "third"));
+            Assert.Null(third);
 
             // Deletion removes the lease and reserves the ID against a former owner.
             await repository.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention: TimeSpan.FromSeconds(1));
@@ -126,7 +125,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
             instance.Status = WorkflowStatus.Running;
             instance.Revision = 0;
             Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-                repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, third!.Epoch, 0)))).Kind);
+                repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, second!.Epoch, 0)))).Kind);
 
             var elapsed = System.Diagnostics.Stopwatch.StartNew();
             ExecutionLeaseGrant? fourth = null;
@@ -137,7 +136,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
                     await Task.Delay(50);
             }
             Assert.NotNull(fourth);
-            Assert.True(fourth.Epoch > third!.Epoch);
+            Assert.True(fourth.Epoch > second!.Epoch);
         }
         finally
         {
