@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace IxIFlow.Core;
 
-public partial class InMemoryWorkflowStateRepository : IWorkflowPublicationStore
+public partial class InMemoryWorkflowStateRepository
 {
     private readonly Dictionary<(string, int), WorkflowDraft> _definitions = new();
     private readonly Dictionary<(string, int), WorkflowVersion> _versions = new();

@@ -33,6 +33,8 @@ public interface IWorkflowCatalogStore
     Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version);
     Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null);
     Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state);
+    /// <summary>Publishes a version atomically against the draft's revision and deletes the draft.</summary>
+    Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version);
     /// <summary>Collects old artifacts while catalog references cannot change. No instance names an artifact yet.</summary>
     Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default);
@@ -49,13 +51,7 @@ public interface IWorkflowCatalog : IWorkflowCatalogStore
     Task RetireWorkflowVersionAsync(string name, int version);
 }
 
-/// <summary>Catalogs that support the atomic draft-to-version publication transaction.</summary>
-public interface IWorkflowPublicationStore : IWorkflowCatalogStore
-{
-    Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version);
-}
-
-public sealed class WorkflowCatalog : IWorkflowCatalog, IWorkflowPublicationStore
+public sealed class WorkflowCatalog : IWorkflowCatalog
 {
     private readonly IWorkflowCatalogStore _store;
     private readonly ConcurrentDictionary<(string, int), WorkflowDefinition> _definitions = new();
@@ -104,8 +100,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IWorkflowPublicationStor
         _store.SaveDefinitionAsync(definition, expectedRevision);
     public Task RegisterWorkflowVersionAsync(WorkflowVersion version) => _store.RegisterWorkflowVersionAsync(version);
     public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version) =>
-        (_store as IWorkflowPublicationStore ?? throw new InvalidOperationException("The catalog store does not support atomic publication"))
-            .PublishDefinitionAsync(draftId, version);
+        _store.PublishDefinitionAsync(draftId, version);
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _store.GetWorkflowVersionAsync(name, version);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _store.GetWorkflowVersionsAsync(name);
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>

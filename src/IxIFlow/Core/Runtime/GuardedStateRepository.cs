@@ -19,6 +19,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetWorkflowVersionsAsync(name), "Accessing workflow catalog or artifacts");
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>
         Guard(() => _store.SetWorkflowVersionStateAsync(name, version, state), "Accessing workflow catalog or artifacts");
+    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version) =>
+        Guard(() => _store.PublishDefinitionAsync(draftId, version), "Accessing workflow catalog or artifacts");
     public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
         Guard(() => _store.PurgeArtifactsAsync(ReferenceEquals(artifacts, this) ? _store : artifacts, retention, batchSize, cancellationToken), "Accessing workflow catalog or artifacts");
     public async ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>

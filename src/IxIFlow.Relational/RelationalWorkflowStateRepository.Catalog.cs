@@ -5,7 +5,7 @@ using IxIFlow.Core;
 
 namespace IxIFlow.Relational;
 
-public abstract partial class RelationalWorkflowStateRepository : IWorkflowPublicationStore
+public abstract partial class RelationalWorkflowStateRepository
 {
     private sealed class DraftRow
     {
