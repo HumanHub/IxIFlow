@@ -122,9 +122,18 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
         var before = await Measure("300,000 instances");
         await Insert(true);
         var after = await Measure("600,000 instances; growth entirely in a schedulable set");
-        Assert.Equal(before.Items.Select(r => r.InstanceId), after.Items.Select(r => r.InstanceId));
+        Assert.Equal(before.Page.Items.Select(r => r.InstanceId), after.Page.Items.Select(r => r.InstanceId));
+        // Print both volumes' plans before enforcing either timing budget.
+        Assert.True(before.Elapsed < TimeSpan.FromMilliseconds(500),
+            $"{provider}: 300,000 instances: {before.Elapsed.TotalMilliseconds:F2} ms exceeds 500 ms");
+        Assert.True(after.Elapsed < TimeSpan.FromMilliseconds(500),
+            $"{provider}: 600,000 instances: {after.Elapsed.TotalMilliseconds:F2} ms exceeds 500 ms");
+        var growthBudget = before.Elapsed * 2 + TimeSpan.FromMilliseconds(20);
+        Assert.True(after.Elapsed <= growthBudget,
+            $"{provider}: schedulable-set growth: {after.Elapsed.TotalMilliseconds:F2} ms exceeds twice " +
+            $"{before.Elapsed.TotalMilliseconds:F2} ms plus 20 ms ({growthBudget.TotalMilliseconds:F2} ms)");
 
-        async Task<UnschedulablePage> Measure(string scenario)
+        async Task<(UnschedulablePage Page, TimeSpan Elapsed)> Measure(string scenario)
         {
             await store.GetUnschedulableAsync(32); // warm the complete production call
             var start = Stopwatch.GetTimestamp();
@@ -137,7 +146,7 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
             var sets = JsonSerializer.Serialize(new[] { new { Id = cuda.Id, Failed = true, Pins = Array.Empty<string>() },
                 new { Id = metal.Id, Failed = false, Pins = new[] { host.ToString("D") } } });
             var parameters = new { Sets = sets, Limit = 33, AfterId = (string?)null,
-                AfterTime = (DateTime?)null, Now = provider == "sqlite" ? (object)DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fffffff") : DateTime.UtcNow };
+                AfterTime = (DateTime?)null, Now = provider == "sqlite" ? (object)result.StoreTimeUtc.ToString("yyyy-MM-dd HH:mm:ss.fffffff") : result.StoreTimeUtc };
             if (provider == "sqlite")
             {
                 var plan = (await connection.QueryAsync("EXPLAIN QUERY PLAN " + sql, parameters)).Select(row => (string)row.detail).ToArray();
@@ -147,7 +156,13 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
                 Assert.DoesNotContain(plan, line => line.StartsWith("SCAN instance"));
             }
             else if (postgres)
-                output.WriteLine(string.Join(Environment.NewLine, await connection.QueryAsync<string>("EXPLAIN (ANALYZE, BUFFERS) " + sql, parameters)));
+            {
+                output.WriteLine($"{scenario}, complete production unschedulable scan");
+                var plan = string.Join(Environment.NewLine, await connection.QueryAsync<string>(
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) " + sql, parameters, commandTimeout: 60));
+                output.WriteLine(plan);
+                Assert.Contains("Execution Time", plan);
+            }
             else
             {
                 using var plans = await connection.QueryMultipleAsync("SET STATISTICS XML ON; " + sql + " SET STATISTICS XML OFF;", parameters);
@@ -156,8 +171,7 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
                         foreach (var value in row.Values)
                             if (value is string plan && plan.Contains("<ShowPlanXML")) output.WriteLine(plan);
             }
-            Assert.True(elapsed < TimeSpan.FromMilliseconds(500), $"{provider}: {scenario}: {elapsed.TotalMilliseconds:F2} ms exceeds 500 ms");
-            return result;
+            return (result, elapsed);
         }
     }
 }
