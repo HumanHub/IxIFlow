@@ -140,35 +140,35 @@ public sealed class FileSystemArtifactStore : IArtifactStore
         int batchSize, CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+        cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
             // An active writer holds FileShare.None, including during a long stalled upload.
-            foreach (var path in Directory.EnumerateFiles(_root, "*.tmp")
-                .Where(path => !_gate.Uploads.Contains(path) && File.GetLastWriteTimeUtc(path) < DateTime.UtcNow - StagingRetention)
-                .OrderBy(path => path, StringComparer.Ordinal).Take(batchSize))
+            var stagingCandidates = 0;
+            var stagingCutoff = DateTime.UtcNow - StagingRetention;
+            foreach (var path in Directory.EnumerateFiles(_root, "*.tmp"))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (_gate.Uploads.Contains(path) || File.GetLastWriteTimeUtc(path) >= stagingCutoff) continue;
                 try
                 {
                     using var abandoned = new FileStream(path, FileMode.Open, FileAccess.ReadWrite,
                         FileShare.None, 1, FileOptions.DeleteOnClose);
                 }
                 catch (IOException) { } // Still being written, or already reclaimed.
+                if (++stagingCandidates == batchSize) break;
             }
-            var candidates = Directory.EnumerateFiles(_root, "*.artifact")
-                .Select(path => (Path: path, Name: Path.GetFileNameWithoutExtension(path)))
-                .Where(file => file.Name.Length == 64 && !file.Name.AsSpan().ContainsAnyExcept("0123456789abcdef"))
-                .Select(file => (file.Path, Digest: new ArtifactDigest("sha256:" + file.Name), Created: File.GetLastWriteTimeUtc(file.Path)))
-                .Where(file => file.Created < olderThanUtc && !references.Contains(file.Digest))
-                .OrderBy(file => file.Created).ThenBy(file => file.Digest.Value, StringComparer.Ordinal)
-                .Take(batchSize).ToArray();
             var removed = 0;
-            foreach (var file in candidates)
+            foreach (var path in Directory.EnumerateFiles(_root, "*.artifact"))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (File.GetLastWriteTimeUtc(file.Path) >= olderThanUtc) continue;
-                File.Delete(file.Path);
-                removed++;
+                var name = Path.GetFileNameWithoutExtension(path);
+                if (name.Length != 64 || name.AsSpan().ContainsAnyExcept("0123456789abcdef")) continue;
+                var digest = new ArtifactDigest("sha256:" + name);
+                if (File.GetLastWriteTimeUtc(path) >= olderThanUtc || references.Contains(digest)) continue;
+                cancellationToken.ThrowIfCancellationRequested();
+                File.Delete(path);
+                if (++removed == batchSize) break;
             }
             return ValueTask.FromResult(removed);
         }

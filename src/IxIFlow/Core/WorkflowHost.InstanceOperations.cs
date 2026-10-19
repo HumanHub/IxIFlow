@@ -343,7 +343,8 @@ public sealed partial class WorkflowHost
             WorkflowDefinition definition,
             TData workflowData,
             WorkflowOptions options,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool versionOmitted = false)
             where TData : class
         {
             if (options.InstanceId != null && string.IsNullOrWhiteSpace(options.InstanceId))
@@ -362,7 +363,7 @@ public sealed partial class WorkflowHost
                 // never count as crashes of an instance another host lost (B-08).
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } started)
-                    return ExistingStart(started, definition, scopes);
+                    return await ExistingStartAsync(started, definition, scopes, versionOmitted);
                 await using var owner = await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, _time)
                         ?? (options.InstanceId == null
                             ? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
@@ -373,7 +374,7 @@ public sealed partial class WorkflowHost
                 // Another start may have saved the instance since the first read.
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } existing)
-                    return ExistingStart(existing, definition, scopes);
+                    return await ExistingStartAsync(existing, definition, scopes, versionOmitted);
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
                 await registry.RegisterWorkflowAsync(definition);
                 WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(definition.Name, definition.Version),
@@ -676,16 +677,24 @@ public sealed partial class WorkflowHost
         private static WorkflowExecutionResult ReadResult(WorkflowInstance instance) =>
             ExecutionCheckpoint.StopOf(instance) is { } stop ? Stopped(instance, stop) : ExistingResult(instance);
 
-        private static WorkflowExecutionResult ExistingStart(WorkflowInstance existing, WorkflowDefinition definition,
-            WorkflowScopeCatalog scopes)
+        private async Task<WorkflowExecutionResult> ExistingStartAsync(WorkflowInstance existing, WorkflowDefinition definition,
+            WorkflowScopeCatalog scopes, bool versionOmitted)
         {
             var checkpoint = ExecutionCheckpoint.ReadTrunk(existing.ExecutionStateJson);
-            if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version)
+            if (existing.WorkflowName != definition.Name || (!versionOmitted && existing.WorkflowVersion != definition.Version))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"Workflow instance '{existing.InstanceId}' belongs to a different definition");
+            if (versionOmitted && existing.WorkflowVersion != definition.Version)
+            {
+                definition = await registry.GetWorkflowDefinitionAsync(existing.WorkflowName, existing.WorkflowVersion)
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                        $"Workflow definition not found: {existing.WorkflowName} v{existing.WorkflowVersion}");
+                scopes = WorkflowDefinitionValidator.ForExecution(definition);
+            }
             if (checkpoint.StructureHash != scopes.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     scopes.Mismatch(definition, checkpoint.StructureHash));
+            _control.Accept(existing.InstanceId);
             // A stopped instance is answered without reading its data, which may be what stopped it.
             return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : ExistingResult(existing);
         }
