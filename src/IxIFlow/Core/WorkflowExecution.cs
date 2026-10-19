@@ -572,7 +572,9 @@ public enum TraceEntryType
     CompensationFailed,
     TraceBudgetReached,
     Paused,
-    Continued
+    Continued,
+    BreakpointHit,
+    BreakpointsChanged
 }
 
 /// <summary>

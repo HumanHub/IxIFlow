@@ -258,6 +258,17 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
         return await RecoverAsync(instanceId, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
+        string actor, CancellationToken cancellationToken = default)
+    {
+        var resolved = await host.ReadAsync(client => client.SetBreakpointsAsync(instanceId, breakpoints, actor, cancellationToken));
+        host.WakeNow(instanceId);
+        return resolved;
+    }
+
+    public Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string instanceId, CancellationToken cancellationToken = default) =>
+        host.ReadAsync(client => client.GetBreakpointsAsync(instanceId, cancellationToken));
+
     public Task<WorkflowExecutionResult> ResolveAsync(string instanceId, string invocationId,
         ActivityResolution resolution, CancellationToken cancellationToken = default)
     {

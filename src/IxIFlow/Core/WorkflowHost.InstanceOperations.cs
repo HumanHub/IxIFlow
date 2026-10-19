@@ -14,7 +14,7 @@ public sealed partial class WorkflowHost
     /// commits checkpoints, and prepares the children a run starts. The <see cref="WorkflowExecutor"/>
     /// runs the instance between commits.
     /// </summary>
-    internal sealed class InstanceOperations(
+    internal sealed partial class InstanceOperations(
         IServiceProvider services,
         IActivityExecutor activityExecutor,
         IWorkflowStateRepository repository,
@@ -131,7 +131,8 @@ public sealed partial class WorkflowHost
             if (instance == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow instance does not exist");
             var state = (await _store.GetDebugStatesAsync([instanceId]))[instanceId];
             var generation = state.PauseGeneration + (kind == DebugCommandKind.Continue && instance.Status != WorkflowStatus.Paused &&
-                state.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause) ? 1 : 0);
+                (state.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause) ||
+                 WorkflowDebugRules.Checkpoint(instance).Stop != null) ? 1 : 0);
             var requested = await _store.RequestDebugCommandAsync(instanceId,
                 new(Guid.NewGuid().ToString("N"), kind, generation, actor));
             if (requested.Status is not (DebugCommandStatus.Accepted or DebugCommandStatus.AlreadyAccepted))
@@ -156,7 +157,7 @@ public sealed partial class WorkflowHost
             if (scopes.StructureHash != checkpoint.StructureHash) return Rejected(instanceId, "Workflow structure differs");
             checkpoint.Signals = signals;
             checkpoint.Trace.Configure(current, checkpoint, _limits, _time, scopes);
-            checkpoint.Debug = new(checkpoint.Debug.PauseGeneration + 1, first.Order);
+            checkpoint.Debug = checkpoint.Debug with { PauseGeneration = checkpoint.Debug.PauseGeneration + 1, AppliedOrder = first.Order };
             current.Status = WorkflowStatus.Paused;
             checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.Paused,
                 Payload = new DebugCommandTrace(actor, first.Id, checkpoint.Debug.PauseGeneration) });
@@ -591,11 +592,10 @@ public sealed partial class WorkflowHost
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
             var debugState = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);
             var pendingDebug = debugState?.Commands.Any(c => c.AcknowledgedRevision == null) == true;
-            var pendingContinue = (hostSettings ?? HostSettings.Default).Debugging &&
-                debugState?.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Continue) == true;
-            if (instance?.Status == WorkflowStatus.Paused && cancellationReason == null && !pendingContinue)
+            var canApplyPausedDebug = (hostSettings ?? HostSettings.Default).Debugging && pendingDebug;
+            if (instance?.Status == WorkflowStatus.Paused && cancellationReason == null && !canApplyPausedDebug)
                 return ExistingResult(instance);
-            var canRecover = instance?.Status == WorkflowStatus.Paused && (cancellationReason != null || pendingContinue) ||
+            var canRecover = instance?.Status == WorkflowStatus.Paused && (cancellationReason != null || canApplyPausedDebug) ||
                 instance?.Status == WorkflowStatus.Ready && pendingDebug || instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
                 instance?.Status == WorkflowStatus.Suspended &&
                 (cancellationReason != null || pendingDebug || await HasInboxWorkAsync(instanceId));
@@ -752,7 +752,7 @@ public sealed partial class WorkflowHost
                 assigned.Incarnation = instance.Incarnation;
                 assigned.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
                 var assign = new Assign(signals.AssignmentId, assigned, instance.PartsAt(instance.Revision),
-                    checkpoint.StructureHash, owner.Epoch, signals.InboxSequence, _limits, depth == 1, [], preparation)
+                    checkpoint.StructureHash, owner.Epoch, signals.InboxSequence, _limits, depth == 1, checkpoint.Debug.Breakpoints, preparation)
                 {
                     DebugState = (await _store.GetDebugStatesAsync([instance.InstanceId])).GetValueOrDefault(instance.InstanceId),
                     DebuggingEnabled = (hostSettings ?? HostSettings.Default).Debugging
