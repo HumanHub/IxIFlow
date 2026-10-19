@@ -12,7 +12,7 @@ public static class Hosting
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        var flow = services.AddIxIFlow(options => options.Slots = 8);
+        var flow = services.AddIxIFlow(options => { options.ReplyTokenKeys = SampleReplyKeys.Ring; options.Slots = 8; });
         switch (store)
         {
             case "memory": break;
@@ -28,7 +28,7 @@ public static class Hosting
     public static IHost CreateHost()
     {
         var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddIxIFlow(options => options.Slots = 8);
+        builder.Services.AddIxIFlow(options => { options.ReplyTokenKeys = SampleReplyKeys.Ring; options.Slots = 8; });
         return builder.Build();
     }
 

@@ -22,7 +22,7 @@ Each single-instance route first authorizes its policy against the HTTP context 
 
 Search authorization runs before the store query. Register an `IInstanceQueryScope` with both overloads: one narrows `InstanceQuery` and one narrows `WaitQuery` for the principal. Preserve the caller's filters and paging while intersecting them with the application's permitted scope. Never broaden a supplied filter. The wait overload can constrain `InstanceIds`; an empty collection permits no instances. Even an unrestricted administrative application must register an explicit implementation. Results are never post-filtered, so authorized pages and continuation cursors remain intact. Global outbox access is governed by the outbox policy.
 
-**Inspection also requires reply authorization.** Both trace and snapshot routes enforce the inspect policy and the reply policy, including both checks against the instance summary. This remains necessary until signed reply tokens are implemented. Applications must treat trace and snapshot readers as capable of replying. This package does not sign reply tokens.
+Trace and snapshot routes require the inspect policy, including authorization against the instance summary. Inspect grants no reply permission. The engine signs all [reply tokens](reply-tokens.md); configure the shared key ring before starting the host.
 
 All paths below are relative to the mapped prefix.
 
@@ -34,8 +34,8 @@ All paths below are relative to the mapped prefix.
 | `GET /instances/{id}/waits?tokens=true` | reply | `WorkflowWaitPage`: `items`, `nextAfter`; items include reply tokens |
 | `GET /waits` | reply | Scoped `WorkflowWaitPage` |
 | `GET /instances/{id}/pending-activities` | read | Array of `PendingActivityInfo` |
-| `GET /instances/{id}/trace` | inspect and reply | `WorkflowTracePage`: `items`, `nextAfter` |
-| `GET /instances/{id}/snapshot` | inspect and reply | `WorkflowSnapshotResponse` |
+| `GET /instances/{id}/trace` | inspect | `WorkflowTracePage`: `items`, `nextAfter` |
+| `GET /instances/{id}/snapshot` | inspect | `WorkflowSnapshotResponse` |
 | `POST /instances/{id}/resolutions` | write | Public operation status, or accepted status location |
 | `POST /instances/{id}/release` | write | Public operation status, or accepted status location |
 | `POST /instances/{id}/cancel` | write | Public operation status, or accepted status location |
@@ -48,7 +48,7 @@ All paths below are relative to the mapped prefix.
 
 Instance searches combine `status` (comma-separated names), `stop`, `workflow`, `version`, `correlationId`, `parentInstanceId`, `createdFrom`, `createdTo`, `endedFrom`, `endedTo`, `after` and `limit`. Times are UTC; From is inclusive and To is exclusive. Creation order is descending, with instance ID ascending for ties. Reuse an opaque cursor with the same filters and principal scope. Page sizes are 1–1,000, default 100.
 
-Token wait listings accept `after` and `limit`; global listings additionally accept `key` and `eventType`. `nextAfter` is the last returned wait ID when another row exists. Only plain event waits are discoverable. The read-policy wait listing returns all eligible waits for that instance without truncation or capabilities. Trace uses a numeric sequence `after`, default zero, and `limit`; continue with `nextAfter` until it is null. An exact final trace page can require one empty follow-up request.
+Token wait listings accept `after` and `limit`; global listings additionally accept `key` and `eventType`. `nextAfter` is an opaque authenticated and encrypted cursor when another row exists; pass it unchanged. Rows contain `waitRef` and a signed token, with no raw wait ID. Only plain event waits are discoverable. The read-policy wait listing returns all eligible waits for that instance without truncation or capabilities. Trace uses a numeric sequence `after`, default zero, and `limit`; continue with `nextAfter` until it is null. An exact final trace page can require one empty follow-up request.
 
 Delivery searches combine `publisher`, `status`, `instanceId`, `neverAttempted`, `after` and `limit`. Delivery order is event ID then publisher name. Publisher and delivery listings contain no lease credentials. Delivery event metadata excludes the event body. Retention can remove given-up deliveries; retry is available only while they remain retained. Retry requires a given-up delivery and an enabled, registered publisher. Enable retries only deliveries given up because the publisher was disabled. Unregister is durable across host restarts and enable cannot reverse it.
 

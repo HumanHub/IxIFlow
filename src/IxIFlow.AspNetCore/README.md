@@ -2,7 +2,7 @@
 
 Authorized workflow triggers, atomic idempotent starts, CloudEvents ingress and workflow operations for ASP.NET Core on .NET 10.
 
-`app.MapWorkflowOperations("/ixiflow/ops", options => ...)` exposes instance search, waits, inspection, operator decisions and outbox administration. Every route requires an explicit read, reply, inspect, write or outbox policy, and search requires an application `IInstanceQueryScope`. **Inspect also requires the reply policy until reply tokens are signed.** See the [HTTP operations guide](../../docs/operations-http.md) for endpoint contracts, resource authorization, actor delegation and bounded mutation waits.
+`app.MapWorkflowOperations("/ixiflow/ops", options => ...)` exposes instance search, waits, inspection, operator decisions and outbox administration. Every route requires an explicit read, reply, inspect, write or outbox policy, and search requires an application `IInstanceQueryScope`. Inspect and reply permissions are independent. Configure the engine's [shared signing key ring](../../docs/reply-tokens.md) before starting the host. See the [HTTP operations guide](../../docs/operations-http.md) for endpoint contracts, resource authorization, actor delegation and bounded mutation waits.
 
 <!-- snippet: samples/IxIFlow.Samples/IncomingWebhookExamples.cs#incoming-map -->
 ```csharp

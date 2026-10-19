@@ -13,7 +13,7 @@ YAML covers every fluent construct with strict reading and a packaged schema. Ac
 
 Completion outbox publishers and outgoing signed webhooks are implemented, as are retained results, instance cleanup and tombstones. Committed control-flow, event and operator traces live outside checkpoints; snapshots, scoped logging and OpenTelemetry signals are available. Versioned Liquid templates and application-supplied message senders also work.
 
-Instance search, safe operator wait listings, trace paging, hard termination and outbox administration are available through [IWorkflowOperations](operations.md) and the authorized [HTTP operations mapping](operations-http.md). Signed reply tokens remain planned; HTTP inspection currently requires reply authorization too.
+Instance search, safe operator wait listings, trace paging, hard termination and outbox administration are available through [IWorkflowOperations](operations.md) and the authorized [HTTP operations mapping](operations-http.md). [Signed reply tokens](reply-tokens.md) support rotating shared keys; HTTP inspection requires the inspect policy independently of reply authorization.
 
 ## Remaining 1.0 work
 
@@ -26,7 +26,7 @@ Instance search, safe operator wait listings, trace paging, hard termination and
 | Catalog and authoring services | Broader catalog API, code-defined workflows in the catalog, published code activities, inline workflow calls, explicit workflow input/output contracts, YAML-defined code activities and local registration beyond installed-assembly metadata |
 | Runtime validation | Native AOT publish/run verification; broader conformance and fault injection as coordinator/process paths land |
 | Editor and debugger | Visual editor, breakpoints, all-stop pause, stepping through loops, paused timer rules, audited data edits, Debug Adapter Protocol and inspection/replay tooling |
-| Management and operations | Signed reply tokens, unused bundle retention, large-payload storage, residency policies and redaction |
+| Management and operations | unused bundle retention, large-payload storage, residency policies and redaction |
 
 The outgoing `IxIFlow.Webhooks` publisher does not provide incoming trigger endpoints. Instance retention is complete; bundle retention depends on the publishing work. The current in-memory version registry supports registration, exact name/version lookup and deactivation for installed definitions; the durable publishing lifecycle remains planned.
 

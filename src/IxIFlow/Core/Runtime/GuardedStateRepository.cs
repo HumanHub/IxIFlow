@@ -85,7 +85,7 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
 
     public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
         Guard(() => _store.GetWaitAsync(instanceId, waitId),
-            $"Reading wait '{waitId}' of workflow instance '{instanceId}'");
+            $"Reading wait reference '{WaitReference.Of(instanceId, waitId)}' of workflow instance '{instanceId}'");
 
     public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
         Guard(() => _store.GetOpenWaitsAsync(query), "Listing open workflow waits");

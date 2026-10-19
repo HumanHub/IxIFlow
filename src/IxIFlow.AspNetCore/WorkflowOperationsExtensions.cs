@@ -48,13 +48,13 @@ public static class WorkflowOperationsExtensions
             if (!new Query(http).Bool("tokens"))
                 return Results.Ok(await Operations(http).GetWaitsAsync([summary.InstanceId], http.RequestAborted));
             var q = new Query(http);
-            return await WaitsAsync(http, new WaitQuery(InstanceId: summary.InstanceId, AfterWaitId: q.Text("after"), Limit: q.Limit()));
+            return await WaitsAsync(http, new WaitQuery(InstanceId: summary.InstanceId, AfterWaitId: WaitBoundary(http, q.Text("after")), Limit: q.Limit()));
         }, tokenWaits: true);
         Map("GET", "/waits", options.ReplyPolicy!, async http =>
         {
             var q = new Query(http);
             var query = new WaitQuery(Key: q.Text("key"), EventType: q.Text("eventType"),
-                AfterWaitId: q.Text("after"), Limit: q.Limit());
+                AfterWaitId: WaitBoundary(http, q.Text("after")), Limit: q.Limit());
             var scope = http.RequestServices.GetRequiredService<IInstanceQueryScope>();
             return await WaitsAsync(http, await scope.ScopeAsync(http.User, query, http.RequestAborted));
         });
@@ -75,7 +75,7 @@ public static class WorkflowOperationsExtensions
                 e.Entry.TraceId, e.Entry.Timestamp, e.Entry.Clock, e.Entry.StepNumber, e.Entry.ActivityName,
                 e.Entry.EntryType, e.Entry.Duration, e.Entry.ErrorMessage, e.Entry.Payload)).ToArray(),
                 entries.Count == limit ? entries[^1].Sequence : null));
-        }, inspect: true);
+        });
         MapInstance("GET", "/snapshot", options.InspectPolicy!, async (http, summary) =>
         {
             var snapshot = await Client(http).GetSnapshotAsync(summary.InstanceId);
@@ -85,7 +85,7 @@ public static class WorkflowOperationsExtensions
                 snapshot.Status, snapshot.CapturedAtUtc, snapshot.Pointers.Select(p => new WorkflowPointerResponse(
                     p.PointerId, p.StepId, p.StepIndex, p.Status, p.FrameId)).ToArray(),
                 snapshot.Frames.Select(f => new WorkflowFrameResponse(f.FrameId, f.Kind, f.StepId, f.ParentFrameId)).ToArray()));
-        }, inspect: true);
+        });
         MapInstance("POST", "/resolutions", options.WritePolicy!, async (http, summary) =>
         {
             var request = await BodyAsync<ResolutionRequest>(http);
@@ -156,25 +156,27 @@ public static class WorkflowOperationsExtensions
         return group;
 
         void Map(string method, string route, string policy, Func<HttpContext, Task<IResult>> handler,
-            bool instance = false, bool inspect = false, bool tokenWaits = false)
+            bool instance = false, bool tokenWaits = false)
         {
             var endpoint = group.MapMethods(route, [method], (Delegate)handler);
             endpoint.WithMetadata(new WorkflowRoute("operations:" + prefix + ":" + method + ":" + route));
-            endpoint.AddEndpointFilter(new OperationsFilter(options, policy, instance, inspect, tokenWaits));
+            endpoint.AddEndpointFilter(new OperationsFilter(options, policy, instance, tokenWaits, route == "/waits"));
         }
         void MapInstance(string method, string suffix, string policy, Func<HttpContext, InstanceSummary, Task<IResult>> handler,
-            bool inspect = false, bool tokenWaits = false) => Map(method, "/instances/{id}" + suffix, policy,
-                http => handler(http, (InstanceSummary)http.Items[typeof(InstanceSummary)]!), true, inspect, tokenWaits);
+            bool tokenWaits = false) => Map(method, "/instances/{id}" + suffix, policy,
+                http => handler(http, (InstanceSummary)http.Items[typeof(InstanceSummary)]!), true, tokenWaits);
     }
 
-    private sealed class OperationsFilter(WorkflowOperationsOptions options, string policy, bool instance, bool inspect, bool tokenWaits) : IEndpointFilter
+    private sealed class OperationsFilter(WorkflowOperationsOptions options, string policy, bool instance, bool tokenWaits, bool globalWaits) : IEndpointFilter
     {
         public ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext invocation, EndpointFilterDelegate next) => HandleErrorsAsync(async () =>
         {
             var http = invocation.HttpContext;
             var effective = tokenWaits && new Query(http).Bool("tokens") ? options.ReplyPolicy! : policy;
             if (await AuthorizeAsync(http, http, effective) is { } denied) return denied;
-            if (inspect && await AuthorizeAsync(http, http, options.ReplyPolicy!) is { } noReply) return noReply;
+            // Authenticate pagination tokens before any instance lookup or store query.
+            if (globalWaits || tokenWaits && new Query(http).Bool("tokens"))
+                _ = WaitBoundary(http, new Query(http).Text("after"));
             if (http.Request.Headers.TryGetValue("X-IxIFlow-Actor", out var header))
             {
                 if (header.Count != 1 || string.IsNullOrWhiteSpace(header[0])) throw new ArgumentException("Invalid actor");
@@ -188,7 +190,6 @@ public static class WorkflowOperationsExtensions
                 var summary = await Operations(http).GetAsync(id, http.RequestAborted);
                 if (summary == null) return await Client(http).GetStatusAsync(id) == WorkflowExecutionStatus.Removed ? Removed() : Unknown();
                 if (await AuthorizeAsync(http, summary, effective) is { } noInstance) return noInstance;
-                if (inspect && await AuthorizeAsync(http, summary, options.ReplyPolicy!) is { } noInstanceReply) return noInstanceReply;
                 http.Items[typeof(InstanceSummary)] = summary;
             }
             return await next(invocation);
@@ -218,7 +219,17 @@ public static class WorkflowOperationsExtensions
         if (limit is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(scoped.Limit));
         var waits = await Client(http).GetOpenWaitsAsync(scoped with { Limit = limit + 1 });
         if (waits.IsRemoved) return Removed();
-        return Results.Ok(new WorkflowWaitPage(waits.Take(limit).ToArray(), waits.Count > limit ? waits[limit - 1].WaitId : null));
+        return Results.Ok(new WorkflowWaitPage(waits.Take(limit).Select(w => new WorkflowOpenWaitResponse(w.InstanceId,
+            WaitReference.Of(w.InstanceId, w.WaitId), w.Kind, w.Key, w.EventType, w.EventSchema, w.DeadlineUtc,
+            w.OpenedAtUtc, w.Token, w.DefaultPayloadJson)).ToArray(), waits.Count > limit
+                ? WaitPageCursor.Create(http.RequestServices.GetRequiredService<ReplyTokenKeyRing>(), waits[limit - 1].WaitId) : null));
+    }
+    private static string? WaitBoundary(HttpContext http, string? token)
+    {
+        if (token == null) return null;
+        if (!WaitPageCursor.TryRead(http.RequestServices.GetRequiredService<ReplyTokenKeyRing>(), token, out var waitId))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown wait cursor");
+        return waitId;
     }
     private static IWorkflowOperations Operations(HttpContext http) => http.RequestServices.GetRequiredService<IWorkflowOperations>();
     private static IWorkflowClient Client(HttpContext http) => http.RequestServices.GetRequiredService<IWorkflowClient>();

@@ -40,7 +40,7 @@ In application service setup, with `IxIFlow.Extensions` imported:
 
 <!-- snippet: samples/IxIFlow.Samples/DocumentationExamples.cs#publisher-registration -->
 ```csharp
-services.AddIxIFlow()
+services.AddIxIFlow(options => options.ReplyTokenKeys = SampleReplyKeys.Ring)
     .ConfigureOutbox(concurrency: 8)
     .AddOutboxPublisher<CompletionLog>();
 ```

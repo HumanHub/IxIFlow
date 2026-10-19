@@ -13,7 +13,7 @@ public static class IncomingWebhookExamples
     public static void Run(WebApplicationBuilder builder)
     {
         // snippet: incoming-host
-        builder.Services.AddIxIFlow(); // Or choose a persistent store with the returned builder.
+        builder.Services.AddIxIFlow(options => options.ReplyTokenKeys = SampleReplyKeys.Ring); // Or choose a persistent store with the returned builder.
         builder.Services.AddAuthorization(options =>
         {
             options.AddPolicy("orders-api", policy => policy.RequireAuthenticatedUser());

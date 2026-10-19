@@ -5,7 +5,10 @@ namespace IxIFlow.AspNetCore;
 public sealed record WorkflowTraceResponse(long Sequence, string TraceId, DateTime Timestamp, TraceClock Clock,
     int StepNumber, string ActivityName, TraceEntryType EntryType, TimeSpan? Duration, string? ErrorMessage, TracePayload? Payload);
 public sealed record WorkflowTracePage(IReadOnlyList<WorkflowTraceResponse> Items, long? NextAfter);
-public sealed record WorkflowWaitPage(IReadOnlyList<OpenWait> Items, string? NextAfter);
+public sealed record WorkflowOpenWaitResponse(string InstanceId, string WaitRef, WaitKind Kind, string Key,
+    string EventType, string? EventSchema, DateTime? DeadlineUtc, DateTime OpenedAtUtc, string Token,
+    string? DefaultPayloadJson);
+public sealed record WorkflowWaitPage(IReadOnlyList<WorkflowOpenWaitResponse> Items, string? NextAfter);
 public sealed record WorkflowSnapshotResponse(string InstanceId, string WorkflowName, int WorkflowVersion,
     WorkflowStatus Status, DateTime CapturedAtUtc, IReadOnlyList<WorkflowPointerResponse> Pointers,
     IReadOnlyList<WorkflowFrameResponse> Frames);

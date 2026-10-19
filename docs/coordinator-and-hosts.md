@@ -5,6 +5,8 @@ description: Configure the core host, slots, storage, recovery and graceful drai
 
 `AddIxIFlow()` registers the core host, client and hosted heartbeat, recovery, outbox and retention services. The executor runs activities in that process. Use the .NET generic host to start background services and stop them in order.
 
+Every host requires a [reply-token signing key ring](reply-tokens.md). The executable examples use ephemeral demo keys; deployed hosts must load a persistent shared ring from protected configuration.
+
 ## Start the host
 
 With imports `IxIFlow.Extensions`, `Microsoft.Extensions.Hosting` and the standard .NET usings:
@@ -14,7 +16,7 @@ With imports `IxIFlow.Extensions`, `Microsoft.Extensions.Hosting` and the standa
 public static IHost CreateHost()
 {
     var builder = Host.CreateApplicationBuilder();
-    builder.Services.AddIxIFlow(options => options.Slots = 8);
+    builder.Services.AddIxIFlow(options => { options.ReplyTokenKeys = SampleReplyKeys.Ring; options.Slots = 8; });
     return builder.Build();
 }
 ```
