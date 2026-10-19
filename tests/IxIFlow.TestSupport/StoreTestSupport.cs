@@ -25,7 +25,8 @@ public static class StoreTestSupport
     private static readonly ConditionalWeakTable<IWorkflowStateRepository, ConcurrentDictionary<string, Owner>> Owners = new();
 
     /// <summary>Retains the test owner while active, or claims a new epoch after release or expiry.</summary>
-    public static async Task<ExecutionLeaseGrant> LeaseAsync(IWorkflowStateRepository store, string instanceId)
+    public static async Task<ExecutionLeaseGrant> LeaseAsync(IWorkflowStateRepository store, string instanceId,
+        ClaimQuery? query = null)
     {
         var owner = Owners.GetOrCreateValue(store).GetOrAdd(instanceId, _ => new Owner());
         await owner.Gate.WaitAsync();
@@ -34,10 +35,26 @@ public static class StoreTestSupport
             var duration = TimeSpan.FromMinutes(5);
             if (owner.Grant != null && await store.RenewExecutionLeaseAsync(instanceId, owner.Token, duration))
                 return owner.Grant;
-            owner.Grant = await store.TryAcquireExecutionLeaseAsync(instanceId, owner.Token, duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+            owner.Grant = await store.TryAcquireExecutionLeaseAsync(instanceId, owner.Token, duration,
+                query ?? new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             return owner.Grant ?? throw new InvalidOperationException($"The test could not claim '{instanceId}'");
         }
         finally { owner.Gate.Release(); }
+    }
+
+    /// <summary>The automatic capabilities and configured tags of the host represented by a fixture.</summary>
+    public static async Task<ClaimQuery> ClaimAsync(IServiceProvider host, int limit = 100)
+    {
+        var settings = (HostSettings)host.GetService(typeof(HostSettings))!;
+        var registry = (IWorkflowVersionRegistry)host.GetService(typeof(IWorkflowVersionRegistry))!;
+        return new ClaimQuery(settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings), limit);
+    }
+
+    /// <summary>A simulated host with the definitions in this registry and no configured tags.</summary>
+    public static async Task<ClaimQuery> ClaimAsync(IWorkflowVersionRegistry registry, int limit = 100)
+    {
+        var settings = HostSettings.Default;
+        return new ClaimQuery(settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings), limit);
     }
 
     /// <summary>Explicit cancellation reads for fault-injecting test repositories.</summary>
@@ -59,9 +76,9 @@ public static class StoreTestSupport
 
     /// <summary>Seeds or updates a store fixture through its normal commit contract.</summary>
     public static async Task SeedAsync(this IWorkflowStateRepository store, WorkflowInstance instance,
-        TimeSpan? wakeAfter = null)
+        TimeSpan? wakeAfter = null, ClaimQuery? query = null)
     {
-        var grant = await LeaseAsync(store, instance.InstanceId);
+        var grant = await LeaseAsync(store, instance.InstanceId, query);
         var commit = CheckpointCommit.Create(instance, grant.Epoch, instance.Revision, wakeAfter: wakeAfter);
         var result = await store.CommitWorkflowInstanceAsync(commit);
         Assert.Equal(WorkflowCommitStatus.Applied, result.Status);

@@ -771,7 +771,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         foreach (var batch in commit.ClosedWaits.Chunk(StatementBatchSize))
             await CloseWaitsAsync(connection, transaction, commit.InstanceId, batch, now);
         // An idle instance is next due at the earliest deadline of its open waits (D-31, D-35).
-        var runnableNow = (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
+        var runnableNow = (commit.Parks && !parked) || (unread && !commit.Stopped &&
+            snapshot.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) ||
             WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.AcknowledgesCancellation, unacknowledged);
         var earliestDeadline = !runnableNow && !commit.Stopped &&
                                snapshot.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution

@@ -33,7 +33,8 @@ public sealed partial class SqlWorkflowStateRepository
         SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId)
             OR EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances AS instance
                 WHERE instance.InstanceId = @InstanceId
-                  AND (instance.RunnableAtUtc <= @Now OR (@Operator = 1 AND instance.RunnableAtUtc IS NULL
+                  AND instance.Status NOT IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
+                  AND (instance.RunnableAtUtc <= @Now OR (@Operator = 1
                       AND (instance.Status = 'NeedsResolution' OR JSON_QUERY(instance.StateJson, '$.ExecutionStateJson.OperatorStop') IS NOT NULL)))
                   AND {MatchingDemands}) THEN 1 ELSE 0 END
         """;
