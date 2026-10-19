@@ -23,13 +23,24 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                       WHERE lease.instance_id = instance.instance_id), true)
                 ORDER BY instance.runnable_at_utc, instance.instance_id LIMIT @Limit) AS candidate
             WHERE sets.failed UNION ALL SELECT candidate.* FROM sets CROSS JOIN LATERAL (
-                SELECT instance.instance_id, instance.runnable_at_utc FROM ixiflow_workflow_instances AS instance
-                WHERE NOT sets.failed AND instance.demand_set_id = sets.id AND instance.runnable_at_utc <= @Now
+                SELECT instance.instance_id, instance.runnable_at_utc FROM (
+                    -- Seek both active expiry ranges in the filtered set/pin index.
+                    SELECT instance.instance_id, instance.runnable_at_utc, instance.pinned_host
+                    FROM ixiflow_workflow_instances AS instance
+                    WHERE instance.demand_set_id = sets.id AND instance.pin_expires_at_utc IS NULL
+                      AND instance.pinned_host IS NOT NULL AND instance.runnable_at_utc IS NOT NULL
+                    UNION ALL
+                    SELECT instance.instance_id, instance.runnable_at_utc, instance.pinned_host
+                    FROM ixiflow_workflow_instances AS instance
+                    WHERE instance.demand_set_id = sets.id AND instance.pin_expires_at_utc > @Now
+                      AND instance.pinned_host IS NOT NULL AND instance.runnable_at_utc IS NOT NULL
+                    -- Keep runnable ordering outside these seeks so LIMIT cannot favor the set/runnable index.
+                    OFFSET 0) AS instance
+                WHERE NOT sets.failed AND instance.runnable_at_utc <= @Now
                   AND (CAST(@AfterTime AS timestamptz) IS NULL OR instance.runnable_at_utc > CAST(@AfterTime AS timestamptz) OR
                       (instance.runnable_at_utc = CAST(@AfterTime AS timestamptz) AND instance.instance_id > CAST(@AfterId AS text)))
                   AND COALESCE((SELECT lease.expires_at_utc <= @Now FROM ixiflow_workflow_leases AS lease
-                      WHERE lease.instance_id = instance.instance_id), true) AND instance.pinned_host IS NOT NULL
-                  AND (instance.pin_expires_at_utc IS NULL OR instance.pin_expires_at_utc > @Now)
+                      WHERE lease.instance_id = instance.instance_id), true)
                   AND NOT EXISTS (SELECT 1 FROM pins WHERE pins.id = sets.id AND pins.value = instance.pinned_host)
                 ORDER BY instance.runnable_at_utc, instance.instance_id LIMIT @Limit) AS candidate
             WHERE NOT sets.failed),
