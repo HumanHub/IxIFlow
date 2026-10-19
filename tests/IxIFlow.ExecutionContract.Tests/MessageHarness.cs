@@ -89,6 +89,8 @@ internal sealed class MessageHarness : IDisposable
 
     private sealed class ExecutorEnd(MessageHarness harness) : IExecutionHost
     {
+        public async Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            harness.Cross(await harness.Host.ReadPayloadAsync(harness.Cross(request)));
         public async Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
             request = harness.Cross(request);
@@ -106,9 +108,15 @@ internal sealed class MessageHarness : IDisposable
     internal sealed class HostEnd : IExecutionHost
     {
         public InMemoryWorkflowStateRepository Store { get; } = new();
+        private ExecutionPayloadTransfer? _payloads;
+        public ExecutionPayloadTransfer Payloads => _payloads ??= new(Store.PayloadStore, Assignment.Limits);
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Admits(request.AssignmentId, request.InstanceId) ? Payloads.ReadAsync(request) :
+                Task.FromResult(new ReadPayloadReply(request.AssignmentId, Conflict: ConflictReason.NotAssigned));
         public Assign Assignment { get; set; } = null!;
         public bool Active { get; set; }
         public bool LoseFirstReply { get; set; }
+        public Func<Checkpoint, bool>? LoseReply { get; set; }
         public int StoreCalls { get; private set; }
         public List<Checkpoint> Requests { get; } = [];
         public List<WorkflowCommitStatus> Receipts { get; } = [];
@@ -126,11 +134,16 @@ internal sealed class MessageHarness : IDisposable
                 return LastReply = new(request.AssignmentId, CheckpointReplyKind.Conflict, Conflict: ConflictReason.NotAssigned);
             if (request.Commit.Epoch != Assignment.Epoch || request.Commit.Incarnation != Assignment.Incarnation)
                 return LastReply = new(request.AssignmentId, CheckpointReplyKind.Conflict, Conflict: ConflictReason.StaleEpoch);
+            if (request.UploadOnly)
+            {
+                await Payloads.AcceptAsync(request.Payload!);
+                return new(request.AssignmentId, CheckpointReplyKind.UploadAccepted);
+            }
             StoreCalls++;
             var receipt = await Store.CommitWorkflowInstanceAsync(request.Commit);
             Receipts.Add(receipt.Status);
             Saved = await Store.GetWorkflowInstanceAsync(request.Commit.InstanceId);
-            if (LoseFirstReply && StoreCalls == 1)
+            if (LoseFirstReply && StoreCalls == 1 || LoseReply?.Invoke(request) == true)
                 return LastReply = new(request.AssignmentId, CheckpointReplyKind.Unknown, Error: "Reply lost after apply");
             return LastReply = receipt.Status is WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied
                 ? new(request.AssignmentId, CheckpointReplyKind.Ack, receipt.Revision)

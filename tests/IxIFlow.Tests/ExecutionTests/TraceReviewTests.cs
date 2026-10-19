@@ -391,6 +391,8 @@ public sealed class TraceReviewTests
 
     private sealed class VerificationHost : IExecutionHost
     {
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
         public List<CheckpointCommit> Commits { get; } = [];
         public WorkflowInstance? Saved { get; private set; }
         public List<ExecutionTraceEntry> TraceEntries { get; } = [];

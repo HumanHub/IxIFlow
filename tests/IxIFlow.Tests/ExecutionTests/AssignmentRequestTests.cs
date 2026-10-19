@@ -436,6 +436,8 @@ public sealed class AssignmentRequestTests
 
     private sealed class ExecutorHost : IExecutionHost
     {
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
         public bool UnknownAfterFirst;
         public bool NotAssignedAtChild;
         public int BeforeChild;
