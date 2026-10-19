@@ -21,11 +21,6 @@ internal static class ExecutionCheckpointWriter
         TimeSpan? parkFor = null)
     {
         checkpoint.Trace.Configure(instance, checkpoint, host.Limits, null, scopes);
-        if (!host.PersistsState)
-        {
-            checkpoint.AcknowledgeTrace();
-            return false;
-        }
         var lastCommitted = SavedForm.Of(instance);
         checkpoint.CloseEndedRequests();
         OperatorTrace.ChildCancellations(instance, checkpoint, now);
@@ -155,9 +150,6 @@ internal static class ExecutionCheckpointWriter
             throw new CheckpointDataException(ex);
         }
     }
-
-    /// <summary>The size a checkpoint limit applies to: the instance's state and data as they are stored.</summary>
-    public static long CheckpointBytes(WorkflowInstance instance) => StoredCheckpoint.Of(instance).Bytes;
 
     public sealed class CheckpointDataException(Exception inner) : Exception(
         $"The workflow state could not be checkpointed: {inner.Message}", inner);

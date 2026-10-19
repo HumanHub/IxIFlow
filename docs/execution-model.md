@@ -15,7 +15,7 @@ Each immutable commit includes an execution epoch, commit ID, expected revision 
 
 Conditions, mappings, wait predicates, result/outcome selectors and combiners must be pure. Read workflow time through `ctx.UtcNow`. Memory and SQLite use the registered `TimeProvider`; SQL Server and PostgreSQL use database time for deadlines and event ordering. Purity validation and analyzers cover supported patterns, not arbitrary external code.
 
-`WorkflowOptions.PersistState = false` skips saved instances for single-call execution. Waits, delays and child invocations are rejected in that mode.
+Every execution acquires a lease and saves its state through fenced commits, including local and single-call execution. Waits, delays and child invocations use the same durable path.
 
 ## Leases and recovery
 
