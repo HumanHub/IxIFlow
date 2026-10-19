@@ -380,7 +380,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
                 Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
                 // The parts are known for the next revision, except before every tenth, which replaces them all.
                 if ((revision + 1) % 10 != 0)
-                    instance.Saved(commit.StoredParts, revision + 1);
+                    instance.Saved(commit.ApplyParts(instance.PartsAt(revision)), revision + 1);
             }
             stop.Cancel();
             await reader;

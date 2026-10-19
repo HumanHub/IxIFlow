@@ -430,7 +430,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             """,
         Statement.CommitState => """
             SELECT revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
-                cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence
+                cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence, runnable_at_utc AS RunnableAtUtc
             FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId
             """,
         Statement.Receipt => """

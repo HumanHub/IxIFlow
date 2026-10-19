@@ -490,7 +490,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // Read clock_timestamp() in the next statement so commit time follows the lock wait (D-35).
         Statement.CommitState => """
             SELECT revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
-                cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence
+                cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence, runnable_at_utc AS RunnableAtUtc
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             FOR UPDATE;

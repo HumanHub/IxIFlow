@@ -168,7 +168,7 @@ public sealed partial class WorkflowHost
             }
             catch (ExecutionOwnershipLostException)
             {
-                return WorkflowExecutor.Busy(instanceId);
+                return InstanceOperations.Busy(instanceId);
             }
             catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error))
             {
