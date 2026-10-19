@@ -142,13 +142,12 @@ public static class ServiceCollectionExtensions
     /// </summary>
     /// <typeparam name="TWorkflow">The workflow class that implements IWorkflow&lt;TWorkflowData&gt;</typeparam>
     /// <param name="services">The service collection</param>
-    /// <param name="name">Optional workflow name (defaults to type name)</param>
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection RegisterWorkflow<TWorkflow>(
-        this IServiceCollection services,
-        string? name = null)
+        this IServiceCollection services)
         where TWorkflow : class
     {
+        _ = WorkflowAttribute.For(typeof(TWorkflow));
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
         // Use reflection to find the IWorkflow<T> interface
         var workflowInterface = typeof(TWorkflow)
@@ -171,7 +170,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-            var definition = (WorkflowDefinition)buildMethod.Invoke(null, new object?[] { workflow, name })!;
+            var definition = (WorkflowDefinition)buildMethod.Invoke(null, new object?[] { workflow })!;
             return new RegisteredWorkflowDefinition<TWorkflow>(definition);
         });
         services.AddSingleton(serviceProvider =>
@@ -186,14 +185,13 @@ public static class ServiceCollectionExtensions
     /// <typeparam name="TWorkflow">The workflow class that implements IWorkflow&lt;TWorkflowData&gt;</typeparam>
     /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
     /// <param name="services">The service collection</param>
-    /// <param name="name">Optional workflow name (defaults to type name)</param>
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection RegisterWorkflow<TWorkflow, TWorkflowData>(
-        this IServiceCollection services,
-        string? name = null)
+        this IServiceCollection services)
         where TWorkflow : class, IWorkflow<TWorkflowData>
         where TWorkflowData : class
     {
+        _ = WorkflowAttribute.For(typeof(TWorkflow));
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
         // Register the workflow class
         services.AddTransient<TWorkflow>();
@@ -202,7 +200,7 @@ public static class ServiceCollectionExtensions
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
             return new RegisteredWorkflowDefinition<TWorkflow>(
-                BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow, name));
+                BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow));
         });
         services.AddSingleton(serviceProvider =>
             serviceProvider.GetRequiredService<RegisteredWorkflowDefinition<TWorkflow>>().Definition);
@@ -216,16 +214,14 @@ public static class ServiceCollectionExtensions
     /// <typeparam name="TWorkflow">The workflow class type</typeparam>
     /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
     /// <param name="workflow">The workflow instance</param>
-    /// <param name="name">Optional workflow name</param>
     /// <returns>The built workflow definition</returns>
     public static WorkflowDefinition BuildWorkflowDefinition<TWorkflow, TWorkflowData>(
-        TWorkflow workflow,
-        string? name = null)
+        TWorkflow workflow)
         where TWorkflow : IWorkflow<TWorkflowData>
         where TWorkflowData : class
     {
-        var workflowName = name ?? typeof(TWorkflow).Name;
-        var builder = Workflow.Create<TWorkflowData>(workflowName, workflow.Version);
+        var identity = WorkflowAttribute.For(typeof(TWorkflow));
+        var builder = Workflow.Create<TWorkflowData>(identity.Name, identity.Version);
         workflow.Build(builder);
         return builder.Build();
     }

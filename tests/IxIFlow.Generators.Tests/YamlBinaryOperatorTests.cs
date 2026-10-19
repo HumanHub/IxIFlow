@@ -24,7 +24,7 @@ public sealed partial class YamlParityTests
     }
 
     [Theory, MemberData(nameof(BinaryCases)), Trait("Feature", "authoring"), Trait("Spec", "F-06"), Trait("Spec", "F-25")]
-    public async Task EveryBinaryOperatorExecutesDistinguishingOperandsWithTheFluentFingerprint(string op, int left, int right, int expected)
+    public async Task EveryBinaryOperatorExecutesDistinguishingOperandsWithTheFluentStructureHash(string op, int left, int right, int expected)
     {
         var arithmetic = op is "add" or "subtract" or "multiply" or "divide";
         var boolean = op is "and" or "or";
@@ -85,7 +85,7 @@ public sealed partial class YamlParityTests
         var second = await Execute(generated, null, Data);
         Assert.Equal(expected, first.Data.Result);
         Assert.Equal(expected, second.Data.Result);
-        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        Assert.Equal(first.StructureHash, second.StructureHash);
         Assert.Equal(Shape(fluent), Shape(generated));
     }
 }

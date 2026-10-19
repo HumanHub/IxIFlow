@@ -195,7 +195,7 @@ public sealed class IncomingWebhookScenarios
             Status = WorkflowStatus.Running, WorkflowDataType = typeof(Data).AssemblyQualifiedName!, WorkflowDataJson = "{}",
             ExecutionStateJson = JsonSerializer.Serialize(new ExecutionCheckpoint
             {
-                DefinitionFingerprint = "race", Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
+                StructureHash = "race", Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
             })
         });
         var left = Commit();

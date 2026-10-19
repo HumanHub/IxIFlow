@@ -12,7 +12,7 @@ internal static class CheckpointRaceContract
         var root = new ContinuationState { Id = "root", Status = ContinuationStatus.Joining,
             Stack = [new ScopePosition { ScopeId = "root" }] };
         var join = new ParallelJoinState { Id = "join", StepId = "root/0", ParentContinuationId = root.Id };
-        var state = new ExecutionCheckpoint { DefinitionFingerprint = marker, BranchesStarted = 1,
+        var state = new ExecutionCheckpoint { StructureHash = marker, BranchesStarted = 1,
             Continuations = [root, new ContinuationState { Id = "branch-" + marker,
                 ParentJoinId = join.Id, Sequence = 1, Status = ContinuationStatus.Waiting,
                 Stack = [new ScopePosition { ScopeId = "root/0/branch/0" }] }], Joins = [join] };

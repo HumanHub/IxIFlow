@@ -83,9 +83,8 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null)
         where TActivity : class, IAsyncActivity
     {
-        var expression = subjectExpression == null ? null : WorkflowExpressionSignature.Checked(subjectExpression);
         var result = Request<TActivity>(name, configure, subjectExpression?.Compile());
-        _steps[^1].RequestSubjectExpression = expression;
+        _steps[^1].RequestSubjectExpression = subjectExpression;
         return result;
     }
 
@@ -100,7 +99,6 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         var step = _steps[^1];
         step.RequestName = name;
         step.ReplyType = replyType;
-        step.RequestSubjectBehavior = subject;
         if (subject != null)
             step.RequestSubject = context => subject((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
         return next;
@@ -114,9 +112,8 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
         where TResumeEvent : class
     {
-        var expression = resumeExpression == null ? null : WorkflowExpressionSignature.Checked(resumeExpression);
         var result = Suspend<TResumeEvent>(suspendReason, resumeExpression?.Compile(), configure);
-        _steps[^1].ConditionExpression = expression;
+        _steps[^1].ConditionExpression = resumeExpression;
         return result;
     }
 
@@ -175,7 +172,6 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
             };
 
             suspendStep.CompiledCondition = conditionWrapper;
-            suspendStep.ConditionBehavior = resumeCondition;
         }
 
         // Configure the suspend step if a setup action is provided
@@ -199,9 +195,8 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
         where TResumeEvent : class
     {
-        var expression = matchesExpression == null ? null : WorkflowExpressionSignature.Checked(matchesExpression);
         var result = WaitFor<TResumeEvent>(key, matchesExpression?.Compile(), configure);
-        _steps[^1].ConditionExpression = expression;
+        _steps[^1].ConditionExpression = matchesExpression;
         return result;
     }
 
@@ -452,7 +447,7 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
         {
             TargetProperty = propertyName,
             SourceFunction = sourceFunction,
-            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            Expression = source,
             ContextFactory = Core.Runtime.WorkflowStepDelegates.Previous<TWorkflowData, TPreviousStepData>,
             SourceType = typeof(WorkflowContext<TWorkflowData, TPreviousStepData>),
             TargetType = propertyType,
@@ -571,7 +566,7 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
         {
             TargetProperty = propertyName,
             TargetAssignmentFunction = targetAssignmentFunction,
-            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(destination),
+            Expression = destination,
             ContextFactory = Core.Runtime.WorkflowStepDelegates.Data<TWorkflowData>,
             TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = propertyType,
@@ -785,7 +780,7 @@ public class SagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty> : I
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}, {typeof(TPreviousStepData).Name}>, got {context.GetType().Name}");
         };
 
-        _outcomeStep.OutcomeExpression = Core.Runtime.WorkflowExpressionSignature.Checked(_propertySelector);
+        _outcomeStep.OutcomeExpression = _propertySelector;
         _outcomeStep.OutcomeSelector = selectorWrapper;
         _outcomeStep.OutcomeBranches =
             _defaultBranch == null ? [.. _outcomeBranches] : [.. _outcomeBranches, _defaultBranch];

@@ -5,7 +5,7 @@ using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
 
-/// <summary>Embeds a validated schema-3 checkpoint as a JSON object.</summary>
+/// <summary>Embeds a validated schema-4 checkpoint as a JSON object.</summary>
 internal sealed class RawJsonText : JsonConverter<string>
 {
     public override bool HandleNull => true;

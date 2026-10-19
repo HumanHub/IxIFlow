@@ -27,12 +27,12 @@ public sealed class SampleTests
 
     [Theory]
     [MemberData(nameof(Pairs))]
-    public async Task YamlAndFluentHaveTheSameSavedFingerprintAndResult(string sample, bool alternative)
+    public async Task YamlAndFluentHaveTheSameSavedStructureHashAndResult(string sample, bool alternative)
     {
         var (fluent, yaml) = Definitions(sample);
         var first = await Execute(fluent, Data(sample, alternative), sample, Review.Child());
         var second = await Execute(yaml, Data(sample, alternative), sample, Workflow_review_child_workflow.Build());
-        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        Assert.Equal(first.StructureHash, second.StructureHash);
         Assert.Equal(JsonSerializer.Serialize(first.Data), JsonSerializer.Serialize(second.Data));
         if (first.Data is QuoteData quote)
         {
@@ -301,7 +301,7 @@ public sealed class SampleTests
         _ => new QuoteData { Amount = alternative ? 0m : 10m }
     };
 
-    private static async Task<(object Data, string Fingerprint)> Execute(WorkflowDefinition definition, object data,
+    private static async Task<(object Data, string StructureHash)> Execute(WorkflowDefinition definition, object data,
         string name, WorkflowDefinition child)
     {
         await using var services = Services();
@@ -318,7 +318,7 @@ public sealed class SampleTests
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
-        return (result.WorkflowData!, checkpoint.RootElement.GetProperty("DefinitionFingerprint").GetString()!);
+        return (result.WorkflowData!, checkpoint.RootElement.GetProperty("StructureHash").GetString()!);
     }
 
     private sealed class RecordingSender : ITemplateMessageSender

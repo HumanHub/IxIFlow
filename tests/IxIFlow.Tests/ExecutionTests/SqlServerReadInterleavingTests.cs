@@ -80,7 +80,7 @@ public sealed class SqlServerReadInterleavingTests
         using var data = JsonDocument.Parse(saved.WorkflowDataJson);
         var marker = data.RootElement.GetProperty("marker").GetString();
         Assert.Contains(marker, new[] { "old", "new" });
-        Assert.Equal(marker, ExecutionCheckpoint.ReadTrunk(saved.ExecutionStateJson).DefinitionFingerprint);
+        Assert.Equal(marker, ExecutionCheckpoint.ReadTrunk(saved.ExecutionStateJson).StructureHash);
         Assert.Equal(recreate || marker == "old" ? 1 : 2, saved.Revision);
         var expected = marker == "old" ? original : replacement;
         Assert.Equal(expected.WorkflowDataJson, saved.WorkflowDataJson);

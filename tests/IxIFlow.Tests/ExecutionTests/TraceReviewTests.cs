@@ -291,7 +291,7 @@ public sealed class TraceReviewTests
             Data = new Data(), Stack = [new ScopePosition { ScopeId = "root/1/branch/0" }] };
         join.ChildContinuationIds.Add(branch.Id);
         var data = new Data();
-        var checkpoint = new ExecutionCheckpoint { DefinitionFingerprint = scopes.Fingerprint,
+        var checkpoint = new ExecutionCheckpoint { StructureHash = scopes.StructureHash,
             Continuations = [root, branch], Joins = [join], RootData = data };
         var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "verification-trace", WorkflowName = definition.Name,
             WorkflowDataType = typeof(Data).AssemblyQualifiedName!, WorkflowDataJson = JsonSerializer.Serialize(data),

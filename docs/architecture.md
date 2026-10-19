@@ -13,7 +13,7 @@ The instance row is the durable backlog: `RunnableAtUtc` identifies due work. Lo
 
 One store supplies instance state, checkpoint parts, inboxes, wait indexes, traces, leases, commit receipts, completion outbox deliveries and tombstones. A checkpoint transaction can settle an event, close a wait, start a child and record progress together. Outgoing publishers run outside execution slots and settle their deliveries separately.
 
-Definition and version registries are in memory. Hosts must load compatible definitions and activity assemblies before recovering their instances. Runtime fingerprints detect incompatible definitions; immutable published bundles and their declared artifact identity are planned.
+Definition and version registries are in memory. Hosts must load compatible definitions and activity assemblies before recovering their instances. Declared `(name, version)` identifies a workflow; names are required. A compiler-free structure hash refuses incompatible checkpoints and duplicate registrations with changed structure. It excludes delegate bodies, captured values and presentation metadata. Schema 4 refuses older saved instances without migration; immutable published bundles remain planned.
 
 ## Packages
 
