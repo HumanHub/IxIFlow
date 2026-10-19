@@ -98,7 +98,7 @@ public abstract partial class RelationalWorkflowStateRepository
         }
     }
 
-    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version) =>
+    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) =>
         CatalogWriteAsync(async (connection, transaction) =>
         {
             var versions = await ReadVersionsAsync(connection, transaction);
@@ -106,6 +106,7 @@ public abstract partial class RelationalWorkflowStateRepository
             var draft = await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition), draftId, transaction);
             WorkflowCatalogRules.CheckPublication(draftId, version, draft?.Value, existing);
             if (existing != null) return existing;
+            await WorkflowCatalogRules.CheckArtifactsAsync(version, artifacts ?? this);
             foreach (var dependency in version.Dependencies ?? [])
                 WorkflowCatalogRules.CheckStartable(versions.SingleOrDefault(row => row.Name == dependency.Name && row.Version == dependency.Version), dependency.Name, dependency.Version);
             await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionInsert), new

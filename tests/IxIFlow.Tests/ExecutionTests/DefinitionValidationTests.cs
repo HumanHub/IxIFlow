@@ -168,7 +168,7 @@ public sealed class DefinitionValidationTests
         public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _catalog.GetWorkflowVersionAsync(name, version);
         public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _catalog.GetWorkflowVersionsAsync(name);
         public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) => _catalog.SetWorkflowVersionStateAsync(name, version, state, artifacts);
-        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version) => _catalog.PublishDefinitionAsync(draftId, version);
+        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) => _catalog.PublishDefinitionAsync(draftId, version, artifacts);
         public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _catalog.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
         public Task<WorkflowVersion?> GetLatestWorkflowVersionAsync(string name) => _catalog.GetLatestWorkflowVersionAsync(name);
         public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>

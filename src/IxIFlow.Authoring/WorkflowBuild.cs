@@ -17,7 +17,12 @@ internal static class WorkflowBuild
         cancellationToken.ThrowIfCancellationRequested();
         var completion = new TaskCompletionSource<WorkflowBuildResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         // A noncooperative Build must neither occupy the pool nor keep the process alive at shutdown.
-        var thread = new Thread(() => completion.SetResult(Inspect(compilation)))
+        var thread = new Thread(() =>
+        {
+            try { completion.TrySetResult(Inspect(compilation)); }
+            // Includes failures while extracting/formatting the original build diagnostic.
+            catch (Exception) { completion.TrySetResult(new(Error: "Build() failed while inspecting its result")); }
+        })
         { IsBackground = true, Name = "IxIFlow publish Build" };
         thread.Start();
         try
@@ -62,7 +67,8 @@ internal static class WorkflowBuild
         {
             var location = Regex.Match(error.Message, @"workflow\.yaml:(\d+)");
             var frame = new StackTrace(error, true).GetFrames().FirstOrDefault(frame => frame.GetFileName() == "workflow.yaml");
-            return new(Error: error.Message, Line: location.Success ? int.Parse(location.Groups[1].Value) : frame?.GetFileLineNumber() ?? 1,
+            return new(Error: error.Message, Line: location.Success && int.TryParse(location.Groups[1].ValueSpan, out var line) && line > 0
+                    ? line : Math.Max(1, frame?.GetFileLineNumber() ?? 1),
                 Column: Math.Max(1, frame?.GetFileColumnNumber() ?? 1));
         }
     }

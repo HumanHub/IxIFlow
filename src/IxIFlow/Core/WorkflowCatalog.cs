@@ -34,7 +34,7 @@ public interface IWorkflowCatalogStore
     Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null);
     Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null);
     /// <summary>Publishes a version atomically against the draft's revision and deletes the draft.</summary>
-    Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version);
+    Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null);
     /// <summary>Collects old artifacts while catalog references cannot change. No instance names an artifact yet.</summary>
     Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default);
@@ -121,8 +121,8 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
         _store.SaveDefinitionAsync(definition, expectedRevision);
     public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
         _store.RegisterWorkflowVersionAsync(version, artifacts ?? _artifacts);
-    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version) =>
-        _store.PublishDefinitionAsync(draftId, version);
+    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) =>
+        _store.PublishDefinitionAsync(draftId, version, artifacts ?? _artifacts);
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _store.GetWorkflowVersionAsync(name, version);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _store.GetWorkflowVersionsAsync(name);
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>

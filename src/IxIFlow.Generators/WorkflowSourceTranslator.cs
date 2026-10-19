@@ -146,6 +146,7 @@ public static class WorkflowSourceTranslator
         private string _workflowRoot = "ctx.WorkflowData";
         private int _next;
         private string _previousRoot = "ctx.PreviousStep";
+        private DocumentLocation? _nextLocation;
 
         public string Run()
         {
@@ -432,13 +433,17 @@ public static class WorkflowSourceTranslator
         {
             foreach (var input in inputs)
             {
-                Locate(input);
-                Line($"{setup}.Input(act => act.{Member(input.Target!, input)}).From({(inputContext == null ? "ctx" : "(" + inputContext + " ctx)")} => {Expression(input.From)});");
+                Locate(input, "target");
+                Line($"{setup}.Input(act => act.{Member(input.Target!, input)})", input.Target);
+                Locate(input.From, input.From is ConstantExpressionDocument ? "value" : input.From is PathExpressionDocument ? "path" : null);
+                Line($".From({(inputContext == null ? "ctx" : "(" + inputContext + " ctx)")} => {Expression(input.From)});", input.From is ConstantExpressionDocument ? Expression(input.From) : null);
             }
             foreach (var output in outputs)
             {
-                Locate(output);
-                Line($"{setup}.Output(act => act.{Member(output.Source!, output)}).To(ctx => {Expression(output.To)});");
+                Locate(output, "source");
+                Line($"{setup}.Output(act => act.{Member(output.Source!, output)})", output.Source);
+                Locate(output.To, output.To is PathExpressionDocument ? "path" : null);
+                Line($".To(ctx => {Expression(output.To)});");
             }
         }
 
@@ -509,9 +514,23 @@ public static class WorkflowSourceTranslator
         {
             var location = member != null && node.Members.TryGetValue(member, out var found) ? found : node.Location;
             Line($"// {path}:{Math.Max(1, location.Line)}");
-            Line($"#line {Math.Max(1, location.Line)} \"{path}\"");
+            _nextLocation = location;
         }
-        private void Line(string text) => _source.Append(text).Append('\n');
+        private void Line(string text, string? anchor = null)
+        {
+            if (_nextLocation is { } location)
+            {
+                _nextLocation = null;
+                var line = Math.Max(1, location.Line);
+                var column = Math.Max(1, location.Column);
+                // Without a token correspondence, map the entire generated span to the
+                // YAML node instead of leaking a generated C# character offset.
+                var offset = anchor == null ? text.Length + 1 : Math.Max(1, text.IndexOf(anchor, StringComparison.Ordinal) + 1);
+                // Enhanced #line spans carry the YAML column as well as its line.
+                _source.Append($"#line ({line}, {column}) - ({line}, {column + Math.Max(1, anchor?.Length ?? 1)}) {offset} \"{path}\"\n");
+            }
+            _source.Append(text).Append('\n');
+        }
         private WorkflowSourceException Error(DocumentNode node, string message, string? member = null)
         {
             var location = member != null && node.Members.TryGetValue(member, out var found) ? found : node.Location;
