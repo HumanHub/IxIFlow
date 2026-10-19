@@ -336,7 +336,8 @@ public sealed class TraceReviewTests
             Payload = new ConditionTrace("root/0", WorkflowStepType.Conditional, root.Id, 0, "root/0/then", ConditionPath.Then) });
         checkpoint.Trace.Add(new ExecutionTraceEntry { EntryType = TraceEntryType.EventReceived,
             Payload = new ReceivedEventTrace("pending", "go", typeof(Go).AssemblyQualifiedName!, "wait", "root/0") });
-        Assert.Equal(2, checkpoint.Trace.Pending.Count);
+        Assert.Equal([TraceEntryType.ThreadPosition, TraceEntryType.ConditionTaken, TraceEntryType.EventReceived],
+            checkpoint.Trace.Pending.Select(entry => entry.EntryType));
         var rejected = await Assert.ThrowsAsync<CheckpointVerificationException>(() =>
             ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, data, scopes, Start.UtcDateTime));
         Assert.Contains(StoredCheckpoint.BranchKey(branch.Id), rejected.Message);
@@ -356,9 +357,10 @@ public sealed class TraceReviewTests
         Assert.NotNull(host.Saved);
         instance = host.Saved;
         Assert.Equal(WorkflowStatus.NeedsResolution, instance.Status);
-        Assert.Empty(host.TraceEntries);
+        Assert.Equal([TraceEntryType.ReplayOrigin], host.TraceEntries.Select(entry => entry.EntryType));
         Assert.Equal(2, commits.Count);
-        Assert.All(commits, commit => Assert.Empty(commit.TraceEntries));
+        Assert.Equal([TraceEntryType.ReplayOrigin], commits[0].ReadTraceEntries().Select(entry => entry.EntryType));
+        Assert.Empty(commits[1].TraceEntries);
         var saved = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
         Assert.Equal(OperatorStopKind.Verification, saved.OperatorStop!.Kind);
         Assert.Equal(scopes.StructureHash, saved.StructureHash);
