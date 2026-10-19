@@ -1,0 +1,108 @@
+using IxIFlow.Core.Runtime;
+
+namespace IxIFlow.Core;
+
+/// <summary>Trusted identity and request identity supplied by an ingress adapter.</summary>
+public sealed record WorkflowAdmission(string Sender, string Trigger, string Key, string Fingerprint,
+    string Owner, string? Tenant = null, TimeSpan? Retention = null)
+{
+    public TimeSpan KeyRetention => Retention ?? TimeSpan.FromHours(24);
+
+    public void Validate()
+    {
+        foreach (var value in new[] { Sender, Trigger, Key, Owner })
+            if (string.IsNullOrWhiteSpace(value) || value.Length > 128 || value != value.Trim())
+                throw new ArgumentException("Admission identities must contain 1 to 128 characters");
+        if (Tenant?.Length > 200 || Fingerprint == null || Fingerprint.Length != 64 || !Fingerprint.All(Uri.IsHexDigit))
+            throw new ArgumentException("Admission requires a SHA-256 fingerprint and a tenant of at most 200 characters");
+        if (KeyRetention <= TimeSpan.Zero || KeyRetention > CheckpointCommit.MaxDuration)
+            throw new ArgumentOutOfRangeException(nameof(Retention));
+    }
+
+    public void ValidateCommit(CheckpointCommit commit)
+    {
+        Validate();
+        if (commit.Epoch != 0 || commit.ExpectedRevision != 0 || commit.Instance.Status != WorkflowStatus.Running ||
+            commit.ChildStarts.Count != 0 || commit.ParentNotice != null || commit.Settlements.Count != 0 || commit.Parks)
+            throw new ArgumentException("Admission requires a new, unowned running instance's first commit");
+    }
+}
+
+public sealed record WorkflowAdmissionRecord(string Sender, string Trigger, string Key, string Fingerprint,
+    string InstanceId, string WorkflowName, int WorkflowVersion, DateTime ExpiresAtUtc, Guid Incarnation = default);
+
+/// <summary>Retained with the instance and its removal tombstone, independently of key expiry.</summary>
+public sealed record WorkflowOwnership(string InstanceId, string Sender, string Trigger, string Owner, string? Tenant, Guid Incarnation = default);
+
+/// <summary>Atomic admission through the store's checkpoint commit protocol.</summary>
+public interface IWorkflowAdmissionStore
+{
+    Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission);
+    Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId);
+    Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key);
+}
+
+/// <summary>Acceptance-only operations. Acknowledgement always follows durable storage.</summary>
+public interface IWorkflowIngressClient
+{
+    Task<WorkflowAdmissionRecord> AdmitAsync<TData>(WorkflowDefinition definition, TData data,
+        WorkflowAdmission admission, CancellationToken cancellationToken = default) where TData : class;
+    Task<EventAppendResult> AcceptEventAsync(WorkflowEvent workflowEvent, CancellationToken cancellationToken = default);
+    Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId);
+    Task<WorkflowOwnership?> GetOwnershipAsync(string instanceId);
+}
+
+internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWorkflowVersionRegistry registry,
+    WorkflowHost host, ExecutionLimits limits, TimeProvider time) : IWorkflowIngressClient
+{
+    private readonly IWorkflowAdmissionStore _admission = store;
+
+    public async Task<WorkflowAdmissionRecord> AdmitAsync<TData>(WorkflowDefinition definition, TData data,
+        WorkflowAdmission admission, CancellationToken cancellationToken = default) where TData : class
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(data);
+        admission.Validate();
+        if (await _admission.GetWorkflowAdmissionAsync(admission.Sender, admission.Trigger, admission.Key) is { } existing)
+        {
+            host.WakeNow(existing.InstanceId);
+            return existing;
+        }
+        var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
+        if (registered?.Metadata.TryGetValue("IsActive", out var active) == true && active is false)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow version is deactivated");
+        var now = time.GetUtcNow().UtcDateTime;
+        var (instance, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(definition, data, new(), now);
+        var prepared = ExecutionCheckpointWriter.Prepare(instance, checkpoint, data, scopes, now,
+            verify: limits.VerifyCheckpointParts);
+        if (prepared.Bytes > limits.MaxCheckpointBytes)
+            throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "The admission checkpoint exceeds the configured limit");
+        var commit = CheckpointCommit.CreateAdmission(instance);
+        await registry.RegisterWorkflowAsync(definition);
+        // Keep the exact commit on an unknown outcome; no key reservation or separate instance insert.
+        for (var attempt = 1; ; attempt++)
+        {
+            WorkflowCommitResult result;
+            try { result = await _admission.AdmitWorkflowInstanceAsync(commit, admission); }
+            catch (Exception error) when (attempt < 3 && error is not ArgumentException &&
+                error is not WorkflowEngineException { Kind: not WorkflowErrorKind.Infrastructure }) { continue; }
+            if (result.Status == WorkflowCommitStatus.Retry && attempt < 3) continue;
+            if (result.Admission is not { } record)
+                throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "Atomic admission was not acknowledged");
+            host.WakeNow(record.InstanceId);
+            return record;
+        }
+    }
+
+    public async Task<EventAppendResult> AcceptEventAsync(WorkflowEvent workflowEvent,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var receipt = await store.AppendEventAsync(workflowEvent);
+        if (receipt.MadeRunnable) host.WakeNow(workflowEvent.InstanceId);
+        return receipt;
+    }
+
+    public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) => store.GetEventAsync(instanceId, eventId);
+    public Task<WorkflowOwnership?> GetOwnershipAsync(string instanceId) => _admission.GetWorkflowOwnershipAsync(instanceId);
+}

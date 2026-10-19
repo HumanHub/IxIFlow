@@ -1,8 +1,6 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using IxIFlow.Core;
 
@@ -52,14 +50,7 @@ public sealed class WebhookOutboxPublisher : IOutboxPublisher
         ArgumentNullException.ThrowIfNull(endpoint.EventTypes);
         if (endpoint.EventTypes.Count == 0 || endpoint.EventTypes.Any(string.IsNullOrWhiteSpace))
             throw new ArgumentException("A webhook needs at least one event type");
-        if (!endpoint.Secret.StartsWith("whsec_", StringComparison.Ordinal))
-            throw new ArgumentException("A Standard Webhooks secret must start with whsec_");
-        byte[] secret;
-        try { secret = Convert.FromBase64String(endpoint.Secret[6..]); }
-        catch (FormatException) { throw new ArgumentException("A Standard Webhooks secret must contain base64"); }
-        if (secret.Length is < 24 or > 64)
-            throw new ArgumentException("A Standard Webhooks secret must contain 24 to 64 bytes");
-        return secret;
+        return StandardWebhookSignature.DecodeSecret(endpoint.Secret);
     }
 
     public string Name => "webhook:" + _endpoint.Name;
@@ -79,15 +70,11 @@ public sealed class WebhookOutboxPublisher : IOutboxPublisher
             data = JsonSerializer.Deserialize<JsonElement>(item.DataJson)
         });
         var timestamp = storeNow.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
-        var prefix = Encoding.UTF8.GetBytes(item.Id + "." + timestamp + ".");
-        var signed = new byte[prefix.Length + body.Length];
-        prefix.CopyTo(signed, 0);
-        body.CopyTo(signed, prefix.Length);
-        var signature = Convert.ToBase64String(HMACSHA256.HashData(_secret, signed));
+        var signature = StandardWebhookSignature.Sign(_secret, item.Id, timestamp, body);
         using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint.Url);
         request.Headers.Add("webhook-id", item.Id);
         request.Headers.Add("webhook-timestamp", timestamp);
-        request.Headers.Add("webhook-signature", "v1," + signature);
+        request.Headers.Add("webhook-signature", signature);
         request.Content = new ByteArrayContent(body);
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/cloudevents+json");
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30), _time);
