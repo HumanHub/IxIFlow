@@ -5,6 +5,8 @@ using IxIFlow.Core;
 using IxIFlow.Dsl.Compilation;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Generators;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using YamlDotNet.Core;
 
 namespace IxIFlow.Authoring;
@@ -21,9 +23,11 @@ public sealed record WorkflowPublishResult(WorkflowVersion? Version, IReadOnlyLi
 }
 
 /// <summary>Publishes import-free drafts using the runtime shared set and already-loaded application assemblies.</summary>
-public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactStore artifacts, WorkflowPublisherOptions? options = null)
+public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactStore artifacts, WorkflowPublisherOptions? options = null,
+    ILogger<WorkflowPublisher>? logger = null)
 {
     private readonly WorkflowPublisherOptions _options = options ?? new();
+    private readonly ILogger<WorkflowPublisher> _logger = logger ?? NullLogger<WorkflowPublisher>.Instance;
     private const string Path = "workflow.yaml";
 
     public async Task<WorkflowPublishResult> PublishAsync(WorkflowDraftId draftId, CancellationToken cancellationToken = default)
@@ -67,7 +71,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             diagnostics.AddRange(compilation.Diagnostics);
             if (!compilation.Success) return new(null, diagnostics);
             stage = WorkflowPublishStage.Test;
-            var tested = await WorkflowBuildWorker.RunAsync(compilation, references, _options.BuildTimeout, cancellationToken);
+            var tested = await WorkflowBuild.RunAsync(compilation, _options.BuildTimeout, _logger, cancellationToken);
             if (tested.Error != null)
             {
                 location = tested.Line > 1 ? FindBuildLocation(document, tested.Line, tested.Column) : document.Workflow.Location;
