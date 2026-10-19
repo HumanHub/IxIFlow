@@ -865,7 +865,10 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             parameter.ParameterName = connection is Npgsql.NpgsqlConnection ? "InstanceId" : "@InstanceId";
             parameter.Value = childId;
             read.Parameters.Add(parameter);
-            Assert.Equal(payload, (string)(await read.ExecuteScalarAsync())!);
+            // The child stores placement through its set reference, outside the trunk.
+            var expected = System.Text.Json.Nodes.JsonNode.Parse(payload)!;
+            expected["ExecutionStateJson"]!.AsObject().Remove("Demands");
+            Assert.Equal(expected.ToJsonString(), (string)(await read.ExecuteScalarAsync())!);
             var child = (await store.GetWorkflowInstanceAsync(childId))!;
             Assert.Equal(1, child.Revision);
             Assert.NotNull(child.RunnableAtUtc);
