@@ -187,6 +187,7 @@ public sealed partial class WorkflowHost
                 checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                 OperatorTrace.ApplyCancellation(instance, checkpoint, cancellationReason, Now);
             await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
+            _control.Accept(instanceId);
             return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                 owner, cancellationToken);
         }
@@ -328,15 +329,17 @@ public sealed partial class WorkflowHost
             }
             foreach (var (name, value) in resolution.OutputProperties)
             {
-                var property = step.ActivityType!.GetProperty(name)
+                var property = step.ActivityType!.GetProperty(name, System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.IgnoreCase)
                     ?? throw new ArgumentException($"Activity has no output property '{name}'", nameof(resolution));
                 if (property.GetSetMethod(nonPublic: true) == null || property.GetIndexParameters().Length != 0)
                     throw new ArgumentException($"Activity output '{name}' is not writable", nameof(resolution));
-                if ((value == null && property.PropertyType.IsValueType &&
+                var output = value is JsonElement json ? json.Deserialize(property.PropertyType, JsonSerializerOptions.Web) : value;
+                if ((output == null && property.PropertyType.IsValueType &&
                      Nullable.GetUnderlyingType(property.PropertyType) == null) ||
-                    (value != null && !property.PropertyType.IsInstanceOfType(value)))
+                    (output != null && !property.PropertyType.IsInstanceOfType(output)))
                     throw new ArgumentException($"Activity output '{name}' has the wrong type", nameof(resolution));
-                decision.OutputProperties.Add(name, SerializedValue.From(value));
+                decision.OutputProperties.Add(property.Name, SerializedValue.From(output));
             }
             return decision;
         }
@@ -656,6 +659,7 @@ public sealed partial class WorkflowHost
                 // marker, so no limit applies; a run that still exceeds a limit stops again at its next commit.
                 await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner), instance,
                     checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
+                if (release) _control.Accept(instanceId);
             }
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,

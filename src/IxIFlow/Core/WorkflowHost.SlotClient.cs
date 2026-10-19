@@ -11,6 +11,7 @@ public sealed partial class WorkflowHost
     /// </summary>
     internal sealed class SlotClient
     {
+        public Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName) => _runner.GetDeliveryAsync(eventId, publisherName);
         public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => _runner.ListDeliveriesAsync(query);
         public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => _runner.RetryDeliveryAsync(eventId, publisherName, actor);
         public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => _runner.ListPublishersAsync();
