@@ -29,7 +29,8 @@ public sealed class WorkflowExecutorHostTests
 
         var result = await RunAsync(services, definition, host);
 
-        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Equal(AssignmentOutcomeKind.Idle, result.Outcome.Kind);
+        Assert.Equal(WorkflowStatus.Completed, result.Saved.Status);
         Assert.Equal(["first", "second"], Probe(services).Seen.Select(seen => seen.Activity));
         var first = Probe(services).Seen[0].CommitsBefore;
         var second = Probe(services).Seen[1].CommitsBefore;
@@ -51,7 +52,8 @@ public sealed class WorkflowExecutorHostTests
         var result = await RunAsync(services, definition, host);
 
         // The parent waits for its child, whose start travels in the parent's commit (D-17).
-        Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
+        Assert.Equal(AssignmentOutcomeKind.Idle, result.Outcome.Kind);
+        Assert.Equal(WorkflowStatus.Suspended, result.Saved.Status);
         var invocation = Assert.Single(host.Invocations);
         Assert.Equal("ExecutorChildTarget", invocation.WorkflowName);
         Assert.Equal(WorkflowStatus.Suspended, host.Commits[^1]);
@@ -64,14 +66,14 @@ public sealed class WorkflowExecutorHostTests
     {
         using var services = Services();
         var host = new RecordingHost(Probe(services));
-        Draining = host.Draining;
+        Recycle = () => host.Recycle();
         // The host starts draining as the join decides on the first item, before the next is admitted.
         var definition = Workflow.Create<ExecutorData>("DrainedBetweenItems")
             .Step<FirstActivity>()
             .ForEach(_ => new[] { 1, 2 }, (body, _) => body.Step<SecondActivity>().Result(_ => 1),
                 setup => setup.Parallel(maxConcurrency: 1).WaitConditionally<int>((_, _) =>
                 {
-                    Draining?.Cancel();
+                    Recycle?.Invoke();
                     return false;
                 }))
             .Build();
@@ -80,7 +82,8 @@ public sealed class WorkflowExecutorHostTests
 
         // Nothing is active and nothing waits, but an item is still to start: the run stops to continue on
         // recovery, rather than finding nothing to do.
-        Assert.Equal(WorkflowExecutionStatus.Running, result.Status);
+        Assert.Equal(AssignmentOutcomeKind.Drained, result.Outcome.Kind);
+        Assert.Equal(WorkflowStatus.Running, result.Saved.Status);
         Assert.Single(Probe(services).Seen, seen => seen.Activity == "second");
     }
 
@@ -96,7 +99,8 @@ public sealed class WorkflowExecutorHostTests
 
         var result = await RunAsync(services, definition, host);
 
-        Assert.Equal(WorkflowExecutionStatus.Running, result.Status);
+        Assert.Equal(AssignmentOutcomeKind.OwnershipLost, result.Outcome.Kind);
+        Assert.Equal(WorkflowStatus.Running, result.Saved.Status);
         Assert.Single(host.Commits);
         Assert.DoesNotContain(Probe(services).Seen, seen => seen.Activity == "second");
     }
@@ -120,11 +124,12 @@ public sealed class WorkflowExecutorHostTests
 
         var result = await RunAsync(services, definition, host);
 
-        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.Equal(AssignmentOutcomeKind.Idle, result.Outcome.Kind);
+        Assert.Equal(WorkflowStatus.Cancelled, result.Saved.Status);
         Assert.Equal(["start", "first", "cleanup"], probe.Seen.Select(seen => seen.Activity));
     }
 
-    private static Task<WorkflowExecutionResult> RunAsync(IServiceProvider services,
+    private static async Task<(AssignmentOutcome Outcome, WorkflowInstance Saved)> RunAsync(IServiceProvider services,
         WorkflowDefinition definition, RecordingHost host)
     {
         var time = TimeProvider.System;
@@ -146,8 +151,17 @@ public sealed class WorkflowExecutorHostTests
             StructureHash = new WorkflowScopeCatalog(definition).StructureHash,
             Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
         };
-        var executor = new WorkflowExecutor(services, services.GetRequiredService<IActivityExecutor>(), time);
-        return executor.RunAsync(definition, instance, checkpoint, data, host, CancellationToken.None);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+            Workflow.Create<ExecutorData>("ExecutorChildTarget").Step<FirstActivity>().Build());
+        instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+        var executor = new WorkflowExecutor(services, host);
+        using var run = executor.PrepareAssignment(Guid.NewGuid());
+        host.Recycle = () => executor.Deliver(new Recycle(run.AssignmentId));
+        var ready = await executor.ExecuteAsync(new(run.AssignmentId, instance, null, checkpoint.StructureHash,
+            1, 0, new() { MaxCheckpointBytes = long.MaxValue }, false, []), CancellationToken.None);
+        Assert.NotNull(host.Saved);
+        return (ready.Outcome, host.Saved);
     }
 
     private static ServiceProvider Services()
@@ -165,8 +179,8 @@ public sealed class WorkflowExecutorHostTests
 
     private static ExecutorProbe Probe(IServiceProvider services) => services.GetRequiredService<ExecutorProbe>();
 
-    // The drain a definition's condition starts; read through a static, as a definition may not capture a host.
-    private static CancellationTokenSource? Draining;
+    // The recycle a definition's condition sends; a definition may not capture a host.
+    private static Action? Recycle;
 
     /// <summary>A host with no store: it records what the executor asks of it.</summary>
     private sealed class RecordingHost(ExecutorProbe probe) : IExecutionHost
@@ -174,63 +188,41 @@ public sealed class WorkflowExecutorHostTests
         private readonly List<WorkflowStatus> _commits = [];
 
         public IReadOnlyList<WorkflowStatus> Commits => _commits;
-        public List<WorkflowStep> Invocations { get; } = [];
+        public List<WorkflowInstance> Invocations { get; } = [];
         public List<ChildStart> ChildStarts { get; } = [];
         public int LoseOwnershipAtCommit { get; init; }
         public Func<bool> CancellationWhen { get; init; } = () => false;
 
-        public CancellationTokenSource Draining { get; } = new();
-        public CancellationToken Drain => Draining.Token;
-        public long Epoch => 1;
-        public ExecutionLimits Limits { get; } = new() { MaxCheckpointBytes = long.MaxValue };
-        public bool CanPark => false;
-        public Task? OwnershipLoss => null;
-        public Task<CancellationReason>? CancellationSignal => null;
-        public CancellationReason? ObservedCancellation { get; private set; }
-
-        public void ThrowIfOwnershipLost()
+        public Action Recycle { get; set; } = () => { };
+        public WorkflowInstance? Saved { get; private set; }
+        public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
-        }
-
-        public Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
-        {
+            var commit = request.Commit;
             if (_commits.Count + 1 == LoseOwnershipAtCommit)
-                return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Conflict,
+                return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Conflict,
                     Error: new InvalidOperationException("Another owner committed")));
-            _commits.Add(commit.ReadTrunk().Status);
+            Saved = commit.ReadInstance(Saved);
+            _commits.Add(Saved.Status);
             ChildStarts.AddRange(commit.ChildStarts);
             probe.Commits = _commits.Count;
             // Like a store, the commit reply reports a pending cancellation request.
-            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, _commits.Count,
+            return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Ack, _commits.Count,
                 PendingCancellation: CancellationWhen()
                     ? new CancellationReason { ReasonCode = "host-cancelled" }
                     : null));
         }
 
-        public void ObserveCancellation(CancellationReason reason) => ObservedCancellation ??= reason;
-
-        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting)
+        public Task<StartChildReply> StartChildAsync(StartChild request)
         {
-            Invocations.Add(step);
-            return Task.FromResult(Workflow.Create<ExecutorData>(step.WorkflowName!).Step<FirstActivity>().Build());
+            Invocations.Add(request.Start.Child!);
+            return Task.FromResult(new StartChildReply(request.AssignmentId, request.Start));
         }
 
-        public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
-            string childInstanceId, string parentWaitId) =>
-            new(childInstanceId, System.Text.Json.JsonSerializer.Serialize(new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
-                InstanceId = childInstanceId, WorkflowName = definition.Name, Status = WorkflowStatus.Running,
-                ParentInstanceId = parent.InstanceId, ParentWaitId = parentWaitId
-            }), parentWaitId);
-
-        public long ObservedInboxSequence => 0;
-        public Task? InboxChanged => null;
-
         // No event is sent in these tests: the inbox is always empty.
-        public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) =>
-            Task.FromResult(new InboxPage([], afterSequence, new Dictionary<string, long>()));
-
-        public Task<StoredWait?> ReadWaitAsync(string waitId) => Task.FromResult<StoredWait?>(null);
+        public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) =>
+            Task.FromResult(new ReadInboxReply(request.AssignmentId,
+                new InboxPage([], request.AfterSequence, new Dictionary<string, long>())));
+        public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => Task.FromResult(new ReadWaitReply(request.AssignmentId));
     }
 
     public sealed class ExecutorProbe

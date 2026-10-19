@@ -31,7 +31,8 @@ public enum WorkflowCommitStatus
 /// <summary>
 /// A durable commit receipt. On conflict or a stale epoch, Revision is the current stored revision.
 /// An applied commit also reports the instance's pending cancellation request, if any, so the owner
-/// learns of it with the commit instead of polling.
+/// learns of it with the commit instead of polling. RunnableAtUtc is the stored runnable time;
+/// StoreTimeUtc is a fresh sample of the store clock, including on receipt replay.
 /// </summary>
 public sealed record WorkflowCommitResult(
     WorkflowCommitStatus Status,
@@ -39,7 +40,9 @@ public sealed record WorkflowCommitResult(
     CancellationReason? PendingCancellation = null,
     bool Parked = false,
     bool UnreadEvents = false,
-    IReadOnlyList<string>? MadeRunnable = null)
+    IReadOnlyList<string>? MadeRunnable = null,
+    DateTime? RunnableAtUtc = null,
+    DateTime StoreTimeUtc = default)
 {
     /// <summary>The winning admission, also returned to a losing duplicate for fingerprint comparison.</summary>
     public WorkflowAdmissionRecord? Admission { get; init; }
@@ -54,10 +57,12 @@ public sealed record WorkflowCommitResult(
     public bool Equals(WorkflowCommitResult? other) =>
         other is not null && Status == other.Status && Revision == other.Revision &&
         Equals(Admission, other.Admission) && Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
+        RunnableAtUtc == other.RunnableAtUtc && StoreTimeUtc == other.StoreTimeUtc &&
         UnreadEvents == other.UnreadEvents && MadeRunnable.SequenceEqual(other.MadeRunnable, StringComparer.Ordinal);
 
     public override int GetHashCode() =>
-        HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission);
+        HashCode.Combine(HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission),
+            RunnableAtUtc, StoreTimeUtc);
 }
 
 /// <summary>

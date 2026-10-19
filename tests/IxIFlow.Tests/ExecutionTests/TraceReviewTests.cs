@@ -228,21 +228,50 @@ public sealed class TraceReviewTests
     }
 
     [Fact]
-    public void AcknowledgementClearsTheBufferAndTransfersTheResultWithoutCopyingIt()
+    public async Task AcknowledgementClearsTheBufferAndTransfersTheResultWithoutCopyingIt()
     {
-        var checkpoint = new ExecutionCheckpoint { ResultTrace = [] };
+        var checkpoint = new ExecutionCheckpoint();
         var trace = checkpoint.Trace;
         var first = new ExecutionTraceEntry { EntryType = TraceEntryType.ActivityStarted };
         trace.Add(first);
-        checkpoint.AcknowledgeTrace();
+        trace.Committed();
         Assert.Empty(trace.Pending);
         var discarded = new ExecutionTraceEntry { EntryType = TraceEntryType.ConditionTaken };
         trace.Add(discarded);
         trace.DiscardPending();
-        var result = checkpoint.TakeTraceResult();
-        Assert.Same(first, Assert.Single(result));
-        Assert.Empty(checkpoint.TakeTraceResult());
         Assert.Empty(trace.Pending);
+
+        // The host now owns the acknowledged trace. Hold an activity so its receipt can be inspected
+        // before the host transfers the entries to the result and removes the run's receipt.
+        var time = new FakeTimeProvider(Start);
+        var gate = new TraceGate();
+        var store = new InMemoryWorkflowStateRepository(time);
+        using var services = new ServiceCollection().AddLogging().AddSingleton(gate)
+            .AddIxIFlow().Services.BuildServiceProvider();
+        await using var watch = new CancellationWatch(store, time);
+        var host = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
+            store, services.GetRequiredService<IWorkflowVersionRegistry>(), new InProcessInstanceGate(),
+            timeProvider: time, watch: watch);
+        var running = host.StartAsync(Workflow.Create<Data>("ReceiptTrace").Step<HeldTrace>().Build(),
+            new Data(), new WorkflowOptions(), CancellationToken.None);
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        // Inspect the receipt where this internal ownership assertion moved; do not expose production APIs for it.
+        var assignments = Assert.IsAssignableFrom<System.Collections.IDictionary>(typeof(WorkflowHost.InstanceOperations)
+            .GetField("_assignments", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .GetValue(host));
+        IEnumerable<object> Receipts() => assignments.Values.Cast<object>().Select(run => run.GetType()
+            .GetField("Receipt", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(run)!);
+        var receipt = Assert.Single(Receipts());
+        var acknowledged = Assert.IsType<List<ExecutionTraceEntry>>(receipt.GetType().GetField("Trace")!.GetValue(receipt));
+        var acknowledgedFirst = acknowledged[0];
+        gate.Release.TrySetResult();
+        var result = await running.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Same(acknowledgedFirst, result.TraceEntries[0]);
+        Assert.Equal(acknowledged, result.TraceEntries);
+        Assert.All(acknowledged.Zip(result.TraceEntries), pair => Assert.Same(pair.First, pair.Second));
+        Assert.DoesNotContain(result.TraceEntries, entry => entry.EntryType == discarded.EntryType);
+        Assert.Empty(Receipts());
     }
 
     [Fact]
@@ -279,8 +308,6 @@ public sealed class TraceReviewTests
     [Fact]
     public async Task AVerificationStopDiscardsTheAbandonedPassAndRetainsTheSavedCheckpoint()
     {
-        var time = new FakeTimeProvider(Start);
-        using var services = Services(time);
         var definition = Workflow.Create<Data>("VerificationTrace").Step<Noop>().Parallel(parallel => parallel
             .Do(body => body.WaitFor<Go>("go"))).Build();
         var scopes = new WorkflowScopeCatalog(definition);
@@ -298,22 +325,24 @@ public sealed class TraceReviewTests
             Status = WorkflowStatus.Running, StartedAt = Start.UtcDateTime };
         var host = new VerificationHost();
         var commits = host.Commits;
-        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, data, scopes, Start.UtcDateTime);
+        var session = new ExecutionSession(host, Guid.NewGuid(), instance.InstanceId, 1,
+            new() { VerifyCheckpointParts = true }, false);
+        await ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, data, scopes, Start.UtcDateTime);
+        var savedState = StoredCheckpoint.WholeState(instance);
+        var savedData = instance.WorkflowDataJson;
         // Deliberately change a saved branch without its dirty mark: diagnostic verification must stop this pass.
         branch.Status = ContinuationStatus.WaitingResolution;
         checkpoint.Trace.Add(new ExecutionTraceEntry { EntryType = TraceEntryType.ConditionTaken,
             Payload = new ConditionTrace("root/0", WorkflowStepType.Conditional, root.Id, 0, "root/0/then", ConditionPath.Then) });
         checkpoint.Trace.Add(new ExecutionTraceEntry { EntryType = TraceEntryType.EventReceived,
             Payload = new ReceivedEventTrace("pending", "go", typeof(Go).AssemblyQualifiedName!, "wait", "root/0") });
-        var executor = new WorkflowExecutor(services, services.GetRequiredService<IActivityExecutor>(), time);
-        var result = await executor.RunAsync(definition, instance, checkpoint, data, host, CancellationToken.None);
-        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
-        Assert.Empty(result.TraceEntries);
-        Assert.Equal(2, commits.Count);
-        Assert.All(commits, commit => Assert.Empty(commit.TraceEntries));
-        var saved = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
-        Assert.Equal(OperatorStopKind.Verification, saved.OperatorStop!.Kind);
-        Assert.Equal(ContinuationStatus.Waiting, saved.Continuations.Single(item => item.Id == branch.Id).Status);
+        Assert.Equal(2, checkpoint.Trace.Pending.Count);
+        var rejected = await Assert.ThrowsAsync<CheckpointVerificationException>(() =>
+            ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, data, scopes, Start.UtcDateTime));
+        Assert.Contains(StoredCheckpoint.BranchKey(branch.Id), rejected.Message);
+        Assert.Single(commits);
+        Assert.Equal(savedState, StoredCheckpoint.WholeState(instance));
+        Assert.Equal(savedData, instance.WorkflowDataJson);
         Assert.Empty(checkpoint.Trace.Pending);
     }
 
@@ -342,28 +371,19 @@ public sealed class TraceReviewTests
     private sealed class VerificationHost : IExecutionHost
     {
         public List<CheckpointCommit> Commits { get; } = [];
-        public ExecutionLimits Limits { get; } = new() { VerifyCheckpointParts = true };
-        public CancellationToken Drain => CancellationToken.None;
-        public Task? OwnershipLoss => null;
-        public Task<CancellationReason>? CancellationSignal => null;
-        public long ObservedInboxSequence => 0;
-        public Task? InboxChanged => null;
-        public CancellationReason? ObservedCancellation => null;
-        public long Epoch => 1;
-        public bool CanPark => false;
-        public void ThrowIfOwnershipLost() { }
-        public void ObserveCancellation(CancellationReason reason) { }
-        public Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
+        public WorkflowInstance? Saved { get; private set; }
+        public List<ExecutionTraceEntry> TraceEntries { get; } = [];
+        public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
+            var commit = request.Commit;
+            Saved = commit.ReadInstance(Saved);
+            TraceEntries.AddRange(commit.TraceEntries.Select(json => JsonSerializer.Deserialize<ExecutionTraceEntry>(json)!));
             Commits.Add(commit);
-            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, Commits.Count));
+            return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Ack, Commits.Count));
         }
-        public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) =>
-            Task.FromResult(new InboxPage([], afterSequence, new Dictionary<string, long>()));
-        public Task<StoredWait?> ReadWaitAsync(string waitId) => Task.FromResult<StoredWait?>(null);
-        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) => throw new NotSupportedException();
-        public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
-            string childInstanceId, string parentWaitId) => throw new NotSupportedException();
+        public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => throw new NotSupportedException();
+        public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => throw new NotSupportedException();
+        public Task<StartChildReply> StartChildAsync(StartChild request) => throw new NotSupportedException();
     }
 
     private static ServiceProvider Services(FakeTimeProvider time, Action<IxIFlowOptions>? configure = null,
@@ -375,6 +395,21 @@ public sealed class TraceReviewTests
         services.AddSingleton<IWorkflowStateRepository>(store ?? new InMemoryWorkflowStateRepository(time));
         services.AddIxIFlow(configure ?? (_ => { }));
         return services.BuildServiceProvider();
+    }
+
+    public sealed class TraceGate
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public sealed class HeldTrace(TraceGate gate) : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            gate.Entered.TrySetResult();
+            await gate.Release.Task.WaitAsync(cancellationToken);
+        }
     }
 
     public sealed class Data { public List<int> Items { get; set; } = [1]; }
