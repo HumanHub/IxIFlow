@@ -99,7 +99,8 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     {
         await using var services = Services(sqlite);
         var client = services.GetRequiredService<IWorkflowClient>();
-        var definition = new WorkflowBuilder<Data, object>([], "RequestSuggestion")
+        var definition = new WorkflowBuilder<Data, object>([], "RequestSuggestion",
+                1 + (hasDefault ? 1 : 0) + (timeout ? 2 : 0))
             .Request<Ask>("review")
             .WaitFor<Answer>("review", configure: wait =>
             {

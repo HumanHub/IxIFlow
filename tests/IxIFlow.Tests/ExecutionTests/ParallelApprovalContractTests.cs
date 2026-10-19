@@ -1,9 +1,11 @@
 using IxIFlow.Builders;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -522,14 +524,24 @@ public class ParallelApprovalContractTests
         var repository = new InMemoryWorkflowStateRepository();
         await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
+        string checkpointJson;
         using (var wrongProvider = CreateServices(repository))
         {
+            var catalog = wrongProvider.GetRequiredService<IWorkflowCatalog>();
+            await catalog.RegisterWorkflowAsync(CreateRecoverWorkflow());
             var changed = Workflow.Create<ApprovalData>("RecoverApproval")
                 .Step<StartActivity>()
                 .WaitFor<ApprovalReply>("finance")
                 .Build();
-            await wrongProvider.GetRequiredService<IWorkflowCatalog>()
-                .RegisterWorkflowAsync(changed);
+            var registration = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(changed));
+            Assert.Equal(WorkflowErrorKind.InvalidRequest, registration.Kind);
+
+            var instance = (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!;
+            var checkpoint = JsonNode.Parse(instance.ExecutionStateJson)!;
+            checkpoint["StructureHash"] = new WorkflowScopeCatalog(changed).StructureHash;
+            instance.ExecutionStateJson = checkpoint.ToJsonString();
+            await repository.SeedAsync(instance);
+            checkpointJson = (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.ExecutionStateJson;
             var rejected = await wrongProvider.GetRequiredService<IWorkflowClient>()
                 .RecoverAsync(saved.InstanceId);
             Assert.Equal(WorkflowExecutionStatus.Faulted, rejected.Status);
@@ -537,6 +549,9 @@ public class ParallelApprovalContractTests
 
         var stillSaved = await repository.GetWorkflowInstanceAsync(saved.InstanceId);
         Assert.Equal(WorkflowStatus.Running, stillSaved!.Status);
+        Assert.Equal(checkpointJson, stillSaved.ExecutionStateJson);
+        stillSaved.ExecutionStateJson = saved.ExecutionStateJson;
+        await repository.SeedAsync(stillSaved);
         using var correctProvider = CreateServices(repository);
         await correctProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(CreateRecoverWorkflow());

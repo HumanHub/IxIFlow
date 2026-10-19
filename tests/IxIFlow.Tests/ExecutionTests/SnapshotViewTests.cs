@@ -1,9 +1,11 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
+using System.Text.Json.Nodes;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -54,19 +56,30 @@ public sealed class SnapshotViewTests
             instanceId = (await first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(Waiting("SnapshotDefinition"), new ViewData())).InstanceId;
 
-        // A host that has not registered the definition, then one that registered a different one.
+        // A host that has not registered the definition, then a mismatched stored checkpoint.
         using var unregistered = Services(repository, TimeProvider.System);
         var missing = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => unregistered.GetRequiredService<IWorkflowClient>().GetSnapshotAsync(instanceId));
         Assert.Contains("is unavailable", missing.Message);
 
         using var changed = Services(repository, TimeProvider.System);
-        await changed.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
-            Workflow.Create<ViewData>("SnapshotDefinition").Step<ViewActivity>().Step<ViewActivity>()
-                .WaitFor<ViewEvent>("go").Build());
+        var definition = Workflow.Create<ViewData>("SnapshotDefinition").Step<ViewActivity>().Step<ViewActivity>()
+            .WaitFor<ViewEvent>("go").Build();
+        var catalog = changed.GetRequiredService<IWorkflowCatalog>();
+        var registration = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(definition));
+        Assert.Equal(WorkflowErrorKind.InvalidRequest, registration.Kind);
+        await catalog.RegisterWorkflowAsync(Waiting("SnapshotDefinition"));
+
+        var instance = (await repository.GetWorkflowInstanceAsync(instanceId))!;
+        var checkpoint = JsonNode.Parse(instance.ExecutionStateJson)!;
+        checkpoint["StructureHash"] = new WorkflowScopeCatalog(definition).StructureHash;
+        instance.ExecutionStateJson = checkpoint.ToJsonString();
+        await repository.SeedAsync(instance);
+        var checkpointJson = (await repository.GetWorkflowInstanceAsync(instanceId))!.ExecutionStateJson;
         var differs = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => changed.GetRequiredService<IWorkflowClient>().GetSnapshotAsync(instanceId));
         Assert.Contains("differs from the saved version", differs.Message);
+        Assert.Equal(checkpointJson, (await repository.GetWorkflowInstanceAsync(instanceId))!.ExecutionStateJson);
     }
 
     private static WorkflowDefinition Waiting(string name) =>
