@@ -15,6 +15,9 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
     public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
         inner.UnregisterMemberAsync(memberId, cancellationToken);
+    public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
+        inner.GetWorkflowDemandsAsync(instanceId);
+
     public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
         inner.GetLiveMembersAsync(cancellationToken);
 

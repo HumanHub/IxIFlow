@@ -27,6 +27,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 SELECT incarnation, instance_id, sender, trigger_id, owner_kind, owner_id, tenant FROM ixiflow_workflow_ownership WHERE 1=0;
                 SELECT delivery_identity, payload_hash, sequence, rejection, expires_at_utc FROM ixiflow_webhook_deliveries WHERE 1=0;
                 SELECT member_id, kind, name, endpoint, slots, engine_version, heartbeat_interval_ticks, started_at_utc, heartbeat_at_utc FROM ixiflow_hosts WHERE 1=0;
+                SELECT instance_id, demand_key, demand_value, expires_at_utc, inherit FROM ixiflow_workflow_demands WHERE 1=0;
                 SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();

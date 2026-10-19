@@ -7,6 +7,10 @@ namespace IxIFlow.Core.Runtime;
 
 internal sealed class ExecutionCheckpoint
 {
+    public List<WorkflowDemand> Demands { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TimeSpan? HostPinLifetime { get; set; }
+
     [JsonIgnore]
     public TraceBuffer Trace { get; set; } = new();
 

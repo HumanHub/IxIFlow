@@ -40,14 +40,17 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
             if (EngineSymbols.For(start.Compilation) is not { } engine)
                 return;
             var code = new WorkflowCode(engine.Compilation);
+            var demands = new WorkflowCode(engine.Compilation, target =>
+                target is IPropertySymbol { Name: "UtcNow" } property && engine.IsContext(property.ContainingType)
+                    ? "WorkflowContext.UtcNow" : null);
             start.RegisterOperationAction(operation =>
-                CheckExpressions(operation, engine, code), OperationKind.Invocation);
+                CheckExpressions(operation, engine, code, demands), OperationKind.Invocation);
             if (engine.Combiner != null)
                 start.RegisterSymbolAction(symbol => CheckCombiner(symbol, engine, code), SymbolKind.NamedType);
         });
     }
 
-    private static void CheckExpressions(OperationAnalysisContext context, EngineSymbols engine, WorkflowCode code)
+    private static void CheckExpressions(OperationAnalysisContext context, EngineSymbols engine, WorkflowCode code, WorkflowCode demands)
     {
         var invocation = (IInvocationOperation)context.Operation;
         if (!engine.IsBuilderMethod(invocation.TargetMethod) || NameOnly.Contains(invocation.TargetMethod.Name))
@@ -65,9 +68,10 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
             // A destination is set, so only its lambda tells what runs; one kept elsewhere is left to the build.
             if (destination && value is not IAnonymousFunctionOperation)
                 continue;
-            foreach (var (use, member) in code.Uses(value, destination, context.CancellationToken))
+            var demand = invocation.TargetMethod.Name == "DemandFrom";
+            foreach (var (use, member) in (demand ? demands : code).Uses(value, destination, context.CancellationToken))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureExpression, use.Syntax.GetLocation(),
-                    ClockFix(engine, use, member), member));
+                    demand ? null : ClockFix(engine, use, member), member));
         }
     }
 

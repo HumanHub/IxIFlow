@@ -55,6 +55,17 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
             }
         }
 
+        for (var index = 0; index < document.Demands.Count; index++)
+        {
+            var demand = document.Demands[index];
+            var path = $"demands[{index}]";
+            if (string.IsNullOrWhiteSpace(demand.Key) || demand.Key.Length > 400)
+                Invalid("DEMAND001", "Demand keys must contain 1 to 400 characters", path + ".key", diagnostics);
+            if (demand.Value != null && demand.From != null)
+                Invalid("DEMAND002", "A demand accepts value or from, not both", path, diagnostics);
+            ValidateExpression(demand.From, diagnostics, path + ".from", ["workflow"], document.Code);
+        }
+
         foreach (var activityTemplate in document.Activities)
         {
             await ValidateActivityTemplateAsync(activityTemplate.Key, activityTemplate.Value, document, diagnostics, context, cancellationToken);

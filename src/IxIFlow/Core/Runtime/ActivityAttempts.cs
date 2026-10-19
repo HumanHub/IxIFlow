@@ -347,6 +347,12 @@ internal sealed class ActivityAttempts(
             var data = ChildInputs.NewData(childDefinition, step, context);
             start = host.StartChild(childDefinition, data, instance, pending.Id, Guid.NewGuid().ToString("N"));
         }
+        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidRequest)
+        {
+            continuation.PendingActivity = pending;
+            Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
+            return Settles(ActivityRunResult.Unresolved($"The child workflow could not start: {error.Message}"));
+        }
         catch (CheckpointLimitExceededException error)
         {
             // The same child would be refused again, so an operator decides (A-08, D-28).

@@ -267,7 +267,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             Names = children.Select(child => child.Instance!.WorkflowName).ToArray(),
             Statuses = children.Select(child => child.Instance!.Status.ToString()).ToArray(),
             CorrelationIds = children.Select(child => child.Instance!.CorrelationId).ToArray(),
-            Payloads = children.Select(child => child.Payload).ToArray()
+            Payloads = children.Select(child => StampStartPayload(child.Payload, now)).ToArray()
         }, transaction);
     }
 
@@ -618,6 +618,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             DELETE FROM ixiflow_workflow_leases WHERE instance_id = @InstanceId
             """,
         Statement.DeleteRows => """
+                DELETE FROM ixiflow_workflow_demands WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_outbox_deliveries WHERE event_id IN (SELECT e.event_id FROM ixiflow_outbox_events e WHERE e.instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=e.event_id AND pending.status=0));
                 DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
@@ -762,6 +763,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(DemandsSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }

@@ -145,6 +145,9 @@ public static class WorkflowStoreRules
 /// </summary>
 public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore
 {
+    /// <summary>The resolved placement rows saved in the instance's creating transaction.</summary>
+    Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId);
+
     /// <summary>Registers a member and its capabilities atomically, stamping start and heartbeat with store time.</summary>
     Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default);
 
@@ -296,6 +299,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
     private readonly object _claimLock = new();
+    private readonly Dictionary<string, IReadOnlyList<WorkflowDemand>> _demands = new(StringComparer.Ordinal);
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] ContentHash, long Revision)> _commits = new();
     private long _executionEpoch;
     // A lease record keeps the instance's crash count until deletion. Epochs come from the store-wide
@@ -509,6 +513,19 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     $"Child workflow '{taken.ChildInstanceId}' cannot start: an instance with its ID exists");
             // One store time for the whole commit: its deadlines, its runnable time and its records (D-35).
             var now = Now;
+            // Prepare all creation projections before mutating any in-memory table.
+            if (stored == null)
+                snapshot.ExecutionStateJson = JsonSerializer.Deserialize<WorkflowInstance>(WorkflowDemands.StampStartPayload(
+                    JsonSerializer.Serialize(snapshot), now))!.ExecutionStateJson;
+            var createdDemands = stored == null ? WorkflowDemands.Saved(snapshot).ToArray() : null;
+            var createdChildren = commit.ChildStarts.Select(start =>
+            {
+                var child = JsonSerializer.Deserialize<WorkflowInstance>(WorkflowDemands.StampStartPayload(start.Payload, now))!;
+                child.Incarnation = Guid.NewGuid();
+                child.Revision = 1;
+                child.RunnableAtUtc = now;
+                return (Instance: child, Demands: WorkflowDemands.Saved(child).ToArray());
+            }).ToArray();
             var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
                 !_acknowledgedCancellations.Contains(commit.InstanceId);
             // A run that has not read every arrival neither parks nor goes idle out of reach.
@@ -566,6 +583,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             foreach (var part in commit.Parts)
                 parts[part.Key] = part.Json;
             snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
+            if (createdDemands != null)
+                _demands[commit.InstanceId] = createdDemands;
             _instances[commit.InstanceId] = snapshot;
             RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
@@ -586,12 +605,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 };
             var madeRunnable = new List<string>();
             // Each child starts as its own instance, runnable now, with no owner yet (D-17).
-            foreach (var start in commit.ChildStarts)
+            foreach (var created in createdChildren)
             {
-                var child = JsonSerializer.Deserialize<WorkflowInstance>(start.Payload)!;
-                child.Incarnation = Guid.NewGuid();
-                child.Revision = 1;
-                child.RunnableAtUtc = now;
+                var child = created.Instance;
+                _demands[child.InstanceId] = created.Demands;
                 _instances[child.InstanceId] = child;
                 _parts.Remove(child.InstanceId);
                 madeRunnable.Add(child.InstanceId);
@@ -808,6 +825,13 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         _leases.TryGetValue(commit.InstanceId, out var lease) && lease.ExpiresAtUtc > Now &&
         lease.Epoch == commit.Epoch;
 
+    public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId)
+    {
+        lock (_claimLock)
+            return Task.FromResult<IReadOnlyList<WorkflowDemand>>(_demands.TryGetValue(instanceId, out var demands)
+                ? demands.ToArray() : []);
+    }
+
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
     {
         lock (_claimLock)
@@ -895,6 +919,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
             Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
         _instances.TryRemove(instanceId, out _);
+        _demands.Remove(instanceId);
         _leases.Remove(instanceId);
         _endedAt.Remove(instanceId);
         _cancellations.Remove(instanceId);
@@ -1031,6 +1056,8 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
                 CreatedBy = definition.CreatedBy,
                 Tags = definition.Tags,
                 Steps = definition.Steps,
+                Demands = definition.Demands.ToList(),
+                RegistrationDemands = definition.RegistrationDemands.ToArray(),
                 Metadata = new Dictionary<string, object>(definition.Metadata)
                 {
                     ["IsActive"] = false
