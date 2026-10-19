@@ -47,7 +47,7 @@ public static class WorkflowCompilation
         var references = NormalizeReferences(paths);
         if (options != null)
         {
-            var assemblies = references.Select(path => Assembly.Load(AssemblyName.GetAssemblyName(path))).ToArray();
+            var assemblies = ReferenceAssemblies(references);
             foreach (var name in options.Types.Values.Concat(options.WorkflowDataTypes.Values)
                          .Concat(options.Workflows.Values.Select(item => item.DataType)).Distinct(StringComparer.Ordinal))
             {
@@ -57,6 +57,14 @@ public static class WorkflowCompilation
             }
         }
         return references;
+    }
+
+    internal static IAssemblySymbol[] ReferenceAssemblies(IEnumerable<string> paths)
+    {
+        var compilation = CSharpCompilation.Create("WorkflowReferences",
+            references: paths.Select(path => MetadataReference.CreateFromFile(path)));
+        return compilation.References.Select(reference => compilation.GetAssemblyOrModuleSymbol(reference))
+            .OfType<IAssemblySymbol>().ToArray();
     }
 
     internal static string[] NormalizeReferences(IEnumerable<string> paths) => paths
