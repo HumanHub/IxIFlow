@@ -14,9 +14,11 @@ public sealed partial class SqliteWorkflowStateRepository
         );
         """;
 
-    internal override string DemandSetsLockSql => """
+    internal override string CreateDemandSetsLockSql => """
         SELECT 1; -- the owned SQLite writer transaction already serializes creation and collection
         """;
+
+    internal override string CollectDemandSetsLockSql => CreateDemandSetsLockSql;
 
     internal override string ReadDemandsSql => """
         SELECT demand.demand_key AS [Key], demand.demand_value AS [Value], demand.expires_at_utc AS [ExpiresAtUtc], demand.inherit AS [Inherit]
@@ -32,8 +34,11 @@ public sealed partial class SqliteWorkflowStateRepository
         FROM ixiflow_demand_set_rows WHERE demand_set_id = @DemandSetId
         """;
 
-    internal override string FindDemandSetSql => "SELECT demand_set_id FROM ixiflow_demand_sets WHERE demand_set_id = @DemandSetId";
-    internal override string InsertDemandSetSql => "INSERT INTO ixiflow_demand_sets (demand_set_id) VALUES (@DemandSetId)";
+    internal override string InsertDemandSetSql => """
+        INSERT INTO ixiflow_demand_sets (demand_set_id) VALUES (@DemandSetId)
+        ON CONFLICT (demand_set_id) DO NOTHING
+        RETURNING demand_set_id;
+        """;
     internal override string InsertDemandSql => """
         INSERT INTO ixiflow_demand_set_rows (demand_set_id, demand_key, demand_value, expires_at_utc, inherit)
         VALUES (@DemandSetId, @Key, @Value, @ExpiresAtUtc, @Inherit)

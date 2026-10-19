@@ -14,7 +14,11 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         );
         """;
 
-    internal override string DemandSetsLockSql => """
+    internal override string CreateDemandSetsLockSql => """
+        SELECT pg_advisory_xact_lock_shared(7843921052389);
+        """;
+
+    internal override string CollectDemandSetsLockSql => """
         SELECT pg_advisory_xact_lock(7843921052389);
         """;
 
@@ -32,8 +36,11 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         FROM ixiflow_demand_set_rows WHERE demand_set_id = @DemandSetId
         """;
 
-    internal override string FindDemandSetSql => "SELECT demand_set_id FROM ixiflow_demand_sets WHERE demand_set_id = @DemandSetId";
-    internal override string InsertDemandSetSql => "INSERT INTO ixiflow_demand_sets (demand_set_id) VALUES (@DemandSetId)";
+    internal override string InsertDemandSetSql => """
+        INSERT INTO ixiflow_demand_sets (demand_set_id) VALUES (@DemandSetId)
+        ON CONFLICT (demand_set_id) DO NOTHING
+        RETURNING demand_set_id;
+        """;
     internal override string InsertDemandSql => """
         INSERT INTO ixiflow_demand_set_rows (demand_set_id, demand_key, demand_value, expires_at_utc, inherit)
         VALUES (@DemandSetId, @Key, @Value, @ExpiresAtUtc, @Inherit)
