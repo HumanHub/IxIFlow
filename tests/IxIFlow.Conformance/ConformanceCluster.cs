@@ -53,6 +53,7 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         services.Replace(ServiceDescriptor.Singleton(Registry));
         services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
         _configure(services);
+        _store.ConfigureHost(services);
         if (_time != null)
             services.AddSingleton(_time);
         var host = services.BuildServiceProvider();
@@ -60,6 +61,7 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         {
             host.GetRequiredService<IWorkflowStateRepository>();
             var engine = host.GetRequiredService<IWorkflowClient>();
+            _store.StartHostLinksAsync(host).GetAwaiter().GetResult();
             _hosts.Add(host);
             return engine;
         }

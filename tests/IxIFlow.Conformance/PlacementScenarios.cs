@@ -17,7 +17,7 @@ public sealed class PlacementScenarios
 {
     [Theory]
     [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
-    public async Task DemandedInstanceRunsOnlyOnTheMatchingHostWithoutCoordinators(string profile)
+    public async Task DemandedInstanceRunsOnlyOnTheMatchingHost(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
         var ran = new ConcurrentQueue<string>();
@@ -34,6 +34,7 @@ public sealed class PlacementScenarios
             services.Replace(ServiceDescriptor.Singleton(store.NewRepository()));
             services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
             services.AddSingleton(new Probe(name, ran));
+            store.ConfigureHost(services);
             return services.BuildServiceProvider();
         }
         await using var wrong = Host("wrong");
@@ -42,6 +43,8 @@ public sealed class PlacementScenarios
             .Step<RecordHost>().WaitFor<Go>("go").Step<RecordHost>().Build();
         await wrong.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
         await matching.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await store.StartHostLinksAsync(wrong);
+        await store.StartHostLinksAsync(matching);
         var first = wrong.GetRequiredService<IWorkflowClient>();
         using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var id = await first.StartAsync(definition, new Data(), cancellationToken: patience.Token);
