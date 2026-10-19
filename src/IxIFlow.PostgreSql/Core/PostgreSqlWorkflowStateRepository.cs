@@ -252,12 +252,12 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, incarnation, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
+                    (instance_id, incarnation, workflow_name, workflow_version, status, correlation_id, runnable_at_utc, state_json, revision,
                      parent_instance_id)
-                SELECT child.instance_id, child.incarnation, child.workflow_name, child.status, child.correlation_id, @Now,
+                SELECT child.instance_id, child.incarnation, child.workflow_name, child.workflow_version, child.status, child.correlation_id, @Now,
                     child.state_json, 1, @ParentInstanceId
-                FROM unnest(@Ids::text[], @Incarnations::uuid[], @Names::text[], @Statuses::text[], @CorrelationIds::text[],
-                    @Payloads::text[]) AS child (instance_id, incarnation, workflow_name, status, correlation_id, state_json)
+                FROM unnest(@Ids::text[], @Incarnations::uuid[], @Names::text[], @Versions::integer[], @Statuses::text[], @CorrelationIds::text[],
+                    @Payloads::text[]) AS child (instance_id, incarnation, workflow_name, workflow_version, status, correlation_id, state_json)
                 """, new
         {
             Now = Timestamp(now),
@@ -265,6 +265,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             Ids = children.Select(child => child.Instance!.InstanceId).ToArray(),
             Incarnations = children.Select(_ => Guid.NewGuid()).ToArray(),
             Names = children.Select(child => child.Instance!.WorkflowName).ToArray(),
+            Versions = children.Select(child => child.Instance!.WorkflowVersion).ToArray(),
             Statuses = children.Select(child => child.Instance!.Status.ToString()).ToArray(),
             CorrelationIds = children.Select(child => child.Instance!.CorrelationId).ToArray(),
             Payloads = children.Select(child => child.Payload).ToArray()
@@ -574,14 +575,14 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
-              VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
+                  (instance_id, incarnation, workflow_name, workflow_version, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
+              VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
-                  workflow_name = @WorkflowName, status = @Status,
+                  workflow_name = @WorkflowName, workflow_version = @WorkflowVersion, status = @Status,
                   correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
                   runnable_at_utc = @RunnableAtUtc,
                   inbox_read_through = COALESCE(@InboxReadThrough, inbox_read_through),
@@ -669,6 +670,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id varchar(100) COLLATE "C" NOT NULL PRIMARY KEY,
             workflow_name varchar(200) COLLATE "C" NOT NULL,
+            workflow_version integer NOT NULL,
             status varchar(50) COLLATE "C" NOT NULL,
             correlation_id varchar(100) COLLATE "C" NULL,
             runnable_at_utc timestamptz NULL,
@@ -686,6 +688,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             ON ixiflow_workflow_instances (status);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_workflow_name
             ON ixiflow_workflow_instances (workflow_name);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_unfinished_workflow
+            ON ixiflow_workflow_instances (workflow_name, workflow_version)
+            WHERE status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut');
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_correlation_id
             ON ixiflow_workflow_instances (correlation_id);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_parent

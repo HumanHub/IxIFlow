@@ -52,10 +52,11 @@ public sealed partial class SqlWorkflowStateRepository
             FROM OPENJSON(@Callers) WITH (Name nvarchar(200), Version int) AS caller
             WHERE EXISTS (
                 SELECT 1 FROM dbo.IxIFlowWorkflowInstances AS instance
-                WHERE instance.WorkflowName = caller.Name COLLATE Latin1_General_100_BIN2
-                AND CASE WHEN instance.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
+                -- Seek in the column's collation, then enforce ordinal name identity.
+                WHERE instance.WorkflowName = caller.Name
+                    AND instance.WorkflowVersion = caller.Version
                     AND instance.WorkflowName = caller.Name COLLATE Latin1_General_100_BIN2
-                    THEN CAST(JSON_VALUE(instance.StateJson, '$.WorkflowVersion') AS int) END = caller.Version)
+                    AND instance.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
             """,
         Statement.CatalogVersionInsert => """
             INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson)

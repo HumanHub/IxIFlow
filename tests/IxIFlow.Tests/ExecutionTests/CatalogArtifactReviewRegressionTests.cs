@@ -185,7 +185,8 @@ public sealed class CatalogArtifactReviewRegressionTests
                             () => transaction.RollbackAsync());
                     }
                     Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
-                    Assert.Contains("unfinished parent", error.Message);
+                    Assert.Contains("has unfinished parent instances of", error.Message);
+                    Assert.DoesNotContain("required by caller", error.Message);
                     Assert.Contains(name, error.Message);
                     parent = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
                     parent.Status = WorkflowStatus.Completed;

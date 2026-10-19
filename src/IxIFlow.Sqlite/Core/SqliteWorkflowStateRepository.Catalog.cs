@@ -49,9 +49,8 @@ public sealed partial class SqliteWorkflowStateRepository
             WHERE EXISTS (
                 SELECT 1 FROM ixiflow_workflow_instances AS instance
                 WHERE instance.workflow_name = json_extract(caller.value, '$.Name')
-                AND CASE WHEN instance.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
-                    AND instance.workflow_name = json_extract(caller.value, '$.Name')
-                    THEN json_extract(instance.state_json, '$.WorkflowVersion') END = json_extract(caller.value, '$.Version'))
+                    AND instance.workflow_version = json_extract(caller.value, '$.Version')
+                    AND instance.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
             LIMIT 1
             """,
         Statement.CatalogVersionInsert => """
