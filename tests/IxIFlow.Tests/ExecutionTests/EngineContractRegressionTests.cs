@@ -329,7 +329,7 @@ public class EngineContractRegressionTests
             .CancelAsync(instance.InstanceId,
                 new CancellationReason { ReasonCode = "operator" });
 
-        Assert.Equal(WorkflowExecutionStatus.Failed, result.Status);
+        Assert.Equal(WorkflowExecutionStatus.Terminated, result.Status);
     }
 
     // A cancellation that arrives after the instance completed changes nothing and does not report it cancelled.
