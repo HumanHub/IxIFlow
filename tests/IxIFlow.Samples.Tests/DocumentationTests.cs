@@ -42,7 +42,7 @@ public sealed class DocumentationTests
             .Build();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.MaxActiveBranches = 2; });
+        services.AddIxIFlow(options => options.MaxActiveBranches = 2);
         await using var provider = services.BuildServiceProvider();
         var client = SampleTests.Client(provider);
         var finished = await client.RunAsync(definition, new QuoteData());
@@ -53,7 +53,7 @@ public sealed class DocumentationTests
 
         var limitedServices = new ServiceCollection();
         limitedServices.AddLogging();
-        limitedServices.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.MaxActiveBranches = 1; });
+        limitedServices.AddIxIFlow(options => options.MaxActiveBranches = 1);
         await using var limitedProvider = limitedServices.BuildServiceProvider();
         var limitedClient = SampleTests.Client(limitedProvider);
         var stopped = await limitedClient.RunAsync(definition, new QuoteData());

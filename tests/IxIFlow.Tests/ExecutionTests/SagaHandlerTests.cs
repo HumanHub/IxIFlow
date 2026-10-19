@@ -1445,7 +1445,7 @@ public sealed class SagaHandlerTests
         services.AddLogging();
         if (time != null)
             services.AddSingleton(time);
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         if (repository != null)
             services.AddSingleton(repository);
         services.AddSingleton(journal ?? new Journal());

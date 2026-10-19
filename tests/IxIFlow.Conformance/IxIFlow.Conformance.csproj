@@ -30,7 +30,4 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Include="../TestReplyKeys.cs" Link="TestReplyKeys.cs" />
-  </ItemGroup>
 </Project>

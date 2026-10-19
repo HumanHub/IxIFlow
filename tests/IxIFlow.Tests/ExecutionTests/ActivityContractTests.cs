@@ -241,7 +241,7 @@ public sealed class ActivityContractTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         return services.BuildServiceProvider();
     }
 

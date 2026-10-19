@@ -272,7 +272,7 @@ public sealed class WaitRecipeScenarios
         Assert.Equal(WorkflowExecutionStatus.Suspended, parent.Status);
         // The child runs as an instance of its own and sends its request when a slot takes it (D-17).
         var request = await mailer.ToAsync("purchasing");
-        Assert.True(ReplyToken.TryVerify(TestReplyKeys.Ring, request.ReplyToken, out var childId, out _, out _));
+        Assert.True(ReplyToken.TryRead(request.ReplyToken, out var childId, out _, out _));
         Assert.NotEqual(parent.InstanceId, childId);
 
         var answered = await engine.ReplyAsync(request.ReplyToken, new ApprovalDecision { Approved = true });
@@ -296,7 +296,7 @@ public sealed class WaitRecipeScenarios
         var started = await engine.RunAsync(PaymentRecipe.Definition(TimeSpan.FromSeconds(2)),
             new Payment { OrderId = "order-14", Amount = 40 });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        Assert.True(ReplyToken.TryVerify(TestReplyKeys.Ring, payments.Token, out var instanceId, out var waitId, out var subject));
+        Assert.True(ReplyToken.TryRead(payments.Token, out var instanceId, out var waitId, out var subject));
 
         // The callback is stored in time, but nothing runs the instance until the host's timer does so
         // at the deadline, as when the owner is gone or slow: the callback still wins.

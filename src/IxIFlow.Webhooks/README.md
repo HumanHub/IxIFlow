@@ -4,7 +4,7 @@ Outgoing webhook delivery for IxIFlow outbox events. This is a separate package 
 
 <!-- snippet: samples/IxIFlow.Samples/DocumentationExamples.cs#webhook-registration -->
 ```csharp
-services.AddIxIFlow(options => options.ReplyTokenKeys = SampleReplyKeys.Ring)
+services.AddIxIFlow()
     .ConfigureOutbox(concurrency: 8)
     .AddWebhook(new WebhookEndpoint(
         "orders", new Uri("https://receiver.example/workflow-events"),

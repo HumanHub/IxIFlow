@@ -94,7 +94,7 @@ public sealed class EventArrivalTests
             services.AddSingleton(repository);
         services.AddSingleton<SlowGate>();
         services.AddTransient<SlowActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         return services.BuildServiceProvider();
     }
 

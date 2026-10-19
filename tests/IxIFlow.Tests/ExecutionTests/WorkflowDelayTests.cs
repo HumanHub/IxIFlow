@@ -124,7 +124,7 @@ public sealed class WorkflowDelayTests : IClassFixture<SqliteTestDatabase<Workfl
         services.AddLogging();
         if (time != null)
             services.AddSingleton(time);
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddSingleton(repository);
         services.AddTransient<NoopActivity>();
         services.AddTransient<MarkActivity>();

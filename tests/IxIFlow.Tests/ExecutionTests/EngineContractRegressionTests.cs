@@ -210,7 +210,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddTransient<MarkChildActivity>();
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
@@ -232,7 +232,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddTransient<MarkChildActivity>();
         using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>()
@@ -250,7 +250,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddTransient<MarkChildActivity>();
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
@@ -278,7 +278,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<RegressionData>("TerminatedBeforeCancel")
             .Step<MarkChildActivity>()
@@ -308,7 +308,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var completed = await engine.RunAsync(Workflow.Create<RegressionData>("CompletedBeforeCancel")
@@ -342,7 +342,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
 
         WorkflowExecutionResult instance;
@@ -365,7 +365,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.UseCustomStateRepository = typeof(ConfiguredStateRepository); });
+        services.AddIxIFlow(options => options.UseCustomStateRepository = typeof(ConfiguredStateRepository));
 
         var registrations = services.Where(service => service.ServiceType == typeof(IWorkflowStateRepository)).ToList();
         Assert.Single(registrations);
@@ -385,7 +385,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
 
         var definition = Workflow.Create<RegressionData>("LocalResume")
@@ -420,7 +420,7 @@ public class EngineContractRegressionTests
         services.AddLogging();
         services.AddSingleton(gate);
         services.AddTransient<BlockingResumeActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var firstScope = provider.CreateScope();
         using var secondScope = provider.CreateScope();
@@ -470,7 +470,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
 
@@ -494,7 +494,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
 
@@ -520,7 +520,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
 
@@ -548,7 +548,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
 
@@ -576,7 +576,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
@@ -611,7 +611,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
@@ -648,7 +648,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
@@ -677,7 +677,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
@@ -718,7 +718,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
@@ -759,7 +759,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
@@ -814,7 +814,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
 
@@ -1008,7 +1008,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var registry = scope.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>();
@@ -1038,7 +1038,7 @@ public class EngineContractRegressionTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();

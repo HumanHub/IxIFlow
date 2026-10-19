@@ -19,7 +19,7 @@ public class WorkflowInvocationTests
         // Setup DI container
         var services = new ServiceCollection();
         services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.RegisterWorkflow<ChildWorkflow>();
 
         _serviceProvider = services.BuildServiceProvider();
@@ -31,7 +31,7 @@ public class WorkflowInvocationTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.RegisterWorkflow<ChildWorkflow>();
         using var provider = services.BuildServiceProvider();
         var builder = new WorkflowBuilder<ParentWorkflowData>("InvocationTrace");

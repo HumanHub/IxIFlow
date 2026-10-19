@@ -124,7 +124,7 @@ public sealed class RecoveryResultTests
         services.AddLogging();
         services.AddSingleton<TimeProvider>(time);
         services.AddSingleton<IWorkflowStateRepository>(new InMemoryWorkflowStateRepository(time));
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         return services.BuildServiceProvider();
     }
 

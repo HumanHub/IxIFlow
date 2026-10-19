@@ -52,12 +52,11 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     private ITimer? _timer;
     private DateTime? _armedFor;
 
-    internal WorkflowHost(IServiceScopeFactory scopes, HostSettings settings, ReplyTokenKeyRing replyTokenKeys, TimeProvider? time = null,
+    internal WorkflowHost(IServiceScopeFactory scopes, HostSettings settings, TimeProvider? time = null,
         ILogger<WorkflowHost>? logger = null)
     {
         _scopes = scopes;
         _settings = settings;
-        ReplyTokenKeys = replyTokenKeys;
         _slots = new SemaphoreSlim(settings.Slots, settings.Slots);
         _time = time ?? TimeProvider.System;
         _logger = logger ?? NullLogger<WorkflowHost>.Instance;
@@ -69,8 +68,6 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
 
     /// <summary>Slots not running anything now; the poll claims at most this many instances.</summary>
     internal int FreeSlots => _slots.CurrentCount;
-
-    internal ReplyTokenKeyRing ReplyTokenKeys { get; }
 
     /// <summary>
     /// Resumes an instance at <paramref name="dueUtc"/>, the runnable time a run just saved for it.

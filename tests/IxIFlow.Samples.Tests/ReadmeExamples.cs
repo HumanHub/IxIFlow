@@ -13,7 +13,7 @@ public sealed class ReadmeExamples
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = new ReplyTokenKeyRing(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+        services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
         

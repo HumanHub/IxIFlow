@@ -119,7 +119,7 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!ReplyToken.TryVerify(host.ReplyTokenKeys, token, out var instanceId, out var waitId, out var subject) ||
+        if (!ReplyToken.TryRead(token, out var instanceId, out var waitId, out var subject) ||
             instanceId != workflowEvent.InstanceId)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown reply token");
         return AppendAsync(workflowEvent with { TargetWaitId = waitId, Subject = subject, Key = null });

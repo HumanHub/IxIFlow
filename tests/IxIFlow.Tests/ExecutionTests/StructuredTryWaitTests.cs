@@ -563,7 +563,7 @@ public class StructuredTryWaitTests
         collection.AddLogging();
         collection.AddSingleton<CancellationProbe>();
         collection.AddTransient<WaitForCancellationActivity>();
-        collection.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
         var definition = Workflow.Create<TryData>("CallerCancellationCleanup")
             .Step<StartActivity>()
@@ -644,7 +644,7 @@ public class StructuredTryWaitTests
         collection.AddLogging();
         collection.AddSingleton<CancellationProbe>();
         collection.AddTransient<WaitForCancellationActivity>();
-        collection.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
         var definition = Workflow.Create<TryData>("CallerCancellationWaitCleanup")
             .Step<StartActivity>()
@@ -676,7 +676,7 @@ public class StructuredTryWaitTests
         collection.AddLogging();
         collection.AddSingleton<ManualCleanupProbe>();
         collection.AddTransient<ManualCleanupActivity>();
-        collection.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
         var definition = Workflow.Create<TryData>("CallerCancellationDuringFinally")
             .Step<StartActivity>()
@@ -733,7 +733,7 @@ public class StructuredTryWaitTests
         services.AddTransient<WaitForCleanupReleaseActivity>();
         services.AddSingleton<StepLog>();
         services.AddTransient<LoggedCountActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<TryData>("NestedFinallyJoin")
             .Step<StartActivity>()
@@ -769,7 +769,7 @@ public class StructuredTryWaitTests
         services.AddTransient<CompleteNestedWinnerActivity>();
         services.AddTransient<WaitForOuterCancellationActivity>();
         services.AddTransient<ThrowLosingCleanupActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<TryData>("NestedJoinFailure")
             .Step<StartActivity>()
@@ -859,7 +859,7 @@ public class StructuredTryWaitTests
         services.AddLogging();
         services.AddSingleton<FinallyJoinProbe>();
         services.AddTransient<CountFinallyWinnerActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddSingleton<IWorkflowStateRepository>(new BoundedCheckpointStore());
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<TryData>("ParallelInsideFinallyFailure")
@@ -1383,7 +1383,7 @@ public class StructuredTryWaitTests
         services.AddLogging();
         services.AddSingleton<StepLog>();
         services.AddTransient<LoggedCountActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         if (repository != null)
             services.AddSingleton(repository);
         return services.BuildServiceProvider();
@@ -1395,7 +1395,7 @@ public class StructuredTryWaitTests
         services.AddLogging();
         services.AddSingleton<CleanupAttemptProbe>();
         services.AddTransient<ThrowOnceCleanupActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         return services.BuildServiceProvider();
     }
 

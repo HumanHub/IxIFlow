@@ -13,7 +13,7 @@ using IxIFlow.AspNetCore;
 using IxIFlow.Core;
 using IxIFlow.Extensions;
 
-builder.Services.AddIxIFlow(options => options.ReplyTokenKeys = SampleReplyKeys.Ring); // Or choose a persistent store with the returned builder.
+builder.Services.AddIxIFlow(); // Or choose a persistent store with the returned builder.
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("orders-api", policy => policy.RequireAuthenticatedUser());
@@ -166,4 +166,4 @@ The schema is declared at database creation. An existing instance table with mis
 
 Protocol references: [Standard Webhooks specification](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md), [CloudEvents specification](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md), and [CloudEvents HTTP binding](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/bindings/http-protocol-binding.md).
 
-For token-addressed replies, send `X-IxIFlow-Reply-Token`. The engine verifies the signature and route instance before any store access. Authentication and instance authorization still apply. See [signed reply tokens](reply-tokens.md) for configuration and rotation.
+For token-addressed replies, send `X-IxIFlow-Reply-Token`. The engine checks the token format and route instance before any store access, then checks the addressed wait. Authentication and instance authorization still apply. See [reply tokens](reply-tokens.md) for capability handling.

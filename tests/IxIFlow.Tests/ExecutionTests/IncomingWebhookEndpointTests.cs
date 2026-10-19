@@ -57,7 +57,7 @@ public sealed partial class IncomingWebhookEndpointTests
             Store = store ?? new InMemoryWorkflowStateRepository(Time);
             var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
             builder.Logging.ClearProviders();
-            builder.Services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+            builder.Services.AddIxIFlow();
             builder.Services.AddTransient<Noop>();
             builder.Services.AddTransient<Failing>();
             builder.Services.Replace(ServiceDescriptor.Singleton(Store));

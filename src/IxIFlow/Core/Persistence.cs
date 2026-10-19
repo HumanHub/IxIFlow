@@ -800,9 +800,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                                (query.Kind == null
                                    ? wait.Kind is not (WaitKind.Delay or WaitKind.Execution)
                                    : wait.Kind == query.Kind) &&
-                               (query.AfterWaitId == null ||
-                                string.CompareOrdinal(wait.WaitId, query.AfterWaitId) > 0))
-                .OrderBy(wait => wait.WaitId, StringComparer.Ordinal)
+                               (query.AfterWaitRef == null ||
+                                string.CompareOrdinal(WaitReference.Of(wait.InstanceId, wait.WaitId), query.AfterWaitRef) > 0))
+                .OrderBy(wait => WaitReference.Of(wait.InstanceId, wait.WaitId), StringComparer.Ordinal)
                 .Take(query.Limit)
                 .ToArray());
     }

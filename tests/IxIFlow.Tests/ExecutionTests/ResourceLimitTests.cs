@@ -269,7 +269,8 @@ public sealed class ResourceLimitTests
     {
         var services = new ServiceCollection();
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring;
+        Assert.Throws<ArgumentOutOfRangeException>(() => services.AddIxIFlow(options =>
+        {
             if (limit == "branches")
                 options.MaxActiveBranches = 0;
             else
@@ -314,7 +315,7 @@ public sealed class ResourceLimitTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(store);
-        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; configure(options); });
+        services.AddIxIFlow(configure);
         services.AddSingleton<LimitProbe>();
         services.AddTransient<QuickActivity>();
         services.AddTransient<GatedActivity>();

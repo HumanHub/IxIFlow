@@ -13,7 +13,7 @@ YAML covers every fluent construct with strict reading and a packaged schema. Ac
 
 Completion outbox publishers and outgoing signed webhooks are implemented, as are retained results, instance cleanup and tombstones. Committed control-flow, event and operator traces live outside checkpoints; snapshots, scoped logging and OpenTelemetry signals are available. Versioned Liquid templates and application-supplied message senders also work.
 
-Instance search, safe operator wait listings, trace paging, hard termination and outbox administration are available through [IWorkflowOperations](operations.md) and the authorized [HTTP operations mapping](operations-http.md). [Signed reply tokens](reply-tokens.md) support rotating shared keys; HTTP inspection requires the inspect policy independently of reply authorization.
+Instance search, safe operator wait listings, trace paging, hard termination and outbox administration are available through [IWorkflowOperations](operations.md) and the authorized [HTTP operations mapping](operations-http.md). [Reply tokens](reply-tokens.md) are capabilities for answering one wait; HTTP inspection requires the inspect policy independently of reply authorization.
 
 ## Remaining 1.0 work
 

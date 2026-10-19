@@ -422,7 +422,7 @@ public class StructuredSagaWaitTests
         collection.AddTransient<SlowReserveActivity>();
         collection.AddSingleton<ReleaseLog>();
         collection.AddTransient<LoggedReleaseActivity>();
-        collection.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
         var definition = Workflow.Create<SagaData>("CancelledInflightSaga")
             .Step<BeginActivity>()
@@ -461,7 +461,7 @@ public class StructuredSagaWaitTests
         services.AddLogging();
         services.AddSingleton<PausedCompensationProbe>();
         services.AddTransient<PausedReleaseActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<SagaData>("CancelDuringCompensation")
             .Step<BeginActivity>()
@@ -500,7 +500,7 @@ public class StructuredSagaWaitTests
         services.AddSingleton<UnsafeOutputProbe>();
         services.AddTransient<UnsafeOutputActivity>();
         services.AddTransient<UnsafeOutputCompensation>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<SagaData>("UnsafeSagaOutput")
             .Step<BeginActivity>()
@@ -845,7 +845,7 @@ public class StructuredSagaWaitTests
         services.AddLogging();
         services.AddSingleton<SagaRetryProbe>();
         services.AddTransient<FailOnceSagaActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<SagaData>("RetryPrevious")
             .Step<SeedActivity>()
@@ -978,7 +978,7 @@ public class StructuredSagaWaitTests
         services.AddLogging();
         services.AddSingleton<CompletedStepProbe>();
         services.AddTransient<CountedReserveActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<SagaData>("SagaOutputRetry")
             .Step<BeginActivity>()
@@ -1027,7 +1027,7 @@ public class StructuredSagaWaitTests
         services.AddLogging();
         services.AddSingleton<RetryIdProbe>();
         services.AddTransient<RetryIdActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<SagaData>("StableStepRetryId")
             .Step<BeginActivity>()
@@ -1053,7 +1053,7 @@ public class StructuredSagaWaitTests
         services.AddSingleton<TimeProvider>(time);
         services.AddSingleton<RetryIdProbe>();
         services.AddTransient<RetryIdActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var instanceId = Guid.NewGuid().ToString("N");
         var definition = Workflow.Create<SagaData>("DelayedStepRetry")
@@ -1084,7 +1084,7 @@ public class StructuredSagaWaitTests
         services.AddSingleton<TimeProvider>(time);
         services.AddSingleton<SagaRetryProbe>();
         services.AddTransient<FailOnceSagaActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var instanceId = Guid.NewGuid().ToString("N");
         var definition = Workflow.Create<SagaData>("DelayedSagaRetry")
@@ -1117,7 +1117,7 @@ public class StructuredSagaWaitTests
         services.AddSingleton<TimeProvider>(time);
         services.AddSingleton<SagaRetryProbe>();
         services.AddTransient<FailOnceSagaActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var instanceId = Guid.NewGuid().ToString("N");
         var definition = Workflow.Create<SagaData>("DefaultSagaRetry")
@@ -1150,7 +1150,7 @@ public class StructuredSagaWaitTests
         services.AddSingleton<IWorkflowStateRepository>(repository);
         services.AddSingleton<RetryIdProbe>();
         services.AddTransient<RetryIdActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
@@ -1194,7 +1194,7 @@ public class StructuredSagaWaitTests
         services.AddSingleton<IWorkflowStateRepository>(repository);
         services.AddSingleton<RetryIdProbe>();
         services.AddTransient<RetryIdActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
@@ -1265,7 +1265,7 @@ public class StructuredSagaWaitTests
         services.AddSingleton<SagaRetryProbe>();
         services.AddTransient<SagaAttemptIdActivity>();
         services.AddTransient<FailOnceSagaActivity>();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<SagaData>("NewSagaRetryId")
             .Step<BeginActivity>()
@@ -1508,7 +1508,7 @@ public class StructuredSagaWaitTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddSingleton(repository);
         services.AddSingleton<ReleaseLog>();
         services.AddTransient<LoggedReleaseActivity>();

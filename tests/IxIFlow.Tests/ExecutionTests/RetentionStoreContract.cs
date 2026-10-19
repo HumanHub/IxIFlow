@@ -67,7 +67,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         services.AddLogging();
         services.AddSingleton<TimeProvider>(new FakeTimeProvider());
         services.AddSingleton(store);
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         return services.BuildServiceProvider();
     }
 
@@ -218,8 +218,8 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         await Refused(() => client.ResumeAsync(instance.InstanceId, new ResultData()));
         await Refused(() => client.ResumeAsync(instance.InstanceId, "key", new ResultData()));
         await Refused(() => client.ResumeAsync(instance.InstanceId, null, new ResultData(), "late"));
-        await Refused(() => client.ReplyAsync(ReplyToken.Sign(TestReplyKeys.Ring, instance.InstanceId, "old-wait"), new ResultData()));
-        await Refused(() => client.ReplyAsync(ReplyToken.Sign(TestReplyKeys.Ring, instance.InstanceId, "old-wait"), new ResultData(), "reply"));
+        await Refused(() => client.ReplyAsync(ReplyToken.Create(instance.InstanceId, "old-wait"), new ResultData()));
+        await Refused(() => client.ReplyAsync(ReplyToken.Create(instance.InstanceId, "old-wait"), new ResultData(), "reply"));
         await Refused(() => client.CancelAsync(instance.InstanceId, new CancellationReason { ReasonCode = "operator" }));
         await Refused(() => client.RecoverAsync(instance.InstanceId));
         await Refused(() => client.ReleaseAsync(instance.InstanceId));

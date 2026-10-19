@@ -148,7 +148,7 @@ public sealed class RunnableWakeUpTests
         services.AddSingleton(repository);
         if (wakeUps != null)
             services.AddSingleton(wakeUps);
-        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.PollInterval = PollInterval; });
+        services.AddIxIFlow(options => options.PollInterval = PollInterval);
         services.AddTransient<Noop>();
         return Registered(services.BuildServiceProvider());
     }
@@ -157,7 +157,7 @@ public sealed class RunnableWakeUpTests
     {
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(time);
-        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.PollInterval = PollInterval; }).UsePostgreSql(connectionString);
+        services.AddIxIFlow(options => options.PollInterval = PollInterval).UsePostgreSql(connectionString);
         services.AddTransient<Noop>();
         return Registered(services.BuildServiceProvider());
     }

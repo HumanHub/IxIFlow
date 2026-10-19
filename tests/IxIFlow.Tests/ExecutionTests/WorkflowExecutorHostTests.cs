@@ -154,7 +154,7 @@ public sealed class WorkflowExecutorHostTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddSingleton<ExecutorProbe>();
         services.AddTransient<StartActivity>();
         services.AddTransient<FirstActivity>();

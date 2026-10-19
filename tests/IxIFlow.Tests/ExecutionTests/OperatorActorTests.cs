@@ -87,7 +87,8 @@ public sealed class OperatorActorTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(store);
-        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring;
+        services.AddIxIFlow(options =>
+        {
             options.Actor = actor;
             options.MaxCheckpointBytes = maxCheckpointBytes;
         });

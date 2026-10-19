@@ -309,7 +309,7 @@ public static class WaitCloseReasonExtensions
 }
 
 /// <summary>
-/// Which open waits to list. Every filter is optional; <see cref="AfterWaitId"/> pages by wait ID
+/// Which open waits to list. Every filter is optional; <see cref="AfterWaitRef"/> pages by diagnostic wait reference
 /// within the other filters.
 /// </summary>
 public sealed record WaitQuery(
@@ -317,7 +317,7 @@ public sealed record WaitQuery(
     string? Key = null,
     string? EventType = null,
     WaitKind? Kind = null,
-    string? AfterWaitId = null,
+    string? AfterWaitRef = null,
     int Limit = 100,
     IReadOnlyCollection<string>? InstanceIds = null);
 

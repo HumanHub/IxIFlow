@@ -43,7 +43,7 @@ public sealed class OperationsHttpTests
     }
 
     [Fact]
-    public async Task InstanceAuthorizationIsEnforcedAndInspectNeedsNoReply()
+    public async Task InstanceAuthorizationAndInspectRequiringReplyAreEnforced()
     {
         await using var factory = new OperationsHttpFactory(new InMemoryWorkflowStateRepository());
         using var http = factory.Operator();
@@ -53,8 +53,8 @@ public sealed class OperationsHttpTests
             Assert.Equal(HttpStatusCode.Forbidden, (await http.GetAsync("/ops/instances/" + id + suffix)).StatusCode);
         factory.DenyInstance = null;
         using var inspectOnly = factory.Operator("inspect");
-        Assert.Equal(HttpStatusCode.OK, (await inspectOnly.GetAsync($"/ops/instances/{id}/trace")).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await inspectOnly.GetAsync($"/ops/instances/{id}/snapshot")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await inspectOnly.GetAsync($"/ops/instances/{id}/trace")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await inspectOnly.GetAsync($"/ops/instances/{id}/snapshot")).StatusCode);
         using var readOnly = factory.Operator("read");
         Assert.Equal(HttpStatusCode.Forbidden, (await readOnly.GetAsync($"/ops/instances/{id}/waits?tokens=true")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await readOnly.GetAsync($"/ops/instances/{id}/waits")).StatusCode);

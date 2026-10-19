@@ -100,7 +100,7 @@ public sealed class ExpressionPurityTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<TimeProvider>(time);
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<Data>("ReadsTheRunsClock")
             .Step<Takes>()

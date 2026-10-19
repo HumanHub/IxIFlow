@@ -380,7 +380,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         services.AddSingleton(repository);
         if (time != null)
             services.AddSingleton(time);
-        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.MaxCrashes = 3; });
+        services.AddIxIFlow(options => options.MaxCrashes = 3);
         services.AddSingleton<CrashProbe>();
         services.AddTransient<QuickActivity>();
         services.AddTransient<CountingActivity>();

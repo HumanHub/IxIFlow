@@ -125,13 +125,14 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_waits
-                    (instance_id, wait_id, kind, wait_key, event_type, deadline_utc, opened_sequence, opened_at_utc, default_payload_json)
-                VALUES (@InstanceId, @WaitId, @Kind, @Key, @EventType, @Deadline, @Sequence, @Now, @DefaultPayloadJson)
+                    (instance_id, wait_id, wait_ref, kind, wait_key, event_type, deadline_utc, opened_sequence, opened_at_utc, default_payload_json)
+                VALUES (@InstanceId, @WaitId, @WaitRef, @Kind, @Key, @EventType, @Deadline, @Sequence, @Now, @DefaultPayloadJson)
                 ON CONFLICT (instance_id, wait_id) DO NOTHING
                 """, waits.Select(wait => new
         {
             InstanceId = instanceId,
             wait.WaitId,
+            WaitRef = WaitReference.Of(instanceId, wait.WaitId),
             Kind = (short)wait.Kind,
             wait.Key,
             wait.EventType,
@@ -529,8 +530,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
               AND (@Key IS NULL OR wait_key = @Key)
               AND (@EventType IS NULL OR event_type = @EventType)
               AND (@Kind IS NULL AND kind NOT IN (@Delay, @Execution) OR kind = @Kind)
-              AND (@AfterWaitId IS NULL OR wait_id > @AfterWaitId)
-            ORDER BY wait_id
+              AND (@AfterWaitRef IS NULL OR wait_ref > @AfterWaitRef)
+            ORDER BY wait_ref
             LIMIT @Limit
             """,
         Statement.EarliestDeadline => """
@@ -681,6 +682,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_waits (
             instance_id TEXT COLLATE BINARY NOT NULL,
             wait_id TEXT COLLATE BINARY NOT NULL,
+            wait_ref TEXT COLLATE BINARY NOT NULL,
             kind INTEGER NOT NULL,
             wait_key TEXT COLLATE BINARY NOT NULL,
             event_type TEXT COLLATE BINARY NOT NULL,
@@ -693,7 +695,9 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             PRIMARY KEY (instance_id, wait_id)
         );
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_waits_open
-            ON ixiflow_workflow_waits (wait_key, event_type, wait_id) WHERE close_reason IS NULL;
+            ON ixiflow_workflow_waits (wait_key, event_type, wait_ref) WHERE close_reason IS NULL;
+        CREATE INDEX IF NOT EXISTS ixiflow_workflow_waits_page
+            ON ixiflow_workflow_waits (wait_ref) WHERE close_reason IS NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_commits (
             instance_id TEXT COLLATE BINARY NOT NULL,
             commit_id TEXT COLLATE BINARY NOT NULL,

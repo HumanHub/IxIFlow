@@ -22,7 +22,7 @@ Each single-instance route first authorizes its policy against the HTTP context 
 
 Search authorization runs before the store query. Register an `IInstanceQueryScope` with both overloads: one narrows `InstanceQuery` and one narrows `WaitQuery` for the principal. Preserve the caller's filters and paging while intersecting them with the application's permitted scope. Never broaden a supplied filter. The wait overload can constrain `InstanceIds`; an empty collection permits no instances. Even an unrestricted administrative application must register an explicit implementation. Results are never post-filtered, so authorized pages and continuation cursors remain intact. Global outbox access is governed by the outbox policy.
 
-Trace and snapshot routes require the inspect policy, including authorization against the instance summary. Inspect grants no reply permission. The engine signs all [reply tokens](reply-tokens.md); configure the shared key ring before starting the host.
+**Inspection also requires reply authorization.** Trace and snapshot routes enforce the inspect policy and the reply policy, including both checks against the instance summary. Treat trace and snapshot readers as able to reply. [Reply tokens](reply-tokens.md) are capabilities: holding one is the right to answer its wait. Handle token-bearing listings as privileged output.
 
 All paths below are relative to the mapped prefix.
 
@@ -34,8 +34,8 @@ All paths below are relative to the mapped prefix.
 | `GET /instances/{id}/waits?tokens=true` | reply | `WorkflowWaitPage`: `items`, `nextAfter`; items include reply tokens |
 | `GET /waits` | reply | Scoped `WorkflowWaitPage` |
 | `GET /instances/{id}/pending-activities` | read | Array of `PendingActivityInfo` |
-| `GET /instances/{id}/trace` | inspect | `WorkflowTracePage`: `items`, `nextAfter` |
-| `GET /instances/{id}/snapshot` | inspect | `WorkflowSnapshotResponse` |
+| `GET /instances/{id}/trace` | inspect and reply | `WorkflowTracePage`: `items`, `nextAfter` |
+| `GET /instances/{id}/snapshot` | inspect and reply | `WorkflowSnapshotResponse` |
 | `POST /instances/{id}/resolutions` | write | Public operation status, or accepted status location |
 | `POST /instances/{id}/release` | write | Public operation status, or accepted status location |
 | `POST /instances/{id}/cancel` | write | Public operation status, or accepted status location |
