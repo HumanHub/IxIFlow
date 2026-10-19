@@ -874,7 +874,7 @@ public class EngineContractRegressionTests
             Then = [new ActivityStepDocument { Id = "yes", Activity = "Mark" }]
         });
 
-        var definition = await YamlTestCompilation.BuildAsync(document, ResolvedContracts());
+        var definition = await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts());
         Assert.Single(definition.Steps);
         Assert.Equal(WorkflowStepType.Conditional, definition.Steps[0].StepType);
         Assert.Single(definition.Steps[0].ThenSteps);
@@ -885,7 +885,7 @@ public class EngineContractRegressionTests
     public async Task GeneratedYaml_RejectsExternalStepReferences()
     {
         var document = Document(new StepReferenceStepDocument { Id = "external", Ref = "SharedSequence" });
-        await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => YamlTestCompilation.BuildAsync(document, ResolvedContracts()));
+        await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts()));
     }
 
     [Trait("Feature", "documents")]
@@ -908,7 +908,7 @@ public class EngineContractRegressionTests
             }]
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts(typeof(YamlMappingActivity)))).Steps);
+        var step = Assert.Single((await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts(typeof(YamlMappingActivity)))).Steps);
         var data = new RegressionData { Value = "input" };
         var context = new WorkflowContext<RegressionData> { WorkflowData = data };
 
@@ -937,7 +937,7 @@ public class EngineContractRegressionTests
             }]
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts(typeof(YamlMappingActivity)))).Steps);
+        var step = Assert.Single((await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts(typeof(YamlMappingActivity)))).Steps);
         Assert.Equal(true, Assert.Single(step.InputMappings).SourceFunction(new WorkflowContext<RegressionData>
         {
             WorkflowData = new RegressionData()
@@ -975,7 +975,7 @@ public class EngineContractRegressionTests
             ResumeCondition = new PathExpressionDocument { Path = "event.Approved" }
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts())).Steps);
+        var step = Assert.Single((await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts())).Steps);
         Assert.NotNull(step.CompiledCondition);
         Assert.False(step.CompiledCondition(new ResumeEventContext<RegressionData, RegressionApprovalEvent>
         {
@@ -997,7 +997,7 @@ public class EngineContractRegressionTests
             Workflow = new WorkflowReferenceDocument { Name = "Child", Version = 1 }
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts())).Steps);
+        var step = Assert.Single((await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts())).Steps);
         Assert.Null(step.WorkflowType);
         Assert.Equal("Child", step.WorkflowName);
     }
