@@ -124,7 +124,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             saved.RunnableAtUtc = null;
 
             // The commit that takes an event settles it, and records how far it read.
-            var commit = CheckpointCommit.Create(saved, 0, saved.Revision, settlements:
+            var commit = CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision, settlements:
             [
                 new EventSettlement("taken", EventOutcome.Consumed, "wait-1"),
                 new EventSettlement("refused", EventOutcome.Rejected, Rejection: EventRejection.Ambiguous)
@@ -148,12 +148,12 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
             saved.Revision = applied.Revision;
             Assert.Equal(WorkflowCommitStatus.EventsChanged, (await store.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(saved, 0, saved.Revision,
+                CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision,
                     settlements: [new EventSettlement("taken", EventOutcome.Consumed, "wait-2")]))).Status);
 
             // An idle commit that has not read the latest arrival stays runnable now.
             await inbox.AppendEventAsync(Event(instanceId, "late", "{}"));
-            var behindCommit = CheckpointCommit.Create(saved, 0, saved.Revision, inboxReadThrough: 2);
+            var behindCommit = CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision, inboxReadThrough: 2);
             var behind = await store.CommitWorkflowInstanceAsync(behindCommit);
             Assert.Equal(WorkflowCommitStatus.Applied, behind.Status);
             Assert.True(behind.UnreadEvents);
@@ -201,7 +201,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
         {
             var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromSeconds(30)))!;
             var instance = new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "InboxPark", Status = WorkflowStatus.Running,
                 WorkflowDataJson = "{}"
             };
@@ -271,7 +271,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             var saved = (await store.GetWorkflowInstanceAsync(finished))!;
             saved.Status = WorkflowStatus.Completed;
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, 0, saved.Revision))).Status);
+                (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision))).Status);
             Assert.Equal(EventAppendStatus.Closed,
                 (await inbox.AppendEventAsync(Event(finished, "after", "{}"))).Status);
             Assert.Equal(EventAppendStatus.Duplicate,
@@ -354,7 +354,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             // addressed by its key finds no open wait.
             var saved = (await store.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(saved, 0, saved.Revision,
+                CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision,
                     settlements: [new EventSettlement("t2", EventOutcome.Consumed, approval)], inboxReadThrough: 1,
                     closedWaits: [new ClosedWait(approval, WaitCloseReason.Answered)]))).Status);
             var answered = await inbox.AppendEventAsync(
@@ -416,7 +416,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             // the store's clock plus its timeout (D-35).
             var saved = (await store.GetWorkflowInstanceAsync(instanceId))!;
             var timeout = TimeSpan.FromDays(30);
-            var applied = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, 0, saved.Revision,
+            var applied = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision,
                 openedWaits:
                 [
                     new OpenedWait(next, WaitKind.Event, "approval", "Approval", timeout),
@@ -436,7 +436,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             // Opening a wait again keeps its first record.
             saved.Revision = applied.Revision;
             await inbox.AppendEventAsync(Event(instanceId, "later", "{}"));
-            applied = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, 0, saved.Revision,
+            applied = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision,
                 openedWaits: [new OpenedWait(next, WaitKind.Event, "approval", "Approval", timeout)]));
             Assert.Equal(1, (await inbox.GetWaitAsync(instanceId, next))!.OpenedSequence);
 
@@ -463,7 +463,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             // A closed wait leaves the open set.
             saved.Revision = applied.Revision;
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(saved, 0, saved.Revision,
+                CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision,
                     closedWaits: [new ClosedWait(first, WaitCloseReason.TimedOut)]))).Status);
             Assert.DoesNotContain(first, (await inbox.GetPendingEventsAsync(instanceId, 0, 10)).OpenWaits.Keys);
             Assert.Equal(WaitCloseReason.TimedOut, (await inbox.GetWaitAsync(instanceId, first))!.CloseReason);
@@ -515,7 +515,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             for (var index = 0; index < count; index++)
                 await inbox.AppendEventAsync(Event(instanceId, $"e{index}", "{}"));
             var saved = (await store.GetWorkflowInstanceAsync(instanceId))!;
-            var commit = CheckpointCommit.Create(saved, 0, saved.Revision,
+            var commit = CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision,
                 settlements: Enumerable.Range(0, count).Select(index => new EventSettlement($"e{index}",
                     EventOutcome.Rejected, Rejection: EventRejection.NotMatched)).ToArray(),
                 inboxReadThrough: count,
@@ -536,45 +536,49 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
 
     [Fact]
     [Trait("Spec", "D-04")]
-    public void ACommitSettlesEachEventOnceAndOnlyAsConsumedOrRejected()
+    public async Task ACommitSettlesEachEventOnceAndOnlyAsConsumedOrRejected()
     {
-        var instance = new WorkflowInstance { InstanceId = "settling", WorkflowName = "Inbox" };
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "settling", WorkflowName = "Inbox" };
 
-        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, 0, 0, settlements:
+        var store = new InMemoryWorkflowStateRepository();
+        var epoch = (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch;
+        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, epoch, 0, settlements:
         [
             new EventSettlement("e1", EventOutcome.Consumed, "a"),
             new EventSettlement("e1", EventOutcome.Rejected, Rejection: EventRejection.NotMatched)
         ]));
-        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, 0, 0,
+        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, epoch, 0,
             settlements: [new EventSettlement("e1", EventOutcome.Pending)]));
-        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, 0, 0,
+        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, epoch, 0,
             settlements: [new EventSettlement("e1", EventOutcome.Consumed)]));
-        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, 0, 0,
+        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, epoch, 0,
             settlements: [new EventSettlement("e1", EventOutcome.Rejected)]));
 
         // The commit keeps its own copy, so changing the list afterwards changes nothing.
         var settlements = new List<EventSettlement> { new("e1", EventOutcome.Consumed, "a") };
-        var commit = CheckpointCommit.Create(instance, 0, 0, settlements: settlements);
+        var commit = CheckpointCommit.Create(instance, epoch, 0, settlements: settlements);
         settlements.Clear();
         Assert.Single(commit.Settlements);
     }
 
     [Fact]
     [Trait("Spec", "D-03")]
-    public void ACommitOpensOrClosesEachWaitOnceAndHashesWhatItChanges()
+    public async Task ACommitOpensOrClosesEachWaitOnceAndHashesWhatItChanges()
     {
-        var instance = new WorkflowInstance { InstanceId = "waiting", WorkflowName = "Inbox" };
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "waiting", WorkflowName = "Inbox" };
         var opened = new OpenedWait("w1", WaitKind.Event, "approval", "Approval", null);
 
-        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, 0, 0,
+        var store = new InMemoryWorkflowStateRepository();
+        var epoch = (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch;
+        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, epoch, 0,
             openedWaits: [opened], closedWaits: [new ClosedWait("w1", WaitCloseReason.Answered)]));
-        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, 0, 0,
+        Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(instance, epoch, 0,
             openedWaits: [opened with { EventType = "" }]));
 
         // Two commits that differ only in the waits they change are different commits.
-        var plain = CheckpointCommit.Create(instance, 0, 0, commitId: "c1");
-        var opening = CheckpointCommit.Create(instance, 0, 0, commitId: "c1", openedWaits: [opened]);
-        var closing = CheckpointCommit.Create(instance, 0, 0, commitId: "c1",
+        var plain = CheckpointCommit.Create(instance, epoch, 0, commitId: "c1");
+        var opening = CheckpointCommit.Create(instance, epoch, 0, commitId: "c1", openedWaits: [opened]);
+        var closing = CheckpointCommit.Create(instance, epoch, 0, commitId: "c1",
             closedWaits: [new ClosedWait("w1", WaitCloseReason.Answered)]);
         Assert.NotEqual(plain.ContentHash, opening.ContentHash);
         Assert.NotEqual(plain.ContentHash, closing.ContentHash);
@@ -634,7 +638,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
         try
         {
             var parent = (await store.GetWorkflowInstanceAsync(parentId))!;
-            var start = CheckpointCommit.Create(parent, 0, parent.Revision,
+            var start = CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                 openedWaits: [new OpenedWait(wait, WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
                 childStarts: [new ChildStart(childId, System.Text.Json.JsonSerializer.Serialize(
                     Child(childId, parentId, wait)), wait)]);
@@ -649,15 +653,15 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             // The same commit again starts nothing more; another start under the child's ID is refused.
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(start)).Status);
             parent.Revision = started.Revision;
-            await Assert.ThrowsAsync<InvalidOperationException>(() => store.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(parent, 0, parent.Revision,
+            await Assert.ThrowsAsync<InvalidOperationException>(async () => await store.CommitWorkflowInstanceAsync(
+                CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                     openedWaits: [new OpenedWait($"{wait}-again", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
                     childStarts: [new ChildStart(childId, System.Text.Json.JsonSerializer.Serialize(
                         Child(childId, parentId, $"{wait}-again")), $"{wait}-again")])));
 
             // A parent's commit can ask its child to cancel; the first request stands, as the commit was made.
             var reason = new CancellationReason { ReasonCode = "parent" };
-            var cancelling = CheckpointCommit.Create(parent, 0, parent.Revision,
+            var cancelling = CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                 childCancellations: [new ChildCancellation(childId, reason, wait)]);
             reason.ReasonCode = "changed after the commit was made";
             var cancelled = await store.CommitWorkflowInstanceAsync(cancelling);
@@ -679,12 +683,12 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
 
             // A child whose parent no longer waits still finishes: the completion is recorded as refused.
             parent.Revision = cancelled.Revision;
-            var closing = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, parent.Revision,
+            var closing = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                 openedWaits: [new OpenedWait($"{wait}-2", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
                 childStarts: [new ChildStart(otherId, System.Text.Json.JsonSerializer.Serialize(
                     Child(otherId, parentId, $"{wait}-2")), $"{wait}-2")]));
             parent.Revision = closing.Revision;
-            await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, parent.Revision,
+            await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                 closedWaits: [new ClosedWait($"{wait}-2", WaitCloseReason.Cancelled)]));
             var other = (await store.GetWorkflowInstanceAsync(otherId))!;
             var otherGrant = (await store.TryAcquireExecutionLeaseAsync(otherId, "owner", TimeSpan.FromMinutes(1)))!;
@@ -702,7 +706,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             parent = (await store.GetWorkflowInstanceAsync(parentId))!;
             var deletedChild = Guid.NewGuid().ToString("N");
             var missingChild = Guid.NewGuid().ToString("N");
-            var starting = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, parent.Revision,
+            var starting = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                 openedWaits:
                 [
                     new OpenedWait($"{wait}-deleted", WaitKind.Child, "", "IxIFlow.ChildCompleted", null),
@@ -715,8 +719,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
                 ((await inbox.GetEventAsync(parentId, $"child-completed-{deletedChild}"))!.Outcome,
                     (await inbox.GetEventAsync(parentId, $"child-completed-{deletedChild}"))!.TargetWaitId));
             parent.Revision = starting.Revision;
-            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
-                parent, 0, parent.Revision, childCancellations:
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision, childCancellations:
                 [new ChildCancellation(missingChild, new CancellationReason { ReasonCode = "parent" }, $"{wait}-missing")]))).Status);
             Assert.Equal($"{wait}-missing",
                 (await inbox.GetEventAsync(parentId, $"child-completed-{missingChild}"))!.TargetWaitId);
@@ -772,7 +775,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
         try
         {
             var parent = (await store.GetWorkflowInstanceAsync(parentId))!;
-            var opening = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, 0, parent.Revision,
+            var opening = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                 openedWaits:
                 [
                     new OpenedWait($"{first}-wait", WaitKind.Child, "", "IxIFlow.ChildCompleted", null),
@@ -780,8 +783,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
                 ]));
             parent.Revision = opening.Revision;
             var reason = new CancellationReason { ReasonCode = "parent" };
-            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
-                parent, 0, parent.Revision, childCancellations:
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision, childCancellations:
                 [
                     new ChildCancellation(first, reason, $"{first}-wait"),
                     new ChildCancellation(second, reason, $"{second}-wait")
@@ -801,7 +803,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
     }
 
     private static WorkflowInstance Child(string childId, string parentId, string waitId) => new()
-    {
+    { ExecutionStateJson = StoreTestSupport.CheckpointJson,
         InstanceId = childId, WorkflowName = "Child", Status = WorkflowStatus.Running, WorkflowDataJson = "{}",
         ParentInstanceId = parentId, ParentWaitId = waitId
     };
@@ -818,12 +820,12 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
     private static async Task<string> IdleInstanceAsync(IWorkflowStateRepository store, WorkflowStatus status)
     {
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Inbox", Status = status,
             WorkflowDataJson = "{}"
         };
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(instance, 0, 0, openedWaits: [OpenApproval(instance.InstanceId)]))).Status);
+            CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0, openedWaits: [OpenApproval(instance.InstanceId)]))).Status);
         return instance.InstanceId;
     }
     [Fact]
@@ -845,8 +847,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
         {
             var parent = (await store.GetWorkflowInstanceAsync(parentId))!;
             var payload = System.Text.Json.JsonSerializer.Serialize(Child(childId, parentId, wait));
-            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
-                parent, 0, parent.Revision,
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                 openedWaits: [new OpenedWait(wait, WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
                 childStarts: [new ChildStart(childId, payload, wait)]))).Status);
 

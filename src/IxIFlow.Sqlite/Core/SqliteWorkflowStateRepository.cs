@@ -517,7 +517,6 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
-                  incarnation = CASE WHEN @ExpectedRevision = 0 THEN @Incarnation ELSE incarnation END,
                   workflow_name = @WorkflowName, status = @Status,
                   correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
                   runnable_at_utc = @RunnableAtUtc,
@@ -540,22 +539,6 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 SET expires_at_utc = CASE WHEN @Released THEN '0001-01-01 00:00:00.0000000' ELSE expires_at_utc END,
                     crash_count = CASE WHEN @ClearsCrashCount THEN 0 ELSE crash_count END
                 WHERE instance_id = @InstanceId
-                """,
-        Statement.SaveParts => """
-                DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId
-                    AND EXISTS (SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId AND revision = 0)
-                """,
-        Statement.Save => """
-                INSERT INTO ixiflow_workflow_instances
-                    (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json)
-                VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
-                    CASE WHEN @RunnableNow THEN @Now ELSE @RunnableAtUtc END, @StateJson)
-                ON CONFLICT (instance_id) DO UPDATE
-                SET workflow_name = excluded.workflow_name, status = excluded.status,
-                    correlation_id = excluded.correlation_id, parent_instance_id = excluded.parent_instance_id, runnable_at_utc = excluded.runnable_at_utc,
-                    state_json = excluded.state_json
-                WHERE ixiflow_workflow_instances.revision = 0
-                RETURNING COALESCE(runnable_at_utc <= @Now, false)
                 """,
         Statement.ReadParts => """
             SELECT instance_id AS InstanceId, part_key AS PartKey, json AS Json FROM ixiflow_workflow_parts
@@ -620,7 +603,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             state_json TEXT NOT NULL,
             cancellation_json TEXT NULL,
             cancellation_acknowledged INTEGER NOT NULL DEFAULT false,
-            revision INTEGER NOT NULL DEFAULT 0,
+            revision INTEGER NOT NULL,
             inbox_sequence INTEGER NOT NULL DEFAULT 0,
             inbox_read_through INTEGER NOT NULL DEFAULT 0,
             parent_instance_id TEXT COLLATE BINARY NULL

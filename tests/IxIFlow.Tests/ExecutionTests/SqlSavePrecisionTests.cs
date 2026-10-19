@@ -16,8 +16,8 @@ public class SqlSavePrecisionTests
         var runnableAt = new DateTime(2030, 1, 2, 3, 4, 5, DateTimeKind.Utc).AddTicks(12345);
         try
         {
-            await repository.SaveWorkflowInstanceAsync(new WorkflowInstance
-            {
+            await repository.SeedAsync(new WorkflowInstance
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "SavePrecision",
                 Status = WorkflowStatus.Suspended,

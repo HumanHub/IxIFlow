@@ -60,7 +60,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     internal override int OwnershipReadBatchSize => 1000;
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.Save or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
+        operation is Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
             ? await connection.BeginTransactionAsync() : null;
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
@@ -580,7 +580,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             USING (SELECT @InstanceId AS InstanceId) AS source
             ON target.InstanceId = source.InstanceId
             WHEN MATCHED THEN UPDATE SET
-                Incarnation = CASE WHEN @ExpectedRevision = 0 THEN @Incarnation ELSE target.Incarnation END,
                 WorkflowName = @WorkflowName, Status = @Status,
                 CorrelationId = @CorrelationId, ParentInstanceId = @ParentInstanceId,
                 RunnableAtUtc = @RunnableAtUtc,
@@ -608,23 +607,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                     CrashCount = CASE WHEN @ClearsCrashCount = 1 THEN 0 ELSE CrashCount END
                 WHERE InstanceId = @InstanceId
                 """,
-        Statement.Save => """
-            DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId
-                AND EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId AND Revision = 0);
-            MERGE dbo.IxIFlowWorkflowInstances WITH (HOLDLOCK) AS target
-            USING (SELECT @InstanceId AS InstanceId) AS source
-            ON target.InstanceId = source.InstanceId
-            WHEN MATCHED AND target.Revision = 0 THEN UPDATE SET
-                WorkflowName = @WorkflowName, Status = @Status,
-                CorrelationId = @CorrelationId, ParentInstanceId = @ParentInstanceId,
-                RunnableAtUtc = CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END,
-                StateJson = @StateJson
-            WHEN NOT MATCHED THEN INSERT
-                (InstanceId, Incarnation, WorkflowName, Status, CorrelationId, ParentInstanceId, RunnableAtUtc, StateJson)
-                VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
-                        CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END, @StateJson)
-            OUTPUT CAST(CASE WHEN inserted.RunnableAtUtc <= SYSUTCDATETIME() THEN 1 ELSE 0 END AS BIT);
-            """,
         Statement.ReadParts => """
                 SELECT InstanceId, PartKey, Json FROM dbo.IxIFlowWorkflowParts WHERE InstanceId IN @Ids;
                 SELECT InstanceId, Revision, Incarnation FROM dbo.IxIFlowWorkflowInstances
@@ -698,7 +680,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 StateJson NVARCHAR(MAX) NOT NULL,
                 CancellationJson NVARCHAR(MAX) NULL,
                 CancellationAcknowledged BIT NOT NULL DEFAULT 0,
-                Revision BIGINT NOT NULL DEFAULT 0,
+                Revision BIGINT NOT NULL,
                 InboxSequence BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_InboxSequence DEFAULT 0,
                 InboxReadThrough BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_InboxReadThrough DEFAULT 0,
                 Incarnation UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_Incarnation DEFAULT NEWID(),

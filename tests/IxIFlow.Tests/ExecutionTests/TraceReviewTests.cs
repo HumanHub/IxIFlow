@@ -293,7 +293,7 @@ public sealed class TraceReviewTests
         var data = new Data();
         var checkpoint = new ExecutionCheckpoint { DefinitionFingerprint = scopes.Fingerprint,
             Continuations = [root, branch], Joins = [join], RootData = data };
-        var instance = new WorkflowInstance { InstanceId = "verification-trace", WorkflowName = definition.Name,
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "verification-trace", WorkflowName = definition.Name,
             WorkflowDataType = typeof(Data).AssemblyQualifiedName!, WorkflowDataJson = JsonSerializer.Serialize(data),
             Status = WorkflowStatus.Running, StartedAt = Start.UtcDateTime };
         var host = new VerificationHost();

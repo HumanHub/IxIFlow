@@ -25,7 +25,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     {
         Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge,
         CancellationRequest, CancellationRead, LeaseClaim, LeaseRenew, LeaseRelease,
-        Append, InboxPage, Save, Commit, Delete
+        Append, InboxPage, Commit, Delete
     }
 
     /// <summary>SQL steps in the shared protocol. Optional steps return null.</summary>
@@ -38,7 +38,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
-        SaveParts, Save, ReadInstance, ReadParts, Query, ByName, ByStatus, ByCorrelation, ByParent,
+        ReadInstance, ReadParts, Query, ByName, ByStatus, ByCorrelation, ByParent,
         LockAndReadPage, DeleteLease,
         DeleteState, DeleteParentInbox, DeleteRows, Trace
     }
@@ -125,7 +125,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         WithTimes(new { InstanceId = instanceId }, ("Now", now));
     /// <summary>Converts a UTC timestamp to the driver representation without losing its precision.</summary>
     internal abstract object? At(DateTime? value);
-    /// <summary>Wire type used for all timestamp parameters, including revision-zero saves.</summary>
+    /// <summary>Wire type used for all timestamp parameters, for checkpoint and lease operations.</summary>
     internal virtual DbType? TimeDbType => null;
     /// <summary>Wire type for wait kinds, event rejections and close reasons.</summary>
     internal virtual DbType SmallIntDbType => DbType.Int16;
@@ -141,8 +141,6 @@ public abstract partial class RelationalWorkflowStateRepository :
     internal virtual bool ReadsUseStamps => true;
     /// <summary>Driver timestamps in runnable columns need conversion or stamping to UTC on instance reads.</summary>
     internal virtual bool NormalizeRunnableTime => true;
-    /// <summary>Save returns a nullable due flag: no row rejects a revisioned save, true requests a wake-up.</summary>
-    internal virtual bool SaveReturnsDue => true;
     /// <summary>Lease release returns a nullable due flag for a released instance that may need a wake-up.</summary>
     internal virtual bool ReleaseReturnsDue => false;
     /// <summary>Bulk child insertion needs ordinal key order to avoid deadlocks between overlapping child sets.</summary>
@@ -279,15 +277,48 @@ public abstract partial class RelationalWorkflowStateRepository :
         var requests = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
         if (instanceIds.Count == 0)
             return requests;
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync(ownership: true);
-        foreach (var batch in instanceIds.Distinct(StringComparer.Ordinal).Chunk(OwnershipReadBatchSize))
+        DbConnection connection;
+        try
         {
-            var rows = await connection.QueryAsync<(string InstanceId, string CancellationJson)>(RequiredSql(Statement.Cancellations), new { InstanceIds = batch });
-            foreach (var row in rows)
-                if (ReadReason(row.CancellationJson) is { } reason)
-                    requests[row.InstanceId] = reason;
+            await EnsureSchemaAsync();
+            connection = await OpenConnectionAsync(ownership: true);
         }
+        catch (Exception error)
+        {
+            throw new AggregateException("No cancellation request could be read", error);
+        }
+        await using var ownedConnection = connection;
+        var ids = instanceIds.Distinct(StringComparer.Ordinal).ToArray();
+        var failures = new List<Exception>();
+        var failedReads = 0;
+        foreach (var batch in ids.Chunk(OwnershipReadBatchSize))
+        {
+            IEnumerable<(string InstanceId, string CancellationJson)> rows;
+            try
+            {
+                rows = await connection.QueryAsync<(string InstanceId, string CancellationJson)>(
+                    RequiredSql(Statement.Cancellations), new { InstanceIds = batch });
+            }
+            catch (Exception error)
+            {
+                failures.Add(error);
+                failedReads += batch.Length;
+                continue;
+            }
+            foreach (var row in rows)
+                try
+                {
+                    if (JsonSerializer.Deserialize<CancellationReason>(row.CancellationJson) is { } reason)
+                        requests[row.InstanceId] = reason;
+                }
+                catch (Exception error)
+                {
+                    failures.Add(error);
+                    failedReads++;
+                }
+        }
+        if (failedReads == ids.Length)
+            throw new AggregateException("No cancellation request could be read", failures);
         return requests;
     }
 
@@ -539,52 +570,6 @@ public abstract partial class RelationalWorkflowStateRepository :
         return rows.Select(row => row.Read(ReadTime)).ToArray();
     }
 
-    public async Task SaveWorkflowInstanceAsync(WorkflowInstance instance)
-    {
-        ArgumentNullException.ThrowIfNull(instance);
-        if (instance.Revision != 0)
-            throw new InvalidOperationException("Revisioned instances require an atomic commit");
-        await EnsureSchemaAsync();
-        await ExecuteOperationAsync(Operation.Save, async () =>
-        {
-            await using var connection = await OpenConnectionAsync();
-            await using var transaction = await BeginTransactionAsync(connection, Operation.Save);
-            await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { instance.InstanceId });
-            var (current, saveNow) = await LockAsync<CommitState>(connection, transaction!, Statement.CommitState, instance.InstanceId);
-            await RefuseRemovedAsync(connection, transaction, instance.InstanceId, saveNow);
-            var incarnation = current?.Incarnation ?? Guid.NewGuid();
-            var runnableNow = WorkflowStoreRules.IsRunnableNow(instance, false);
-            await ExecuteOptionalAsync(connection, transaction, Statement.SaveParts, new { instance.InstanceId });
-            var parameters = WithTimes(WithLocalTime(new
-            {
-                instance.InstanceId,
-                Incarnation = incarnation,
-                instance.WorkflowName,
-                Status = instance.Status.ToString(),
-                instance.CorrelationId,
-                instance.ParentInstanceId,
-                RunnableNow = runnableNow
-            }), ("RunnableAtUtc", instance.RunnableAtUtc));
-            parameters.Add("StateJson", JsonSerializer.Serialize(instance));
-            if (SaveReturnsDue)
-            {
-                var due = await connection.QuerySingleOrDefaultAsync<bool?>(RequiredSql(Statement.Save), parameters, transaction);
-                if (due == null)
-                    throw new InvalidOperationException("Revisioned instances require an atomic commit");
-                if (due.Value)
-                    await NotifyRunnableAsync(connection, transaction);
-            }
-            else
-                await connection.ExecuteAsync(RequiredSql(Statement.Save), parameters, transaction);
-            if (WorkflowStoreRules.IsTerminal(instance.Status))
-                await RecordCompletionAsync(connection, transaction, instance, 0,
-                    await OutboxNowAsync(connection, transaction));
-            await CompleteAsync(transaction);
-            instance.Incarnation = incarnation;
-            return true;
-        });
-    }
-
     public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
         ArgumentNullException.ThrowIfNull(commit);
@@ -647,11 +632,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             now = await OutboxNowAsync(connection, transaction);
         }
         var lease = await connection.QuerySingleOrDefaultAsync<LeaseRecord>(RequiredSql(Statement.Lease), LeaseParameters(commit.InstanceId, now), transaction);
-        // A leased commit needs the instance's current, active lease. An unleased commit (epoch zero)
-        // is accepted only while nobody holds the lease; the revision check still orders it.
-        var owns = commit.Epoch == 0
-            ? lease?.IsActive != true
-            : lease is { IsActive: true } && lease.Epoch == commit.Epoch;
+        var owns = lease is { IsActive: true } && lease.Epoch == commit.Epoch;
         if (receipt != null)
         {
             if (receipt.ExpectedRevision != commit.ExpectedRevision ||
@@ -791,8 +772,8 @@ public abstract partial class RelationalWorkflowStateRepository :
                 madeRunnable.Add(completion.ParentInstanceId);
         }
         // Other hosts hear of what this commit made claimable: other instances, and this one when it is due
-        // and nobody holds it, because the commit let it go, was made without a lease, or woke it with an event.
-        if (madeRunnable.Count > 0 || woken || (runnableAt <= now && (releases || commit.Epoch == 0)))
+        // and nobody holds it, because the commit let it go or woke it with an event.
+        if (madeRunnable.Count > 0 || woken || (runnableAt <= now && releases))
             await NotifyRunnableAsync(connection, transaction);
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,

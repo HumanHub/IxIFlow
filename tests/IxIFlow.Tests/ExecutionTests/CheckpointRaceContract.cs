@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using System.Text.Json;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
@@ -28,15 +29,16 @@ internal static class CheckpointRaceContract
         try
         {
             var seed = Instance(id, "seed");
+            var epoch = (await StoreTestSupport.LeaseAsync(stores[0], id)).Epoch;
             if (revision > 0)
                 Assert.Equal(WorkflowCommitStatus.Applied, (await stores[0].CommitWorkflowInstanceAsync(
-                    CheckpointCommit.Create(seed, 0, 0))).Status);
+                    CheckpointCommit.Create(seed, epoch, 0))).Status);
             // Contenders after the first commit name the seeded row's incarnation.
             var commits = stores.Select((_, index) =>
             {
                 var writer = Instance(id, "writer-" + index);
                 writer.Incarnation = seed.Incarnation;
-                return CheckpointCommit.Create(writer, 0, revision, "writer-" + index);
+                return CheckpointCommit.Create(writer, epoch, revision, "writer-" + index);
             }).ToArray();
             Assert.All(commits, c => Assert.True(c.Parts.Count >= 2, "The race must write branch and data parts"));
             var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -55,7 +57,7 @@ internal static class CheckpointRaceContract
                 Assert.Equal(expected.WorkflowDataJson, saved.WorkflowDataJson);
                 Assert.Equal(expected.ExecutionStateJson, saved.ExecutionStateJson);
                 Assert.Equal(commits[winner].StoredParts.OrderBy(p => p.Key),
-                    CheckpointCommit.Create(saved, 0, saved.Revision).StoredParts.OrderBy(p => p.Key));
+                    CheckpointCommit.Create(saved, epoch, saved.Revision).StoredParts.OrderBy(p => p.Key));
             }
         }
         finally { await stores[0].DeleteWorkflowInstanceAsync(id); }

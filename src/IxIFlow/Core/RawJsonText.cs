@@ -1,53 +1,47 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
 
-/// <summary>
-/// Writes a string that holds JSON as that JSON, not as an escaped string inside its owner's JSON, and reads it
-/// back as text. A string written before this, as an escaped string, still reads.
-/// </summary>
+/// <summary>Embeds a validated schema-3 checkpoint as a JSON object.</summary>
 internal sealed class RawJsonText : JsonConverter<string>
 {
-    // The text sits one level inside its owner, so what is written raw keeps one level of the reader's depth
-    // free; deeper text is escaped, as is text that is not JSON, so whatever is written reads back.
-    private const int MaxRawDepth = 63;
+    public override bool HandleNull => true;
 
-    public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        if (reader.TokenType == JsonTokenType.String)
-            return reader.GetString();
-        if (reader.TokenType == JsonTokenType.Null)
-            return null;
+        if (reader.TokenType != JsonTokenType.StartObject)
+            throw new JsonException("An execution checkpoint must be a JSON object");
         using var document = JsonDocument.ParseValue(ref reader);
-        return document.RootElement.GetRawText();
+        var json = document.RootElement.GetRawText();
+        _ = ExecutionCheckpoint.ReadTrunk(json);
+        return json;
     }
 
     public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options)
     {
-        var text = value.AsSpan().TrimStart();
-        if (text.Length > 0 && text[0] is '{' or '[' && IsJson(Encoding.UTF8.GetBytes(value), out var utf8))
-            writer.WriteRawValue(utf8, skipInputValidation: true);
-        else
-            writer.WriteStringValue(value);
-    }
-
-    // One pass that both validates the text and bounds its depth.
-    private static bool IsJson(byte[] bytes, out byte[] utf8)
-    {
-        utf8 = bytes;
-        var reader = new Utf8JsonReader(bytes, new JsonReaderOptions { MaxDepth = MaxRawDepth });
+        ArgumentNullException.ThrowIfNull(value);
+        // The checkpoint shares its owner's depth budget. Reject excess depth before writing.
+        var remainingDepth = (options.MaxDepth == 0 ? 64 : options.MaxDepth) - writer.CurrentDepth;
+        if (remainingDepth <= 0)
+            throw new JsonException("The execution checkpoint exceeds the JSON depth limit");
+        var bytes = Encoding.UTF8.GetBytes(value);
+        var reader = new Utf8JsonReader(bytes, new JsonReaderOptions { MaxDepth = remainingDepth });
+        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+            throw new JsonException("An execution checkpoint must be a JSON object");
         try
         {
-            if (!reader.Read())
-                return false;
             reader.Skip();
-            return !reader.Read();
+            if (reader.Read())
+                throw new JsonException("Unexpected content after the execution checkpoint");
         }
-        catch (JsonException)
+        catch (JsonException error)
         {
-            return false;
+            throw new JsonException("The execution checkpoint is invalid or exceeds the JSON depth limit", error);
         }
+        _ = ExecutionCheckpoint.ReadTrunk(value);
+        writer.WriteRawValue(bytes, skipInputValidation: true);
     }
 }

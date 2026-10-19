@@ -159,14 +159,14 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "OutOfDate", Status = WorkflowStatus.Running,
             ExecutionStateJson = state, WorkflowDataJson = "{\"Value\":\"A\"}"
         };
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0));
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0));
         var read = (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!;
         read.WorkflowDataJson = "{\"Value\":\"B\"}";
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(read, 0, 1));
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(read, (await StoreTestSupport.LeaseAsync(repository, read.InstanceId)).Epoch, 1));
 
         read.Revision = 2;
         read.WorkflowDataJson = "{\"Value\":\"A\"}";
-        var commit = CheckpointCommit.Create(read, 0, 2);
+        var commit = CheckpointCommit.Create(read, (await StoreTestSupport.LeaseAsync(repository, read.InstanceId)).Epoch, 2);
         await repository.CommitWorkflowInstanceAsync(commit);
 
         Assert.True(commit.ReplacesParts);
@@ -187,13 +187,13 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         };
         var first = Instance("{\"Value\":\"A\"}");
         var second = Instance("{\"Value\":\"B\"}");
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, 0, 0));
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(second, 0, 0));
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, (await StoreTestSupport.LeaseAsync(repository, first.InstanceId)).Epoch, 0));
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(second, (await StoreTestSupport.LeaseAsync(repository, second.InstanceId)).Epoch, 0));
         var read = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
 
         read.InstanceId = second.InstanceId;
         read.Incarnation = second.Incarnation;
-        var commit = CheckpointCommit.Create(read, 0, 1);
+        var commit = CheckpointCommit.Create(read, (await StoreTestSupport.LeaseAsync(repository, read.InstanceId)).Epoch, 1);
         await repository.CommitWorkflowInstanceAsync(commit);
 
         Assert.True(commit.ReplacesParts);
@@ -349,7 +349,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         var states = new[] { State(1, 5), State(6, 5) };
         var expected = states.Select(state => Branches(state.ExecutionStateJson)).ToArray();
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "MixedReads", Status = WorkflowStatus.Running
         };
         try
@@ -376,7 +376,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
                 instance.ExecutionStateJson = state.ExecutionStateJson;
                 instance.WorkflowDataJson = state.WorkflowDataJson;
                 instance.Revision = revision;
-                var commit = CheckpointCommit.Create(instance, 0, revision);
+                var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, revision);
                 Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
                 // The parts are known for the next revision, except before every tenth, which replaces them all.
                 if ((revision + 1) % 10 != 0)

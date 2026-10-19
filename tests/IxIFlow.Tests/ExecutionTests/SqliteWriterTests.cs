@@ -16,8 +16,11 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
     {
         using var time = new PausedTimeProvider();
         await using var store = new SqliteWorkflowStateRepository(ConnectionString, time);
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N") };
-        var writing = Task.Run(() => store.SaveWorkflowInstanceAsync(instance));
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
+        var grant = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
+        var commit = CheckpointCommit.Create(instance, grant.Epoch, 0);
+        time.Pause = true;
+        var writing = Task.Run(() => store.CommitWorkflowInstanceAsync(commit));
         await time.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Task<bool> queued;
         try
@@ -45,15 +48,15 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
     [InlineData("release lease")]
     [InlineData("append")]
     [InlineData("page")]
-    [InlineData("save")]
     [InlineData("commit")]
     [InlineData("delete")]
     [Trait("Spec", "C-18")]
     public async Task ExternalWriterContentionHasTheSameFailureOnEveryWritePath(string operation)
     {
         await using var store = new SqliteWorkflowStateRepository(ConnectionString);
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N") };
-        await store.SaveWorkflowInstanceAsync(instance);
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
+        await store.SeedAsync(instance);
+        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, instance.Revision);
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync();
         await using var transaction = connection.BeginTransaction(deferred: false);
@@ -69,8 +72,7 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
             "release lease" => () => store.ReleaseExecutionLeaseAsync(instance.InstanceId, "owner"),
             "append" => () => store.AppendEventAsync(new WorkflowEvent(instance.InstanceId, "event", "test", "{}", "test")),
             "page" => () => store.GetPendingEventsAsync(instance.InstanceId, 0, 10),
-            "save" => () => store.SaveWorkflowInstanceAsync(instance),
-            "commit" => () => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0)),
+            "commit" => () => store.CommitWorkflowInstanceAsync(commit),
             "delete" => () => store.DeleteWorkflowInstanceAsync(instance.InstanceId),
             _ => throw new ArgumentOutOfRangeException(nameof(operation))
         };
@@ -86,8 +88,10 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ManualResetEventSlim Release { get; } = new();
 
+        public bool Pause { get; set; }
         public override DateTimeOffset GetUtcNow()
         {
+            if (!Pause) return base.GetUtcNow();
             Started.TrySetResult();
             if (!Release.Wait(TimeSpan.FromSeconds(10)))
                 throw new TimeoutException("The test did not release the writer");

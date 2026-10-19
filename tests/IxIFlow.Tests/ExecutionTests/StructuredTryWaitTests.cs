@@ -1515,7 +1515,7 @@ public class StructuredTryWaitTests
         continuation.Status = ContinuationStatus.Active;
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = System.Text.Json.JsonSerializer.Serialize(checkpoint);
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, 0, saved.Revision, Guid.NewGuid().ToString("N")));
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
 
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
@@ -1643,8 +1643,14 @@ public class StructuredTryWaitTests
             return _inner.CommitWorkflowInstanceAsync(commit);
         }
 
-        public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
-            _inner.SaveWorkflowInstanceAsync(instance);
+        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
+            _inner.GetWorkflowInstanceSummaryAsync(instanceId);
+        public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
+            _inner.GetChildInstancesAsync(parentInstanceId);
+        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+            IReadOnlyCollection<string> instanceIds) =>
+            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);
         public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>

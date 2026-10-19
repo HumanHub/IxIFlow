@@ -49,7 +49,7 @@ public sealed class WorkflowCompletionOutboxTests : IClassFixture<SqliteTestData
         var outbox = Assert.IsAssignableFrom<IWorkflowOutbox>(repository);
         var publisherName = "expired-claim-" + Guid.NewGuid().ToString("N");
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = "ExpiredOutboxClaim",
             Status = WorkflowStatus.Completed
@@ -58,7 +58,7 @@ public sealed class WorkflowCompletionOutboxTests : IClassFixture<SqliteTestData
         {
             await outbox.RegisterPublisherAsync(publisherName, [OutboxEvent.WorkflowCompleted]);
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0,
                     Guid.NewGuid().ToString("N")))).Status);
             var original = Assert.Single(await outbox.ClaimDeliveriesAsync(
                 publisherName, "dead-host", deadHostClaim, 1));

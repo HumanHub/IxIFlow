@@ -68,7 +68,7 @@ public sealed class LeaseIncarnationContractTests
             try
             {
                 var saved = NewInstance(id);
-                await store.SaveWorkflowInstanceAsync(saved);
+                await store.SeedAsync(saved);
                 // Detach even from memory's unstructured revision-zero row before Create stamps it.
                 var caller = (await store.GetWorkflowInstanceAsync(id))!.CopyForResume();
                 Assert.Equal(0, caller.Revision);
@@ -110,7 +110,7 @@ public sealed class LeaseIncarnationContractTests
                 await store.DeleteWorkflowInstanceAsync(id, tombstones);
                 await advance(id, tombstones + TimeSpan.FromDays(1));
                 var replacement = NewInstance(id);
-                await store.SaveWorkflowInstanceAsync(replacement);
+                await store.SeedAsync(replacement);
                 replacement = (await store.GetWorkflowInstanceAsync(id))!.CopyForResume();
                 var grant = (await store.TryAcquireExecutionLeaseAsync(id, "replacement", duration))!;
                 Assert.True(grant.Epoch > oldEpoch);
@@ -205,7 +205,7 @@ public sealed class LeaseIncarnationContractTests
             await VerifyAbsentDelete(store, id + "-absent", duration, open);
             await VerifyFirstInsertReplay(store, id + "-retry", duration);
             var original = NewInstance(id);
-            await Apply(store, CheckpointCommit.Create(original, 0, 0));
+            await Apply(store, CheckpointCommit.Create(original, (await StoreTestSupport.LeaseAsync(store, original.InstanceId)).Epoch, 0));
             original = (await store.GetWorkflowInstanceAsync(id))!;
             var originalIncarnation = original.Incarnation;
             Assert.NotEqual(Guid.Empty, originalIncarnation);
@@ -249,7 +249,7 @@ public sealed class LeaseIncarnationContractTests
             replacement.Status = WorkflowStatus.Running;
             replacement.Revision = 0;
             Assert.Equal(originalIncarnation, replacement.Incarnation);
-            var firstInsert = CheckpointCommit.Create(replacement, 0, 0);
+            var firstInsert = CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(store, replacement.InstanceId)).Epoch, 0);
             Assert.NotEqual(originalIncarnation, firstInsert.Incarnation);
             Assert.Equal(firstInsert.Incarnation, replacement.Incarnation);
             await Apply(store, firstInsert);
@@ -300,7 +300,7 @@ public sealed class LeaseIncarnationContractTests
             var unleased = NewInstance(id);
             unleased.Status = WorkflowStatus.Completed;
             Assert.Equal(WorkflowCommitStatus.StaleEpoch,
-                (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(unleased, 0, finished.Revision))).Status);
+                (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(unleased, (await StoreTestSupport.LeaseAsync(store, unleased.InstanceId)).Epoch, finished.Revision))).Status);
             var untouched = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.Equal(finished.Revision, untouched.Revision);
             Assert.Equal(finished.WorkflowDataJson, untouched.WorkflowDataJson);
@@ -313,13 +313,13 @@ public sealed class LeaseIncarnationContractTests
             await store.PurgeAsync(retention, tombstones, 100);
             original.Revision = 0;
             original.Status = WorkflowStatus.Running;
-            await store.SaveWorkflowInstanceAsync(original);
+            await store.SeedAsync(original);
             var saved = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.Equal(original.Incarnation, saved.Incarnation);
             Assert.NotEqual(originalIncarnation, saved.Incarnation);
             Assert.NotEqual(replacement.Incarnation, saved.Incarnation);
             var update = NewInstance(id);
-            await store.SaveWorkflowInstanceAsync(update);
+            await store.SeedAsync(update);
             Assert.Equal(saved.Incarnation, update.Incarnation);
             Assert.Equal(saved.Incarnation, (await store.GetWorkflowInstanceAsync(id))!.Incarnation);
             await VerifyJsonAndChildReuse(store, saved, advance, tombstones);
@@ -328,7 +328,7 @@ public sealed class LeaseIncarnationContractTests
     }
 
     private static WorkflowInstance NewInstance(string id) => new()
-    {
+    { ExecutionStateJson = StoreTestSupport.CheckpointJson,
         InstanceId = id, WorkflowName = "LeaseIncarnation" + id,
         Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
     };
@@ -421,7 +421,7 @@ public sealed class LeaseIncarnationContractTests
         parent.Status = WorkflowStatus.Suspended;
         try
         {
-            await Apply(store, CheckpointCommit.Create(parent, 0, 0,
+            await Apply(store, CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, 0,
                 openedWaits: [new OpenedWait("notice", WaitKind.Child, "", "child-result", null)]));
             var parentBefore = (await store.GetWorkflowInstanceAsync(parentId))!;
             var parentWait = await store.GetWaitAsync(parentId, "notice");
@@ -481,9 +481,9 @@ public sealed class LeaseIncarnationContractTests
             Assert.Equal(Guid.Empty, reused.Incarnation);
             reused.Revision = 0;
             if (save)
-                await store.SaveWorkflowInstanceAsync(reused);
+                await store.SeedAsync(reused);
             else
-                await Apply(store, CheckpointCommit.Create(reused, 0, 0));
+                await Apply(store, CheckpointCommit.Create(reused, (await StoreTestSupport.LeaseAsync(store, reused.InstanceId)).Epoch, 0));
             var row = (await store.GetWorkflowInstanceAsync(saved.InstanceId))!;
             Assert.True(incarnations.Add(row.Incarnation));
             Assert.Equal(row.Incarnation, reused.Incarnation);
@@ -502,7 +502,7 @@ public sealed class LeaseIncarnationContractTests
                 child.ParentWaitId = "child";
                 var payload = JsonSerializer.SerializeToNode(child)!;
                 payload[nameof(WorkflowInstance.Incarnation)] = saved.Incarnation;
-                await Apply(store, CheckpointCommit.Create(parent, 0, 0,
+                await Apply(store, CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, 0,
                     openedWaits: [new OpenedWait("child", WaitKind.Child, "", "child-result", null)],
                     childStarts: [new ChildStart(child.InstanceId, payload.ToJsonString(), "child")]));
                 var row = (await store.GetWorkflowInstanceAsync(child.InstanceId))!;

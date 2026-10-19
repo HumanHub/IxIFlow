@@ -206,13 +206,13 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
             var committed = DateTime.UtcNow;
             for (var index = 0; index < 3; index++)
                 await Commit(store, new WorkflowInstance
-                {
+                { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                     InstanceId = ids[index], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
                     WorkflowDataJson = "{}"
                 }, new OpenedWait($"{ids[index]}-delay", WaitKind.Delay, "delay", "",
                     TimeSpan.FromSeconds(7 - 3 * index)));
             await Commit(store, new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = ids[3], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
                 WorkflowDataJson = "{}"
             });
@@ -253,7 +253,7 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
     {
         var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromSeconds(30)))!;
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "Parking", Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
         };
         var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, grant.Epoch, 0));
@@ -272,7 +272,7 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
     private static async Task Commit(IWorkflowStateRepository store, WorkflowInstance instance,
         params OpenedWait[] waits) =>
         Assert.Equal(WorkflowCommitStatus.Applied,
-            (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
+            (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0,
                 openedWaits: waits))).Status);
 
     private static async Task<T> WaitForAsync<T>(Func<Task<T?>> probe) where T : class

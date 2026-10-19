@@ -33,11 +33,13 @@ internal sealed class ExecutionCheckpoint
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool TraceBudgetExhausted { get; set; }
 
+    [JsonRequired]
     public string Runtime { get; set; } = "structured-v2";
     /// <summary>
     /// The form the checkpoint is saved in; 3 stores the trunk and separate state parts. A checkpoint in another form is refused
     /// as unsupported rather than read wrongly.
     /// </summary>
+    [JsonRequired]
     public int SchemaVersion { get; set; } = 3;
     public string DefinitionFingerprint { get; set; } = "";
     public List<ContinuationState> Continuations { get; set; } = [];
@@ -328,7 +330,7 @@ internal sealed class ExecutionCheckpoint
 
     /// <summary>The operator stop of a saved instance, read without its workflow data.</summary>
     public static OperatorStopState? StopOf(WorkflowInstance instance) =>
-        IsStructured(instance.ExecutionStateJson) ? ReadTrunk(instance.ExecutionStateJson).OperatorStop : null;
+        ReadTrunk(instance.ExecutionStateJson).OperatorStop;
 
     public static bool IsStructured(string json)
     {

@@ -334,12 +334,12 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"),
             Status = WorkflowStatus.Terminated
         };
         await provider.GetRequiredService<IWorkflowStateRepository>()
-            .SaveWorkflowInstanceAsync(instance);
+            .SeedAsync(instance);
 
         var result = await provider.GetRequiredService<IWorkflowClient>()
             .CancelAsync(instance.InstanceId,
@@ -392,11 +392,11 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
 
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString() };
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString() };
         using (var firstScope = provider.CreateScope())
         {
             await firstScope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>()
-                .SaveWorkflowInstanceAsync(instance);
+                .SeedAsync(instance);
         }
 
         using var secondScope = provider.CreateScope();
