@@ -16,6 +16,7 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT [InstanceId], [EventId], [Sequence], [EventType], [EventKey], [TargetWaitId], [Subject], [PayloadJson], [PayloadHash], [ReceivedAtUtc], [Outcome], [WaitId], [Rejection], [SettledAtUtc] FROM dbo.IxIFlowWorkflowEvents WHERE 1=0;
                 SELECT [InstanceId], [PartKey], [Json] FROM dbo.IxIFlowWorkflowParts WHERE 1=0;
                 SELECT [InstanceId], [Sequence], [EntryJson] FROM dbo.IxIFlowWorkflowTraces WHERE 1=0;
+                SELECT InstanceId, DiagnosticId, DiagnosticJson FROM dbo.IxIFlowWorkflowDiagnostics WHERE 1=0;
                 SELECT [InstanceId], [WaitId], [Kind], [WaitKey], [EventType], [DefaultPayloadJson], [DeadlineUtc], [OpenedSequence], [OpenedAtUtc], [CloseReason], [ClosedAtUtc] FROM dbo.IxIFlowWorkflowWaits WHERE 1=0;
                 SELECT [InstanceId], [CommitId], [ExpectedRevision], [Revision], [PayloadHash] FROM dbo.IxIFlowWorkflowCommits WHERE 1=0;
                 SELECT [InstanceId], [Token], [ExpiresAtUtc], [Epoch], [CrashCount] FROM dbo.IxIFlowWorkflowLeases WHERE 1=0;

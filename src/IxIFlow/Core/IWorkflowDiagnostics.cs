@@ -1,4 +1,3 @@
-using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Core;
@@ -25,9 +24,8 @@ internal sealed class WorkflowDiagnostics(IServiceProvider services, IWorkflowSt
         if (authorizer == null || !await authorizer.CanReadAsync(instanceId, cancellationToken))
             throw new UnauthorizedAccessException("Raw workflow diagnostics require application authorization");
         cancellationToken.ThrowIfCancellationRequested();
-        var instance = await repository.GetWorkflowInstanceAsync(instanceId);
+        var diagnostics = await repository.GetDiagnosticsAsync(instanceId);
         cancellationToken.ThrowIfCancellationRequested();
-        return instance == null || !ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
-            ? [] : ExecutionCheckpoint.Read(instance.ExecutionStateJson).Diagnostics.ToArray();
+        return diagnostics;
     }
 }

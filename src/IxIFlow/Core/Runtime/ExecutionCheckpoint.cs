@@ -90,21 +90,46 @@ internal sealed class ExecutionCheckpoint
     public DateTime? ExecutionDeadlineUtc { get; set; }
     public bool TimedOut { get; set; }
     public SerializedException? UnhandledError { get; set; }
-    public List<WorkflowDiagnostic> Diagnostics { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<InspectionError>? Diagnostics { get; set; }
+
+    /// <summary>New raw records travel once with the commit, never in checkpoint JSON.</summary>
+    [JsonIgnore]
+    public List<WorkflowDiagnostic> PendingDiagnostics { get; } = [];
 
     public InspectionError RecordDiagnostic(Exception error)
     {
         var safe = InspectionRedactionPolicy.Default.Error(error);
+        Diagnostics ??= [];
         if (Diagnostics.All(item => item.DiagnosticId != safe.DiagnosticId))
-            Diagnostics.Add(new(safe.DiagnosticId, safe.ErrorType, error.Message, error.StackTrace));
+            PendingDiagnostics.Add(new(safe.DiagnosticId, safe.ErrorType, error.Message, error.StackTrace));
+        Diagnostics.RemoveAll(item => item.DiagnosticId == safe.DiagnosticId);
+        Diagnostics.Add(safe);
         return safe;
     }
 
     public InspectionError RecordDiagnostic(string code, string message)
     {
         var safe = new InspectionError(code, Guid.NewGuid().ToString("N"));
-        Diagnostics.Add(new(safe.DiagnosticId, safe.ErrorType, message, null));
+        (Diagnostics ??= []).Add(safe);
+        PendingDiagnostics.Add(new(safe.DiagnosticId, safe.ErrorType, message, null));
         return safe;
+    }
+
+    /// <summary>
+    /// Keep the latest diagnostic and every pending activity/stop's diagnostic. Completed, caught and
+    /// retried failures get only the single latest slot, independent of the number of loop iterations.
+    /// </summary>
+    public void RetainDiagnostics()
+    {
+        if (Diagnostics is not { Count: > 0 })
+            return;
+        var retained = Continuations.Where(item => item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled))
+            .Select(item => item.PendingActivity?.ResolutionDiagnostic?.DiagnosticId)
+            .Append(OperatorStop?.Diagnostic?.DiagnosticId).Append(Diagnostics[^1].DiagnosticId)
+            .Where(id => id != null).ToHashSet(StringComparer.Ordinal);
+        Diagnostics.RemoveAll(item => !retained.Contains(item.DiagnosticId));
+        PendingDiagnostics.RemoveAll(item => !retained.Contains(item.DiagnosticId));
     }
     public bool CancellationRequested { get; set; }
 
