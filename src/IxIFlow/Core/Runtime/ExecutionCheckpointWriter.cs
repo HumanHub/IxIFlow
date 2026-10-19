@@ -158,6 +158,8 @@ internal static class ExecutionCheckpointWriter
             if (!preserveContinuationState)
                 ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
             checkpoint.RecordBranchChanges();
+            // Recording changes the persisted trace-budget counters; do it before splitting the checkpoint.
+            checkpoint.Trace.CapturePositions(now);
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson
                 : StoredJson.Inline(BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData))));

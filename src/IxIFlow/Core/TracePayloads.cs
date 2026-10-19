@@ -19,7 +19,16 @@ namespace IxIFlow.Core;
 [JsonDerivedType(typeof(DataEditedTrace), "dataEdited")]
 [JsonDerivedType(typeof(DebugCommandTrace), "debugCommand")]
 [JsonDerivedType(typeof(BreakpointHitTrace), "breakpointHit")]
+[JsonDerivedType(typeof(ReplayOriginTrace), "replayOrigin")]
+[JsonDerivedType(typeof(ThreadPositionTrace), "threadPosition")]
 public abstract record TracePayload;
+
+/// <summary>Versioned, value-free replay facts. Position deltas record decisions after execution, never expressions.</summary>
+public sealed record ReplayOriginTrace(string InstanceId, string StructureHash, long BaseRevision, TraceDetail Detail) : TracePayload
+{
+    public IReadOnlyList<InspectionThread> Threads { get; init; } = [];
+}
+public sealed record ThreadPositionTrace(string ContinuationId, InspectionThread? Thread) : TracePayload;
 
 /// <summary>Identifiers only; item indices start at zero and loop iterations at one.</summary>
 public record ControlFlowTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,

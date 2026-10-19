@@ -192,3 +192,7 @@ Success returns a receipt with the edit ID, committed revision and target. The i
 If a response is lost, retry with exactly the same instance ID, edit ID, expected revision, target, patches and actor. The store returns the original receipt, even if another host has since continued or completed the instance. Reusing an ID with different fields is refused. Receipts last with the retained instance and are removed with it.
 
 Each edit atomically records a `DataEdited` trace entry with its actor, edit ID, target, committed revision and paths. Before and after values are represented only by HMAC-SHA-256 digests using the configured key, bound to the instance, edit, path and before/after position. Values and dictionary key values are absent from the audit. This audit is mandatory even with tracing disabled, activity-only tracing, or exhausted trace limits. A digest cannot be checked by hashing guesses without the secret key.
+
+## Inspection and replay
+
+See [Inspection and replay](inspection-and-replay.md) for saved checkpoint projections, sequence-paged trace reads, forward and backward navigation, cursor breakpoints and access requirements.

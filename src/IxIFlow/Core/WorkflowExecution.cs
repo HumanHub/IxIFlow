@@ -404,6 +404,8 @@ public class ExecutionFrame
 /// </summary>
 public class ExecutionTraceEntry
 {
+    public string? ContinuationId { get; set; }
+    public string? FrameActivationId { get; set; }
     /// <summary>The catalog identity of the activity step.</summary>
     public string? StepId { get; set; }
     /// <summary>
@@ -584,7 +586,9 @@ public enum TraceEntryType
     /// <summary>A mandatory, value-free audit of a paused data edit.</summary>
     DataEdited,
     TimersFrozen,
-    TimersShifted
+    TimersShifted,
+    ReplayOrigin,
+    ThreadPosition
 }
 
 /// <summary>

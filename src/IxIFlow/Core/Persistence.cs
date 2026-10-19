@@ -304,7 +304,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly Dictionary<string, Dictionary<string, StoredJson>> _parts = new(StringComparer.Ordinal);
     // Each instance's waits by wait ID, so appends and reads touch only that instance's waits.
     private readonly Dictionary<string, Dictionary<string, StoredWait>> _waits = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, List<string>> _traces = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<(string Json, long Revision, long? CommitEndSequence, WorkflowStatus? CommitStatus)>> _traces = new(StringComparer.Ordinal);
     private readonly HashSet<string> _acknowledgedCancellations = new();
 
     public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
@@ -569,7 +569,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             {
                 if (!_traces.TryGetValue(commit.InstanceId, out var trace))
                     _traces[commit.InstanceId] = trace = [];
-                trace.AddRange(traces);
+                var end = checked((long)trace.Count + traces.Count);
+                trace.AddRange(traces.Select(json => (json, snapshot.Revision, (long?)end, (WorkflowStatus?)snapshot.Status)));
             }
             if (snapshot.CancellationReason != null && _cancellations.ContainsKey(commit.InstanceId))
                 _acknowledgedCancellations.Add(commit.InstanceId);
@@ -696,7 +697,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             return;
         if (!_traces.TryGetValue(workflowEvent.InstanceId, out var trace))
             _traces[workflowEvent.InstanceId] = trace = [];
-        trace.Add(WorkflowStoreRules.SerializeTrace(WorkflowStoreRules.RefusedEventTrace(workflowEvent, rejection, now)));
+        trace.Add((WorkflowStoreRules.SerializeTrace(WorkflowStoreRules.RefusedEventTrace(workflowEvent, rejection, now)),
+            instance.Revision, null, null));
     }
 
     private static StoredWorkflowEvent Stored(WorkflowEvent workflowEvent, long sequence, DateTime now) =>
@@ -853,8 +855,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
             return Task.FromResult<IReadOnlyList<StoredTraceEntry>>(_traces.TryGetValue(instanceId, out var trace)
                 ? trace.Skip((int)Math.Min(afterSequence, trace.Count)).Take(limit)
-                    .Select((json, index) => new StoredTraceEntry(afterSequence + index + 1,
-                        JsonSerializer.Deserialize<ExecutionTraceEntry>(json)!)).ToArray()
+                    .Select((stored, index) => new StoredTraceEntry(afterSequence + index + 1,
+                        JsonSerializer.Deserialize<ExecutionTraceEntry>(stored.Json)!)
+                        { Revision = stored.Revision, CommitEndSequence = stored.CommitEndSequence, CommitStatus = stored.CommitStatus }).ToArray()
                 : []);
     }
 

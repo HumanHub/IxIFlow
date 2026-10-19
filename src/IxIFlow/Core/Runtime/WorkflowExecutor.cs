@@ -398,6 +398,7 @@ public sealed class WorkflowExecutor
                 // This lets a sibling start even when another activity is awaiting it.
                 while (true)
                 {
+                    checkpoint.Trace.CapturePositions();
                     signals.ThrowIfStopped();
                     signals.ThrowIfOwnershipLost();
                     // A draining host starts no new steps (B-12), nor does a run stopping at a limit.

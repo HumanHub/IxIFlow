@@ -16,6 +16,10 @@ internal sealed class ExecutionCheckpoint
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool TraceBudgetExhausted { get; set; }
 
+    /// <summary>Whether this instance's replay origin has been recorded, including for child starts.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool TraceReplayInitialized { get; set; }
+
     [JsonRequired]
     public string Runtime { get; set; } = "structured-v2";
     /// <summary>

@@ -57,6 +57,11 @@ public interface IWorkflowDebugStore
 /// <summary>Authorized in-process debugger operations. The application authorizes the actor.</summary>
 public interface IWorkflowOperations
 {
+    /// <summary>Reads a projection of the saved checkpoint, never the checkpoint itself.</summary>
+    Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default);
+    /// <summary>Reads at most 1000 entries strictly after the given sequence. Sequence orders both clocks.</summary>
+    Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000,
+        CancellationToken cancellationToken = default);
     /// <summary>Requests a durable pause; running activities finish before it is committed.</summary>
     Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
     /// <summary>Continues a pause under a fresh lease on this host.</summary>
