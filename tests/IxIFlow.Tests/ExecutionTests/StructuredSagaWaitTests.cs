@@ -1786,6 +1786,12 @@ public class StructuredSagaWaitTests
             _inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
         public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
             _inner.GetTombstoneAsync(instanceId);
+        public Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission) =>
+            _inner.AdmitWorkflowInstanceAsync(commit, admission);
+        public Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId) =>
+            _inner.GetWorkflowOwnershipAsync(instanceId);
+        public Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key) =>
+            _inner.GetWorkflowAdmissionAsync(sender, trigger, key);
 
         public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
             _inner.RegisterPublisherAsync(name, eventTypes, replayRetained);

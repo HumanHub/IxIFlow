@@ -14,6 +14,7 @@
     <ProjectReference Include="../../src/IxIFlow.SqlServer/IxIFlow.SqlServer.csproj" />
     <ProjectReference Include="../../src/IxIFlow.PostgreSql/IxIFlow.PostgreSql.csproj" />
     <ProjectReference Include="../../src/IxIFlow.Webhooks/IxIFlow.Webhooks.csproj" />
+    <ProjectReference Include="../../src/IxIFlow.AspNetCore/IxIFlow.AspNetCore.csproj" />
     <ProjectReference Include="../../src/IxIFlow.Templates.Liquid/IxIFlow.Templates.Liquid.csproj" />
     <ProjectReference Include="../IxIFlow.Recipes/IxIFlow.Recipes.csproj" />
   </ItemGroup>
