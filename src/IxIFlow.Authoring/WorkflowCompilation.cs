@@ -28,23 +28,14 @@ public static class WorkflowCompilation
         typeof(CSharpCompilation).Assembly.GetName().Version!.ToString(), "CSharp14", "Release", true, "PortablePdb");
 
     // TPA is the host's fixed runtime/dependency profile, independent of lazy loading.
-    // Extend it with the entry point's transitive closure and explicitly configured types.
+    // Extend it only with the entry point's transitive closure, loaded by name.
+    // SourceOptions types must resolve within this fixed profile, even on a warm host.
     public static string[] ReferencePaths(WorkflowSourceOptions? options = null)
     {
         var paths = new HashSet<string>(((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "")
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
         var pending = new Queue<Assembly>();
         if (Assembly.GetEntryAssembly() is { } entry) pending.Enqueue(entry);
-        pending.Enqueue(typeof(WorkflowCompilation).Assembly);
-        if (options != null)
-            foreach (var name in options.Types.Values.Concat(options.WorkflowDataTypes.Values)
-                         .Concat(options.Workflows.Values.Select(item => item.DataType)).Distinct(StringComparer.Ordinal))
-            {
-                var clrName = name.Replace("global::", "", StringComparison.Ordinal);
-                // Only explicit SourceOptions may introduce assemblies outside the host profile.
-                foreach (var assembly in AssemblyLoadContext.Default.Assemblies.Where(item => !item.IsDynamic))
-                    if (WorkflowPublisher.FindType(assembly, clrName) != null) pending.Enqueue(assembly);
-            }
         var visited = new HashSet<string>(StringComparer.Ordinal);
         while (pending.TryDequeue(out var assembly))
         {
@@ -53,7 +44,19 @@ public static class WorkflowCompilation
             foreach (var reference in assembly.GetReferencedAssemblies().OrderBy(item => item.FullName, StringComparer.Ordinal))
                 pending.Enqueue(Assembly.Load(reference));
         }
-        return NormalizeReferences(paths);
+        var references = NormalizeReferences(paths);
+        if (options != null)
+        {
+            var assemblies = references.Select(path => Assembly.Load(AssemblyName.GetAssemblyName(path))).ToArray();
+            foreach (var name in options.Types.Values.Concat(options.WorkflowDataTypes.Values)
+                         .Concat(options.Workflows.Values.Select(item => item.DataType)).Distinct(StringComparer.Ordinal))
+            {
+                var clrName = name.Replace("global::", "", StringComparison.Ordinal);
+                if (!assemblies.Any(assembly => WorkflowPublisher.FindType(assembly, clrName) != null))
+                    throw new InvalidOperationException($"Configured type '{name}' is outside the host reference profile (trusted-platform assemblies and entry assembly closure)");
+            }
+        }
+        return references;
     }
 
     internal static string[] NormalizeReferences(IEnumerable<string> paths) => paths
