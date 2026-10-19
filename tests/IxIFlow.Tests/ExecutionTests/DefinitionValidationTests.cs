@@ -178,8 +178,9 @@ public sealed class DefinitionValidationTests
         var checkpoint = new ExecutionCheckpoint { StructureHash = new WorkflowScopeCatalog(definition).StructureHash };
         var executor = new WorkflowExecutor(provider, provider.GetRequiredService<IActivityExecutor>(), TimeProvider.System);
 
+        using var run = executor.OpenRun();
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => executor.RunAsync(definition,
-            new WorkflowInstance(), checkpoint, data, null!, CancellationToken.None));
+            new WorkflowInstance(), checkpoint, data, null!, run.RunId));
 
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains("has not been validated", error.Message);

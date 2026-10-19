@@ -228,21 +228,48 @@ public sealed class TraceReviewTests
     }
 
     [Fact]
-    public void AcknowledgementClearsTheBufferAndTransfersTheResultWithoutCopyingIt()
+    public async Task AcknowledgementClearsTheBufferAndTransfersTheResultWithoutCopyingIt()
     {
-        var checkpoint = new ExecutionCheckpoint { ResultTrace = [] };
+        var checkpoint = new ExecutionCheckpoint();
         var trace = checkpoint.Trace;
         var first = new ExecutionTraceEntry { EntryType = TraceEntryType.ActivityStarted };
         trace.Add(first);
-        checkpoint.AcknowledgeTrace();
+        trace.Committed();
         Assert.Empty(trace.Pending);
         var discarded = new ExecutionTraceEntry { EntryType = TraceEntryType.ConditionTaken };
         trace.Add(discarded);
         trace.DiscardPending();
-        var result = checkpoint.TakeTraceResult();
-        Assert.Same(first, Assert.Single(result));
-        Assert.Empty(checkpoint.TakeTraceResult());
         Assert.Empty(trace.Pending);
+
+        // The host now owns the acknowledged trace. Hold an activity so its receipt can be inspected
+        // before the host transfers the entries to the result and removes the run's receipt.
+        var time = new FakeTimeProvider(Start);
+        var gate = new TraceGate();
+        var store = new InMemoryWorkflowStateRepository(time);
+        using var services = new ServiceCollection().AddLogging().AddSingleton(gate)
+            .AddIxIFlow().Services.BuildServiceProvider();
+        await using var watch = new CancellationWatch(store, time);
+        var host = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
+            store, services.GetRequiredService<IWorkflowVersionRegistry>(), new InProcessInstanceGate(),
+            timeProvider: time, watch: watch);
+        var running = host.StartAsync(Workflow.Create<Data>("ReceiptTrace").Step<HeldTrace>().Build(),
+            new Data(), new WorkflowOptions(), CancellationToken.None);
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        // Inspect the receipt where this internal ownership assertion moved; do not expose production APIs for it.
+        var receipts = Assert.IsAssignableFrom<System.Collections.IDictionary>(typeof(WorkflowHost.InstanceOperations)
+            .GetField("_receipts", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .GetValue(host));
+        var receipt = Assert.Single(receipts.Values.Cast<object>());
+        var acknowledged = Assert.IsType<List<ExecutionTraceEntry>>(receipt.GetType().GetField("Trace")!.GetValue(receipt));
+        var acknowledgedFirst = acknowledged[0];
+        gate.Release.TrySetResult();
+        var result = await running.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+        Assert.Same(acknowledgedFirst, result.TraceEntries[0]);
+        Assert.Equal(acknowledged, result.TraceEntries);
+        Assert.All(acknowledged.Zip(result.TraceEntries), pair => Assert.Same(pair.First, pair.Second));
+        Assert.DoesNotContain(result.TraceEntries, entry => entry.EntryType == discarded.EntryType);
+        Assert.Empty(receipts);
     }
 
     [Fact]
@@ -306,9 +333,13 @@ public sealed class TraceReviewTests
         checkpoint.Trace.Add(new ExecutionTraceEntry { EntryType = TraceEntryType.EventReceived,
             Payload = new ReceivedEventTrace("pending", "go", typeof(Go).AssemblyQualifiedName!, "wait", "root/0") });
         var executor = new WorkflowExecutor(services, services.GetRequiredService<IActivityExecutor>(), time);
-        var result = await executor.RunAsync(definition, instance, checkpoint, data, host, CancellationToken.None);
-        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
-        Assert.Empty(result.TraceEntries);
+        using var run = executor.OpenRun();
+        var outcome = await executor.RunAsync(definition, instance, checkpoint, data, host, run.RunId);
+        Assert.Equal(AssignmentOutcomeKind.Idle, outcome.Kind);
+        Assert.NotNull(host.Saved);
+        instance = host.Saved;
+        Assert.Equal(WorkflowStatus.NeedsResolution, instance.Status);
+        Assert.Empty(host.TraceEntries);
         Assert.Equal(2, commits.Count);
         Assert.All(commits, commit => Assert.Empty(commit.TraceEntries));
         var saved = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
@@ -342,19 +373,15 @@ public sealed class TraceReviewTests
     private sealed class VerificationHost : IExecutionHost
     {
         public List<CheckpointCommit> Commits { get; } = [];
+        public WorkflowInstance? Saved { get; private set; }
+        public List<ExecutionTraceEntry> TraceEntries { get; } = [];
         public ExecutionLimits Limits { get; } = new() { VerifyCheckpointParts = true };
-        public CancellationToken Drain => CancellationToken.None;
-        public Task? OwnershipLoss => null;
-        public Task<CancellationReason>? CancellationSignal => null;
-        public long ObservedInboxSequence => 0;
-        public Task? InboxChanged => null;
-        public CancellationReason? ObservedCancellation => null;
         public long Epoch => 1;
         public bool CanPark => false;
-        public void ThrowIfOwnershipLost() { }
-        public void ObserveCancellation(CancellationReason reason) { }
         public Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
         {
+            Saved = commit.ReadInstance(Saved);
+            TraceEntries.AddRange(commit.TraceEntries.Select(json => JsonSerializer.Deserialize<ExecutionTraceEntry>(json)!));
             Commits.Add(commit);
             return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, Commits.Count));
         }
@@ -375,6 +402,21 @@ public sealed class TraceReviewTests
         services.AddSingleton<IWorkflowStateRepository>(store ?? new InMemoryWorkflowStateRepository(time));
         services.AddIxIFlow(configure ?? (_ => { }));
         return services.BuildServiceProvider();
+    }
+
+    public sealed class TraceGate
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public sealed class HeldTrace(TraceGate gate) : IAsyncActivity
+    {
+        public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            gate.Entered.TrySetResult();
+            await gate.Release.Task.WaitAsync(cancellationToken);
+        }
     }
 
     public sealed class Data { public List<int> Items { get; set; } = [1]; }

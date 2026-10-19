@@ -202,9 +202,9 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         gate.Release.TrySetResult();
 
         var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.Equal(WorkflowStatus.Cancelled, result.Status);
         Assert.Equal(WaitCloseReason.Cancelled, host.Closed[waitId]);
-        Assert.Equal("", Assert.IsType<ClockData>(result.WorkflowData).Outcome);
+        Assert.Equal("", JsonSerializer.Deserialize<ClockData>(result.WorkflowDataJson)!.Outcome);
     }
 
     [Fact]
@@ -231,7 +231,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         gate.Release.TrySetResult();
 
         var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+        Assert.Equal(WorkflowStatus.Cancelled, result.Status);
     }
 
     [Theory]
@@ -817,8 +817,8 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         await scanner.RecoverOnceAsync(CancellationToken.None);
     }
 
-    private static Task<WorkflowExecutionResult> RunExecutorAsync(IServiceProvider services,
-        WorkflowDefinition definition, IExecutionHost host, TimeProvider time, TimeSpan? executionTimeout = null)
+    private static async Task<WorkflowInstance> RunExecutorAsync(IServiceProvider services,
+        WorkflowDefinition definition, DueHost host, TimeProvider time, TimeSpan? executionTimeout = null)
     {
         var now = time.GetUtcNow().UtcDateTime;
         var data = new ClockData();
@@ -842,7 +842,12 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
         };
         var executor = new WorkflowExecutor(services, services.GetRequiredService<IActivityExecutor>(), time);
-        return Task.Run(() => executor.RunAsync(definition, instance, checkpoint, data, host, CancellationToken.None));
+        using var run = executor.OpenRun();
+        host.DeliverCancellation = reason => executor.Deliver(new Cancel(run.RunId, CancelKind.Workflow, reason));
+        var outcome = await Task.Run(() => executor.RunAsync(definition, instance, checkpoint, data, host, run.RunId));
+        Assert.Equal(AssignmentOutcomeKind.Idle, outcome.Kind);
+        Assert.NotNull(host.Saved);
+        return host.Saved;
     }
 
     /// <summary>
@@ -867,7 +872,14 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             get { lock (_lock) return new Dictionary<string, WaitCloseReason>(_closed); }
         }
 
-        public void Cancel() => _cancelled = true;
+        public Action<CancellationReason> DeliverCancellation { get; set; } = _ => { };
+        public WorkflowInstance? Saved { get; private set; }
+
+        public void Cancel()
+        {
+            _cancelled = true;
+            DeliverCancellation(new CancellationReason { ReasonCode = "stop" });
+        }
 
         private TaskCompletionSource? _readStarted;
         private TaskCompletionSource? _readRelease;
@@ -882,36 +894,20 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
 
         public void ReleaseReads() => _readRelease?.TrySetResult();
 
-        public CancellationToken Drain => CancellationToken.None;
         public long Epoch => 1;
         public ExecutionLimits Limits { get; } = new() { MaxCheckpointBytes = long.MaxValue };
-        public bool ChildStartIsCheckpointed => true;
         public bool CanPark => false;
-        public Task? OwnershipLoss => null;
-        public Task<CancellationReason>? CancellationSignal => null;
-        public CancellationReason? ObservedCancellation =>
-            _cancelled ? new CancellationReason { ReasonCode = "stop" } : null;
-        public long ObservedInboxSequence => 0;
-        public Task? InboxChanged => null;
-
-        public void ThrowIfOwnershipLost()
-        {
-        }
-
         public Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
         {
             lock (_lock)
             {
+                Saved = commit.ReadInstance(Saved);
                 _opened.AddRange(commit.OpenedWaits.Where(wait => wait.Timeout != null).Select(wait => wait.WaitId));
                 foreach (var closed in commit.ClosedWaits)
                     _closed[closed.WaitId] = closed.Reason;
             }
             return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged,
                 Interlocked.Increment(ref _revision)));
-        }
-
-        public void ObserveCancellation(CancellationReason reason)
-        {
         }
 
         public async Task<InboxPage> ReadInboxAsync(long afterSequence, int limit)
