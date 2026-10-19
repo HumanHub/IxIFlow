@@ -103,3 +103,11 @@ public sealed class CompletionLog(ILogger<CompletionLog> logger) : IOutboxPublis
     }
 }
 // end-snippet: completion-publisher
+
+// snippet: sensitive-member
+public sealed class PaymentNote
+{
+    [Sensitive] public string CardNumber { get; set; } = "";
+    public string Outcome { get; set; } = "";
+}
+// end-snippet: sensitive-member
