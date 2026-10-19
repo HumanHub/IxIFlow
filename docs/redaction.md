@@ -42,7 +42,7 @@ Microsoft currently marks the HMAC API experimental (`EXTEXP0002`). See [Microso
 
 ## Errors and free-text notes
 
-Activity trace errors and pending-activity reasons contain a safe exception type or engine code and a diagnostic ID. Snapshot `Errors` lists those identities, including workflow failures and operator stops. Raw messages, stack traces and stop descriptions stay in checkpoint diagnostic records. Trace `StackTrace` is empty. Diagnostic IDs are random correlation identifiers, independent of error contents; the same live exception keeps its ID across a span, trace and logger. Delivery inspection uses `InspectionRedactionPolicy.Delivery` to replace `LastError` with a delivery failure identity tied to the event, publisher and attempt. Store primitives continue to return original records for execution.
+Activity trace errors and pending-activity reasons contain a safe exception type or engine code and a diagnostic ID. Snapshot `Errors` lists retained identities, including workflow failures and operator stops. Raw diagnostic messages, stack traces and stop descriptions are stored separately from checkpoint state. Trace `StackTrace` is empty. Diagnostic IDs are random correlation identifiers, independent of error contents; the same live exception keeps its ID across a span, trace and logger. Delivery inspection uses `InspectionRedactionPolicy.Delivery` to replace `LastError` with a delivery failure identity tied to the event, publisher and attempt. Store primitives continue to return original records for execution.
 
 A plain string attempt note or operator decision note is wholly sensitive. The policy erases it by default, or passes the whole text to the registered redactor under `SensitiveAttribute.Classification`. Typed notes keep their member-by-member projection. This affects inspection copies, including traces carried by application results; execution and retry notes stay original.
 
@@ -52,9 +52,13 @@ Error spans use `error.type` and `ixiflow.diagnostic.id`, with error status and 
 
 `IWorkflowDiagnostics` is a separate scoped service. Calling `ReadAsync(instanceId)` requires an application registration of `IWorkflowDiagnosticsAuthorizer`. The authorizer checks the current caller and the requested instance on **every** read, before the store is read. Missing or rejecting authorization denies access. An authorizer failure propagates without returning diagnostics. Resolve this service in the caller's scope so the authorizer can use the application's current principal or tenant.
 
-After authorization, `ReadAsync` returns checkpoint `WorkflowDiagnostic` records: diagnostic ID, error type, original message and original stack. An unknown or removed instance returns an empty list. This read neither runs the workflow nor changes state. Normal inspection never invokes it. A management or debugger integration must supply a separate application-authorized action if it offers this read; an ordinary inspect permission must not grant it.
+After authorization, `ReadAsync` returns retained `WorkflowDiagnostic` records: diagnostic ID, error type, original message and original stack. An unknown or removed instance returns an empty list. This read neither runs the workflow nor changes state. Normal inspection never invokes it. A management or debugger integration must supply a separate application-authorized action if it offers this read; an ordinary inspect permission must not grant it.
 
-Raw checkpoint diagnostics follow checkpoint retention and can contain secrets. Protect store access and any application route returning these records. Run and await results continue to return the original error and workflow data to the application.
+Raw diagnostics are immutable rows keyed by instance ID and diagnostic ID, beside the trace: `dbo.IxIFlowWorkflowDiagnostics` on SQL Server and `ixiflow_workflow_diagnostics` on PostgreSQL and SQLite; memory uses a separate dictionary. Each new record is inserted in the same fenced, idempotent transaction as its checkpoint and trace. Later commits carry only safe identities and new records, and never rewrite earlier diagnostic payloads. Ordinary checkpoint reads do not load these rows. Each relational schema declares and validates the table and its columns when opened.
+
+Retention keeps the most recent diagnostic per instance, plus diagnostics referenced by pending activities (including unresolved recovery) and an active operator stop. Completed attempts, including attempts that were retried, succeeded later or were caught, share that single most recent slot; they do not accumulate a history. The terminal failure occupies the most recent slot and remains available until instance deletion or retention purge. Thus retained records are bounded by one plus the number of open activities and active operator stops, independent of loop iterations or completed attempts. Each commit deletes rows that leave this set in the same transaction. Trace identities can outlive their raw records; the privileged read is not an archive of every error. Deleting or purging an instance deletes all its diagnostic rows.
+
+Raw diagnostics can contain secrets. Protect store access and any application route returning these records. Execution state, retry inputs/history, and run and await results keep their original errors and workflow data; diagnostic retention does not change those application contracts.
 
 ## Opt into sensitive exception logging
 
@@ -62,6 +66,6 @@ Raw checkpoint diagnostics follow checkpoint retention and can contain secrets. 
 
 Call `services.AddIxIFlow()` first, then call `services.AddLogging(logging => logging.AddFilter(InspectionRedactionPolicy.SensitiveDiagnosticsCategory, LogLevel.Error))`.
 
-This category receives the full exception with its safe type and diagnostic ID. Ordinary engine categories keep the safe diagnostic summary. Configure the logging provider's destination and access controls for sensitive records before opting in. Enabling this category is independent of authorizing the privileged checkpoint read.
+This category receives the full exception with its safe type and diagnostic ID. Ordinary engine categories keep the safe diagnostic summary. Configure the logging provider's destination and access controls for sensitive records before opting in. Enabling this category is independent of authorizing the privileged diagnostic read.
 
 Redaction applies when producing new inspection output; it does not rewrite previously committed trace records.

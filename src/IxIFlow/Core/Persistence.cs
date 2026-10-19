@@ -260,6 +260,9 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWo
     /// </summary>
     Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000);
 
+    /// <summary>Raw immutable diagnostic records. Only the authorized diagnostics service exposes this read.</summary>
+    Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId);
+
     /// <summary>The child workflows a parent started, for operators.</summary>
     Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId);
 
@@ -503,6 +506,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
             foreach (var child in commit.ChildStarts)
                 RefuseRemoved(child.ChildInstanceId, Now);
+            if (commit.Diagnostics.Any(item => _diagnostics.TryGetValue(commit.InstanceId, out var rows) &&
+                                              rows.ContainsKey(item.DiagnosticId)))
+                throw new InvalidOperationException("Diagnostic records are immutable and cannot be rewritten");
             // A child's ID is new; a commit that names an existing instance changes nothing.
             if (commit.ChildStarts.FirstOrDefault(child => _instances.ContainsKey(child.ChildInstanceId)) is { } taken)
                 throw new InvalidOperationException(
@@ -559,6 +565,22 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             // An idle owner that has not read every arrival keeps the lease and reads them.
             var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
             // A commit changes only the parts it names, in place.
+            if (commit.Diagnostics.Count > 0)
+            {
+                if (!_diagnostics.TryGetValue(commit.InstanceId, out var rows))
+                    _diagnostics[commit.InstanceId] = rows = new(StringComparer.Ordinal);
+                foreach (var diagnostic in commit.Diagnostics)
+                    rows.Add(diagnostic.DiagnosticId, diagnostic);
+            }
+            if (commit.RetainedDiagnosticIds is { } retained &&
+                _diagnostics.TryGetValue(commit.InstanceId, out var diagnostics))
+            {
+                var keep = retained.ToHashSet(StringComparer.Ordinal);
+                foreach (var id in diagnostics.Keys.Where(id => !keep.Contains(id)).ToArray())
+                    diagnostics.Remove(id);
+                if (diagnostics.Count == 0)
+                    _diagnostics.Remove(commit.InstanceId);
+            }
             if (commit.ReplacesParts || !_parts.TryGetValue(commit.InstanceId, out var parts))
                 _parts[commit.InstanceId] = parts = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var deleted in commit.DeletedParts)
@@ -906,6 +928,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         _inboxReadThrough.Remove(instanceId);
         _waits.Remove(instanceId);
         _traces.Remove(instanceId);
+        _diagnostics.Remove(instanceId);
         _parts.Remove(instanceId);
         foreach (var key in _commits.Keys.Where(key => key.InstanceId == instanceId).ToArray())
             _commits.Remove(key);

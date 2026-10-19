@@ -44,7 +44,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
         ReadInstance, ReadParts, Query, ByName, ByStatus, ByCorrelation, ByParent,
         LockAndReadPage, DeleteLease,
-        DeleteState, DeleteParentInbox, DeleteRows, Trace
+        DeleteState, DeleteParentInbox, DeleteRows, Trace, Diagnostics, DiagnosticIds, InsertDiagnostic, DeleteDiagnostics
     }
 
     /// <summary>The result of the provider's atomic cancellation SQL.</summary>
@@ -746,6 +746,23 @@ public abstract partial class RelationalWorkflowStateRepository :
             ? RequiredSql(Statement.InsertCommit)
             : RequiredSql(Statement.UpdateCommit), values, transaction);
         await ApplyPartsAsync(connection, transaction, commit);
+        foreach (var diagnostic in commit.Diagnostics)
+            await connection.ExecuteAsync(RequiredSql(Statement.InsertDiagnostic), new
+            {
+                commit.InstanceId, diagnostic.DiagnosticId,
+                DiagnosticJson = JsonSerializer.Serialize(diagnostic)
+            }, transaction);
+        if (commit.RetainedDiagnosticIds is { } retained)
+        {
+            // Bound parameter counts even when many branches need operator resolution. Read only IDs;
+            // ordinary execution never loads the stored messages or stacks.
+            var keep = retained.ToHashSet(StringComparer.Ordinal);
+            var ids = await connection.QueryAsync<string>(RequiredSql(Statement.DiagnosticIds),
+                new { commit.InstanceId }, transaction);
+            foreach (var batch in ids.Where(id => !keep.Contains(id)).Chunk(StatementBatchSize))
+                await connection.ExecuteAsync(RequiredSql(Statement.DeleteDiagnostics),
+                    new { commit.InstanceId, Ids = batch }, transaction);
+        }
         await RecordCompletionAsync(connection, transaction, WorkflowStoreRules.IsTerminal(snapshot.Status) ? commit.ReadTrunk() : null, revision, now);
         if (commit.TraceEntries.Count > 0)
             await AppendTraceAsync(connection, transaction, commit.InstanceId, commit.TraceEntries);
@@ -1009,6 +1026,14 @@ public abstract partial class RelationalWorkflowStateRepository :
             new { InstanceId = instanceId, AfterSequence = afterSequence, Limit = limit });
         return rows.Select(row => new StoredTraceEntry(row.Sequence,
             JsonSerializer.Deserialize<ExecutionTraceEntry>(row.EntryJson)!)).ToArray();
+    }
+
+    public async Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId)
+    {
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var rows = await connection.QueryAsync<string>(RequiredSql(Statement.Diagnostics), new { InstanceId = instanceId });
+        return rows.Select(json => JsonSerializer.Deserialize<WorkflowDiagnostic>(json)!).ToArray();
     }
 
     private static WorkflowEvent ToEvent(ParentNotice notice) =>

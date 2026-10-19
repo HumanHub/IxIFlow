@@ -622,11 +622,16 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId;
+                DELETE FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_events WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId;
                 """,
+        Statement.Diagnostics => "SELECT diagnostic_json FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId ORDER BY diagnostic_id",
+        Statement.DiagnosticIds => "SELECT diagnostic_id FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId",
+        Statement.InsertDiagnostic => "INSERT INTO ixiflow_workflow_diagnostics (instance_id, diagnostic_id, diagnostic_json) VALUES (@InstanceId, @DiagnosticId, @DiagnosticJson)",
+        Statement.DeleteDiagnostics => "DELETE FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId AND diagnostic_id IN @Ids",
         Statement.Trace => """
             SELECT sequence, entry_json FROM ixiflow_workflow_traces
             WHERE instance_id = @InstanceId AND sequence > @AfterSequence
@@ -716,6 +721,12 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             part_key varchar(200) COLLATE "C" NOT NULL,
             json text NOT NULL,
             PRIMARY KEY (instance_id, part_key)
+        );
+        CREATE TABLE IF NOT EXISTS ixiflow_workflow_diagnostics (
+            instance_id varchar(100) COLLATE "C" NOT NULL,
+            diagnostic_id varchar(100) COLLATE "C" NOT NULL,
+            diagnostic_json text NOT NULL,
+            PRIMARY KEY (instance_id, diagnostic_id)
         );
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_traces (
             instance_id varchar(100) COLLATE "C" NOT NULL,
