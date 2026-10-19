@@ -347,7 +347,10 @@ internal sealed class ActivityAttempts(
                     $"Workflow definition not found: {step.WorkflowName} v{step.WorkflowVersion}");
         if (childDefinition.Name != step.WorkflowName || childDefinition.Version != step.WorkflowVersion)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                "The child definition has a different declared identity");
+                step.WorkflowType != null
+                    ? $"Workflow type '{step.WorkflowType}' is registered as '{childDefinition.Name}' v{childDefinition.Version}, " +
+                      $"but the invocation requires '{step.WorkflowName}' v{step.WorkflowVersion}"
+                    : "The child definition has a different declared identity");
         var childScopes = WorkflowDefinitionValidator.ForExecution(childDefinition);
         pending.ChildDataType = childDefinition.WorkflowDataType!.AssemblyQualifiedName!;
         ChildStart start;

@@ -920,10 +920,16 @@ public sealed partial class WorkflowHost
             _ = WorkflowDefinitionValidator.ForExecution(definition);
             var hash = await registry.GetWorkflowStructureHashAsync(child.WorkflowName, child.WorkflowVersion);
             var checkpoint = ExecutionCheckpoint.Read(child.ExecutionStateJson);
-            if (hash != request.StructureHash || checkpoint.StructureHash != hash ||
-                child.WorkflowDataType != definition.WorkflowDataType!.AssemblyQualifiedName)
+            if (child.WorkflowDataType != definition.WorkflowDataType!.AssemblyQualifiedName)
                 return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
-                    Message: "The child workflow structure hash or data type differs from its registered definition");
+                    Message: $"Workflow {definition.Name} v{definition.Version} differs from its registered definition: " +
+                        $"registered data type '{definition.WorkflowDataType.AssemblyQualifiedName}', " +
+                        $"loaded data type '{child.WorkflowDataType}'");
+            if (hash != request.StructureHash || checkpoint.StructureHash != hash)
+                return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
+                    Message: $"Workflow {definition.Name} v{definition.Version} differs from its registered definition: " +
+                        $"registered structure hash '{hash}', loaded structure hash " +
+                        $"'{(hash != request.StructureHash ? request.StructureHash : checkpoint.StructureHash)}'");
             var size = StoredCheckpoint.Of(child).Bytes;
             if (size > _limits.MaxCheckpointBytes)
                 return new(request.AssignmentId, Refusal: WorkflowErrorKind.ResourceExhausted,
