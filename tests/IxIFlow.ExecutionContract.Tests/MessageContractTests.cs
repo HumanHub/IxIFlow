@@ -20,7 +20,7 @@ public sealed class MessageContractTests
         typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
         typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome),
         typeof(BreakpointSource), typeof(BreakpointStop), typeof(BreakpointHitTrace),
-        typeof(BreakpointEvaluation), typeof(BreakpointConditionDiagnostic)
+        typeof(DebugStepPosition), typeof(DebugStepping), typeof(BreakpointEvaluation), typeof(BreakpointConditionDiagnostic)
     ];
     public static TheoryData<Type> MessageTypes => new(MessageTypeList);
 
@@ -72,6 +72,9 @@ public sealed class MessageContractTests
                 { Reason = "ConditionCompilationFailed", Diagnostics = [new("BPC001", "Refused", 0, 3, 1, 1)] },
             new BreakpointHitTrace("root", "root/0", "stop", 3, 1)
                 { Reason = "ConditionCompilerUnavailable" },
+            new DebugStepPosition("activation", 2, 3, 4, true),
+            new DebugStepping("root", DebugStepKind.Over, new("activation", 2, 3, 4, true),
+                ["outer", "activation"], ["root", "forked"], "step", "actor", true),
             new BreakpointEvaluation("root", "root/0", "activation", 2, now),
             new BreakpointConditionDiagnostic("BPC001", "Refused member", 4, 3, 1, 5),
             new AssignmentOutcome(AssignmentOutcomeKind.Interrupted, "error", "type", "stack", "root/0", "attempt")

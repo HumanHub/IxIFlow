@@ -7,6 +7,57 @@ namespace IxIFlow.ContractTests;
 [Trait("Feature", "host")]
 public sealed class DebugCommandMessagesTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Spec", "G-06")]
+    public async Task SerializedExecutorCannotAdvanceAnInterruptedStepWithoutCapabilities(bool enabled)
+    {
+        using var harness = new MessageHarness();
+        var assign = await harness.AssignAsync(Workflow.Create<MessageHarness.Data>("HeldStepMessages" + enabled).Step<MessageHarness.Noop>().Build());
+        var json = System.Text.Json.Nodes.JsonNode.Parse(assign.Instance.ExecutionStateJson)!;
+        json["Debug"] = JsonSerializer.SerializeToNode(new DebugCheckpoint
+        {
+            Stepping = new("root", DebugStepKind.Over, new("activation", 0, 0, 0, false),
+                ["activation"], ["root"], "step", "stepper", true)
+        });
+        assign.Instance.ExecutionStateJson = json.ToJsonString();
+        var ready = await harness.ExecuteAsync(assign with { DebuggingEnabled = enabled, Parts = null,
+            Breakpoints = enabled ? BreakpointResolver.Resolve(
+                Workflow.Create<MessageHarness.Data>("HeldStepMessages" + enabled).Step<MessageHarness.Noop>().Build(),
+                [new("condition", "root/0", Condition: "false")]) : [] });
+        Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome!.Kind);
+        Assert.Empty(harness.Host.Requests);
+        Assert.Equal(0, harness.Probe.Noops);
+    }
+
+    [Fact]
+    [Trait("Spec", "G-06")]
+    public async Task StepCommandsAndRecoveryOriginsCrossAssignmentAndDelivery()
+    {
+        using var harness = new MessageHarness();
+        var assign = await harness.AssignAsync(Workflow.Create<MessageHarness.Data>("StepMessages").Step<MessageHarness.Noop>().Build());
+        foreach (var kind in Enum.GetValues<DebugStepKind>())
+        {
+            var command = new DebugCommand("step", 7, DebugCommandKind.Step, 3, "stepper",
+                ContinuationId: "branch", StepKind: kind);
+            var state = new WorkflowDebugState(7, 3, [command]);
+            var copy = harness.Cross(assign with { DebugState = state, DebuggingEnabled = true });
+            Assert.Equal(command, Assert.Single(copy.DebugState!.Commands));
+            var delivery = harness.Cross(new DebugCommands(assign.AssignmentId, state));
+            Assert.Equal(command, Assert.Single(delivery.State.Commands));
+            var stepping = new DebugStepping("branch", kind, new("activation", 2, 4, 1, false),
+                ["outer", "activation"], ["branch", "forked"], "step", "stepper", true);
+            var resumed = JsonSerializer.Deserialize(JsonSerializer.Serialize(stepping,
+                ExecutionMessageContext.Default.DebugStepping), ExecutionMessageContext.Default.DebugStepping)!;
+            Assert.Equal(stepping.Origin, resumed.Origin);
+            Assert.Equal(stepping.EligibleContinuations, resumed.EligibleContinuations);
+            Assert.Equal(stepping.OriginScopes, resumed.OriginScopes);
+            Assert.Equal(kind, resumed.Kind);
+            Assert.True(resumed.Started);
+        }
+    }
+
     [Fact]
     [Trait("Spec", "G-04")]
     public async Task SerializedExecutorWithoutCompilerPersistsTheCountAndTimeThenPauses()
