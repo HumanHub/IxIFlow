@@ -4,6 +4,8 @@ namespace IxIFlow.Core;
 
 public sealed partial class SqlWorkflowStateRepository
 {
+    internal override string DeliveryTable => "dbo.IxIFlowOutboxDeliveries";
+    internal override string OutboxEventTable => "dbo.IxIFlowOutboxEvents";
     internal override string InstanceTable => "dbo.IxIFlowWorkflowInstances";
     internal override string SearchLimitPrefix => "TOP (@Limit)";
     internal override string SearchLimitSuffix => "";

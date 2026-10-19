@@ -308,21 +308,21 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             VALUES (@Name, @TypesJson);
             """,
         Statement.Publishers => """
-            SELECT Name AS Name, TypesJson AS TypesJson, DisabledAtUtc AS DisabledAtUtc, LastError AS LastError
+            SELECT Name AS Name, TypesJson AS TypesJson, DisabledAtUtc AS DisabledAtUtc, LastError AS LastError, EnabledAtUtc AS EnabledAtUtc, EnabledBy AS EnabledBy, UnregisteredAtUtc AS UnregisteredAtUtc, UnregisteredBy AS UnregisteredBy
             FROM dbo.IxIFlowOutboxPublishers
             """,
         Statement.PublisherRead => """
-            SELECT Name AS Name, TypesJson AS TypesJson, DisabledAtUtc AS DisabledAtUtc, LastError AS LastError
+            SELECT Name AS Name, TypesJson AS TypesJson, DisabledAtUtc AS DisabledAtUtc, LastError AS LastError, EnabledAtUtc AS EnabledAtUtc, EnabledBy AS EnabledBy, UnregisteredAtUtc AS UnregisteredAtUtc, UnregisteredBy AS UnregisteredBy
             FROM dbo.IxIFlowOutboxPublishers
             WHERE Name=@Name
             """,
         Statement.BackfillDeliveries => """
-            INSERT INTO dbo.IxIFlowOutboxDeliveries (EventId, PublisherName, Attempts, NextAttemptAtUtc, Status, LastError)
+            INSERT INTO dbo.IxIFlowOutboxDeliveries (EventId, PublisherName, Attempts, NextAttemptAtUtc, Status, LastError, GivenUpReason)
             SELECT e.EventId, @Name, 0, @Now, CASE WHEN p.DisabledAtUtc IS NULL THEN 0 ELSE 2 END,
-                p.LastError
+                p.LastError, CASE WHEN p.DisabledAtUtc IS NULL THEN NULL ELSE 2 END
             FROM dbo.IxIFlowOutboxEvents e
             CROSS JOIN dbo.IxIFlowOutboxPublishers p
-            WHERE p.Name=@Name
+            WHERE p.Name=@Name AND p.UnregisteredAtUtc IS NULL
               AND e.EventType=@EventType
               AND NOT EXISTS (SELECT 1
             FROM dbo.IxIFlowOutboxDeliveries d
@@ -342,8 +342,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
               AND event.EventType=@EventType)
             """,
         Statement.InsertDelivery => """
-            INSERT INTO dbo.IxIFlowOutboxDeliveries (EventId, PublisherName, Attempts, NextAttemptAtUtc, Status, LastError)
-            VALUES (@EventId, @Name, 0, @Now, @Status, @LastError)
+            INSERT INTO dbo.IxIFlowOutboxDeliveries (EventId, PublisherName, Attempts, NextAttemptAtUtc, Status, LastError, GivenUpReason)
+            VALUES (@EventId, @Name, 0, @Now, @Status, @LastError, @GivenUpReason)
             """,
         Statement.ClaimDeliveries => """
             SELECT TOP (@Limit) d.EventId AS EventId,
@@ -352,6 +352,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 d.FirstAttemptAtUtc AS FirstAttemptAtUtc,
                 d.NextAttemptAtUtc AS NextAttemptAtUtc,
                 d.Status AS Status,
+                d.RetriedBy AS RetriedBy,
+                d.RetriedAtUtc AS RetriedAtUtc,
+                d.GivenUpReason AS GivenUpReason,
                 d.LastError AS LastError,
                 d.LeaseToken AS LeaseToken,
                 d.LeaseUntilUtc AS LeaseUntilUtc,
@@ -360,7 +363,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             JOIN dbo.IxIFlowOutboxEvents e ON e.EventId=d.EventId
             JOIN dbo.IxIFlowOutboxPublishers p ON p.Name=d.PublisherName
             WHERE d.PublisherName=@Name
-              AND p.DisabledAtUtc IS NULL
+              AND p.DisabledAtUtc IS NULL AND p.UnregisteredAtUtc IS NULL
               AND d.Status=0
               AND d.NextAttemptAtUtc<=SYSUTCDATETIME()
               AND (d.LeaseUntilUtc IS NULL OR d.LeaseUntilUtc<=SYSUTCDATETIME())
@@ -374,6 +377,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 d.FirstAttemptAtUtc AS FirstAttemptAtUtc,
                 d.NextAttemptAtUtc AS NextAttemptAtUtc,
                 d.Status AS Status,
+                d.RetriedBy AS RetriedBy,
+                d.RetriedAtUtc AS RetriedAtUtc,
+                d.GivenUpReason AS GivenUpReason,
                 d.LastError AS LastError,
                 d.LeaseToken AS LeaseToken,
                 d.LeaseUntilUtc AS LeaseUntilUtc,
@@ -390,6 +396,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 d.FirstAttemptAtUtc AS FirstAttemptAtUtc,
                 d.NextAttemptAtUtc AS NextAttemptAtUtc,
                 d.Status AS Status,
+                d.RetriedBy AS RetriedBy,
+                d.RetriedAtUtc AS RetriedAtUtc,
+                d.GivenUpReason AS GivenUpReason,
                 d.LastError AS LastError,
                 d.LeaseToken AS LeaseToken,
                 d.LeaseUntilUtc AS LeaseUntilUtc,
@@ -401,22 +410,35 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             """,
         Statement.DeliveryUpdate => """
             UPDATE dbo.IxIFlowOutboxDeliveries
-            SET FirstAttemptAtUtc=@FirstAttemptAtUtc, Attempts=@Attempts, NextAttemptAtUtc=@NextAttemptAtUtc, Status=@Status, LastError=@LastError, LeaseToken=@LeaseToken, LeaseUntilUtc=@LeaseUntilUtc
+            SET GivenUpReason=@GivenUpReason, RetriedAtUtc=@RetriedAtUtc, RetriedBy=@RetriedBy, FirstAttemptAtUtc=@FirstAttemptAtUtc, Attempts=@Attempts, NextAttemptAtUtc=@NextAttemptAtUtc, Status=@Status, LastError=@LastError, LeaseToken=@LeaseToken, LeaseUntilUtc=@LeaseUntilUtc
             WHERE EventId=@EventId
               AND PublisherName=@Name
             """,
         Statement.UnregisterPublisher => """
+            UPDATE dbo.IxIFlowOutboxPublishers SET UnregisteredAtUtc=@Now, UnregisteredBy=@Actor WHERE Name=@Name;
+            IF @@ROWCOUNT=0 INSERT INTO dbo.IxIFlowOutboxPublishers (Name, TypesJson, UnregisteredAtUtc, UnregisteredBy) VALUES (@Name, '[]', @Now, @Actor);
             UPDATE dbo.IxIFlowOutboxDeliveries
-            SET Status=2, LeaseToken=NULL, LeaseUntilUtc=NULL
+            SET Status=2, GivenUpReason=3, LeaseToken=NULL, LeaseUntilUtc=NULL
             WHERE PublisherName=@Name AND Status=0;
-            DELETE FROM dbo.IxIFlowOutboxPublishers WHERE Name=@Name;
+            """,
+        Statement.EnablePublisher => """
+            UPDATE dbo.IxIFlowOutboxPublishers SET DisabledAtUtc=NULL, LastError=NULL,
+                EnabledAtUtc=@Now, EnabledBy=@Actor WHERE Name=@Name
+            """,
+        Statement.RetryDisabledDeliveries => """
+            UPDATE TOP (1000) dbo.IxIFlowOutboxDeliveries
+            SET Status=0, Attempts=0, FirstAttemptAtUtc=NULL, NextAttemptAtUtc=@Now,
+                GivenUpReason=NULL, LastError=NULL, LeaseToken=NULL, LeaseUntilUtc=NULL,
+                RetriedAtUtc=@Now, RetriedBy=@Actor
+            WHERE PublisherName=@Name AND Status=2 AND GivenUpReason=2
+
             """,
         Statement.DisablePublisher => """
             UPDATE dbo.IxIFlowOutboxPublishers
             SET DisabledAtUtc=COALESCE(DisabledAtUtc, @Now), LastError=@Error
             WHERE Name=@Name;
             UPDATE dbo.IxIFlowOutboxDeliveries
-            SET Status=2, LastError=@Error, LeaseToken=NULL, LeaseUntilUtc=NULL
+            SET Status=2, GivenUpReason=2, LastError=@Error, LeaseToken=NULL, LeaseUntilUtc=NULL
             WHERE PublisherName=@Name
               AND Status=0;
             """,

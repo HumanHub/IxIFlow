@@ -266,21 +266,21 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             SET types_json=excluded.types_json
             """,
         Statement.Publishers => """
-            SELECT name AS Name, types_json AS TypesJson, disabled_at_utc AS DisabledAtUtc, last_error AS LastError
+            SELECT name AS Name, types_json AS TypesJson, disabled_at_utc AS DisabledAtUtc, last_error AS LastError, enabled_at_utc AS EnabledAtUtc, enabled_by AS EnabledBy, unregistered_at_utc AS UnregisteredAtUtc, unregistered_by AS UnregisteredBy
             FROM ixiflow_outbox_publishers
             """,
         Statement.PublisherRead => """
-            SELECT name AS Name, types_json AS TypesJson, disabled_at_utc AS DisabledAtUtc, last_error AS LastError
+            SELECT name AS Name, types_json AS TypesJson, disabled_at_utc AS DisabledAtUtc, last_error AS LastError, enabled_at_utc AS EnabledAtUtc, enabled_by AS EnabledBy, unregistered_at_utc AS UnregisteredAtUtc, unregistered_by AS UnregisteredBy
             FROM ixiflow_outbox_publishers
             WHERE name=@Name
             """,
         Statement.BackfillDeliveries => """
-            INSERT INTO ixiflow_outbox_deliveries (event_id, publisher_name, attempts, next_attempt_at_utc, status, last_error)
+            INSERT INTO ixiflow_outbox_deliveries (event_id, publisher_name, attempts, next_attempt_at_utc, status, last_error, given_up_reason)
             SELECT e.event_id, @Name, 0, @Now, CASE WHEN p.disabled_at_utc IS NULL THEN 0 ELSE 2 END,
-                p.last_error
+                p.last_error, CASE WHEN p.disabled_at_utc IS NULL THEN NULL ELSE 2 END
             FROM ixiflow_outbox_events e
             CROSS JOIN ixiflow_outbox_publishers p
-            WHERE p.name=@Name
+            WHERE p.name=@Name AND p.unregistered_at_utc IS NULL
               AND e.event_type=@EventType
               AND NOT EXISTS (SELECT 1
             FROM ixiflow_outbox_deliveries d
@@ -300,8 +300,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
               AND event.event_type=@EventType)
             """,
         Statement.InsertDelivery => """
-            INSERT INTO ixiflow_outbox_deliveries (event_id, publisher_name, attempts, next_attempt_at_utc, status, last_error)
-            VALUES (@EventId, @Name, 0, @Now, @Status, @LastError)
+            INSERT INTO ixiflow_outbox_deliveries (event_id, publisher_name, attempts, next_attempt_at_utc, status, last_error, given_up_reason)
+            VALUES (@EventId, @Name, 0, @Now, @Status, @LastError, @GivenUpReason)
             """,
         Statement.ClaimDeliveries => """
             SELECT d.event_id AS EventId,
@@ -310,6 +310,9 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 d.first_attempt_at_utc AS FirstAttemptAtUtc,
                 d.next_attempt_at_utc AS NextAttemptAtUtc,
                 d.status AS Status,
+                d.retried_by AS RetriedBy,
+                d.retried_at_utc AS RetriedAtUtc,
+                d.given_up_reason AS GivenUpReason,
                 d.last_error AS LastError,
                 d.lease_token AS LeaseToken,
                 d.lease_until_utc AS LeaseUntilUtc,
@@ -318,7 +321,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             JOIN ixiflow_outbox_events e ON e.event_id=d.event_id
             JOIN ixiflow_outbox_publishers p ON p.name=d.publisher_name
             WHERE d.publisher_name=@Name
-              AND p.disabled_at_utc IS NULL
+              AND p.disabled_at_utc IS NULL AND p.unregistered_at_utc IS NULL
               AND d.status=0
               AND d.next_attempt_at_utc<=@Now
               AND (d.lease_until_utc IS NULL OR d.lease_until_utc<=@Now)
@@ -333,6 +336,9 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 d.first_attempt_at_utc AS FirstAttemptAtUtc,
                 d.next_attempt_at_utc AS NextAttemptAtUtc,
                 d.status AS Status,
+                d.retried_by AS RetriedBy,
+                d.retried_at_utc AS RetriedAtUtc,
+                d.given_up_reason AS GivenUpReason,
                 d.last_error AS LastError,
                 d.lease_token AS LeaseToken,
                 d.lease_until_utc AS LeaseUntilUtc,
@@ -349,6 +355,9 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 d.first_attempt_at_utc AS FirstAttemptAtUtc,
                 d.next_attempt_at_utc AS NextAttemptAtUtc,
                 d.status AS Status,
+                d.retried_by AS RetriedBy,
+                d.retried_at_utc AS RetriedAtUtc,
+                d.given_up_reason AS GivenUpReason,
                 d.last_error AS LastError,
                 d.lease_token AS LeaseToken,
                 d.lease_until_utc AS LeaseUntilUtc,
@@ -360,22 +369,36 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             """,
         Statement.DeliveryUpdate => """
             UPDATE ixiflow_outbox_deliveries
-            SET first_attempt_at_utc=@FirstAttemptAtUtc, attempts=@Attempts, next_attempt_at_utc=@NextAttemptAtUtc, status=@Status, last_error=@LastError, lease_token=@LeaseToken, lease_until_utc=@LeaseUntilUtc
+            SET given_up_reason=@GivenUpReason, retried_at_utc=@RetriedAtUtc, retried_by=@RetriedBy, first_attempt_at_utc=@FirstAttemptAtUtc, attempts=@Attempts, next_attempt_at_utc=@NextAttemptAtUtc, status=@Status, last_error=@LastError, lease_token=@LeaseToken, lease_until_utc=@LeaseUntilUtc
             WHERE event_id=@EventId
               AND publisher_name=@Name
             """,
         Statement.UnregisterPublisher => """
+            INSERT INTO ixiflow_outbox_publishers (name, types_json, unregistered_at_utc, unregistered_by)
+            VALUES (@Name, '[]', @Now, @Actor)
+            ON CONFLICT (name) DO UPDATE SET unregistered_at_utc=excluded.unregistered_at_utc, unregistered_by=excluded.unregistered_by;
             UPDATE ixiflow_outbox_deliveries
-            SET status=2, lease_token=NULL, lease_until_utc=NULL
+            SET status=2, given_up_reason=3, lease_token=NULL, lease_until_utc=NULL
             WHERE publisher_name=@Name AND status=0;
-            DELETE FROM ixiflow_outbox_publishers WHERE name=@Name;
+            """,
+        Statement.EnablePublisher => """
+            UPDATE ixiflow_outbox_publishers SET disabled_at_utc=NULL, last_error=NULL,
+                enabled_at_utc=@Now, enabled_by=@Actor WHERE name=@Name
+            """,
+        Statement.RetryDisabledDeliveries => """
+            UPDATE ixiflow_outbox_deliveries
+            SET status=0, attempts=0, first_attempt_at_utc=NULL, next_attempt_at_utc=@Now,
+                given_up_reason=NULL, last_error=NULL, lease_token=NULL, lease_until_utc=NULL,
+                retried_at_utc=@Now, retried_by=@Actor
+            WHERE publisher_name=@Name AND status=2 AND given_up_reason=2
+              AND event_id IN (SELECT event_id FROM ixiflow_outbox_deliveries WHERE publisher_name=@Name AND status=2 AND given_up_reason=2 ORDER BY event_id LIMIT 1000)
             """,
         Statement.DisablePublisher => """
             UPDATE ixiflow_outbox_publishers
             SET disabled_at_utc=COALESCE(disabled_at_utc, @Now), last_error=@Error
             WHERE name=@Name;
             UPDATE ixiflow_outbox_deliveries
-            SET status=2, last_error=@Error, lease_token=NULL, lease_until_utc=NULL
+            SET status=2, given_up_reason=2, last_error=@Error, lease_token=NULL, lease_until_utc=NULL
             WHERE publisher_name=@Name
               AND status=0;
             """,

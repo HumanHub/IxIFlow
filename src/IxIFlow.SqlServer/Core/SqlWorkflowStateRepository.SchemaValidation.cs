@@ -19,9 +19,9 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT [InstanceId], [WaitId], [Kind], [WaitKey], [EventType], [DefaultPayloadJson], [DeadlineUtc], [OpenedSequence], [OpenedAtUtc], [CloseReason], [ClosedAtUtc] FROM dbo.IxIFlowWorkflowWaits WHERE 1=0;
                 SELECT [InstanceId], [CommitId], [ExpectedRevision], [Revision], [PayloadHash] FROM dbo.IxIFlowWorkflowCommits WHERE 1=0;
                 SELECT [InstanceId], [Token], [ExpiresAtUtc], [Epoch], [CrashCount] FROM dbo.IxIFlowWorkflowLeases WHERE 1=0;
-                SELECT [Name], [TypesJson], [DisabledAtUtc], [LastError] FROM dbo.IxIFlowOutboxPublishers WHERE 1=0;
+                SELECT [Name], [TypesJson], [DisabledAtUtc], [EnabledAtUtc], [EnabledBy], [UnregisteredAtUtc], [UnregisteredBy], [LastError] FROM dbo.IxIFlowOutboxPublishers WHERE 1=0;
                 SELECT [EventId], [Incarnation], [InstanceId], [EventType], [EventJson], [OccurredAtUtc] FROM dbo.IxIFlowOutboxEvents WHERE 1=0;
-                SELECT [EventId], [PublisherName], [Attempts], [FirstAttemptAtUtc], [NextAttemptAtUtc], [Status], [LastError], [LeaseToken], [LeaseUntilUtc] FROM dbo.IxIFlowOutboxDeliveries WHERE 1=0;
+                SELECT [EventId], [PublisherName], [Attempts], [FirstAttemptAtUtc], [GivenUpReason], [RetriedAtUtc], [RetriedBy], [NextAttemptAtUtc], [Status], [LastError], [LeaseToken], [LeaseUntilUtc] FROM dbo.IxIFlowOutboxDeliveries WHERE 1=0;
                 SELECT [InstanceId], [RemovedAtUtc], [ExpiresAtUtc] FROM dbo.IxIFlowWorkflowTombstones WHERE 1=0;
                 SELECT [Incarnation], [Sender], [Trigger], [Key], [Fingerprint], [InstanceId], [WorkflowName], [WorkflowVersion], [ExpiresAtUtc] FROM dbo.IxIFlowWorkflowAdmissions WHERE 1=0;
                 SELECT [Incarnation], [InstanceId], [Sender], [Trigger], [OwnerKind], [Owner], [Tenant] FROM dbo.IxIFlowWorkflowOwnership WHERE 1=0;

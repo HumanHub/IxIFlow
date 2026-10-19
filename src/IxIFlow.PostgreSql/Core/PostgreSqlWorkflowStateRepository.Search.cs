@@ -3,6 +3,8 @@ namespace IxIFlow.Core;
 
 public sealed partial class PostgreSqlWorkflowStateRepository
 {
+    internal override string DeliveryTable => "ixiflow_outbox_deliveries";
+    internal override string OutboxEventTable => "ixiflow_outbox_events";
     internal override string InstanceTable => "ixiflow_workflow_instances";
     internal override string SearchLimitPrefix => "";
     internal override string SearchLimitSuffix => "LIMIT @Limit";

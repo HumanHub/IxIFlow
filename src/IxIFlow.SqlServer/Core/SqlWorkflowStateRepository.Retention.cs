@@ -21,10 +21,10 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT TOP (@Limit) d.*
                 FROM dbo.IxIFlowOutboxDeliveries d WITH (UPDLOCK, READPAST, ROWLOCK)
                 JOIN dbo.IxIFlowOutboxEvents e ON e.EventId=d.EventId
-                WHERE d.Status=0 AND d.Attempts=0 AND d.FirstAttemptAtUtc IS NULL AND e.OccurredAtUtc<=@Cutoff
+                WHERE d.Status=0 AND d.Attempts=0 AND d.FirstAttemptAtUtc IS NULL AND COALESCE(d.RetriedAtUtc, e.OccurredAtUtc)<=@Cutoff
                 ORDER BY e.OccurredAtUtc, d.EventId, d.PublisherName
             )
-            UPDATE candidates SET Status=2, LastError=@Error, LeaseToken=NULL, LeaseUntilUtc=NULL
+            UPDATE candidates SET Status=2, GivenUpReason=1, LastError=@Error, LeaseToken=NULL, LeaseUntilUtc=NULL
             """,
         Statement.RetentionLock => """
             DECLARE @r INT;

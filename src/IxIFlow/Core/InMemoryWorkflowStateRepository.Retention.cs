@@ -32,13 +32,13 @@ public partial class InMemoryWorkflowStateRepository
             ExpireAdmissions(now, batchSize);
             // Sweep every publisher, including subscriptions no host currently serves.
             var unclaimed = _deliveries.Values.Where(d => d.Status == OutboxDeliveryStatus.Pending &&
-                    d.Attempts == 0 && d.FirstAttemptAtUtc == null && now - d.Event.OccurredAtUtc >= _retryHorizon)
+                    d.Attempts == 0 && d.FirstAttemptAtUtc == null && now - (d.RetriedAtUtc ?? d.Event.OccurredAtUtc) >= _retryHorizon)
                 .OrderBy(d => d.Event.OccurredAtUtc).ThenBy(d => d.Event.Id, StringComparer.Ordinal)
                 .ThenBy(d => d.PublisherName, StringComparer.Ordinal).Take(batchSize).ToArray();
             foreach (var delivery in unclaimed)
                 _deliveries[(delivery.Event.Id, delivery.PublisherName)] = delivery with
                 {
-                    Status = OutboxDeliveryStatus.GivenUp, LastError = OutboxRetry.NeverClaimedError,
+                    Status = OutboxDeliveryStatus.GivenUp, GivenUpReason = OutboxGivenUpReason.Horizon, LastError = OutboxRetry.NeverClaimedError,
                     LeaseToken = null, LeaseUntilUtc = null
                 };
             var expired = _tombstones.Values.Where(t => t.ExpiresAtUtc <= now)

@@ -37,6 +37,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         Members, MemberCapabilities, DeleteCapabilities, InsertCapability,
         RetentionLock, RetentionCandidates, RetentionBlockedPublishers, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
+        EnablePublisher, RetryDisabledDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
         TerminationState, TerminationRequest, TerminationChildren, Cancellation, Cancellations, Runnable, Running, ClaimLease, RenewLease, ReleaseLease,
         LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, Lease, TakenChild,
@@ -110,6 +111,8 @@ public abstract partial class RelationalWorkflowStateRepository :
     internal abstract string ReadInstanceSql(string filter, bool wholly);
     /// <summary>Builds a provider query from an internal predicate; caller values remain parameters.</summary>
     internal abstract string InstanceTable { get; }
+    internal abstract string DeliveryTable { get; }
+    internal abstract string OutboxEventTable { get; }
     internal abstract string SearchColumn(string name);
     internal abstract string SearchValues(DynamicParameters parameters, string name, string[] values);
     internal abstract string SearchLimitPrefix { get; }

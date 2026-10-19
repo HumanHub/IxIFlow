@@ -11,6 +11,11 @@ public sealed partial class WorkflowHost
     /// </summary>
     internal sealed class SlotClient
     {
+        public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => _runner.ListDeliveriesAsync(query);
+        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => _runner.RetryDeliveryAsync(eventId, publisherName, actor);
+        public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => _runner.ListPublishersAsync();
+        public Task<bool> EnablePublisherAsync(string publisherName, string actor) => _runner.EnablePublisherAsync(publisherName, actor);
+        public Task UnregisterPublisherAsync(string publisherName, string actor) => _runner.UnregisterPublisherAsync(publisherName, actor);
         public Task<InstancePage> SearchInstancesAsync(InstanceQuery query) => _runner.SearchInstancesAsync(query);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTracePageAsync(string id, long after, int limit) => _runner.GetTracePageAsync(id, after, limit);
         public Task<WorkflowControlReceipt> RequestTerminationAsync(string id, string code, string? description, string? actor) => _runner.RequestTerminationAsync(id, code, description, actor);

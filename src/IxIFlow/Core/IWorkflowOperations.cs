@@ -5,6 +5,11 @@ namespace IxIFlow.Core;
 /// <summary>Operator access on the host pipeline. Applications enforce authorization at their boundary.</summary>
 public interface IWorkflowOperations
 {
+    Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query, string actor, CancellationToken cancellationToken = default);
+    Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync(string actor, CancellationToken cancellationToken = default);
+    Task<bool> EnablePublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default);
+    Task UnregisterPublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default);
     Task<InstancePage> SearchAsync(InstanceQuery query, CancellationToken cancellationToken = default);
     Task<InstanceSummary?> GetAsync(string instanceId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<PendingWait>> GetWaitsAsync(IReadOnlyCollection<string> instanceIds, CancellationToken cancellationToken = default);
@@ -16,6 +21,43 @@ public interface IWorkflowOperations
 
 internal sealed class HostedWorkflowOperations(WorkflowHost host, TimeProvider time) : IWorkflowOperations
 {
+    public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query, string actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        query.Validate();
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        cancellationToken.ThrowIfCancellationRequested();
+        return host.ReadAsync(client => client.ListDeliveriesAsync(query));
+    }
+
+    public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        cancellationToken.ThrowIfCancellationRequested();
+        return host.ReadAsync(client => client.RetryDeliveryAsync(eventId, publisherName, actor));
+    }
+
+    public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync(string actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        cancellationToken.ThrowIfCancellationRequested();
+        return host.ReadAsync(client => client.ListPublishersAsync());
+    }
+
+    public Task<bool> EnablePublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        cancellationToken.ThrowIfCancellationRequested();
+        return host.ReadAsync(client => client.EnablePublisherAsync(publisherName, actor));
+    }
+
+    public Task UnregisterPublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        cancellationToken.ThrowIfCancellationRequested();
+        return host.ReadAsync(async client => { await client.UnregisterPublisherAsync(publisherName, actor); return true; });
+    }
+
     public Task<InstancePage> SearchAsync(InstanceQuery query, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
