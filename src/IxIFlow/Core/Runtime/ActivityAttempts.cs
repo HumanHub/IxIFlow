@@ -520,7 +520,7 @@ internal sealed class ActivityAttempts(
     }
 
     // What a later attempt sees of this one is in the trace too (D-37).
-    private static Dictionary<string, object> AttemptFacts(Dictionary<string, object> metadata,
+    private Dictionary<string, object> AttemptFacts(Dictionary<string, object> metadata,
         ActivityAttemptState attempt)
     {
         if (attempt.Host != null)
@@ -528,7 +528,8 @@ internal sealed class ActivityAttempts(
         if (attempt.ErrorType != null)
             metadata["ErrorType"] = attempt.ErrorType;
         if (attempt.Note != null)
-            metadata["Note"] = attempt.Note.Json;
+            metadata["Note"] = attempt.Note.Type == typeof(string).AssemblyQualifiedName
+                ? attempt.Note.Json : new RedactingJson(services).Serialize(attempt.Note.Json, attempt.Note.Type);
         return metadata;
     }
 

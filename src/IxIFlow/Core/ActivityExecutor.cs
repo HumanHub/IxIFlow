@@ -292,8 +292,7 @@ public class ActivityExecutor : IActivityExecutor
                     inputs.Properties[targetProperty.Name] = saved;
                     targetProperty.SetValue(activity, convertedValue);
 
-                    _logger.LogTrace("Applied typed input mapping: {Property} = {Value}",
-                        mapping.TargetProperty, convertedValue);
+                    _logger.LogTrace("Applied typed input mapping: {Property}", mapping.TargetProperty);
                 }
                 else
                 {
@@ -340,8 +339,7 @@ public class ActivityExecutor : IActivityExecutor
                     {
                         mapping.TargetAssignmentFunction(evaluationContext, sourceValue);
 
-                        _logger.LogTrace("Applied typed output mapping: {Property} = {Value}",
-                            mapping.TargetProperty, sourceValue);
+                        _logger.LogTrace("Applied typed output mapping: {Property}", mapping.TargetProperty);
                     }
                     else
                     {

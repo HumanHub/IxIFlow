@@ -310,10 +310,8 @@ public class WorkflowExecutionSnapshot
     /// </summary>
     public List<ExecutionFrame> Frames { get; set; } = new();
 
-    /// <summary>
-    ///     Serialized values used by the runtime during resume
-    /// </summary>
-    public Dictionary<string, string> Values { get; set; } = new();
+    /// <summary>Workflow data projected for inspection, with classified members redacted.</summary>
+    public System.Text.Json.JsonElement? Data { get; set; }
 
     /// <summary>When the snapshot was computed from the saved checkpoint.</summary>
     public DateTime CapturedAtUtc { get; set; }
