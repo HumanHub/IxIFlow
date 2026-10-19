@@ -233,9 +233,9 @@ public class AllPropertyAccessTypesSyntaxTests
         public TestException() : base("Test Exception") { }
     }
 
+    [IxIFlow.Core.Workflow("TestWorkflow", Version = 1)]
     public class TestWorkflow : IWorkflow<TestWorkflowData>
     {
-        public int Version => 1;
         
         public void Build(IWorkflowBuilder<TestWorkflowData> builder)
         {

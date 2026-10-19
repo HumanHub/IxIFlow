@@ -65,7 +65,7 @@ public sealed class SagaRetryPolicyTests
     }
 
     [Fact]
-    public void DefaultHandlerBackoffChangesTheFingerprint()
+    public void DefaultHandlerBackoffChangesTheStructureHash()
     {
         static WorkflowDefinition Build(RetryPolicy? policy) => Workflow.Create<Data>("RetryFingerprint")
             .Step<Noop>()
@@ -80,10 +80,10 @@ public sealed class SagaRetryPolicyTests
             })
             .Build();
 
-        var fingerprint = new WorkflowScopeCatalog(Build(null)).Fingerprint;
-        Assert.Equal(new WorkflowScopeCatalog(Build(new RetryPolicy { MaximumAttempts = 3 })).Fingerprint,
-            fingerprint);
-        Assert.NotEqual(new WorkflowScopeCatalog(Build(new RetryPolicy(3))).Fingerprint, fingerprint);
+        var structureHash = new WorkflowScopeCatalog(Build(null)).StructureHash;
+        Assert.Equal(new WorkflowScopeCatalog(Build(new RetryPolicy { MaximumAttempts = 3 })).StructureHash,
+            structureHash);
+        Assert.NotEqual(new WorkflowScopeCatalog(Build(new RetryPolicy(3))).StructureHash, structureHash);
     }
 
     public sealed class Data;

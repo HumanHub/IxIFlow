@@ -6,7 +6,7 @@ using IxIFlow.Core.Runtime;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "registration")]
-public sealed class WorkflowFingerprintTests
+public sealed class WorkflowStructureHashTests
 {
     public static TheoryData<string> Behaviors => new()
     {
@@ -16,11 +16,12 @@ public sealed class WorkflowFingerprintTests
 
     [Theory]
     [MemberData(nameof(Behaviors))]
-    public void EngineFactoriesAndAdaptersDoNotChangeTheFingerprint(string behavior)
+    public void EngineFactoriesAndAdaptersDoNotChangeTheStructureHash(string behavior)
     {
         var original = Define(behavior, 1);
         var changed = new WorkflowDefinition
         {
+            Name = "Hand-built fixture", Version = 1,
             WorkflowDataType = original.WorkflowDataType,
             Steps = original.Steps.Select(step => step.Clone()).ToList()
         };
@@ -50,14 +51,36 @@ public sealed class WorkflowFingerprintTests
                 mapping.TargetAssignmentFunction = (_, _) => throw new InvalidOperationException("different output adapter");
             }
         }
-        Assert.Equal(new WorkflowScopeCatalog(original).Fingerprint, new WorkflowScopeCatalog(changed).Fingerprint);
+        Assert.Equal(new WorkflowScopeCatalog(original).StructureHash, new WorkflowScopeCatalog(changed).StructureHash);
     }
 
     [Theory]
     [MemberData(nameof(Behaviors))]
-    public void AuthorBehaviorStillChangesTheFingerprint(string behavior) =>
-        Assert.NotEqual(new WorkflowScopeCatalog(Define(behavior, 1)).Fingerprint,
-            new WorkflowScopeCatalog(Define(behavior, 2)).Fingerprint);
+    public void AuthorBehaviorWithTheSameStructureKeepsTheStructureHash(string behavior) =>
+        Assert.Equal(new WorkflowScopeCatalog(Define(behavior, 1)).StructureHash,
+            new WorkflowScopeCatalog(Define(behavior, 2)).StructureHash);
+
+    [Fact]
+    public void RealStructureChangesStillChangeTheStructureHash()
+    {
+        static string Hash(WorkflowDefinition definition) => new WorkflowScopeCatalog(definition).StructureHash;
+        WorkflowDefinition Member(bool alternate) => Workflow.Create<Data>("Members").Step<Activity>(step =>
+        {
+            if (alternate) step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Other);
+            else step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Total);
+        }).Build();
+        Assert.NotEqual(Hash(Member(false)), Hash(Member(true)));
+        var original = Workflow.Create<Data>("Steps").Step<Activity>().WaitFor<Answer>("answer").Build();
+        Assert.NotEqual(Hash(original), Hash(Workflow.Create<Data>("Steps").Step<Activity>()
+            .WaitFor<Answer>("answer").Step<Activity>().Build()));
+        var reordered = Workflow.Create<Data>("Steps").Step<Activity>().WaitFor<Answer>("answer").Build();
+        (reordered.Steps[0], reordered.Steps[1]) = (reordered.Steps[1], reordered.Steps[0]);
+        Assert.NotEqual(Hash(original), Hash(reordered));
+        Assert.NotEqual(Hash(original), Hash(Workflow.Create<Data>("Steps").Step<Activity>()
+            .WaitFor<Answer>("other-key").Build()));
+        Assert.NotEqual(Hash(original), Hash(Workflow.Create<Data>("Steps").Step<Activity>()
+            .WaitFor<OtherAnswer>("answer").Build()));
+    }
 
     private static WorkflowDefinition Define(string behavior, int threshold)
     {
@@ -105,6 +128,7 @@ public sealed class WorkflowFingerprintTests
     public sealed class Data
     {
         public int Total { get; set; }
+        public int Other { get; set; }
         public List<int> Values { get; set; } = [];
         public List<ItemResult<int>> Results { get; set; } = [];
     }
@@ -115,6 +139,7 @@ public sealed class WorkflowFingerprintTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
     public sealed class Answer;
+    public sealed class OtherAnswer;
     public sealed class Question : IAsyncActivity, IRequestActivity<Answer>
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
