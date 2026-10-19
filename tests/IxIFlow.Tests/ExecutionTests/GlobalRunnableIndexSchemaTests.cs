@@ -56,6 +56,11 @@ public sealed class GlobalRunnableIndexSchemaTests : IClassFixture<SqliteTestDat
             : postgres
                 ? "SELECT indexname FROM pg_indexes WHERE tablename = 'ixiflow_workflow_instances' AND schemaname = current_schema()"
                 : "SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'ixiflow_workflow_instances'")).ToArray();
+        if (connection is SqliteConnection sqlite)
+        {
+            await sqlite.CloseAsync();
+            SqliteConnection.ClearPool(sqlite); // release the file for the fixture's cleanup
+        }
         foreach (var name in sqlServer
             ? new[] { "IX_IxIFlowWorkflowInstances_Runnable", "IX_IxIFlowWorkflowInstances_Affinity" }
             : new[] { "ix_ixiflow_workflow_instances_runnable", "ix_ixiflow_workflow_instances_affinity" })
