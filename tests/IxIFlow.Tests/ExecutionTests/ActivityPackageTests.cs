@@ -1,8 +1,9 @@
 using IxIFlow.ActivitySdk;
 using IxIFlow.Core;
-using IxIFlow.Dsl.Compilation;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Extensions;
+using IxIFlow.Generators;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -40,9 +41,8 @@ public class ActivityPackageTests
         Assert.Equal("example.email@1.0.0", Assert.Single(registry.Packages).PackageReference);
 
         var document = Document();
-        var support = new TestDocumentRegistry();
-        var context = new WorkflowValidationContext(registry, support, support, support, support);
-        var definition = await YamlTestCompilation.BuildAsync(document, context);
+        var options = await ResolvedContracts(registry);
+        var definition = await YamlTestCompilation.BuildAsync(document, options);
 
         var services = new ServiceCollection();
         services.AddLogging();
@@ -60,18 +60,18 @@ public class ActivityPackageTests
     public async Task MissingOrMismatchedActivity_FailsValidationBeforeExecution()
     {
         var registry = new ActivityPackageRegistry();
-        var support = new TestDocumentRegistry();
-        var context = new WorkflowValidationContext(registry, support, support, support, support);
-        var missing = await new WorkflowDocumentValidator().ValidateAsync(Document(), context);
+        var options = await ResolvedContracts(registry);
+        var missing = await YamlTestContracts.ValidateAsync(Document(), options);
         Assert.Contains(missing.Diagnostics, diagnostic => diagnostic.Code == "STEP003");
 
         registry.AddPackage(Manifest, typeof(SendTestEmailActivity).Assembly);
+        options = await ResolvedContracts(registry);
         var wrongVersion = Document(activityVersion: "2.0");
-        var versionResult = await new WorkflowDocumentValidator().ValidateAsync(wrongVersion, context);
+        var versionResult = await YamlTestContracts.ValidateAsync(wrongVersion, options);
         Assert.Contains(versionResult.Diagnostics, diagnostic => diagnostic.Code == "ACT003");
 
         var missingPackage = Document(includeImport: false);
-        var packageResult = await new WorkflowDocumentValidator().ValidateAsync(missingPackage, context);
+        var packageResult = await YamlTestContracts.ValidateAsync(missingPackage, options);
         Assert.Contains(packageResult.Diagnostics, diagnostic => diagnostic.Code == "ACT004");
     }
 
@@ -117,8 +117,7 @@ public class ActivityPackageTests
         Assert.Equal("example.email.send", activity.Activity);
         Assert.Equal("1.0", activity.ActivityVersion);
 
-        var support = new TestDocumentRegistry();
-        var definition = await YamlTestCompilation.BuildAsync(rewritten, new WorkflowValidationContext(registry, support, support, support, support));
+        var definition = await YamlTestCompilation.BuildAsync(rewritten, await ResolvedContracts(registry));
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
@@ -152,21 +151,12 @@ public class ActivityPackageTests
         }]
     };
 
-    private sealed class TestDocumentRegistry : IWorkflowCatalog, IEventRegistry, IDataTypeRegistry, IStepTemplateRegistry
+    private static async Task<WorkflowSourceOptions> ResolvedContracts(ActivityPackageRegistry registry)
     {
-        public ValueTask<WorkflowDescriptor?> FindAsync(string workflowName, int? version, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult<WorkflowDescriptor?>(null);
-
-        ValueTask<EventDescriptor?> IEventRegistry.FindAsync(string eventKey, CancellationToken cancellationToken) =>
-            ValueTask.FromResult<EventDescriptor?>(null);
-
-        ValueTask<DataTypeDescriptor?> IDataTypeRegistry.FindAsync(string typeKey, CancellationToken cancellationToken) =>
-            ValueTask.FromResult<DataTypeDescriptor?>(typeKey == "EmailWorkflowData"
-                ? new DataTypeDescriptor { Key = typeKey, ClrType = typeof(EmailWorkflowData) }
-                : null);
-
-        ValueTask<StepTemplateDescriptor?> IStepTemplateRegistry.FindAsync(string templateKey, CancellationToken cancellationToken) =>
-            ValueTask.FromResult<StepTemplateDescriptor?>(null);
+        var options = YamlTestContracts.Create(("EmailWorkflowData", typeof(EmailWorkflowData)));
+        if (await registry.FindAsync("example.email.send") is { } activity)
+            YamlTestContracts.AddActivity(options, activity);
+        return options;
     }
 }
 

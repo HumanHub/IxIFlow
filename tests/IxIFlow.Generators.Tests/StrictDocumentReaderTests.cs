@@ -30,6 +30,8 @@ public sealed class StrictDocumentReaderTests
     [InlineData("imports:\n  catalogs: []\n  bogus: []\n", "bogus", "Unknown member 'bogus'")]
     [InlineData("definition: []\n", "definition", "Unknown member 'definition'")]
     [InlineData("location: {line: 1, column: 1}\n", "location", "Unknown member 'location'")]
+    [InlineData("steps:\n  block:\n    kind: block\n    steps: []\n", "kind: block", "Unknown member 'kind'")]
+    [InlineData("definitions:\n  - kind: activity\n    activity: IxIFlow.Generators.Tests.Multiply\n    description: ignored\n", "description", "Unknown member 'description'")]
     public void UnknownMembersAndMismatchedKindsArePositioned(string body, string marker, string message)
     {
         var yaml = Header + body;
@@ -89,6 +91,8 @@ public sealed class StrictDocumentReaderTests
     [InlineData("""{"definitions":[{"kind":"activity","activity":"Multiply","output":[{"source":"Result","to":{"kind":"constant","path":"workflow.Result"}}]}]}""", "Expected workflow document kind 'path'")]
     [InlineData("""{"definitions":[{"kind":"if","condition":{"path":"workflow.Value","extra":1}}]}""", "'extra' could not be mapped")]
     [InlineData("""{"definitions":[{"kind":"if","condition":{"kind":"unknown"}}]}""", "Unknown workflow document kind 'unknown'")]
+    [InlineData("""{"steps":{"block":{"kind":"block","steps":[]}}}""", "'kind' could not be mapped")]
+    [InlineData("""{"definitions":[{"kind":"activity","activity":"Multiply","description":"ignored"}]}""", "'description' could not be mapped")]
     public void JsonRejectsWhatYamlRejects(string json, string message) =>
         Assert.Contains(message, Assert.ThrowsAny<JsonException>(() => WorkflowJsonSerializer.Read(json)).Message);
 

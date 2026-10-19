@@ -1,7 +1,8 @@
 using IxIFlow.Core;
-using IxIFlow.Dsl.Compilation;
 using IxIFlow.Dsl.Documents;
+using IxIFlow.Generators;
 using IxIFlow.Tests.ExecutionTests.Models;
+using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -29,8 +30,7 @@ public class DslCompilationTests
             ]
         };
 
-        var validator = new WorkflowDocumentValidator();
-        var result = await validator.ValidateAsync(document, CreateContext());
+        var result = await YamlTestContracts.ValidateAsync(document, CreateOptions());
 
         Assert.False(result.IsValid);
         Assert.Contains(result.Diagnostics, d => d.Code == "STEP003");
@@ -58,7 +58,7 @@ public class DslCompilationTests
             ]
         };
 
-        var definition = await YamlTestCompilation.BuildAsync(document, CreateContext());
+        var definition = await YamlTestCompilation.BuildAsync(document, CreateOptions());
 
         Assert.Equal("OrderProcessing", definition.Name);
         Assert.Single(definition.Steps);
@@ -95,7 +95,6 @@ public class DslCompilationTests
             {
                 ["processing-sequence"] = new()
                 {
-                    Kind = "sequenceTemplate",
                     Steps =
                     [
                         new ActivityStepDocument
@@ -143,7 +142,7 @@ public class DslCompilationTests
             ]
         };
 
-        var definition = await YamlTestCompilation.BuildAsync(document, CreateContext());
+        var definition = await YamlTestCompilation.BuildAsync(document, CreateOptions());
 
         Assert.Equal(2, definition.Steps.Count);
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
@@ -204,8 +203,7 @@ public class DslCompilationTests
             ]
         };
 
-        var validator = new WorkflowDocumentValidator();
-        var result = await validator.ValidateAsync(document, CreateContext());
+        var result = await YamlTestContracts.ValidateAsync(document, CreateOptions());
 
         Assert.False(result.IsValid);
         Assert.Contains(result.Diagnostics, d => d.Code == "EXPR001" && d.Path == "definitions[0].input[0].from");
@@ -213,83 +211,15 @@ public class DslCompilationTests
         Assert.Contains(result.Diagnostics, d => d.Code == "EXPR001" && d.Path == "definitions[1].resumeCondition");
     }
 
-    private static WorkflowValidationContext CreateContext()
+    private static WorkflowSourceOptions CreateOptions()
     {
-        return new WorkflowValidationContext(
-            new InMemoryActivityRegistry(),
-            new InMemoryWorkflowCatalog(),
-            new InMemoryEventRegistry(),
-            new InMemoryDataTypeRegistry(),
-            new InMemoryStepTemplateRegistry());
-    }
-
-    private sealed class InMemoryActivityRegistry : IActivityRegistry
-    {
-        public ValueTask<ActivityDescriptor?> FindAsync(string activityKey, CancellationToken cancellationToken = default)
-        {
-            var descriptor = activityKey switch
-            {
-                nameof(ValidateOrderAsyncActivity) => new ActivityDescriptor { Key = activityKey, ActivityType = typeof(ValidateOrderAsyncActivity) },
-                nameof(ProcessOrderAsyncActivity) => new ActivityDescriptor { Key = activityKey, ActivityType = typeof(ProcessOrderAsyncActivity) },
-                _ => null
-            };
-
-            return ValueTask.FromResult<ActivityDescriptor?>(descriptor);
-        }
-    }
-
-    private sealed class InMemoryWorkflowCatalog : IWorkflowCatalog
-    {
-        public ValueTask<WorkflowDescriptor?> FindAsync(string workflowName, int? version, CancellationToken cancellationToken = default)
-        {
-            return ValueTask.FromResult<WorkflowDescriptor?>(new WorkflowDescriptor
-            {
-                Name = workflowName,
-                Version = version ?? 1,
-                RuntimeDefinition = new WorkflowDefinition
-                {
-                    Name = workflowName,
-                    Version = version ?? 1,
-                    WorkflowDataType = typeof(SuspendResumeTestData)
-                }
-            });
-        }
-    }
-
-    private sealed class InMemoryEventRegistry : IEventRegistry
-    {
-        public ValueTask<EventDescriptor?> FindAsync(string eventKey, CancellationToken cancellationToken = default)
-        {
-            var descriptor = eventKey switch
-            {
-                nameof(ApprovalEvent) => new EventDescriptor { Key = eventKey, EventType = typeof(ApprovalEvent) },
-                _ => null
-            };
-
-            return ValueTask.FromResult<EventDescriptor?>(descriptor);
-        }
-    }
-
-    private sealed class InMemoryDataTypeRegistry : IDataTypeRegistry
-    {
-        public ValueTask<DataTypeDescriptor?> FindAsync(string typeKey, CancellationToken cancellationToken = default)
-        {
-            var descriptor = typeKey switch
-            {
-                nameof(OrderWorkflowData) => new DataTypeDescriptor { Key = typeKey, ClrType = typeof(OrderWorkflowData) },
-                nameof(SuspendResumeTestData) => new DataTypeDescriptor { Key = typeKey, ClrType = typeof(SuspendResumeTestData) },
-                _ => null
-            };
-
-            return ValueTask.FromResult<DataTypeDescriptor?>(descriptor);
-        }
-    }
-
-    private sealed class InMemoryStepTemplateRegistry : IStepTemplateRegistry
-    {
-        public ValueTask<StepTemplateDescriptor?> FindAsync(string templateKey, CancellationToken cancellationToken = default)
-        {
-            return ValueTask.FromResult<StepTemplateDescriptor?>(null);
-        }
+        var options = YamlTestContracts.Create(
+            (nameof(OrderWorkflowData), typeof(OrderWorkflowData)),
+            (nameof(SuspendResumeTestData), typeof(SuspendResumeTestData)),
+            (nameof(ValidateOrderAsyncActivity), typeof(ValidateOrderAsyncActivity)),
+            (nameof(ProcessOrderAsyncActivity), typeof(ProcessOrderAsyncActivity)),
+            (nameof(ApprovalEvent), typeof(ApprovalEvent)));
+        options.Workflows["ChildWorkflow@3"] = new(YamlTestContracts.Name(typeof(SuspendResumeTestData)), 3);
+        return options;
     }
 }
