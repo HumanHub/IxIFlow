@@ -15,10 +15,16 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
 {
     private readonly WorkflowBuilder<TWorkflowData, TPreviousStepData> _workflowBuilder;
 
-    public SagaContainerBuilder(List<WorkflowStep> steps, string workflowName, int workflowVersion)
+    public SagaContainerBuilder(List<WorkflowStep> steps, string workflowName, int workflowVersion, List<WorkflowDemand>? demands = null)
     {
-        _workflowBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, workflowName, workflowVersion);
+        _workflowBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, workflowName, workflowVersion, demands);
     }
+
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Demand(string key, string? value = null, bool inherit = false) =>
+        _workflowBuilder.Demand(key, value, inherit);
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> DemandFrom(string key,
+        Expression<Func<WorkflowContext<TWorkflowData>, string?>> expression, bool inherit = false) =>
+        _workflowBuilder.DemandFrom(key, expression, inherit);
 
     // ISagaContainerBuilder specific methods
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException>(

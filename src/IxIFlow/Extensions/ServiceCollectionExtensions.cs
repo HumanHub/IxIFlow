@@ -91,6 +91,9 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The park threshold cannot be negative");
         if (options.PollInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(configure), "The poll interval must be positive");
+        if (options.HostPinLifetime <= TimeSpan.Zero || options.HostPinLifetime > CheckpointCommit.MaxDuration)
+            throw new ArgumentOutOfRangeException(nameof(options.HostPinLifetime));
+        services.AddSingleton(new DemandSettings(options.HostPinLifetime));
         MemberRegistry.ValidateInterval(options.HeartbeatInterval);
         var capabilities = MemberRegistry.SnapshotCapabilities(options.Capabilities);
         if (capabilities.Keys.Any(WorkflowHeartbeatService.IsAutomaticCapability))
@@ -144,11 +147,13 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection RegisterWorkflow<TWorkflow>(
-        this IServiceCollection services)
+        this IServiceCollection services, Action<WorkflowRegistration>? configure = null)
         where TWorkflow : class
     {
         _ = WorkflowAttribute.For(typeof(TWorkflow));
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
+        var registration = new WorkflowRegistration();
+        configure?.Invoke(registration);
         // Use reflection to find the IWorkflow<T> interface
         var workflowInterface = typeof(TWorkflow)
             .GetInterfaces()
@@ -171,6 +176,8 @@ public static class ServiceCollectionExtensions
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
             var definition = (WorkflowDefinition)buildMethod.Invoke(null, new object?[] { workflow })!;
+            definition.RegistrationDemands = registration.Demands.ToArray();
+            definition.Demands.AddRange(definition.RegistrationDemands);
             return new RegisteredWorkflowDefinition<TWorkflow>(definition);
         });
         services.AddSingleton(serviceProvider =>
@@ -187,20 +194,24 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection RegisterWorkflow<TWorkflow, TWorkflowData>(
-        this IServiceCollection services)
+        this IServiceCollection services, Action<WorkflowRegistration>? configure = null)
         where TWorkflow : class, IWorkflow<TWorkflowData>
         where TWorkflowData : class
     {
         _ = WorkflowAttribute.For(typeof(TWorkflow));
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
+        var registration = new WorkflowRegistration();
+        configure?.Invoke(registration);
         // Register the workflow class
         services.AddTransient<TWorkflow>();
         
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-            return new RegisteredWorkflowDefinition<TWorkflow>(
-                BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow));
+            var definition = BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow);
+            definition.RegistrationDemands = registration.Demands.ToArray();
+            definition.Demands.AddRange(definition.RegistrationDemands);
+            return new RegisteredWorkflowDefinition<TWorkflow>(definition);
         });
         services.AddSingleton(serviceProvider =>
             serviceProvider.GetRequiredService<RegisteredWorkflowDefinition<TWorkflow>>().Definition);
@@ -243,6 +254,9 @@ internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinitio
 /// </summary>
 public class IxIFlowOptions
 {
+    /// <summary>Lifetime of a RequiredHostId demand, measured by store time. Default five minutes.</summary>
+    public TimeSpan HostPinLifetime { get; set; } = TimeSpan.FromMinutes(5);
+
     /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
     public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;
 

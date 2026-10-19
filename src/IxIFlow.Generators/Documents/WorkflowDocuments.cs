@@ -5,6 +5,7 @@ namespace IxIFlow.Dsl.Documents;
 [Description("A workflow document with reusable templates, code assets and executable steps.")]
 public sealed record WorkflowDocument : DocumentNode
 {
+
     [Description("The document contract version.")]
     [DocumentValues("1.0")]
     public string SchemaVersion { get; init; } = "1.0";
@@ -21,6 +22,8 @@ public sealed record WorkflowDocument : DocumentNode
     public Dictionary<string, CodeAssetDocument> Code { get; init; } = new();
     [Description("The workflow steps in execution order.")]
     public List<WorkflowStepDocument> Definitions { get; init; } = new();
+    [Description("Placement constraints resolved once against the workflow start data.")]
+    public List<WorkflowDemandDocument> Demands { get; init; } = [];
 }
 
 [Description("The identity, data type and descriptive metadata of a workflow.")]
@@ -40,6 +43,20 @@ public sealed record WorkflowDefinitionDocument : DocumentNode
     public string? Description { get; init; }
     [Description("Tags stored on the workflow definition.")]
     public string[] Tags { get; init; } = [];
+}
+
+[Description("A capability required by the workflow, optionally inherited by its children.")]
+public sealed record WorkflowDemandDocument : DocumentNode
+{
+    [Description("The capability key.")]
+    [DocumentRequired]
+    public string Key { get; init; } = string.Empty;
+    [Description("A literal capability value, or null for a key-only demand.")]
+    public string? Value { get; init; }
+    [Description("A pure expression evaluated against start data instead of a literal value.")]
+    public ExpressionDocument? From { get; init; }
+    [Description("Whether children inherit this residency constraint.")]
+    public bool Inherit { get; init; }
 }
 
 [Description("Dependencies resolved by a publishing host before translation.")]

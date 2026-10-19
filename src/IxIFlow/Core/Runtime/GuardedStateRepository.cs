@@ -14,6 +14,9 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.HeartbeatAsync(memberId, capabilities, cancellationToken), "Renewing store member heartbeat");
     public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
         Guard(() => _store.UnregisterMemberAsync(memberId, cancellationToken), "Unregistering store member");
+    public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
+        Guard(() => _store.GetWorkflowDemandsAsync(instanceId), "Reading workflow demands");
+
     public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
         Guard(() => _store.GetLiveMembersAsync(cancellationToken), "Reading live store members");
 

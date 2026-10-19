@@ -1646,6 +1646,9 @@ public class ParallelApprovalContractTests
             _inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
         public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
             _inner.UnregisterMemberAsync(memberId, cancellationToken);
+        public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
+            _inner.GetWorkflowDemandsAsync(instanceId);
+
         public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
             _inner.GetLiveMembersAsync(cancellationToken);
 

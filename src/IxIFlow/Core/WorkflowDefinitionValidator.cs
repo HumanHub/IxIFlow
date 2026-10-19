@@ -40,6 +40,11 @@ public static class WorkflowDefinitionValidator
             if (definition.Version < 1)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Workflow '{definition.Name}' requires a positive version");
+            foreach (var demand in definition.Demands)
+            {
+                WorkflowDemands.Validate(demand);
+                ExpressionRules.CheckDemand(demand);
+            }
             var steps = definition.Steps;
             var ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var step in ParallelRules.Flatten(steps))

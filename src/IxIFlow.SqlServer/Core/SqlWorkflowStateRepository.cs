@@ -262,7 +262,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 child.WorkflowName,
                 Status = child.Status.ToString(),
                 child.CorrelationId,
-                StateJson = start.Payload,
+                StateJson = StampStartPayload(start.Payload, now),
                 ParentInstanceId = parentInstanceId
             }, ("Now", now)), transaction);
         }
@@ -628,6 +628,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowOutboxDeliveries WHERE EventId IN (SELECT e.EventId FROM dbo.IxIFlowOutboxEvents e WHERE e.InstanceId=@InstanceId AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowOutboxDeliveries pending WHERE pending.EventId=e.EventId AND pending.Status=0));
             DELETE FROM dbo.IxIFlowOutboxEvents WHERE InstanceId=@InstanceId AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowOutboxDeliveries pending WHERE pending.EventId=dbo.IxIFlowOutboxEvents.EventId);
+            DELETE FROM dbo.IxIFlowWorkflowDemands WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowWaits WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowTraces WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId;
@@ -791,6 +792,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(DemandsSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }

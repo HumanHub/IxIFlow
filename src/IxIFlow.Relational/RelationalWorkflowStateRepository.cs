@@ -188,6 +188,39 @@ public abstract partial class RelationalWorkflowStateRepository :
         string instanceId, IReadOnlyList<CheckpointPart> parts);
     internal abstract Task AppendTraceAsync(DbConnection connection, DbTransaction transaction,
         string instanceId, IReadOnlyList<string> entries);
+    internal static string StampStartPayload(string payload, DateTime now) => WorkflowDemands.StampStartPayload(payload, now);
+
+    private async Task InsertDemandsAsync(DbConnection connection, DbTransaction transaction, string payload)
+    {
+        var instance = JsonSerializer.Deserialize<WorkflowInstance>(payload)!;
+        foreach (var demand in WorkflowDemands.Saved(instance))
+            await connection.ExecuteAsync(InsertDemandSql, WithTimes(new
+            {
+                instance.InstanceId, demand.Key, demand.Value, demand.Inherit
+            }, ("ExpiresAtUtc", demand.ExpiresAtUtc)), transaction);
+    }
+
+    private sealed class DemandRow
+    {
+        public string Key { get; set; } = "";
+        public string? Value { get; set; }
+        public DateTime? ExpiresAtUtc { get; set; }
+        public bool Inherit { get; set; }
+    }
+
+    public async Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId)
+    {
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        var rows = await connection.QueryAsync<DemandRow>(ReadDemandsSql, new { InstanceId = instanceId });
+        return rows.Select(row => new WorkflowDemand(row.Key, row.Value,
+            row.ExpiresAtUtc is { } expiry ? ReadTime(expiry) : null, row.Inherit))
+            .OrderBy(demand => demand.Key, StringComparer.Ordinal).ToArray();
+    }
+
+    internal abstract string ReadDemandsSql { get; }
+    internal abstract string InsertDemandSql { get; }
+
     internal abstract Task InsertChildrenAsync(DbConnection connection, DbTransaction transaction,
         string parentInstanceId, IReadOnlyList<ChildStart> children, DateTime now);
 
@@ -733,7 +766,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             commit.Incarnation,
             Status = snapshot.Status.ToString(),
             commit.InboxReadThrough,
-            StateJson = commit.Payload,
+            StateJson = current == null ? StampStartPayload(commit.Payload, now) : commit.Payload,
             Revision = revision,
             commit.ExpectedRevision,
             commit.CommitId,
@@ -745,6 +778,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         await connection.ExecuteAsync(current == null
             ? RequiredSql(Statement.InsertCommit)
             : RequiredSql(Statement.UpdateCommit), values, transaction);
+        if (current == null)
+            await InsertDemandsAsync(connection, transaction, StampStartPayload(commit.Payload, now));
         await ApplyPartsAsync(connection, transaction, commit);
         await RecordCompletionAsync(connection, transaction, WorkflowStoreRules.IsTerminal(snapshot.Status) ? commit.ReadTrunk() : null, revision, now);
         if (commit.TraceEntries.Count > 0)
@@ -771,6 +806,8 @@ public abstract partial class RelationalWorkflowStateRepository :
                 ? commit.ChildStarts.OrderBy(child => child.Instance!.InstanceId, StringComparer.Ordinal).ToArray()
                 : commit.ChildStarts.ToArray();
             await InsertChildrenAsync(connection, transaction, commit.InstanceId, children, now);
+            foreach (var child in children)
+                await InsertDemandsAsync(connection, transaction, StampStartPayload(child.Payload, now));
             madeRunnable.AddRange(children.Select(child => child.Instance!.InstanceId));
         }
         // Each event this commit appends to its own inbox takes the next sequence.

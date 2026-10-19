@@ -237,7 +237,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             child.Instance!.WorkflowName,
             Status = child.Instance!.Status.ToString(),
             child.Instance!.CorrelationId,
-            child.Payload,
+            Payload = StampStartPayload(child.Payload, now),
             Now = Timestamp(now),
             ParentInstanceId = parentInstanceId
         }), transaction);
@@ -551,6 +551,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 DELETE FROM ixiflow_workflow_leases WHERE instance_id = @InstanceId
                 """,
         Statement.DeleteRows => """
+                DELETE FROM ixiflow_workflow_demands WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_outbox_deliveries WHERE event_id IN (SELECT e.event_id FROM ixiflow_outbox_events e WHERE e.instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=e.event_id AND pending.status=0));
                 DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
@@ -693,6 +694,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(DemandsSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 

@@ -118,7 +118,8 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
         {
             InstanceId = childId,
             CorrelationId = parent.CorrelationId,
-            ParentInstanceId = parent.InstanceId
+            ParentInstanceId = parent.InstanceId,
+            Demands = WorkflowDemands.Saved(parent).Where(demand => demand.Inherit).ToList()
         }, now);
         child.ParentWaitId = parentWaitId;
         var size = ExecutionCheckpointWriter.Prepare(child, checkpoint, data, scopes, now).Bytes;

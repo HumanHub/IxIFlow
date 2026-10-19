@@ -351,7 +351,16 @@ public sealed partial class WorkflowHost
             if (options.ExecutionTimeout is { } executionTimeout && executionTimeout <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(options),
                     "Execution timeout must be positive");
-            var (instance, checkpoint, scopes) = NewInstance(definition, workflowData, options, Now);
+            if (options.InstanceId is { } repeatedId &&
+                await _store.GetWorkflowInstanceSummaryAsync(repeatedId) is { } repeated)
+            {
+                WorkflowDefinitionValidator.Validate(definition);
+                return ExistingStart(repeated, definition, WorkflowDefinitionValidator.ForExecution(definition));
+            }
+            var registration = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
+            var (instance, checkpoint, scopes) = NewInstance(definition, workflowData, options, Now,
+                (services.GetService(typeof(DemandSettings)) as DemandSettings)?.HostPinLifetime,
+                registration?.RegistrationDemands);
 
             try
             {
@@ -381,7 +390,17 @@ public sealed partial class WorkflowHost
                         $"Workflow {definition.Name} v{definition.Version} is deactivated");
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
                 await registry.RegisterWorkflowAsync(definition);
+                if (options.WhenUnschedulable == WhenUnschedulable.Fail)
+                    await WorkflowDemands.RefuseUnschedulableAsync(_store, checkpoint.Demands, cancellationToken);
                 await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
+                if (checkpoint.HostPinLifetime != null)
+                {
+                    var saved = await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId)
+                        ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The created instance disappeared");
+                    checkpoint.Demands = WorkflowDemands.Saved(saved);
+                    checkpoint.HostPinLifetime = null;
+                    instance.ExecutionStateJson = saved.ExecutionStateJson;
+                }
                 // The start is durable from here; a caller waiting only for acceptance continues.
                 _control.Accept(instance.InstanceId);
                 return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
@@ -403,7 +422,8 @@ public sealed partial class WorkflowHost
         /// saves it, and its initial checkpoint: a client's start, or a child a parent's commit starts.
         /// </summary>
         public static (WorkflowInstance Instance, ExecutionCheckpoint Checkpoint, WorkflowScopeCatalog Scopes)
-            NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now)
+            NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now, TimeSpan? hostPinLifetime = null,
+                IEnumerable<WorkflowDemand>? registrationDemands = null)
         {
             WorkflowDefinitionValidator.Validate(definition);
             var instance = new WorkflowInstance
@@ -425,6 +445,8 @@ public sealed partial class WorkflowHost
             var checkpoint = new ExecutionCheckpoint
             {
                 StructureHash = scopes.StructureHash,
+                Demands = WorkflowDemands.Resolve(definition, workflowData, options, scopes.StructureHash, registrationDemands),
+                HostPinLifetime = options.RequiredHostId != null ? hostPinLifetime ?? DemandSettings.Default.HostPinLifetime : null,
                 // The store stamps the execution deadline when the start is committed (D-35).
                 ExecutionTimeout = options.ExecutionTimeout,
                 ExecutionTimerId = options.ExecutionTimeout != null ? Guid.NewGuid().ToString("N") : null,
@@ -437,6 +459,7 @@ public sealed partial class WorkflowHost
                     }
                 ]
             };
+            instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
             return (instance, checkpoint, scopes);
         }
 

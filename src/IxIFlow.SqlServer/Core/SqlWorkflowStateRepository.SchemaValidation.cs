@@ -27,6 +27,7 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT [Incarnation], [InstanceId], [Sender], [Trigger], [OwnerKind], [Owner], [Tenant] FROM dbo.IxIFlowWorkflowOwnership WHERE 1=0;
                 SELECT [DeliveryIdentity], [PayloadHash], [Sequence], [Rejection], [ExpiresAtUtc] FROM dbo.IxIFlowWebhookDeliveries WHERE 1=0;
                 SELECT member_id, kind, name, endpoint, slots, engine_version, heartbeat_interval_ticks, started_at_utc, heartbeat_at_utc FROM dbo.ixiflow_hosts WHERE 1=0;
+                SELECT InstanceId, DemandKey, DemandValue, ExpiresAtUtc, Inherit FROM dbo.IxIFlowWorkflowDemands WHERE 1=0;
                 SELECT member_id, capability_key, capability_value FROM dbo.ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
