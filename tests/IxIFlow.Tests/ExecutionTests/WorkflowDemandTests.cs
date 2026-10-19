@@ -368,7 +368,7 @@ public sealed class WorkflowDemandTests
         await store.GetWorkflowDemandsAsync("initialize");
         await using var connection = new SqliteConnection(cs);
         await connection.ExecuteAsync("""
-            CREATE TRIGGER refuse_demands BEFORE INSERT ON ixiflow_workflow_demands
+            CREATE TRIGGER refuse_demands BEFORE INSERT ON ixiflow_demand_set_rows
             WHEN NEW.demand_key = 'refuse' BEGIN SELECT RAISE(ABORT, 'refused demand'); END;
             """);
         try

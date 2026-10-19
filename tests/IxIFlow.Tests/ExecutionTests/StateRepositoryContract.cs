@@ -60,7 +60,10 @@ internal static class StateRepositoryContract
                 parameter.ParameterName = connection is Npgsql.NpgsqlConnection ? "InstanceId" : "@InstanceId";
                 parameter.Value = instanceId;
                 read.Parameters.Add(parameter);
-                Assert.Equal(commit.Payload, (string?)await read.ExecuteScalarAsync());
+                // Placement is interned; every other payload field is retained exactly.
+                var expected = System.Text.Json.Nodes.JsonNode.Parse(commit.Payload)!;
+                expected["ExecutionStateJson"]!.AsObject().Remove("Demands");
+                Assert.Equal(expected.ToJsonString(), (string?)await read.ExecuteScalarAsync());
             }
             // The payload says revision 0 and a runnable time years away; the columns say what the store set.
             var stored = (await repository.GetWorkflowInstanceAsync(instanceId))!;
