@@ -368,13 +368,9 @@ public abstract partial class RelationalWorkflowStateRepository :
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var now = await OutboxNowAsync(connection, null);
-        var rows = (await connection.QueryAsync<RunnableRow>(RunnableSql(true),
-            PlacementParameters(query, now, query.Limit))).ToList();
-        if (rows.Count < query.Limit)
-            rows.AddRange(await connection.QueryAsync<RunnableRow>(RunnableSql(false),
-                PlacementParameters(query, now, query.Limit - rows.Count)));
-        // A concurrent claim/commit can move a row between the two statements.
-        return rows.DistinctBy(row => row.InstanceId).Select(row =>
+        var rows = await connection.QueryAsync<RunnableRow>(RunnableSql,
+            PlacementParameters(query, now, query.Limit));
+        return rows.Select(row =>
             new RunnableInstance(row.InstanceId, ReadTime(row.RunnableAtUtc))).ToArray();
     }
 

@@ -1,4 +1,3 @@
-using System.Data;
 using System.Text.Json;
 using Dapper;
 
@@ -6,36 +5,49 @@ namespace IxIFlow.Core;
 
 public sealed partial class SqliteWorkflowStateRepository
 {
-    private const string MatchingDemands = """
-        NOT EXISTS (
-            SELECT 1 FROM ixiflow_workflow_demands AS demand
-            WHERE demand.instance_id = instance.instance_id
-              AND (demand.expires_at_utc IS NULL OR demand.expires_at_utc > @Now)
-              AND NOT EXISTS (SELECT 1 FROM json_each(@Capabilities) AS capability
-                  WHERE json_extract(capability.value, '$.Key') COLLATE BINARY = demand.demand_key
-                    AND (demand.demand_value IS NULL OR json_extract(capability.value, '$.Value') COLLATE BINARY = demand.demand_value)))
+    // TEXT affinity lets SQLite build the automatic key index on this CTE.
+    // json_extract alone has no affinity and causes a snapshot scan per demand.
+    private const string CapabilitySnapshotSql = """
+        capabilities AS MATERIALIZED (
+            SELECT CAST(json_extract(value, '$.Key') AS TEXT) COLLATE BINARY AS key,
+                CAST(json_extract(value, '$.Value') AS TEXT) COLLATE BINARY AS value
+            FROM json_each(@Capabilities))
         """;
 
-    internal override string RunnableSql(bool affinity) => $"""
+    private const string UnmetDemand = """
+        (demand.expires_at_utc IS NULL OR demand.expires_at_utc > @Now)
+        AND (capability.key IS NULL OR (demand.demand_value IS NOT NULL AND capability.value <> demand.demand_value))
+        """;
+
+    internal override string RunnableSql => $"""
+        WITH {CapabilitySnapshotSql},
+        blocked AS MATERIALIZED (
+            SELECT demand.instance_id
+            FROM ixiflow_workflow_demands AS demand
+            LEFT JOIN capabilities AS capability ON capability.key = demand.demand_key
+            WHERE {UnmetDemand})
         SELECT instance.instance_id AS InstanceId, instance.runnable_at_utc AS RunnableAtUtc
         FROM ixiflow_workflow_instances AS instance
-        LEFT JOIN ixiflow_workflow_leases AS lease ON lease.instance_id = instance.instance_id
         WHERE instance.runnable_at_utc <= @Now
-          AND (lease.instance_id IS NULL OR lease.expires_at_utc <= @Now)
-          AND {(affinity ? "instance.last_host_id = @HostId" : "(instance.last_host_id IS NULL OR instance.last_host_id <> @HostId)")}
-          AND {MatchingDemands}
-        ORDER BY instance.runnable_at_utc, instance.instance_id
+          AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_leases AS lease
+              WHERE lease.instance_id = instance.instance_id AND lease.expires_at_utc > @Now)
+          AND NOT EXISTS (SELECT 1 FROM blocked WHERE blocked.instance_id = instance.instance_id)
+        ORDER BY CASE WHEN instance.last_host_id = @HostId THEN 0 ELSE 1 END,
+            instance.runnable_at_utc, instance.instance_id
         LIMIT @Limit
         """;
 
     internal override string ClaimEligibilitySql => $"""
+        WITH {CapabilitySnapshotSql}
         SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId)
             OR EXISTS (SELECT 1 FROM ixiflow_workflow_instances AS instance
                 WHERE instance.instance_id = @InstanceId
                   AND instance.status NOT IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
                   AND (instance.runnable_at_utc <= @Now OR (@Operator
                       AND (instance.status = 'NeedsResolution' OR json_type(instance.state_json, '$.ExecutionStateJson.OperatorStop') = 'object')))
-                  AND {MatchingDemands}) THEN 1 ELSE 0 END
+                  AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_demands AS demand
+                      LEFT JOIN capabilities AS capability ON capability.key = demand.demand_key
+                      WHERE demand.instance_id = instance.instance_id AND {UnmetDemand})) THEN 1 ELSE 0 END
         """;
 
     internal override string SetLeaseHostSql => """
