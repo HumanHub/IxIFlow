@@ -27,11 +27,12 @@ public sealed record OutboxEvent(string Id, string Type, string InstanceId, stri
 }
 
 public enum OutboxDeliveryStatus { Pending, Delivered, GivenUp }
+public enum OutboxGivenUpReason { Exhausted, Horizon, Disabled, Unregistered, Operator }
 public enum OutboxPublishOutcome { Delivered, RetryLater, GiveUp }
 
 /// <summary>A retry delay overrides the default exponential backoff. DisablePublisher persists endpoint shutdown.</summary>
 public sealed record OutboxPublishResult(OutboxPublishOutcome Outcome, TimeSpan? RetryAfter = null,
-    string? Error = null, bool DisablePublisher = false)
+    string? Error = null, bool DisablePublisher = false, OutboxGivenUpReason? GivenUpReason = null)
 {
     public static OutboxPublishResult Delivered() => new(OutboxPublishOutcome.Delivered);
     public static OutboxPublishResult RetryLater(string? error = null, TimeSpan? delay = null)
@@ -40,8 +41,9 @@ public sealed record OutboxPublishResult(OutboxPublishOutcome Outcome, TimeSpan?
             throw new ArgumentOutOfRangeException(nameof(delay), "Retry delay must be between zero and 30 days");
         return new(OutboxPublishOutcome.RetryLater, delay, error);
     }
-    public static OutboxPublishResult GiveUp(string? error = null, bool disablePublisher = false) =>
-        new(OutboxPublishOutcome.GiveUp, Error: error, DisablePublisher: disablePublisher);
+    public static OutboxPublishResult GiveUp(string? error = null, bool disablePublisher = false,
+        OutboxGivenUpReason reason = OutboxGivenUpReason.Exhausted) =>
+        new(OutboxPublishOutcome.GiveUp, Error: error, DisablePublisher: disablePublisher, GivenUpReason: reason);
 }
 
 /// <summary>Applications register singleton publishers on the IxIFlow builder. Names must be stable across hosts.</summary>
@@ -58,9 +60,12 @@ public sealed record OutboxPublishContext(OutboxEvent Event, int Attempts, DateT
 /// <summary>Attempts count claims, including a claim lost with its host. StoreNowUtc is sampled after claiming.</summary>
 public sealed record OutboxDelivery(OutboxEvent Event, string PublisherName, int Attempts,
     DateTime NextAttemptAtUtc, OutboxDeliveryStatus Status, string? LastError, string? LeaseToken,
-    DateTime? LeaseUntilUtc, DateTime StoreNowUtc, DateTime? FirstAttemptAtUtc = null);
+    DateTime? LeaseUntilUtc, DateTime StoreNowUtc, DateTime? FirstAttemptAtUtc = null,
+    OutboxGivenUpReason? GivenUpReason = null, DateTime? RetriedAtUtc = null, string? RetriedBy = null);
 
-public sealed record OutboxPublisherState(string Name, DateTime? DisabledAtUtc, string? LastError);
+public sealed record OutboxPublisherState(string Name, DateTime? DisabledAtUtc, string? LastError,
+    DateTime? EnabledAtUtc = null, string? EnabledBy = null,
+    DateTime? UnregisteredAtUtc = null, string? UnregisteredBy = null);
 
 /// <summary>
 /// Per-publisher, leased, at-least-once delivery. All deadlines use the store's clock. Registration starts with
@@ -69,7 +74,11 @@ public sealed record OutboxPublisherState(string Name, DateTime? DisabledAtUtc, 
 public interface IWorkflowOutbox
 {
     Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false);
-    Task UnregisterPublisherAsync(string name);
+    Task UnregisterPublisherAsync(string name, string actor = "host");
+    Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query);
+    Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor);
+    Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync();
+    Task<bool> EnablePublisherAsync(string publisherName, string actor);
     Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token,
         TimeSpan leaseDuration, int limit);
     Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration);

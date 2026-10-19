@@ -19,8 +19,16 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
 
     public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
         Guard(() => _store.RegisterPublisherAsync(name, eventTypes, replayRetained), "Accessing workflow outbox");
-    public Task UnregisterPublisherAsync(string name) =>
-        Guard(() => _store.UnregisterPublisherAsync(name), "Unregistering workflow outbox publisher");
+    public Task UnregisterPublisherAsync(string name, string actor = "host") =>
+        Guard(() => _store.UnregisterPublisherAsync(name, actor), "Unregistering workflow outbox publisher");
+    public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) =>
+        Guard(() => _store.ListDeliveriesAsync(query), "Listing workflow outbox deliveries");
+    public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) =>
+        Guard(() => _store.RetryDeliveryAsync(eventId, publisherName, actor), "Retrying workflow outbox delivery");
+    public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() =>
+        Guard(() => _store.ListPublishersAsync(), "Listing workflow outbox publishers");
+    public Task<bool> EnablePublisherAsync(string publisherName, string actor) =>
+        Guard(() => _store.EnablePublisherAsync(publisherName, actor), "Enabling workflow outbox publisher");
     public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
         Guard(() => _store.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit), "Accessing workflow outbox");
     public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>

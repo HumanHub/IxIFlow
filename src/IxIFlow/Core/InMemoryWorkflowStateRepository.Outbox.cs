@@ -2,7 +2,13 @@ namespace IxIFlow.Core;
 
 public partial class InMemoryWorkflowStateRepository
 {
-    private sealed record Publisher(string[] Types, DateTime? DisabledAtUtc = null, string? Error = null);
+    private sealed record Publisher(string[] Types, DateTime? DisabledAtUtc = null, string? Error = null,
+        DateTime? EnabledAtUtc = null, string? EnabledBy = null,
+        DateTime? UnregisteredAtUtc = null, string? UnregisteredBy = null)
+    {
+        public OutboxPublisherState Read(string name) => new(name, DisabledAtUtc, Error,
+            EnabledAtUtc, EnabledBy, UnregisteredAtUtc, UnregisteredBy);
+    }
     private readonly Dictionary<string, string> _completionEvents = new(StringComparer.Ordinal);
     private readonly Dictionary<string, OutboxEvent> _outbox = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Publisher> _publishers = new(StringComparer.Ordinal);
@@ -23,11 +29,11 @@ public partial class InMemoryWorkflowStateRepository
 
     private void AddDelivery(OutboxEvent item, string name, Publisher publisher, DateTime now)
     {
-        if (!publisher.Types.Contains(item.Type, StringComparer.Ordinal))
+        if (publisher.UnregisteredAtUtc != null || !publisher.Types.Contains(item.Type, StringComparer.Ordinal))
             return;
         _deliveries.TryAdd((item.Id, name), new OutboxDelivery(item, name, 0, now,
             publisher.DisabledAtUtc == null ? OutboxDeliveryStatus.Pending : OutboxDeliveryStatus.GivenUp,
-            publisher.Error, null, null, now));
+            publisher.Error, null, null, now, GivenUpReason: publisher.DisabledAtUtc == null ? null : OutboxGivenUpReason.Disabled));
     }
 
     private void DeleteOutbox(string instanceId)
@@ -55,7 +61,7 @@ public partial class InMemoryWorkflowStateRepository
         {
             var now = Now;
             var old = _publishers.GetValueOrDefault(name);
-            var publisher = new Publisher(eventTypes.Distinct(StringComparer.Ordinal).ToArray(), old?.DisabledAtUtc, old?.Error);
+            var publisher = (old ?? new Publisher([])) with { Types = eventTypes.Distinct(StringComparer.Ordinal).ToArray() };
             _publishers[name] = publisher;
             if (replayRetained)
                 foreach (var item in _outbox.Values)
@@ -64,16 +70,18 @@ public partial class InMemoryWorkflowStateRepository
         return Task.CompletedTask;
     }
 
-    public Task UnregisterPublisherAsync(string name)
+    public Task UnregisterPublisherAsync(string name, string actor = "host")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         lock (_claimLock)
         {
-            _publishers.Remove(name);
+            _publishers[name] = (_publishers.GetValueOrDefault(name) ?? new Publisher([])) with
+                { UnregisteredAtUtc = Now, UnregisteredBy = actor };
             foreach (var key in _deliveries.Keys.Where(k => k.Publisher == name).ToArray())
                 if (_deliveries[key].Status == OutboxDeliveryStatus.Pending)
                     _deliveries[key] = _deliveries[key] with { Status = OutboxDeliveryStatus.GivenUp,
-                        LeaseToken = null, LeaseUntilUtc = null };
+                        GivenUpReason = OutboxGivenUpReason.Unregistered, LeaseToken = null, LeaseUntilUtc = null };
         }
         return Task.CompletedTask;
     }
@@ -85,7 +93,7 @@ public partial class InMemoryWorkflowStateRepository
         lock (_claimLock)
         {
             var now = Now;
-            if (!_publishers.TryGetValue(publisherName, out var publisher) || publisher.DisabledAtUtc != null)
+            if (!_publishers.TryGetValue(publisherName, out var publisher) || publisher.DisabledAtUtc != null || publisher.UnregisteredAtUtc != null)
                 return Task.FromResult<IReadOnlyList<OutboxDelivery>>([]);
             var claimed = _deliveries.Values.Where(d => d.PublisherName == publisherName &&
                     d.Status == OutboxDeliveryStatus.Pending && d.NextAttemptAtUtc <= now &&
@@ -127,9 +135,11 @@ public partial class InMemoryWorkflowStateRepository
             var delay = OutboxRetry.Delay(delivery.Attempts, result);
             _deliveries[(eventId, publisherName)] = delivery with
             {
-                Status = result.Outcome == OutboxPublishOutcome.Delivered ? OutboxDeliveryStatus.Delivered
+                Status = result.DisablePublisher ? OutboxDeliveryStatus.GivenUp : result.Outcome == OutboxPublishOutcome.Delivered ? OutboxDeliveryStatus.Delivered
                     : result.Outcome == OutboxPublishOutcome.GiveUp || result.DisablePublisher
                         ? OutboxDeliveryStatus.GivenUp : OutboxDeliveryStatus.Pending,
+                GivenUpReason = result.DisablePublisher ? OutboxGivenUpReason.Disabled : result.Outcome == OutboxPublishOutcome.GiveUp
+                    ? result.GivenUpReason ?? OutboxGivenUpReason.Exhausted : null,
                 NextAttemptAtUtc = now + delay, LastError = result.Error, LeaseToken = null, LeaseUntilUtc = null
             };
             if (result.DisablePublisher)
@@ -138,7 +148,7 @@ public partial class InMemoryWorkflowStateRepository
                 foreach (var key in _deliveries.Keys.Where(k => k.Publisher == publisherName).ToArray())
                     if (_deliveries[key].Status == OutboxDeliveryStatus.Pending)
                         _deliveries[key] = _deliveries[key] with { Status = OutboxDeliveryStatus.GivenUp,
-                            LastError = result.Error, LeaseToken = null, LeaseUntilUtc = null };
+                            GivenUpReason = OutboxGivenUpReason.Disabled, LastError = result.Error, LeaseToken = null, LeaseUntilUtc = null };
             }
             return Task.FromResult(true);
         }
@@ -155,6 +165,69 @@ public partial class InMemoryWorkflowStateRepository
     {
         lock (_claimLock)
             return Task.FromResult(_publishers.TryGetValue(publisherName, out var p)
-                ? new OutboxPublisherState(publisherName, p.DisabledAtUtc, p.Error) : null);
+                ? p.Read(publisherName) : null);
+    }
+
+    public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        var cursor = query.Validate();
+        lock (_claimLock)
+            return Task.FromResult(query.Page(_deliveries.Values.Where(d =>
+                    (query.PublisherName == null || d.PublisherName == query.PublisherName) &&
+                    (query.Status == null || d.Status == query.Status) &&
+                    (query.InstanceId == null || d.Event.InstanceId == query.InstanceId) &&
+                    (!query.NeverAttempted || d.Attempts == 0 && d.FirstAttemptAtUtc == null) &&
+                    (cursor == null || string.CompareOrdinal(d.Event.Id, cursor.Value.EventId) > 0 ||
+                        d.Event.Id == cursor.Value.EventId && string.CompareOrdinal(d.PublisherName, cursor.Value.Publisher) > 0))
+                .OrderBy(d => d.Event.Id, StringComparer.Ordinal).ThenBy(d => d.PublisherName, StringComparer.Ordinal)
+                .Take(query.Limit + 1).Select(DeliverySummary.From).ToArray()));
+    }
+
+    private static OutboxDelivery Retry(OutboxDelivery delivery, string actor, DateTime now) => delivery with
+    {
+        Status = OutboxDeliveryStatus.Pending, Attempts = 0, FirstAttemptAtUtc = null, NextAttemptAtUtc = now,
+        GivenUpReason = null, LastError = null, LeaseToken = null, LeaseUntilUtc = null,
+        RetriedAtUtc = now, RetriedBy = actor
+    };
+
+    public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(publisherName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        // The same lock protects purge, disable, unregister and completion fan-out.
+        lock (_claimLock)
+        {
+            if (!_publishers.TryGetValue(publisherName, out var publisher) || publisher.DisabledAtUtc != null ||
+                publisher.UnregisteredAtUtc != null || !_deliveries.TryGetValue((eventId, publisherName), out var delivery) ||
+                delivery.Status != OutboxDeliveryStatus.GivenUp) return Task.FromResult(false);
+            _deliveries[(eventId, publisherName)] = Retry(delivery, actor, Now);
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync()
+    {
+        lock (_claimLock)
+            return Task.FromResult<IReadOnlyList<OutboxPublisherState>>(_publishers.OrderBy(p => p.Key, StringComparer.Ordinal)
+                .Select(p => p.Value.Read(p.Key)).ToArray());
+    }
+
+    public Task<bool> EnablePublisherAsync(string publisherName, string actor)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(publisherName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        lock (_claimLock)
+        {
+            if (!_publishers.TryGetValue(publisherName, out var publisher) || publisher.UnregisteredAtUtc != null ||
+                publisher.DisabledAtUtc == null) return Task.FromResult(false);
+            var now = Now;
+            _publishers[publisherName] = publisher with { DisabledAtUtc = null, Error = null, EnabledAtUtc = now, EnabledBy = actor };
+            foreach (var key in _deliveries.Keys.Where(k => k.Publisher == publisherName).ToArray())
+                if (_deliveries[key].Status == OutboxDeliveryStatus.GivenUp && _deliveries[key].GivenUpReason == OutboxGivenUpReason.Disabled)
+                    _deliveries[key] = Retry(_deliveries[key], actor, now);
+            return Task.FromResult(true);
+        }
     }
 }

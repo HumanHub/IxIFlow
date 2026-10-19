@@ -8,6 +8,10 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             name varchar(100) COLLATE "C" NOT NULL PRIMARY KEY,
             types_json text NOT NULL,
             disabled_at_utc timestamptz NULL,
+            enabled_at_utc timestamptz NULL,
+            enabled_by text NULL,
+            unregistered_at_utc timestamptz NULL,
+            unregistered_by text NULL,
             last_error text NULL
         );
        
@@ -27,13 +31,20 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             first_attempt_at_utc timestamptz NULL,
             next_attempt_at_utc timestamptz NOT NULL,
             status integer NOT NULL,
+            given_up_reason integer NULL,
+            retried_at_utc timestamptz NULL,
+            retried_by text NULL,
             last_error text NULL,
             lease_token varchar(100) COLLATE "C" NULL,
             lease_until_utc timestamptz NULL,
             PRIMARY KEY (event_id, publisher_name)
         );
        
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_outbox_deliveries_publisher_listing ON ixiflow_outbox_deliveries (publisher_name, event_id);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_outbox_deliveries_listing ON ixiflow_outbox_deliveries (publisher_name, status, event_id);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_outbox_deliveries_status_listing ON ixiflow_outbox_deliveries (status, event_id, publisher_name);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_outbox_deliveries_pending ON ixiflow_outbox_deliveries (publisher_name, next_attempt_at_utc, event_id) WHERE status=0;
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_outbox_events_listing ON ixiflow_outbox_events (instance_id, event_id);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_outbox_events_instance ON ixiflow_outbox_events (instance_id, incarnation, event_type);
         """;
 }

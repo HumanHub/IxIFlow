@@ -2,6 +2,8 @@
 
 `AddIxIFlow` registers `IWorkflowOperations` alongside `IWorkflowClient`. Operations run through the host's scoped read pipeline. Applications must authorize access to this interface.
 
+The same interface provides [outbox administration](outbox-and-publishers.md#administer-retained-deliveries): delivery listing with filters and cursors, retry, publisher listing, enable and durable unregister. Each call takes an actor. Mutations record that actor and the store time, and delivery listings contain no lease credentials.
+
 <!-- snippet: samples/IxIFlow.Samples/OperationsExamples.cs#search -->
 ```csharp
 var page = await operations.SearchAsync(new InstanceQuery(
