@@ -145,6 +145,8 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             Assert.DoesNotContain(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == instanceId);
 
             // Sending the same commit again is acknowledged; settling the event again is not.
+            // A fresh arrival makes the next pass eligible before it attempts that settlement.
+            await inbox.AppendEventAsync(Event(instanceId, "late", "{}"));
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
             saved.Revision = applied.Revision;
             Assert.Equal(WorkflowCommitStatus.EventsChanged, (await store.CommitWorkflowInstanceAsync(
@@ -152,7 +154,6 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
                     settlements: [new EventSettlement("taken", EventOutcome.Consumed, "wait-2")]))).Status);
 
             // An idle commit that has not read the latest arrival stays runnable now.
-            await inbox.AppendEventAsync(Event(instanceId, "late", "{}"));
             var behindCommit = CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision, inboxReadThrough: 2);
             var behind = await store.CommitWorkflowInstanceAsync(behindCommit);
             Assert.Equal(WorkflowCommitStatus.Applied, behind.Status);
@@ -632,7 +633,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
     private static async Task VerifyChildren(IWorkflowStateRepository store)
     {
         var inbox = (IWorkflowInbox)store;
-        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
+        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Running);
         var childId = Guid.NewGuid().ToString("N");
         var otherId = Guid.NewGuid().ToString("N");
         var wait = $"{parentId}-child";
@@ -662,6 +663,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
 
             // A parent's commit can ask its child to cancel; the first request stands, as the commit was made.
             var reason = new CancellationReason { ReasonCode = "parent" };
+            parent.Status = WorkflowStatus.Suspended;
             var cancelling = CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                 childCancellations: [new ChildCancellation(childId, reason, wait)]);
             reason.ReasonCode = "changed after the commit was made";
@@ -683,6 +685,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             Assert.Contains(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == parentId);
 
             // A child whose parent no longer waits still finishes: the completion is recorded as refused.
+            parent.Status = WorkflowStatus.Running;
             parent.Revision = cancelled.Revision;
             var closing = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                 openedWaits: [new OpenedWait($"{wait}-2", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
@@ -770,7 +773,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
     // its own sequence, so a reader that pages through the inbox one event at a time meets both.
     private static async Task VerifyGoneChildrenTakeTheirOwnPlaces(IWorkflowStateRepository store)
     {
-        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
+        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Running);
         var first = Guid.NewGuid().ToString("N");
         var second = Guid.NewGuid().ToString("N");
         try
@@ -841,7 +844,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
 
     private static async Task VerifyChildStartPayload(IWorkflowStateRepository store, Func<System.Data.Common.DbConnection> newConnection)
     {
-        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Suspended);
+        var parentId = await IdleInstanceAsync(store, WorkflowStatus.Running);
         var childId = Guid.NewGuid().ToString("N");
         var wait = $"{parentId}-child";
         try

@@ -284,11 +284,12 @@ public class EngineContractRegressionTests
             .Step<MarkChildActivity>()
             .Suspend<RegressionApprovalEvent>("termination")
             .Build();
-        var instance = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, new RegressionData());
+        await provider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        var (checkpoint, _, _) = WorkflowHost.InstanceOperations.NewInstance(definition, new RegressionData(), new(), DateTime.UtcNow);
+        var instance = checkpoint;
         var store = provider.GetRequiredService<IWorkflowStateRepository>();
-        var checkpoint = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         checkpoint.Status = WorkflowStatus.Terminated;
-        var grant = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
+        var grant = await StoreTestSupport.LeaseAsync(store, instance.InstanceId, await StoreTestSupport.ClaimAsync(provider));
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(checkpoint, grant.Epoch, checkpoint.Revision))).Status);
         Assert.Equal(WorkflowStatus.Terminated,

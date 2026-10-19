@@ -611,6 +611,8 @@ public sealed class ActivityRecoveryTests
         var started = await engine.RunAsync(definition, new ChargeData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
+        await repository.AppendEventAsync(new WorkflowEvent(started.InstanceId, "winning",
+            typeof(RecoveryReply).AssemblyQualifiedName!, "{}", "b"));
         var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
         var losingWait = checkpoint.Waits.Single(wait => wait.Key == "a");
@@ -633,7 +635,8 @@ public sealed class ActivityRecoveryTests
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var committed = await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
+            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId, await StoreTestSupport.ClaimAsync(provider))).Epoch, saved.Revision, Guid.NewGuid().ToString("N"),
+                settlements: [new EventSettlement("winning", EventOutcome.Consumed, winningWait.Id)], inboxReadThrough: 1));
         Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
 

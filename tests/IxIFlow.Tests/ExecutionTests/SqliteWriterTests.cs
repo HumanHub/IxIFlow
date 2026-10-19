@@ -16,7 +16,7 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
     {
         using var time = new PausedTimeProvider();
         await using var store = new SqliteWorkflowStateRepository(ConnectionString, time);
-        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
+        var instance = new WorkflowInstance { Status = WorkflowStatus.Running, ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
         var grant = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
         var commit = CheckpointCommit.Create(instance, grant.Epoch, 0);
         time.Pause = true;
@@ -54,7 +54,7 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
     public async Task ExternalWriterContentionHasTheSameFailureOnEveryWritePath(string operation)
     {
         await using var store = new SqliteWorkflowStateRepository(ConnectionString);
-        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
+        var instance = new WorkflowInstance { Status = WorkflowStatus.Running, ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
         await store.SeedAsync(instance);
         var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, instance.Revision);
         await using var connection = new SqliteConnection(ConnectionString);

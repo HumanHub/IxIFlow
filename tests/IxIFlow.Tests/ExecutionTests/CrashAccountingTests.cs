@@ -162,7 +162,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var store = new FaultInjectingRepository(time);
         using var services = Services(store, time);
         var instanceId = await InterruptedRunAsync(services, store);
-        await CrashOwnersAsync(store, time, instanceId, 3);
+        await CrashOwnersAsync(store, time, instanceId, 3, await StoreTestSupport.ClaimAsync(services));
 
         var quarantined = await Client(services).RecoverAsync(instanceId);
 
@@ -196,7 +196,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var store = new FaultInjectingRepository(time);
         using var services = Services(store, time);
         var instanceId = await InterruptedRunAsync(services, store);
-        await CrashOwnersAsync(store, time, instanceId, 3);
+        await CrashOwnersAsync(store, time, instanceId, 3, await StoreTestSupport.ClaimAsync(services));
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
             (await Client(services).RecoverAsync(instanceId)).Status);
 
@@ -205,7 +205,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         await Assert.ThrowsAnyAsync<Exception>(() => Client(services).ReleaseAsync(instanceId));
         store.FailCommit = _ => false;
         // Two more lost owners stay under the limit only if the release started the count again.
-        await CrashOwnersAsync(store, time, instanceId, 2);
+        await CrashOwnersAsync(store, time, instanceId, 2, await StoreTestSupport.ClaimAsync(services));
 
         var recovered = await Client(services).RecoverAsync(instanceId);
 
@@ -225,7 +225,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         await Assert.ThrowsAnyAsync<Exception>(() => Client(services).RunAsync(GuardedWorkflow(),
             new CrashData(), new WorkflowOptions { InstanceId = instanceId }));
         store.FailCommit = _ => false;
-        await CrashOwnersAsync(store, time, instanceId, 3);
+        await CrashOwnersAsync(store, time, instanceId, 3, await StoreTestSupport.ClaimAsync(services));
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
             (await Client(services).RecoverAsync(instanceId)).Status);
 
@@ -237,7 +237,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var unwinding = (await store.GetWorkflowInstanceAsync(instanceId))!;
         Assert.Equal(WorkflowStatus.Running, unwinding.Status);
         Assert.Null(ExecutionCheckpoint.StopOf(unwinding));
-        await CrashOwnersAsync(store, time, instanceId, 3);
+        await CrashOwnersAsync(store, time, instanceId, 3, await StoreTestSupport.ClaimAsync(services));
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
             (await Client(services).RecoverAsync(instanceId)).Status);
 
@@ -259,11 +259,11 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var store = new FaultInjectingRepository(time);
         using var services = Services(store, time);
         var instanceId = await InterruptedRunAsync(services, store);
-        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
+        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short, await StoreTestSupport.ClaimAsync(services)))!;
         var corrupted = (await store.GetWorkflowInstanceAsync(instanceId))!;
         corrupted.WorkflowDataJson = "{ not json";
         await CommitAsync(store, corrupted, grant, clearsCrashCount: false);
-        await CrashOwnersAsync(store, time, instanceId, 3, alreadyHeld: true);
+        await CrashOwnersAsync(store, time, instanceId, 3, await StoreTestSupport.ClaimAsync(services), alreadyHeld: true);
 
         var quarantined = await Client(services).RecoverAsync(instanceId);
 
@@ -283,11 +283,11 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var store = new FaultInjectingRepository(time);
         using var services = Services(store, time);
         var instanceId = await InterruptedRunAsync(services, store);
-        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
+        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short, await StoreTestSupport.ClaimAsync(services)))!;
         var corrupted = (await store.GetWorkflowInstanceAsync(instanceId))!;
         corrupted.WorkflowDataJson = "{ not json";
         await CommitAsync(store, corrupted, grant, clearsCrashCount: false);
-        await CrashOwnersAsync(store, time, instanceId, 3, alreadyHeld: true);
+        await CrashOwnersAsync(store, time, instanceId, 3, await StoreTestSupport.ClaimAsync(services), alreadyHeld: true);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution,
             (await Client(services).RecoverAsync(instanceId)).Status);
 
@@ -326,13 +326,13 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
 
     // Owners that claim the running instance and die without releasing it; the clock moves past each lease.
     private static async Task CrashOwnersAsync(IWorkflowStateRepository store, FakeTimeProvider time,
-        string instanceId, int count, bool alreadyHeld = false)
+        string instanceId, int count, ClaimQuery claim, bool alreadyHeld = false)
     {
         for (var index = 0; index < count; index++)
         {
             if (alreadyHeld || index > 0)
                 time.Advance(Short * 2);
-            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"dead-{index}", Short, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"dead-{index}", Short, claim));
         }
         time.Advance(Short * 2);
     }
@@ -364,7 +364,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         ExecutionLeaseGrant grant, bool clearsCrashCount)
     {
         var commit = CheckpointCommit.Create(instance, grant.Epoch, instance.Revision,
-            clearsCrashCount: clearsCrashCount);
+            clearsCrashCount: clearsCrashCount, wakeAfter: instance.Status == WorkflowStatus.Suspended ? TimeSpan.Zero : null);
         var result = await repository.CommitWorkflowInstanceAsync(commit);
         // A store that wrote nothing, for example as a deadlock victim, asks for the same commit again.
         for (var attempt = 0; result.Status == WorkflowCommitStatus.Retry && attempt < 5; attempt++)

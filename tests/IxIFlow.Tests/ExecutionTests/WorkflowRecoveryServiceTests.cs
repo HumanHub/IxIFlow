@@ -25,6 +25,7 @@ public sealed class WorkflowRecoveryServiceTests
         var engine = new BlockingRecoveryEngine();
         var services = new ServiceCollection();
         services.AddSingleton<IWorkflowClient>(engine);
+        services.AddSingleton<IWorkflowVersionRegistry>(new WorkflowVersionRegistry());
         using var provider = services.BuildServiceProvider();
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
@@ -128,6 +129,7 @@ public sealed class WorkflowRecoveryServiceTests
         var engine = new RecordingEngine();
         var services = new ServiceCollection();
         services.AddSingleton<IWorkflowClient>(engine);
+        services.AddSingleton<IWorkflowVersionRegistry>(new WorkflowVersionRegistry());
         using var provider = services.BuildServiceProvider();
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,

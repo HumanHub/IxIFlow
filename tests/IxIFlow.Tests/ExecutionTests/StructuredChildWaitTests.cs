@@ -83,9 +83,12 @@ public sealed class StructuredChildWaitTests
     [Trait("Spec", "D-09")]
     public async Task AParentWaitsWhileItsChildNeedsResolution()
     {
-        var repository = new InMemoryWorkflowStateRepository();
+        var repository = new FaultInjectingRepository
+        { FailCommit = instance => instance.WorkflowName == "UnresolvedChild" &&
+            ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations.Any(item =>
+                item.PendingActivity == null && item.Stack.Any(position => position.NextStepIndex > 0)) };
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("UnresolvedChild"));
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Workflow.Create<ChildData>("UnresolvedChild").Step<NoopActivity>().Build());
         var parent = Workflow.Create<ParentData>("UnresolvedChildParent")
             .Step<NoopActivity>()
             .Invoke<ChildData>("UnresolvedChild", 1)
@@ -93,12 +96,13 @@ public sealed class StructuredChildWaitTests
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(parent, new ParentData());
         var childId = await ChildIdAsync(services, started.InstanceId);
-        await ChildWaitingAsync(services, childId, "approval");
-        var savedChild = (await repository.GetWorkflowInstanceAsync(childId))!;
-        savedChild.Status = WorkflowStatus.NeedsResolution;
-        Assert.Equal(WorkflowCommitStatus.Applied,
-            (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(savedChild, (await StoreTestSupport.LeaseAsync(repository, savedChild.InstanceId)).Epoch, savedChild.Revision,
-                Guid.NewGuid().ToString("N")))).Status);
+        var unresolved = await WaitUntilAsync(async () =>
+        {
+            try { return await engine.RecoverAsync(childId); }
+            catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure) { return null; }
+        }, result => result?.Status == WorkflowExecutionStatus.NeedsResolution);
+        repository.FailCommit = _ => false;
+        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, unresolved!.Status);
 
         // The child sends nothing until an operator moves it; the parent stays at its wait, with nothing to
         // recover.
@@ -155,8 +159,10 @@ public sealed class StructuredChildWaitTests
         var started = await engine.RunAsync(parent, new ParentData());
         var childId = await ChildIdAsync(services, started.InstanceId);
         await ChildWaitingAsync(services, childId, "approval");
+        // The remote executor picks up the durable cancellation request.
+        await repository.RequestCancellationAsync(childId, new CancellationReason { ReasonCode = "operator" });
         var foreignToken = Guid.NewGuid().ToString("N");
-        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, foreignToken, TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, foreignToken, TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)));
 
         var waiting = await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
 
@@ -794,8 +800,9 @@ public sealed class StructuredChildWaitTests
 
         // The parent is held elsewhere while its child completes and a cancellation is requested, so it
         // applies the cancellation before it reads the completion.
+        await repository.RequestCancellationAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(started.InstanceId, "elsewhere",
-            TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+            TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)));
         Assert.Equal(WorkflowExecutionStatus.Success, (await engine.ResumeAsync(childId, "approval", new Approval())).Status);
         Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" }));

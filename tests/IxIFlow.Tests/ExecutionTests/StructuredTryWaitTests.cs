@@ -1502,6 +1502,10 @@ public class StructuredTryWaitTests
             instanceId = started.InstanceId;
         }
 
+        using var secondProvider = CreateServices(repository);
+        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await repository.AppendEventAsync(new WorkflowEvent(instanceId, "accepted", typeof(Approval).AssemblyQualifiedName!,
+            System.Text.Json.JsonSerializer.Serialize(new Approval { Value = 1 }), "approval"));
         var saved = (await repository.GetWorkflowInstanceAsync(instanceId))!;
         var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
         var wait = Assert.Single(checkpoint.Waits);
@@ -1515,12 +1519,10 @@ public class StructuredTryWaitTests
         continuation.Status = ContinuationStatus.Active;
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = System.Text.Json.JsonSerializer.Serialize(checkpoint);
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId, await StoreTestSupport.ClaimAsync(secondProvider))).Epoch, saved.Revision, Guid.NewGuid().ToString("N"),
+            settlements: [new EventSettlement("accepted", EventOutcome.Consumed, wait.Id)], inboxReadThrough: 1));
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
 
-        using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
-            .RegisterWorkflowAsync(definition);
         var result = await secondProvider.GetRequiredService<IWorkflowClient>()
             .RecoverAsync(instanceId);
 

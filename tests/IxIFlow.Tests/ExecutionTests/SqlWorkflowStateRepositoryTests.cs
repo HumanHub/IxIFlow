@@ -1,3 +1,5 @@
+using Dapper;
+using Microsoft.Extensions.Time.Testing;
 using IxIFlow.Core;
 using IxIFlow.Tests.Infrastructure;
 
@@ -9,15 +11,21 @@ public class SqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDatabase<
 {
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SuspendedDeadlineAppearsInRecoveryScanWhenDue() => StateRepositoryContract.VerifySuspendedDeadlineRecoveryScan(new SqlWorkflowStateRepository(SqlTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString));
+    public Task SuspendedDeadlineAppearsInRecoveryScanWhenDue() => StateRepositoryContract.VerifySuspendedDeadlineRecoveryScan(new SqlWorkflowStateRepository(SqlTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString), async id =>
+    {
+        await using var connection = new Microsoft.Data.SqlClient.SqlConnection(SqlTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString);
+        await connection.ExecuteAsync("UPDATE dbo.IxIFlowWorkflowInstances SET RunnableAtUtc=SYSUTCDATETIME() WHERE InstanceId=@Id", new { Id = id });
+    });
 
     [Fact]
     [Trait("Category", "SqliteIntegration")]
     [Trait("Spec", "C-11")]
     public async Task SqliteSuspendedDeadlineAppearsInRecoveryScanWhenDue()
     {
-        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString);
-        await StateRepositoryContract.VerifySuspendedDeadlineRecoveryScan(repository);
+        var time = new FakeTimeProvider();
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString, time);
+        await StateRepositoryContract.VerifySuspendedDeadlineRecoveryScan(repository, _ =>
+        { time.Advance(TimeSpan.FromMinutes(1)); return Task.CompletedTask; });
     }
 
     [SqlServerFact]
@@ -62,7 +70,7 @@ public class SqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDatabase<
                 CorrelationId = "correlation-1",
                 WorkflowDataJson = "{\"Value\":42}"
             };
-            await firstRepository.SeedAsync(instance);
+            await firstRepository.SeedAsync(instance, TimeSpan.Zero);
 
             await firstRepository.DisposeAsync();
             secondRepository = new SqliteWorkflowStateRepository(SqliteTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString);

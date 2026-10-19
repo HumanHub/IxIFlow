@@ -550,7 +550,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
     private async Task PurgeMeetsWriter(RetentionScenario scenario)
     {
         var removed = await Complete();
-        var parent = Instance(WorkflowStatus.Suspended);
+        var parent = Instance(WorkflowStatus.Running);
         await Commit(parent);
         await Advance(TimeSpan.FromDays(31));
         async Task Write()

@@ -1,3 +1,4 @@
+using Dapper;
 using System.Text.Json;
 using IxIFlow.Core;
 using IxIFlow.Tests.Infrastructure;
@@ -10,7 +11,11 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
 {
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task SuspendedDeadlineAppearsInRecoveryScanWhenDue() => StateRepositoryContract.VerifySuspendedDeadlineRecoveryScan(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString));
+    public Task SuspendedDeadlineAppearsInRecoveryScanWhenDue() => StateRepositoryContract.VerifySuspendedDeadlineRecoveryScan(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString), async id =>
+    {
+        await using var connection = new Npgsql.NpgsqlConnection(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString);
+        await connection.ExecuteAsync("UPDATE ixiflow_workflow_instances SET runnable_at_utc=clock_timestamp() AT TIME ZONE 'UTC' WHERE instance_id=@Id", new { Id = id });
+    });
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]

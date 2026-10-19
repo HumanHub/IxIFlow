@@ -97,7 +97,8 @@ public sealed class ClaimHandoffTests
         var seed = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "seed", TimeSpan.FromMinutes(1),
             new ClaimQuery(Guid.NewGuid(), new Dictionary<string, string>())))!;
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(instance, seed.Epoch, 0))).Status);
+            CheckpointCommit.Create(instance, seed.Epoch, 0, wakeAfter: TimeSpan.FromHours(1)))).Status);
+        Assert.True((await store.GetWorkflowInstanceSummaryAsync(instance.InstanceId))!.RunnableAtUtc > DateTime.UtcNow);
         var decision = ActivityResolution.Completed(new Dictionary<string, object?>());
         Assert.Equal(WorkflowExecutionStatus.Scheduled,
             (await from.ResolveAsync(instance.InstanceId, invocation.Id, decision, CancellationToken.None)).Status);

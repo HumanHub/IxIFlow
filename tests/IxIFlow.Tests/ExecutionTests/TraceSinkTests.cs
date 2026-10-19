@@ -229,7 +229,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
 
     private static async Task VerifyTraceOrderOncePerCommit(IWorkflowStateRepository repository)
     {
-        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace" };
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace", Status = WorkflowStatus.Running };
         try
         {
             var first = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, traceEntries:

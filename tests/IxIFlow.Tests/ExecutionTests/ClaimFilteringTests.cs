@@ -111,6 +111,22 @@ public sealed class ClaimFilteringTests
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(resolution.InstanceId, "resolution", TimeSpan.FromMinutes(1), second, ExecutionClaimKind.Operator));
             await store.ReleaseExecutionLeaseAsync(resolution.InstanceId, "resolution");
 
+            // An arrival racing the commit into resolution must keep another branch reachable.
+            var racing = await Seed([], first);
+            var racingOwner = (await store.TryAcquireExecutionLeaseAsync(racing.InstanceId, "racing",
+                TimeSpan.FromMinutes(1), first))!;
+            var opened = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(racing, racingOwner.Epoch,
+                racing.Revision, openedWaits: [new("event", WaitKind.Event, "event", "Event", null)]));
+            Assert.Equal(WorkflowCommitStatus.Applied, opened.Status);
+            await store.AppendEventAsync(new WorkflowEvent(racing.InstanceId, "arrival", "Event", "{}", "event"));
+            racing.Revision = opened.Revision;
+            racing.Status = WorkflowStatus.NeedsResolution;
+            var unresolved = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(racing, racingOwner.Epoch,
+                racing.Revision, inboxReadThrough: 0, wakeAfter: TimeSpan.FromHours(1)));
+            Assert.Equal(WorkflowCommitStatus.Applied, unresolved.Status);
+            Assert.True(unresolved.UnreadEvents);
+            Assert.Contains(await store.GetRunnableInstancesAsync(first), row => row.InstanceId == racing.InstanceId);
+
             // Preference never blocks another host: own rows first, each group ordered by due time and ID.
             var older = await Seed([], second);
             var own = await Seed([], first);
