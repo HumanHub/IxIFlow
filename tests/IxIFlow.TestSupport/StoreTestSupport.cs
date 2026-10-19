@@ -87,6 +87,6 @@ public static class StoreTestSupport
     }
 
     /// <summary>Ends fixture ownership before a host or another owner takes over.</summary>
-    public static Task<bool> ReleaseAsync(IWorkflowStateRepository store, string instanceId) =>
+    public static Task<ExecutionLeaseReleaseResult> ReleaseAsync(IWorkflowStateRepository store, string instanceId) =>
         store.ReleaseExecutionLeaseAsync(instanceId, Owners.GetOrCreateValue(store)[instanceId].Token);
 }

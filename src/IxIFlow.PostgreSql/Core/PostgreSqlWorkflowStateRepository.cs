@@ -417,6 +417,15 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             WHERE publisher_name=@Name
               AND status=0;
             """,
+        Statement.Notice => """
+            SELECT i.demand_set_id AS DemandSetId, i.pinned_host AS PinnedHost,
+                i.pin_expires_at_utc AS PinExpiresAtUtc, i.pin_inherit AS PinInherit, i.last_host_id AS LastHostId,
+                COALESCE(i.runnable_at_utc <= @Now, false) AND NOT EXISTS
+                    (SELECT 1 FROM ixiflow_workflow_leases l WHERE l.instance_id = i.instance_id AND l.expires_at_utc > @Now) AS Claimable,
+                i.status <> 'Running' AND NOT EXISTS
+                    (SELECT 1 FROM ixiflow_workflow_leases l WHERE l.instance_id = i.instance_id AND l.expires_at_utc > @Now) AS Idle
+            FROM ixiflow_workflow_instances i WHERE i.instance_id = @InstanceId
+            """,
         Statement.Cancellation => """
             SELECT cancellation_json FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId

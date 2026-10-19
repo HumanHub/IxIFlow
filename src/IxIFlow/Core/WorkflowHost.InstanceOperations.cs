@@ -34,6 +34,9 @@ public sealed partial class WorkflowHost
         private readonly CancellationWatch _watch = watch ?? new CancellationWatch(repository, timeProvider);
         private readonly WorkflowExecutor _executor = new(services, activityExecutor,
             timeProvider ?? TimeProvider.System);
+        private readonly RunnableNotifications? _notifications = services.GetService(typeof(RunnableNotifications)) as RunnableNotifications;
+
+        private void Released(ExecutionLeaseReleaseResult result) => _notifications?.Publish(result.Notice);
 
         private readonly string? _defaultActor = (services.GetService(typeof(ClientActor)) as ClientActor)?.Name;
 
@@ -77,7 +80,9 @@ public sealed partial class WorkflowHost
             ArgumentNullException.ThrowIfNull(reason);
             cancellationToken.ThrowIfCancellationRequested();
             reason = OperatorTrace.WithActor(reason, _defaultActor, Now);
-            if (!await _store.RequestCancellationAsync(instanceId, reason))
+            var cancellation = await _store.RequestCancellationAsync(instanceId, reason);
+            _notifications?.Publish(cancellation.Notice);
+            if (!cancellation.Accepted)
             {
                 var existing = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
                 if (existing == null)
@@ -183,7 +188,7 @@ public sealed partial class WorkflowHost
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
 
             await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-                _store, instance, _leaseSettings, _watch, claim, _time, ExecutionClaimKind.Operator);
+                _store, instance, _leaseSettings, _watch, claim, _time, ExecutionClaimKind.Operator, Released);
             if (owner == null)
                 return WorkflowExecutor.Busy(instanceId);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
@@ -392,7 +397,7 @@ public sealed partial class WorkflowHost
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } started)
                     return ExistingStart(started, definition, scopes);
-                await using var owner = await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, await ClaimQueryAsync(), _time)
+                await using var owner = await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, await ClaimQueryAsync(), _time, released: Released)
                         ?? (options.InstanceId == null
                             ? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
                                 "The new workflow instance could not acquire execution ownership")
@@ -576,6 +581,7 @@ public sealed partial class WorkflowHost
         private async Task<EventAppendResult> AppendAsync(WorkflowEvent stored)
         {
             var appended = await _store.AppendEventAsync(stored);
+            _notifications?.Publish(appended.Notice);
             if (appended.Status is EventAppendStatus.Closed or EventAppendStatus.NotFound)
                 await RefuseRemovedAsync(stored.InstanceId);
             return appended.Status == EventAppendStatus.Conflict
@@ -663,7 +669,7 @@ public sealed partial class WorkflowHost
             // its host is still counted by the next claim, and quarantined (B-08).
             await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
                 _store, instance, _leaseSettings, _watch, claim, _time,
-                release ? ExecutionClaimKind.Operator : ExecutionClaimKind.Runnable);
+                release ? ExecutionClaimKind.Operator : ExecutionClaimKind.Runnable, Released);
             if (owner == null)
                 return WorkflowExecutor.Busy(instanceId);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
@@ -853,7 +859,14 @@ public sealed partial class WorkflowHost
                     // A child the commit started, or a parent its completion woke, runs here without waiting
                     // for the poll (D-17).
                     foreach (var runnable in result.MadeRunnable)
-                        _control.Runnable(runnable);
+                        _control.Runnable(runnable.InstanceId);
+                    if (result.Status == WorkflowCommitStatus.Applied)
+                    {
+                        _notifications?.Publish(result.Notice);
+                        if (result.Notice?.Idle == true) _control.Changed(commit.InstanceId);
+                        foreach (var notice in result.MadeRunnable)
+                            _notifications?.Publish(notice);
+                    }
                     return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision,
                         PendingCancellation: result.PendingCancellation, Parked: result.Parked,
                         UnreadEvents: result.UnreadEvents);

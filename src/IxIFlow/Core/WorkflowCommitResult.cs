@@ -39,8 +39,14 @@ public sealed record WorkflowCommitResult(
     CancellationReason? PendingCancellation = null,
     bool Parked = false,
     bool UnreadEvents = false,
-    IReadOnlyList<string>? MadeRunnable = null)
+    IReadOnlyList<RunnableNotice>? MadeRunnable = null)
 {
+    /// <summary>The committing instance's change, captured inside the write transaction.</summary>
+    public RunnableNotice? Notice { get; init; }
+
+    /// <summary>The commit left its instance due with no live owner.</summary>
+    public bool Claimable => Notice?.Claimable == true;
+
     /// <summary>The winning admission, also returned to a losing duplicate for fingerprint comparison.</summary>
     public WorkflowAdmissionRecord? Admission { get; init; }
 
@@ -48,16 +54,16 @@ public sealed record WorkflowCommitResult(
     /// Other instances the commit made runnable: the children it started, and a parent whose inbox took
     /// the child's completion. A host may run them at once; the poll finds them otherwise.
     /// </summary>
-    public IReadOnlyList<string> MadeRunnable { get; init; } = MadeRunnable ?? [];
+    public IReadOnlyList<RunnableNotice> MadeRunnable { get; init; } = MadeRunnable ?? [];
 
     /// <summary>Receipts are equal when every field is, the instances made runnable compared in order.</summary>
     public bool Equals(WorkflowCommitResult? other) =>
         other is not null && Status == other.Status && Revision == other.Revision &&
         Equals(Admission, other.Admission) && Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
-        UnreadEvents == other.UnreadEvents && MadeRunnable.SequenceEqual(other.MadeRunnable, StringComparer.Ordinal);
+        UnreadEvents == other.UnreadEvents && Equals(Notice, other.Notice) && MadeRunnable.SequenceEqual(other.MadeRunnable);
 
     public override int GetHashCode() =>
-        HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission);
+        HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission, Notice);
 }
 
 /// <summary>

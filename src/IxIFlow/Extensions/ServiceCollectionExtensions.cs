@@ -26,6 +26,8 @@ public static class ServiceCollectionExtensions
         // Core workflow services
         services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
         services.TryAddSingleton(RetentionSettings.Default);
+        services.TryAddSingleton<IRunnableNotifier, NullRunnableNotifier>();
+        services.AddSingleton<RunnableNotifications>();
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
             provider.GetService<ILogger<WorkflowHost>>()));

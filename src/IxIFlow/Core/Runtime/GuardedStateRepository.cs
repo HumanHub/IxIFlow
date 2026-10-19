@@ -55,7 +55,7 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
         Guard(() => _store.GetTombstoneAsync(instanceId), $"Reading retention tombstone for '{instanceId}'");
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
+    public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
         Guard(() => _store.RequestCancellationAsync(instanceId, reason),
             $"Requesting cancellation of workflow instance '{instanceId}'");
 
@@ -116,7 +116,7 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.RenewExecutionLeaseAsync(instanceId, token, duration),
             $"Renewing the execution lease of workflow instance '{instanceId}'");
 
-    public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+    public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         Guard(() => _store.ReleaseExecutionLeaseAsync(instanceId, token),
             $"Releasing the execution lease of workflow instance '{instanceId}'");
 

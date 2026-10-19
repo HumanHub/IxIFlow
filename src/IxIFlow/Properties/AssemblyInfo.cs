@@ -8,3 +8,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("IxIFlow.Generators.Tests")]
 
 [assembly: InternalsVisibleTo("IxIFlow.TestSupport")]
+[assembly: InternalsVisibleTo("IxIFlow.Coordinator")]

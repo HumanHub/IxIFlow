@@ -38,7 +38,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         RetentionLock, RetentionCandidates, RetentionBlockedPublishers, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
-        Cancellation, Cancellations, Running, ClaimLease, RenewLease, ReleaseLease,
+        Cancellation, Cancellations, Running, ClaimLease, RenewLease, ReleaseLease, Notice,
         LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
@@ -322,7 +322,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         return (row, now);
     }
 
-    public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
+    public async Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
@@ -330,13 +330,19 @@ public abstract partial class RelationalWorkflowStateRepository :
         return await ExecuteOperationAsync(Operation.CancellationRequest, async () =>
         {
             await using var connection = await OpenConnectionAsync(ownership: true);
-            await using var transaction = await BeginTransactionAsync(connection, Operation.CancellationRequest);
+            await using var transaction = (await BeginTransactionAsync(connection, Operation.CancellationRequest))!;
+            await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { InstanceId = instanceId });
+            var (_, now) = await LockAsync<InboxRow>(connection, transaction, Statement.LockInbox, instanceId);
+            var before = await NoticeAsync(connection, transaction, instanceId, now);
             var outcome = await RequestCancellationAsync(connection, transaction, instanceId,
-                JsonSerializer.Serialize(reason), UsesLocalClock ? LocalNow() : null);
+                JsonSerializer.Serialize(reason), now);
+            var notice = (outcome is CancellationOutcome.MadeRunnable or CancellationOutcome.Recorded) && before?.Claimable != true
+                ? await NoticeAsync(connection, transaction, instanceId, now) : null;
             if (outcome == CancellationOutcome.MadeRunnable)
                 await NotifyRunnableAsync(connection, transaction);
             await CompleteAsync(transaction);
-            return outcome != CancellationOutcome.Gone && outcome != CancellationOutcome.Unchanged;
+            return new CancellationRequestResult(outcome != CancellationOutcome.Gone && outcome != CancellationOutcome.Unchanged,
+                notice?.Claimable == true ? notice : null);
         });
     }
 
@@ -471,7 +477,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         });
     }
 
-    public async Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token)
+    public async Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
@@ -479,7 +485,9 @@ public abstract partial class RelationalWorkflowStateRepository :
         return await ExecuteOperationAsync(Operation.LeaseRelease, async () =>
         {
             await using var connection = await OpenConnectionAsync(ownership: true);
-            await using var transaction = await BeginTransactionAsync(connection, Operation.LeaseRelease);
+            await using var transaction = (await BeginTransactionAsync(connection, Operation.LeaseRelease))!;
+            await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { InstanceId = instanceId });
+            var (_, now) = await LockAsync<InboxRow>(connection, transaction, Statement.LockInbox, instanceId);
             var parameters = WithLocalTime(new { InstanceId = instanceId, Token = token });
             bool released;
             if (ReleaseReturnsDue)
@@ -491,8 +499,9 @@ public abstract partial class RelationalWorkflowStateRepository :
             }
             else
                 released = await connection.ExecuteAsync(RequiredSql(Statement.ReleaseLease), parameters, transaction) == 1;
+            var notice = released ? await NoticeAsync(connection, transaction, instanceId, now) : null;
             await CompleteAsync(transaction);
-            return released;
+            return new ExecutionLeaseReleaseResult(released, notice?.Claimable == true ? notice : null);
         });
     }
 
@@ -555,6 +564,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         var sequence = rejection == null ? instance.InboxSequence + 1 : 0;
         var madeRunnable = rejection == null && !instance.Stopped &&
             instance.Status is "Running" or "Suspended" or "NeedsResolution";
+        var wasClaimable = madeRunnable &&
+            (await NoticeAsync(connection, transaction, workflowEvent.InstanceId, now))?.Claimable == true;
         var advanceSql = Sql(Statement.AdvanceInbox);
         var parameters = WithTimes(WithIntegers(new
         {
@@ -578,8 +589,11 @@ public abstract partial class RelationalWorkflowStateRepository :
         // refusal, using the shared trace append and the same instance lock as checkpoint commits.
         if (rejection is { } refused)
             await TraceRefusalAsync(connection, transaction, workflowEvent, refused, now, instance.TracingEnabled);
+        var notice = madeRunnable && !wasClaimable
+            ? await NoticeAsync(connection, transaction, workflowEvent.InstanceId, now) : null;
         return rejection == null
             ? new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable)
+                { Notice = notice?.Claimable == true ? notice : null }
             : new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection);
     }
 
@@ -880,10 +894,15 @@ public abstract partial class RelationalWorkflowStateRepository :
         var woken = false;
         foreach (var cancellation in commit.ChildCancellations)
         {
+            await LockAsync<InboxRow>(connection, transaction, Statement.LockInbox, cancellation.ChildInstanceId, clock: false);
+            var wasClaimable = (await NoticeAsync(connection, transaction, cancellation.ChildInstanceId, now))?.Claimable == true;
             var outcome = await RequestCancellationAsync(connection, transaction, cancellation.ChildInstanceId,
                 JsonSerializer.Serialize(cancellation.Reason), now);
             if (outcome == CancellationOutcome.MadeRunnable)
-                madeRunnable.Add(cancellation.ChildInstanceId);
+            {
+                woken = true;
+                if (!wasClaimable) madeRunnable.Add(cancellation.ChildInstanceId);
+            }
             // A child that is gone will never answer; its parent's wait ends as its termination.
             else if (outcome == CancellationOutcome.Gone)
             {
@@ -900,9 +919,12 @@ public abstract partial class RelationalWorkflowStateRepository :
         if (commit.ParentNotice is { } completion)
         {
             var completed = ToEvent(completion);
-            if (await AppendAsync(connection, transaction, completed, completed.ContentHash(), parent, now) is
-                { Status: EventAppendStatus.Stored, MadeRunnable: true })
-                madeRunnable.Add(completion.ParentInstanceId);
+            var appended = await AppendAsync(connection, transaction, completed, completed.ContentHash(), parent, now);
+            if (appended.Status == EventAppendStatus.Stored && appended.MadeRunnable)
+            {
+                woken = true;
+                if (appended.Claimable) madeRunnable.Add(completion.ParentInstanceId);
+            }
         }
         // Other hosts hear of what this commit made claimable: other instances, and this one when it is due
         // and nobody holds it, because the commit let it go or woke it with an event.
@@ -921,9 +943,37 @@ public abstract partial class RelationalWorkflowStateRepository :
             await connection.ExecuteAsync(RequiredSql(Statement.OwnershipInsert),
                 new { commit.InstanceId, commit.Incarnation, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, admission.OwnerKind }, transaction);
         }
+        var notices = new List<RunnableNotice>();
+        foreach (var id in madeRunnable.Distinct(StringComparer.Ordinal))
+            if (await NoticeAsync(connection, transaction, id, now) is { Claimable: true } runnable)
+                notices.Add(runnable);
+        var changed = await NoticeAsync(connection, transaction, commit.InstanceId, now);
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,
-            ReadReason(current?.CancellationJson), parked, unread, madeRunnable) { Admission = admitted };
+            ReadReason(current?.CancellationJson), parked, unread, notices)
+            { Admission = admitted, Notice = changed is { Claimable: true } or { Idle: true } ? changed : null };
+    }
+
+    private async Task<RunnableNotice?> NoticeAsync(DbConnection connection, DbTransaction transaction,
+        string instanceId, DateTime now)
+    {
+        var row = await connection.QuerySingleOrDefaultAsync<NoticeRow>(RequiredSql(Statement.Notice),
+            WithTimes(new { InstanceId = instanceId }, ("Now", now)), transaction);
+        return row == null ? null : new(instanceId, row.DemandSetId,
+            row.PinnedHost == null ? null : new WorkflowDemand("host", row.PinnedHost,
+                row.PinExpiresAtUtc is { } expiry ? ReadTime(expiry) : null, row.PinInherit),
+            row.LastHostId, row.Claimable, row.Idle);
+    }
+
+    private sealed class NoticeRow
+    {
+        public string DemandSetId { get; set; } = "";
+        public string? PinnedHost { get; set; }
+        public DateTime? PinExpiresAtUtc { get; set; }
+        public bool PinInherit { get; set; }
+        public Guid? LastHostId { get; set; }
+        public bool Claimable { get; set; }
+        public bool Idle { get; set; }
     }
 
     // Replaced and removed parts go before inserts, in the same transaction as the trunk.
