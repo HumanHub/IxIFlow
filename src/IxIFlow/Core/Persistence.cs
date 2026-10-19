@@ -484,7 +484,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     $"Child workflow '{taken.ChildInstanceId}' cannot start: an instance with its ID exists");
             // One store time for the whole commit: its deadlines, its runnable time and its records (D-35).
             var now = Now;
-            var debugCommands = WorkflowDebugRules.Acknowledge(stored, snapshot, CommandsOf(commit.InstanceId), snapshot.Revision);
+            var debugCommands = WorkflowDebugRules.Acknowledge(stored, snapshot, CommandsOf(commit.InstanceId), snapshot.Revision, commit.TraceEntries);
             var debugWake = WorkflowDebugRules.NeedsWake(snapshot.Status, debugCommands);
             var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
                 !_acknowledgedCancellations.Contains(commit.InstanceId);

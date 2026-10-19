@@ -666,7 +666,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         }
         var debugCommands = await ReadDebugCommandsAsync(connection, transaction, commit.InstanceId);
         var previousDebugInstance = current?.StateJson == null ? null : JsonSerializer.Deserialize<WorkflowInstance>(current.StateJson);
-        var acknowledgedDebug = WorkflowDebugRules.Acknowledge(previousDebugInstance, commit.ReadTrunk(), debugCommands, revision);
+        if (previousDebugInstance != null) previousDebugInstance.Revision = currentRevision;
+        var acknowledgedDebug = WorkflowDebugRules.Acknowledge(previousDebugInstance, commit.ReadTrunk(), debugCommands, revision, commit.TraceEntries);
         var debugWake = WorkflowDebugRules.NeedsWake(snapshot.Status, acknowledgedDebug);
         var unacknowledged = current is { CancellationJson: not null, CancellationAcknowledged: false };
         // A run that has not read every arrival neither parks nor goes idle out of reach.

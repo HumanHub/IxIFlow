@@ -30,6 +30,7 @@ public abstract partial class RelationalWorkflowStateRepository
             await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { InstanceId = instanceId });
             var (current, now) = await LockAsync<CommitState>(connection, transaction, Statement.CommitState, instanceId);
             var instance = current?.StateJson == null ? null : JsonSerializer.Deserialize<WorkflowInstance>(current.StateJson);
+            if (instance != null) instance.Revision = current!.Revision;
             var commands = await ReadDebugCommandsAsync(connection, transaction, instanceId);
             var result = WorkflowDebugRules.Validate(instance, commands, command);
             if (result.Status == DebugCommandStatus.Accepted)

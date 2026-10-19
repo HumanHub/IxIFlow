@@ -6,6 +6,7 @@ namespace IxIFlow.Core;
 internal sealed partial class TraceBuffer
 {
     private readonly List<ExecutionTraceEntry> _pending = [];
+    private readonly List<ExecutionTraceEntry> _audits = [];
     private int _limit = ExecutionLimits.DefaultMaxTraceEntriesPerCommit;
     private TraceTruncation? _truncated;
     private TraceBudget? _budgetMarker;
@@ -20,7 +21,7 @@ internal sealed partial class TraceBuffer
     private string _instanceId = "";
     private TimeProvider _time = TimeProvider.System;
 
-    public IReadOnlyList<ExecutionTraceEntry> Pending => _pending;
+    public IReadOnlyList<ExecutionTraceEntry> Pending => _audits.Count == 0 ? _pending : [.. _pending, .. _audits];
 
     public void Configure(int limit)
     {
@@ -103,6 +104,12 @@ internal sealed partial class TraceBuffer
         return false;
     }
 
+    // Mandatory audit records bypass all tracing switches and capacity limits.
+    public void AddAudit(DataEditedTrace audit, DateTime timestamp) => _audits.Add(new ExecutionTraceEntry
+    {
+        EntryType = TraceEntryType.DataEdited, Timestamp = timestamp, Payload = audit
+    });
+
     public void Add(ExecutionTraceEntry entry)
     {
         if (Accepts(entry.EntryType, entry.Timestamp))
@@ -134,6 +141,7 @@ internal sealed partial class TraceBuffer
             _acknowledgedDebug = _checkpoint.Debug;
         }
         _pending.Clear();
+        _audits.Clear();
         _truncated = null;
         _budgetMarker = null;
     }
@@ -147,6 +155,7 @@ internal sealed partial class TraceBuffer
             _checkpoint.Debug = _acknowledgedDebug;
         }
         _pending.Clear();
+        _audits.Clear();
         _truncated = null;
         _budgetMarker = null;
     }

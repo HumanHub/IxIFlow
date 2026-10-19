@@ -93,6 +93,48 @@ internal static class BranchData
         return node.Deserialize(baseline.GetType(), Options)!;
     }
 
+    /// <summary>Validates property paths before patching a detached JSON copy and reading it whole.</summary>
+    public static object Patch(object data, IReadOnlyList<DataPatch> patches)
+    {
+        var node = Node(data);
+        foreach (var patch in patches)
+        {
+            if (patch.Path.Count == 0 || patch.Path.Any(string.IsNullOrEmpty))
+                throw new ArgumentException("An edit requires a nonempty property path");
+            var info = Info(data.GetType());
+            JsonNode? owner = node;
+            foreach (var segment in patch.Path.Take(patch.Path.Count - 1))
+            {
+                var property = EditableProperty(info, segment, leaf: false);
+                if (property.CustomConverter != null)
+                    throw new ArgumentException("An edit cannot traverse a property converter");
+                owner = (owner as JsonObject)?[segment];
+                if (owner == null) throw new ArgumentException("An edit cannot traverse null or absent data");
+                info = Info(property.PropertyType);
+            }
+            _ = EditableProperty(info, patch.Path[^1]);
+            if (owner is not JsonObject target || !target.ContainsKey(patch.Path[^1]))
+                throw new ArgumentException("The edited property does not exist");
+            if (patch.Remove) target.Remove(patch.Path[^1]);
+            else target[patch.Path[^1]] = JsonNode.Parse(patch.Value.GetRawText());
+        }
+        // All converters, required properties and setters see the complete candidate together.
+        return node.Deserialize(data.GetType(), Options)
+            ?? throw new ArgumentException("Workflow data cannot be null");
+    }
+
+    private static JsonPropertyInfo EditableProperty(JsonTypeInfo info, string name, bool leaf = true)
+    {
+        // Dictionary keys are values, so accepting them would also expose them in audit paths.
+        if (info.Kind != JsonTypeInfoKind.Object || info.Converter.GetType().Assembly != typeof(JsonSerializer).Assembly)
+            throw new ArgumentException("An edit path must contain only contract properties, without dictionary keys or indices");
+        var property = PropertyNamed(info, name);
+        if (property?.Get == null || property.IsExtensionData || property.Set == null &&
+            (leaf || (property.ObjectCreationHandling ?? info.PreferredPropertyObjectCreationHandling) != JsonObjectCreationHandling.Populate))
+            throw new ArgumentException("An edit path must name an existing settable contract property");
+        return property;
+    }
+
     /// <summary>
     /// Merges the branches, given in declaration order, into a copy of <paramref name="baseline"/>, or
     /// throws <see cref="JoinConflictException"/> when branches changed the same data, or a property and
