@@ -289,6 +289,7 @@ public sealed record StoredWait(
     public bool IsOpen => CloseReason == null;
 
     /// <summary>The rejection an event for this closed wait receives.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public EventRejection Rejection => CloseReason?.Rejection()
         ?? throw new InvalidOperationException("An open wait has no rejection");
 }

@@ -41,11 +41,10 @@ public interface IWorkflowCatalogStore
 }
 
 /// <summary>Persistent version catalog and the code definitions this host can execute.</summary>
-public interface IWorkflowCatalog : IWorkflowCatalogStore
+public interface IWorkflowCatalog : IWorkflowCatalogStore, IWorkflowDefinitionSource
 {
     Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync();
     Task RegisterWorkflowAsync(WorkflowDefinition definition);
-    Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
     Task<string?> GetWorkflowStructureHashAsync(string name, int version);
     Task<WorkflowVersion?> GetLatestWorkflowVersionAsync(string name);
     Task RetireWorkflowVersionAsync(string name, int version);

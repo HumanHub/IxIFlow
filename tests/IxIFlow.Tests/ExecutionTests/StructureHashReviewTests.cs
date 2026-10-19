@@ -173,7 +173,6 @@ public sealed class StructureHashReviewTests
     {
         var collection = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         collection.RegisterWorkflow<ReviewChild>();
-        using var services = collection.BuildServiceProvider();
         var registry = new WorkflowCatalog();
         var published = Workflow.Create<StructureHashData>("Review child")
             .Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => 1)).Build();
@@ -181,10 +180,12 @@ public sealed class StructureHashReviewTests
         var registeredHash = Hash(published);
         // Rebuilding a catalog from this object would now compare the wrong registration contract.
         published.Steps.Clear();
+        collection.AddSingleton<IWorkflowCatalog>(registry);
+        using var services = collection.BuildServiceProvider();
         var parent = Workflow.Create<StructureHashData>("Parent").Step<StructureHashMultiply>()
             .Invoke<ReviewChild, StructureHashData>().Build();
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            new ChildWorkflows(services, registry, TimeProvider.System).ResolveAsync(parent.Steps[1], starting: true));
+            services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new StructureHashData()));
         Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, error.Kind);
         Assert.Contains(registeredHash, error.Message);
         Assert.Equal(registeredHash, await registry.GetWorkflowStructureHashAsync("Review child", 1));
@@ -199,11 +200,12 @@ public sealed class StructureHashReviewTests
     [Fact]
     public async Task ExecutorMismatchStopsForVerificationAndKeepsTheSavedCheckpoint()
     {
-        using var services = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var original = Workflow.Create<StructureHashData>("Stopped")
             .Step<StructureHashMultiply>().If(ctx => ctx.WorkflowData.Value > 0,
                 body => body.Step<StructureHashMultiply>()).Build();
         var loaded = Workflow.Create<StructureHashData>("Stopped").Step<StructureHashMultiply>().Build();
+        using var services = new ServiceCollection().AddLogging().AddIxIFlow().Services
+            .AddSingleton<IWorkflowDefinitionSource>(new LoadedDefinitionSource(loaded)).BuildServiceProvider();
         var now = DateTime.UtcNow;
         var data = new StructureHashData { Value = 42 };
         var checkpoint = new ExecutionCheckpoint
@@ -221,15 +223,14 @@ public sealed class StructureHashReviewTests
             WorkflowDataJson = JsonSerializer.Serialize(data), ExecutionStateJson = JsonSerializer.Serialize(checkpoint),
             Status = WorkflowStatus.Running, StartedAt = now, CreatedAt = now
         };
-        // Uncommitted state must be discarded, including data and positions.
-        var abandoned = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
-        abandoned.Continuations[0].Stack[0].NextStepIndex = 999;
         var host = new RecordingHost();
-        var executor = new WorkflowExecutor(services, services.GetRequiredService<IActivityExecutor>(), TimeProvider.System);
-        var result = await executor.RunAsync(loaded, instance, abandoned, new StructureHashData { Value = 99 },
-            host, CancellationToken.None);
+        var executor = new WorkflowExecutor(services, host);
+        var ready = await executor.ExecuteAsync(new(Guid.NewGuid(), instance, null, checkpoint.StructureHash,
+            1, 0, ExecutionLimits.Default, false, []), CancellationToken.None);
 
-        Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
+        Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome.Kind);
+        Assert.NotNull(host.Saved);
+        instance = host.Saved;
         Assert.Equal(WorkflowStatus.NeedsResolution, instance.Status);
         var saved = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
         Assert.Equal(OperatorStopKind.Verification, saved.OperatorStop!.Kind);
@@ -243,30 +244,26 @@ public sealed class StructureHashReviewTests
 
     private static string Hash(WorkflowDefinition definition) => new WorkflowScopeCatalog(definition).StructureHash;
 
+    private sealed class LoadedDefinitionSource(WorkflowDefinition loaded) : IWorkflowDefinitionSource
+    {
+        public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version) =>
+            Task.FromResult<WorkflowDefinition?>(loaded);
+    }
+
     private sealed class RecordingHost : IExecutionHost
     {
         public List<CheckpointCommit> Commits { get; } = [];
-        public ExecutionLimits Limits => ExecutionLimits.Default;
-        public long Epoch => 1;
-        public CancellationToken Drain => CancellationToken.None;
-        public Task? OwnershipLoss => null;
-        public Task<CancellationReason>? CancellationSignal => null;
-        public long ObservedInboxSequence => 0;
-        public Task? InboxChanged => null;
-        public CancellationReason? ObservedCancellation => null;
-        public bool CanPark => false;
-        public Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
+        public WorkflowInstance? Saved { get; private set; }
+        public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
+            var commit = request.Commit;
+            Saved = commit.ReadInstance(Saved);
             Commits.Add(commit);
-            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, Commits.Count));
+            return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Ack, Commits.Count));
         }
-        public void ThrowIfOwnershipLost() => throw new InvalidOperationException("Must refuse before execution");
-        public void ObserveCancellation(CancellationReason reason) => throw new InvalidOperationException();
-        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) => throw new InvalidOperationException();
-        public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
-            string childInstanceId, string parentWaitId) => throw new InvalidOperationException();
-        public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) => throw new InvalidOperationException();
-        public Task<StoredWait?> ReadWaitAsync(string waitId) => throw new InvalidOperationException();
+        public Task<StartChildReply> StartChildAsync(StartChild request) => throw new InvalidOperationException();
+        public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => throw new InvalidOperationException();
+        public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => throw new InvalidOperationException();
     }
 
     private sealed class Compiled : IDisposable

@@ -293,12 +293,14 @@ public sealed class ResourceLimitTests
         var store = new HangingRenewalStore();
         var settings = new ExecutionLeaseSettings(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(1));
         var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Hanging" };
+        var loss = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var watch = new CancellationWatch(store, time);
         await using var lease = (await WorkflowExecutionLease.TryAcquireAsync(store, instance, settings,
-            new CancellationWatch(store, time), time))!;
+            watch, error => loss.TrySetResult(error), _ => { }, _ => { }, time))!;
         store.Hang = true;
 
         var started = time.GetUtcNow();
-        while (!lease.Loss.IsCompleted)
+        while (!loss.Task.IsCompleted)
         {
             await Task.Delay(20);
             time.Advance(TimeSpan.FromMilliseconds(250));
@@ -307,7 +309,7 @@ public sealed class ResourceLimitTests
 
         // The hanging renewal was sent one second in, while the lease ran until three.
         Assert.True(time.GetUtcNow() - started <= TimeSpan.FromSeconds(3.5));
-        Assert.IsType<TimeoutException>(await (Task<Exception>)lease.Loss);
+        Assert.IsType<TimeoutException>(await loss.Task);
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository store, Action<IxIFlowOptions> configure)
