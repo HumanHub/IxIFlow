@@ -22,7 +22,7 @@ public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
     }
 
     /// <summary>
-    ///     Configures an input mapping for the resume event
+    ///     Maps a value into the suggested event payload once when the wait opens.
     /// </summary>
     public ISuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData> Input<TProperty>(
         Expression<Func<TResumeEvent, TProperty>> property)
@@ -128,8 +128,8 @@ public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevio
             SourceFunction = wrappedFunction,
             Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
             ContextFactory = Core.Runtime.WorkflowStepDelegates.Previous<TWorkflowData, TPreviousStepData>,
-            SourceType = typeof(WorkflowContext<TWorkflowData, TPreviousStepData>),
-            TargetType = typeof(TResumeEvent),
+            SourceType = typeof(TProperty),
+            TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Input
         };
 

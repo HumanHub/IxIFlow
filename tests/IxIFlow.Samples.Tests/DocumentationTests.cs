@@ -126,7 +126,11 @@ public sealed class DocumentationTests
         Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(yaml, "function.workflow.yaml"));
         var withArguments = yaml.Replace("definitions:", "code:\n  System.Math.Abs:\n    language: csharp-expression\n    source: System.Math.Abs(-1)\ndefinitions:")
             .Replace("function: System.Math.Abs }", "function: System.Math.Abs, arguments: [{ kind: constant, value: -1 }] }");
-        Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(withArguments, "function.workflow.yaml"));
+        var error = Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(withArguments, "function.workflow.yaml"));
+        Assert.Contains("Unknown member 'arguments'", error.Detail);
+        var lines = withArguments.Split('\n');
+        Assert.Equal(Array.FindIndex(lines, line => line.Contains("arguments:", StringComparison.Ordinal)) + 1, error.Line);
+        Assert.Equal(lines[error.Line - 1].IndexOf("arguments:", StringComparison.Ordinal) + 1, error.Column);
     }
 
     [Fact]

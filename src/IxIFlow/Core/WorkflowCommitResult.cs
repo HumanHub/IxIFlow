@@ -153,7 +153,7 @@ public sealed class CheckpointCommit
     /// </summary>
     public IReadOnlyList<string> TraceEntries { get; }
 
-    /// <summary>The execution epoch granted with the owner's lease; zero when the instance was never leased.</summary>
+    /// <summary>The execution epoch granted with the owner's lease; zero for an unleased commit.</summary>
     public long Epoch { get; }
 
     /// <summary>The incarnation chosen for a first insert, or read by the executor for a later commit.</summary>
@@ -289,6 +289,8 @@ public sealed class CheckpointCommit
         foreach (var wait in armed)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(wait.WaitId, nameof(armedWaits));
+            if (wait.Timeout == null && wait.DefaultPayloadJson == null)
+                throw new ArgumentException("An activated wait must supply a timeout or a suggested payload", nameof(armedWaits));
             ValidateDuration(wait.Timeout, nameof(armedWaits));
         }
         var closed = (closedWaits ?? []).ToArray();

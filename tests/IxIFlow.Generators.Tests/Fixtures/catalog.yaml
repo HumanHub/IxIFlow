@@ -36,7 +36,6 @@ steps:
 code:
   increment:
     language: csharp-expression
-    returns: int
     source: workflow.Value + 1
 definitions:
   - kind: activityRef

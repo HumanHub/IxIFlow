@@ -19,7 +19,7 @@ Every execution acquires a lease and saves its state through fenced commits, inc
 
 ## Leases and recovery
 
-An instance has one executing owner, protected by an instance gate and a renewable store lease with a monotonically increasing epoch. Commits also compare revisions. The host stops work when ownership is lost; another host can claim expired work and continue from its checkpoint.
+An instance has one executing owner, protected by an instance gate and a renewable store lease. An epoch is never granted twice in a store, and epochs strictly increase for each instance ID, including across deletions and re-creations. Across instances, epochs follow allocation order, with gaps allowed; grants may complete in a different order. Leased commits must match the active lease's epoch. Commits also compare revisions, and every commit after the first must carry the row's incarnation, including unleased commits at epoch zero. Unleased commits require no active lease. The host stops work when ownership is lost; another host can claim expired work and continue from its checkpoint.
 
 `RunnableAtUtc` on the instance is the backlog. Local scheduling and store polling recover due, unowned work. A long retry parks the instance and releases its slot and lease; foreground callers continue waiting across that park, while `RecoverAsync` can return `Scheduled`. Always read the returned data.
 
@@ -63,6 +63,8 @@ public static WorkflowDefinition DiscoverableReview() =>
 ```
 
 `GetOpenWaitsAsync` returns request-free event waits with owner instance, `WaitId`, key, event type and optional schema, opening time, deadline, token and optional `DefaultPayloadJson`. `WaitQuery` filters by instance, key or event type and pages in wait-ID order with `AfterWaitId` and `Limit` (100 by default). Request replies, child-completion waits, delays and execution deadlines are excluded. The default is a UI suggestion; it never answers automatically. A child task belongs to the child instance. Only trusted callers should receive this listing: the token grants the ability to answer.
+
+Wait input mappings compute that suggestion once when the wait opens, reading workflow data and the previous step. They overlay a deserialized copy of `DefaultPayload`, or a new event instance when no default is declared. The wait saves the resulting JSON, so recovery and replay never evaluate the mappings again. Mapping failures fail the wait step. Request reply tokens are reserved before the request runs; their suggestion is computed when execution reaches `WaitFor`, using the completed previous step.
 
 Inside a method with `client`, `instanceId` and `customer` parameters:
 

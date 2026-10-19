@@ -39,13 +39,13 @@ public sealed partial class YamlParityTests
                       id: first
                       key: first
                       event: Answer
-                      output: [{source: Value, sourceContext: event, to: {path: workflow.Result}}]
+                      output: [{source: Value, to: {path: workflow.Result}}]
                 - steps:
                     - kind: waitFor
                       id: second
                       key: second
                       event: Answer
-                      output: [{source: Value, sourceContext: event, to: {path: workflow.Value}}]
+                      output: [{source: Value, to: {path: workflow.Value}}]
             """);
         var fluent = Start().Parallel(parallel =>
         {
@@ -421,7 +421,7 @@ public sealed partial class YamlParityTests
               event: Answer
               resumeCondition: {path: event.Value > 0}
               input: [{target: Value, from: {path: previousStep.Value}}]
-              output: [{source: Value, sourceContext: event, to: {path: workflow.Result}}]
+              output: [{source: Value, to: {path: workflow.Result}}]
               timeout: '01:00:00'
               onTimeout:
                 - kind: activity

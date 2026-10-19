@@ -56,7 +56,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     internal override object? SmallInt(short? value) => value is { } number ? (byte)number : null;
     internal override bool NormalizeRunnableTime => false;
     internal override DateTime ReadTime(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
-    internal override bool SaveReturnsDue => false;
     internal override int StatementBatchSize => StatementBatch;
     internal override int OwnershipReadBatchSize => 1000;
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 };
@@ -146,15 +145,17 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         var rows = new List<string>();
         for (var index = 0; index < waits.Count; index++)
         {
-            rows.Add($"(@AW{index}, @AD{index})");
+            rows.Add($"(@AW{index}, @AD{index}, @AP{index})");
             parameters.Add($"AW{index}", waits[index].WaitId);
             parameters.Add($"AD{index}", now + waits[index].Timeout, DbType.DateTime2);
+            parameters.Add($"AP{index}", waits[index].DefaultPayloadJson, DbType.String, size: -1);
         }
         await connection.ExecuteAsync($"""
-                UPDATE stored SET DeadlineUtc = armed.DeadlineUtc
+                UPDATE stored SET DeadlineUtc = COALESCE(stored.DeadlineUtc, armed.DeadlineUtc),
+                    DefaultPayloadJson = COALESCE(stored.DefaultPayloadJson, armed.DefaultPayloadJson)
                 FROM dbo.IxIFlowWorkflowWaits AS stored
-                JOIN (VALUES {string.Join(", ", rows)}) AS armed (WaitId, DeadlineUtc) ON stored.WaitId = armed.WaitId
-                WHERE stored.InstanceId = @InstanceId AND stored.CloseReason IS NULL AND stored.DeadlineUtc IS NULL;
+                JOIN (VALUES {string.Join(", ", rows)}) AS armed (WaitId, DeadlineUtc, DefaultPayloadJson) ON stored.WaitId = armed.WaitId
+                WHERE stored.InstanceId = @InstanceId AND stored.CloseReason IS NULL;
 
                 """, parameters, transaction);
     }
@@ -439,20 +440,25 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             WHERE InstanceId = @InstanceId
             """,
         Statement.ClaimLease => """
+            -- Lock the lease before allocating so a waiting claim cannot install an older epoch.
+            DECLARE @Epoch BIGINT;
+            SELECT @Epoch = Epoch FROM dbo.IxIFlowWorkflowLeases WITH (UPDLOCK, HOLDLOCK)
+            WHERE InstanceId = @InstanceId;
+            SET @Epoch = NEXT VALUE FOR dbo.IxIFlowExecutionEpoch;
             MERGE dbo.IxIFlowWorkflowLeases WITH (UPDLOCK, HOLDLOCK) AS target
             USING (SELECT @InstanceId AS InstanceId) AS source
             ON target.InstanceId = source.InstanceId
             WHEN MATCHED AND target.ExpiresAtUtc <= SYSUTCDATETIME() THEN
                 UPDATE SET Token = @Token,
                     ExpiresAtUtc = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()),
-                    Epoch = target.Epoch + 1,
+                    Epoch = @Epoch,
                     CrashCount = target.CrashCount + CASE
                         WHEN @Running = 1 AND target.ExpiresAtUtc > CAST('0001-01-01' AS DATETIME2) THEN 1
                         ELSE 0 END
             WHEN NOT MATCHED THEN
                 INSERT (InstanceId, Token, ExpiresAtUtc, Epoch, CrashCount)
                 VALUES (@InstanceId, @Token,
-                    DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()), 1, 0)
+                    DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()), @Epoch, 0)
             OUTPUT inserted.Epoch, inserted.CrashCount;
             """,
         Statement.RenewLease => """
@@ -616,9 +622,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             WHEN NOT MATCHED THEN INSERT
                 (InstanceId, Incarnation, WorkflowName, Status, CorrelationId, ParentInstanceId, RunnableAtUtc, StateJson)
                 VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId,
-                        CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END, @StateJson);
-            IF @@ROWCOUNT = 0
-                THROW 51000, 'Revisioned instances require an atomic commit', 1;
+                        CASE WHEN @RunnableNow = 1 THEN SYSUTCDATETIME() ELSE @RunnableAtUtc END, @StateJson)
+            OUTPUT CAST(CASE WHEN inserted.RunnableAtUtc <= SYSUTCDATETIME() THEN 1 ELSE 0 END AS BIT);
             """,
         Statement.ReadParts => """
                 SELECT InstanceId, PartKey, Json FROM dbo.IxIFlowWorkflowParts WHERE InstanceId IN @Ids;
@@ -779,6 +784,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             );
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowLeases', N'U') IS NULL
         BEGIN
+            CREATE SEQUENCE dbo.IxIFlowExecutionEpoch AS BIGINT
+                START WITH 1 INCREMENT BY 1 NO CYCLE;
             CREATE TABLE dbo.IxIFlowWorkflowLeases (
                 InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
                 Token NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
