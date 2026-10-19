@@ -20,6 +20,7 @@ public sealed class DefinitionValidationTests
     {
         var definition = new WorkflowDefinition
         {
+            Version = 1,
             Name = "Hand built", WorkflowDataType = typeof(RegistrationData),
             Steps = [new WorkflowStep
             {
@@ -28,7 +29,7 @@ public sealed class DefinitionValidationTests
                 SourceLocation = "hand-built.yaml:17"
             }]
         };
-        Assert.NotEmpty(new WorkflowScopeCatalog(definition).Fingerprint);
+        Assert.NotEmpty(new WorkflowScopeCatalog(definition).StructureHash);
         using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var registry = provider.GetRequiredService<IWorkflowVersionRegistry>();
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
@@ -65,8 +66,8 @@ public sealed class DefinitionValidationTests
             Runtime = WorkflowStepDelegates.Create<RegistrationData>(),
             ConditionExpression = System.Linq.Expressions.Expression.Lambda<Func<bool>>(visits)
         };
-        var definition = new WorkflowDefinition { WorkflowDataType = typeof(RegistrationData), Steps = [step] };
-        Assert.NotEmpty(new WorkflowScopeCatalog(definition).Fingerprint);
+        var definition = new WorkflowDefinition { Name = "Hand-built fixture", Version = 1, WorkflowDataType = typeof(RegistrationData), Steps = [step] };
+        Assert.NotEmpty(new WorkflowScopeCatalog(definition).StructureHash);
         var unvalidated = Assert.Throws<WorkflowEngineException>(() => WorkflowDefinitionValidator.ForExecution(definition));
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, unvalidated.Kind);
         Assert.StartsWith("purity.yaml:4:", unvalidated.Message);
@@ -78,7 +79,7 @@ public sealed class DefinitionValidationTests
         System.Threading.Tasks.Parallel.For(0, 20, _ =>
         {
             WorkflowDefinitionValidator.Validate(definition);
-            _ = new WorkflowScopeCatalog(definition).Fingerprint.Length;
+            _ = new WorkflowScopeCatalog(definition).StructureHash.Length;
             Assert.Same(scopes, WorkflowDefinitionValidator.ForExecution(definition));
             new WorkflowVersionRegistry([definition]);
         });
@@ -94,11 +95,12 @@ public sealed class DefinitionValidationTests
         var built = Workflow.Create<RegistrationData>("Child source").Step<RegistrationActivity>().Build();
         var definition = new WorkflowDefinition
         {
+            Version = 1,
             Name = "Unchecked child", WorkflowDataType = typeof(RegistrationData), Steps = built.Steps
         };
         var children = new ChildWorkflows(provider, new UncheckedRegistry(definition), TimeProvider.System);
         var invocation = new WorkflowStep { WorkflowName = definition.Name, WorkflowVersion = definition.Version };
-        Assert.NotEmpty(new WorkflowScopeCatalog(definition).Fingerprint);
+        Assert.NotEmpty(new WorkflowScopeCatalog(definition).StructureHash);
 
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => children.ResolveAsync(invocation, starting));
 
@@ -115,6 +117,7 @@ public sealed class DefinitionValidationTests
         var visits = new CountingCondition();
         var definition = new WorkflowDefinition
         {
+            Version = 1,
             Name = "Unchecked recovery", WorkflowDataType = typeof(RegistrationData),
             Steps = [new WorkflowStep
             {
@@ -125,7 +128,7 @@ public sealed class DefinitionValidationTests
         };
         var checkpoint = new ExecutionCheckpoint
         {
-            DefinitionFingerprint = new WorkflowScopeCatalog(definition).Fingerprint,
+            StructureHash = new WorkflowScopeCatalog(definition).StructureHash,
             Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
         };
         var repository = new InMemoryWorkflowStateRepository();
@@ -157,16 +160,17 @@ public sealed class DefinitionValidationTests
     }
 
     [Fact]
-    public async Task ExecutorRejectsADefinitionThatOnlyComputedAFingerprint()
+    public async Task ExecutorRejectsADefinitionThatOnlyComputedAStructureHash()
     {
         using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var built = Workflow.Create<RegistrationData>("Validated source").Step<RegistrationActivity>().Build();
         var definition = new WorkflowDefinition
         {
+            Version = 1,
             Name = "Unvalidated copy", WorkflowDataType = typeof(RegistrationData), Steps = built.Steps
         };
         var data = new RegistrationData();
-        var checkpoint = new ExecutionCheckpoint { DefinitionFingerprint = new WorkflowScopeCatalog(definition).Fingerprint };
+        var checkpoint = new ExecutionCheckpoint { StructureHash = new WorkflowScopeCatalog(definition).StructureHash };
         var executor = new WorkflowExecutor(provider, provider.GetRequiredService<IActivityExecutor>(), TimeProvider.System);
 
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => executor.RunAsync(definition,

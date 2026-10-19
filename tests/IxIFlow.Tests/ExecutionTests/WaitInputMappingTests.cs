@@ -123,13 +123,13 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     }
 
     [Fact]
-    public void ChangedMappingChangesTheFingerprint()
+    public void ChangedMappingChangesTheStructureHash()
     {
         var first = new WorkflowBuilder<Data, object>([], "Fingerprint").WaitFor<Answer>("review", configure: wait => wait
             .Input(answer => answer.Value).From(ctx => ctx.WorkflowData.Value)).Build();
         var second = new WorkflowBuilder<Data, object>([], "Fingerprint").WaitFor<Answer>("review", configure: wait => wait
             .Input(answer => answer.Value).From(ctx => ctx.WorkflowData.Value + 1)).Build();
-        Assert.NotEqual(new WorkflowScopeCatalog(first).Fingerprint, new WorkflowScopeCatalog(second).Fingerprint);
+        Assert.NotEqual(new WorkflowScopeCatalog(first).StructureHash, new WorkflowScopeCatalog(second).StructureHash);
     }
 
     [Fact]

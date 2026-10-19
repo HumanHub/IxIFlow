@@ -39,10 +39,18 @@ public sealed class CheckpointPayloadTests
         var instance = new WorkflowInstance { InstanceId = "invalid", ExecutionStateJson = state };
         var grant = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
 
-        Assert.ThrowsAny<JsonException>(() => CheckpointCommit.Create(instance, grant.Epoch, 0));
-        Assert.ThrowsAny<JsonException>(() => JsonSerializer.Serialize(instance));
-        Assert.ThrowsAny<JsonException>(() => JsonSerializer.Deserialize<WorkflowInstance>(
-            "{\"ExecutionStateJson\":" + state + "}"));
+        Assert.Contains("Unsupported execution checkpoint version",
+            Assert.Throws<WorkflowEngineException>(() => CheckpointCommit.Create(instance, grant.Epoch, 0)).Message);
+        if (state == "{}")
+            Assert.Contains("Unsupported execution checkpoint version",
+                Assert.Throws<WorkflowEngineException>(() => JsonSerializer.Serialize(instance)).Message);
+        else
+            Assert.ThrowsAny<JsonException>(() => JsonSerializer.Serialize(instance));
+        Func<object?> read = () => JsonSerializer.Deserialize<WorkflowInstance>("{\"ExecutionStateJson\":" + state + "}");
+        if (state == "{}")
+            Assert.Contains("Unsupported execution checkpoint version", Assert.Throws<WorkflowEngineException>(read).Message);
+        else
+            Assert.ThrowsAny<JsonException>(read);
         Assert.Null(await store.GetWorkflowInstanceAsync(instance.InstanceId));
     }
 
@@ -84,7 +92,7 @@ public sealed class CheckpointPayloadTests
         var repository = new InMemoryWorkflowStateRepository();
         var checkpoint = new ExecutionCheckpoint
         {
-            DefinitionFingerprint = "large",
+            StructureHash = "large",
             Continuations = [new ContinuationState
             {
                 Id = "root", Stack = [new ScopePosition

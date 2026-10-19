@@ -159,9 +159,9 @@ public sealed class OptionalSetupTests
         public string Result { get; set; } = "";
     }
 
+    [IxIFlow.Core.Workflow("ChildWorkflow", Version = 1)]
     public sealed class ChildWorkflow : IWorkflow<ChildData>
     {
-        public int Version => 1;
 
         public void Build(IWorkflowBuilder<ChildData> builder) =>
             builder.Step<RecordActivity>(setup => setup

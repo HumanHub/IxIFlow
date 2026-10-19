@@ -114,7 +114,7 @@ public sealed class ParallelDataTests
 
     [Fact]
     [Trait("Spec", "E-05")]
-    public async Task ACombinerLetsBranchesWriteOnePropertyAndIsPartOfTheFingerprint()
+    public async Task ACombinerLetsBranchesWriteOnePropertyAndIsPartOfTheStructureHash()
     {
         using var services = Services();
         WorkflowDefinition Define<T>() where T : class, ITagged, new() => Workflow.Create<T>("Tagged")

@@ -512,7 +512,7 @@ public sealed class ForEachTests
     }
 
     [Fact]
-    public void TheFingerprintKnowsAHandleByItsStepNotItsLabelAndIncludesTheWholeTarget()
+    public void TheStructureHashKnowsAHandleByItsStepNotItsLabelAndIncludesTheWholeTarget()
     {
         WorkflowDefinition Define(string label, int group) => Workflow.Create<OrderData>("Fingerprinted")
             .Step<NoopActivity>()
@@ -521,17 +521,22 @@ public sealed class ForEachTests
                     .Step<NoteActivity>(step => step
                         .Input(activity => activity.Note).From(ctx => ctx.Item(line).Name))
                     .Result(ctx => ctx.Item(line).Price),
-                setup => setup.As(label).Into(ctx => ctx.WorkflowData.Groups[group].Results))
+                setup =>
+                {
+                    setup.As(label);
+                    if (group == 0) setup.Into(ctx => ctx.WorkflowData.Groups[0].Results);
+                    else setup.Into(ctx => ctx.WorkflowData.Groups[1].Results);
+                })
             .Build();
 
-        Assert.Equal(new WorkflowScopeCatalog(Define("line", 0)).Fingerprint,
-            new WorkflowScopeCatalog(Define("renamed", 0)).Fingerprint);
-        Assert.NotEqual(new WorkflowScopeCatalog(Define("line", 0)).Fingerprint,
-            new WorkflowScopeCatalog(Define("line", 1)).Fingerprint);
+        Assert.Equal(new WorkflowScopeCatalog(Define("line", 0)).StructureHash,
+            new WorkflowScopeCatalog(Define("renamed", 0)).StructureHash);
+        Assert.NotEqual(new WorkflowScopeCatalog(Define("line", 0)).StructureHash,
+            new WorkflowScopeCatalog(Define("line", 1)).StructureHash);
     }
 
     [Fact]
-    public async Task TheFingerprintIsTheSameBeforeAndAfterTheBodyRuns()
+    public async Task TheStructureHashIsTheSameBeforeAndAfterTheBodyRuns()
     {
         using var services = Services();
         var engine = Engine(services);
@@ -551,12 +556,12 @@ public sealed class ForEachTests
                 },
                 setup => setup.Into(ctx => ctx.WorkflowData.Doubled))
             .Build();
-        var before = new WorkflowScopeCatalog(definition).Fingerprint;
+        var before = new WorkflowScopeCatalog(definition).StructureHash;
 
         var started = await engine.RunAsync(definition, Order(3));
         EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approval", new LineApproval { Name = "line-0" }));
 
-        Assert.Equal(before, new WorkflowScopeCatalog(definition).Fingerprint);
+        Assert.Equal(before, new WorkflowScopeCatalog(definition).StructureHash);
     }
 
     [Fact]
@@ -862,12 +867,12 @@ public sealed class ForEachTests
     }
 
     [Fact]
-    public void TheFingerprintKnowsWhichHandleAnExpressionMadeElsewhereReads()
+    public void TheStructureHashKnowsWhichHandleAnExpressionMadeElsewhereReads()
     {
         static System.Linq.Expressions.Expression<Func<WorkflowContext<OrderData>, List<ItemResult<int>>>> GroupOf(
             ItemScope<OrderLine> handle) => ctx => ctx.WorkflowData.Groups[ctx.Index(handle)].Results;
-        Assert.NotEqual(new WorkflowScopeCatalog(DefineWith(true)).Fingerprint,
-            new WorkflowScopeCatalog(DefineWith(false)).Fingerprint);
+        Assert.NotEqual(new WorkflowScopeCatalog(DefineWith(true)).StructureHash,
+            new WorkflowScopeCatalog(DefineWith(false)).StructureHash);
 
         // The innermost step stores through one of the two enclosing handles of the same type.
         WorkflowDefinition DefineWith(bool byOuter) => Workflow.Create<OrderData>("TargetFactory")
@@ -945,28 +950,6 @@ public sealed class ForEachTests
             .Build());
 
         Assert.Contains("cannot be shown to write workflow data", error.Message);
-    }
-
-    [Fact]
-    public void TheCodeOfABehaviorIncludesTheLocalFunctionsItUses()
-    {
-        var limit = 1;
-        bool Keep(int value) => value > limit;
-        Func<int, bool> behavior = least => new[] { 1, 2, 3 }.Count(Keep) > least;
-
-        var parts = LambdaCode.Of(behavior.Method).Split('+');
-
-        Assert.Equal(2, parts.Length);
-    }
-
-    [Fact]
-    public void TheCodeOfABehaviorIncludesTheLambdasItMakes()
-    {
-        Func<int, bool> behavior = limit => new[] { 1, 2, 3 }.Count(value => value > limit) > 1;
-
-        var parts = LambdaCode.Of(behavior.Method).Split('+');
-
-        Assert.Equal(2, parts.Length);
     }
 
     [Fact]

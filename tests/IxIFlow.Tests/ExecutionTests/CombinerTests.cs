@@ -129,8 +129,8 @@ public sealed class CombinerTests
         // Without the step's choice, the two branches writing Score are a build error.
         Assert.Throws<WorkflowEngineException>(() => Counted(_ => { }));
         // The choice is part of the fingerprint.
-        Assert.NotEqual(new WorkflowScopeCatalog(definition).Fingerprint,
-            new WorkflowScopeCatalog(Counted(parallel => parallel.Combine<int, Min<int>>(data => data.Score))).Fingerprint);
+        Assert.NotEqual(new WorkflowScopeCatalog(definition).StructureHash,
+            new WorkflowScopeCatalog(Counted(parallel => parallel.Combine<int, Min<int>>(data => data.Score))).StructureHash);
     }
 
     [Fact]

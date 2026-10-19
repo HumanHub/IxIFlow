@@ -476,12 +476,12 @@ public sealed partial class YamlParityTests
         Assert.Equal(Shape(fluent), Shape(generated));
         var first = await Execute(fluent, idle, data, verifyProbe);
         var second = await Execute(generated, idle, data, verifyProbe);
-        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        Assert.Equal(first.StructureHash, second.StructureHash);
         Assert.Equal(JsonSerializer.Serialize(first.Data), JsonSerializer.Serialize(second.Data));
         return second.Data;
     }
 
-    private static async Task<(ParityData Data, string Fingerprint)> Execute(WorkflowDefinition definition,
+    private static async Task<(ParityData Data, string StructureHash)> Execute(WorkflowDefinition definition,
         Func<ServiceProvider, WorkflowExecutionResult, Task<WorkflowExecutionResult>>? idle, Func<ParityData>? data,
         Action<ParityProbe>? verifyProbe = null)
     {
@@ -505,7 +505,7 @@ public sealed partial class YamlParityTests
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
-        return (Assert.IsType<ParityData>(result.WorkflowData), checkpoint.RootElement.GetProperty("DefinitionFingerprint").GetString()!);
+        return (Assert.IsType<ParityData>(result.WorkflowData), checkpoint.RootElement.GetProperty("StructureHash").GetString()!);
     }
 
     private static async Task<WorkflowExecutionResult> Advance(ServiceProvider services, WorkflowExecutionResult result)
