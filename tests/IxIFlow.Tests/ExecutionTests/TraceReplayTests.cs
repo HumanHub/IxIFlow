@@ -96,6 +96,8 @@ public sealed class TraceReplayTests : IClassFixture<SqliteTestDatabase<TraceRep
         var childInstance = (await store.GetWorkflowInstanceAsync(childId))!;
         var ops = services.GetRequiredService<IWorkflowOperations>();
         Assert.DoesNotContain(childInstance.ParentWaitId!, JsonSerializer.Serialize(await ops.InspectAsync(childId)));
+        // The child runs to its wait on its own; an event before the wait opens is rejected by design.
+        await client.AwaitAsync(childId, WorkflowAwaitCondition.Idle);
         await client.ResumeAsync(childId, "child-go", new Go());
         await client.RecoverAsync(started.InstanceId);
         await client.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(15));
