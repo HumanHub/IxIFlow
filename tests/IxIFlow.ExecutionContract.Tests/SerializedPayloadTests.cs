@@ -10,10 +10,10 @@ namespace IxIFlow.ContractTests;
 public sealed class SerializedPayloadTests
 {
     [Fact]
-    public async Task LargeCheckpointBytesCrossInBoundedChunksAndLostAcknowledgementReplaysSafely()
+    public async Task LargeCheckpointBodiesCrossWholeAndLostAcknowledgementReplaysSafely()
     {
         using var harness = new MessageHarness();
-        var definition = Workflow.Create<MessageHarness.Data>("chunked-checkpoint")
+        var definition = Workflow.Create<MessageHarness.Data>("whole-checkpoint")
             .Step<Grow>(step => step.Output(a => a.Value).To(c => c.WorkflowData.Value)).Step<MessageHarness.Noop>().Build();
         await harness.AssignAsync(definition);
         // The first checkpoint after the activity's start is the one that carries the large data.
@@ -21,13 +21,15 @@ public sealed class SerializedPayloadTests
         harness.Host.LoseReply = request => request.Commit.PayloadReferences.Count > 0 && !lost && (lost = true);
         var ready = await harness.ExecuteAsync();
         Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome!.Kind);
-        var chunks = harness.Host.Requests.Where(r => r.UploadOnly).ToArray();
-        Assert.True(chunks.Length > 4);
-        Assert.All(chunks, request =>
+        var expected = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new MessageHarness.Data { Value = Grow.Text }));
+        var reference = PayloadReference.Of(expected);
+        var carrying = harness.Host.Requests.Where(r => r.Payloads is { Count: > 0 }).ToArray();
+        Assert.True(carrying.Length >= 2);
+        Assert.All(carrying, request =>
         {
-            Assert.InRange(request.Payload!.Body.Length, 1, PayloadChunk.MaxChunkBytes);
-            var frame = JsonSerializer.SerializeToUtf8Bytes(request, ExecutionMessageContext.Default.Checkpoint);
-            Assert.True(frame.Length < 110_000, $"Frame was {frame.Length} bytes");
+            var payload = Assert.Single(request.Payloads!, body => body.Reference == reference);
+            Assert.Equal(expected, payload.Body);
+            Assert.Contains(reference, request.Commit.PayloadReferences);
         });
         var saved = (await harness.Host.Store.GetWorkflowInstanceAsync(harness.Assignment.Instance.InstanceId))!;
         Assert.NotNull(saved.WorkflowDataJson.Reference);
@@ -61,13 +63,13 @@ public sealed class SerializedPayloadTests
     }
 
     [Fact]
-    public async Task ReferencedRootHydratesThroughBoundedReadRequests()
+    public async Task ReferencedRootHydratesThroughAWholeBodyReply()
     {
         using var harness = new MessageHarness();
         var definition = Workflow.Create<MessageHarness.Data>("read-payload").Step<MessageHarness.Noop>().Build();
         var assignment = await harness.AssignAsync(definition);
-        var reference = await harness.Host.Store.PayloadStore.PutAsync(Encoding.UTF8.GetBytes(
-            JsonSerializer.Serialize(new MessageHarness.Data { Value = Grow.Text })));
+        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new MessageHarness.Data { Value = Grow.Text }));
+        var reference = await harness.Host.Store.PayloadStore.PutAsync(body);
         assignment.Instance.WorkflowDataJson = StoredJson.FromReference(reference);
         var parts = assignment.Parts!.ToDictionary(p => p.Key, p => p.Value);
         parts[CheckpointParts.DataKey] = assignment.Instance.WorkflowDataJson;
@@ -75,6 +77,8 @@ public sealed class SerializedPayloadTests
         Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome!.Kind);
         Assert.Contains(typeof(ReadPayload), harness.Crossed);
         Assert.Contains(typeof(ReadPayloadReply), harness.Crossed);
+        Assert.Single(harness.Crossed, type => type == typeof(ReadPayload));
+        Assert.Equal(body, Assert.Single(harness.PayloadReplies).Body);
     }
 
     [Fact]
@@ -88,7 +92,7 @@ public sealed class SerializedPayloadTests
         var interrupted = false;
         harness.ChangeCheckpoint = request =>
         {
-            if (!request.UploadOnly && !interrupted && request.Commit.Payload.Contains("\"StepId\":\"root/1\"", StringComparison.Ordinal))
+            if (!interrupted && request.Commit.Payload.Contains("\"StepId\":\"root/1\"", StringComparison.Ordinal))
             { interrupted = true; harness.Deliver(new Cancel(assignment.AssignmentId, CancelKind.Ownership)); }
             return request;
         };
@@ -100,7 +104,7 @@ public sealed class SerializedPayloadTests
             .GetProperty("Inputs").GetProperty("Properties").GetProperty("Value").GetProperty("Value").GetProperty("Json");
         Assert.True(input.TryGetProperty("reference", out _));
         var parts = assignment.Parts!;
-        foreach (var request in harness.Host.Requests.Where(r => !r.UploadOnly)) parts = request.Commit.ApplyParts(parts);
+        foreach (var request in harness.Host.Requests) parts = request.Commit.ApplyParts(parts);
         var restored = assignment with { AssignmentId = Guid.NewGuid(), Instance = saved, Parts = parts };
         harness.ChangeCheckpoint = null;
         harness.Host.Assignment = restored;

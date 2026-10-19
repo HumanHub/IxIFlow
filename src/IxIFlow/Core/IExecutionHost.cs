@@ -11,14 +11,11 @@ public interface IExecutionHost
 }
 
 public sealed record Checkpoint(Guid AssignmentId, CheckpointCommit Commit,
-    PayloadChunk? Payload = null, bool UploadOnly = false);
-/// <summary>One bounded piece of a new payload, carried with its referencing checkpoint.</summary>
-public sealed record PayloadChunk(PayloadReference Reference, long Offset, byte[] Body,
-    IReadOnlyList<PayloadReference> Dependencies)
-{
-    public const int MaxChunkBytes = 64 * 1024;
-}
-public sealed record ReadPayload(Guid AssignmentId, string InstanceId, PayloadReference Reference, long Offset);
+    IReadOnlyList<PayloadBody>? Payloads = null);
+/// <summary>A complete new payload, carried with its referencing checkpoint.</summary>
+public sealed record PayloadBody(PayloadReference Reference, byte[] Body,
+    IReadOnlyList<PayloadReference> Dependencies);
+public sealed record ReadPayload(Guid AssignmentId, string InstanceId, PayloadReference Reference);
 public sealed record ReadPayloadReply(Guid AssignmentId, byte[]? Body = null,
     WorkflowErrorKind? Refusal = null, ConflictReason? Conflict = null);
 public sealed record StartChild(Guid AssignmentId, string InstanceId, long Epoch, string StepId,
@@ -30,7 +27,7 @@ public sealed record StartChildReply(Guid AssignmentId, ChildStart? Start = null
 public sealed record ReadInboxReply(Guid AssignmentId, InboxPage? Page = null, ConflictReason? Conflict = null);
 public sealed record ReadWaitReply(Guid AssignmentId, StoredWait? Wait = null, ConflictReason? Conflict = null);
 
-public enum CheckpointReplyKind { Ack, Conflict, Retry, Unknown, UploadAccepted }
+public enum CheckpointReplyKind { Ack, Conflict, Retry, Unknown }
 public enum ConflictReason { Revision, StaleEpoch, EventsChanged, NotAssigned }
 public sealed record CheckpointReply(Guid AssignmentId, CheckpointReplyKind Kind, long Revision = 0,
     string? Error = null, CancellationReason? PendingCancellation = null, bool Parked = false,

@@ -19,6 +19,7 @@ internal sealed class MessageHarness : IDisposable
     public WorkflowExecutor Executor { get; }
     public Assign Assignment { get; private set; } = null!;
     public List<Type> Crossed { get; } = [];
+    public List<ReadPayloadReply> PayloadReplies { get; } = [];
     public Func<Checkpoint, Checkpoint>? ChangeCheckpoint { get; set; }
 
     public MessageHarness()
@@ -89,8 +90,12 @@ internal sealed class MessageHarness : IDisposable
 
     private sealed class ExecutorEnd(MessageHarness harness) : IExecutionHost
     {
-        public async Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
-            harness.Cross(await harness.Host.ReadPayloadAsync(harness.Cross(request)));
+        public async Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request)
+        {
+            var reply = harness.Cross(await harness.Host.ReadPayloadAsync(harness.Cross(request)));
+            harness.PayloadReplies.Add(reply);
+            return reply;
+        }
         public async Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
             request = harness.Cross(request);
@@ -134,11 +139,7 @@ internal sealed class MessageHarness : IDisposable
                 return LastReply = new(request.AssignmentId, CheckpointReplyKind.Conflict, Conflict: ConflictReason.NotAssigned);
             if (request.Commit.Epoch != Assignment.Epoch || request.Commit.Incarnation != Assignment.Incarnation)
                 return LastReply = new(request.AssignmentId, CheckpointReplyKind.Conflict, Conflict: ConflictReason.StaleEpoch);
-            if (request.UploadOnly)
-            {
-                await Payloads.AcceptAsync(request.Payload!);
-                return new(request.AssignmentId, CheckpointReplyKind.UploadAccepted);
-            }
+            if (request.Payloads is { Count: > 0 } payloads) await Payloads.AcceptAsync(payloads);
             StoreCalls++;
             var receipt = await Store.CommitWorkflowInstanceAsync(request.Commit);
             Receipts.Add(receipt.Status);
