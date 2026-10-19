@@ -12,7 +12,8 @@ namespace IxIFlow.Core.Runtime;
 /// inputs and gives outputs only from its marked outputs, and each input it requires is mapped unless it has a
 /// default. An activity without the attributes takes inputs into properties with a public setter and gives outputs
 /// from properties with a public getter. A child workflow's data takes inputs into public settable properties and
-/// gives outputs from public readable ones, and an event gives outputs from public readable ones. A mapping that
+/// gives outputs from public readable ones. An event takes suggestion inputs into public settable properties and
+/// gives outputs from public readable ones. A mapping that
 /// breaks a rule fails the build with a message naming the type and property.
 /// </summary>
 internal static class MappingRules
@@ -40,7 +41,7 @@ internal static class MappingRules
                     CheckData(step.InvokedDataType, step.InputMappings, step.OutputMappings, "Child workflow");
                 if (step.ResumeEventType != null && step.ActivityType == null &&
                     step.StepType != WorkflowStepType.WorkflowInvocation)
-                    CheckData(step.ResumeEventType, [], step.OutputMappings, "Event");
+                    CheckEvent(step);
                 if (step.StepMetadata.TryGetValue("CompensationActivities", out var value) &&
                     value is List<CompensationActivityInfo> compensations)
                     foreach (var compensation in compensations)
@@ -112,6 +113,34 @@ internal static class MappingRules
         foreach (var mapping in outputs.Where(item => item.Direction == PropertyMappingDirection.Output))
             if (Property(data, mapping, owner).GetMethod is not { IsPublic: true })
                 throw Refused(owner, data, Property(data, mapping, owner), "is not an output: it has no public getter");
+    }
+
+    private static void CheckEvent(WorkflowStep step)
+    {
+        var type = step.ResumeEventType!;
+        CheckData(type, step.InputMappings, step.OutputMappings, "Event");
+        if (step.DefaultPayload == null && step.InputMappings.Count == 0)
+            return;
+        if (step.DefaultPayload == null && (type.IsAbstract || type.GetConstructor(Type.EmptyTypes) == null))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Event '{type.Name}' needs a public parameterless constructor to create a suggested payload");
+        foreach (var mapping in step.InputMappings)
+        {
+            var property = Property(type, mapping, "Event");
+            if (property.GetIndexParameters().Length != 0)
+                throw Refused("Event", type, property, "is an indexer and cannot be mapped");
+            if (mapping.Expression is { } expression && !property.PropertyType.IsAssignableFrom(expression.ReturnType))
+                throw Refused("Event", type, property, $"takes {property.PropertyType.Name}, not {expression.ReturnType.Name}");
+        }
+        foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                     .Where(property => property.IsDefined(typeof(RequiredAttribute))))
+        {
+            if (property.GetIndexParameters().Length != 0)
+                throw Refused("Event", type, property, "is an indexer and cannot supply a required input");
+            if (!step.InputMappings.Any(mapping => mapping.TargetProperty == property.Name) &&
+                (step.DefaultPayload == null || property.GetMethod == null || property.GetValue(step.DefaultPayload) is null or ""))
+                throw Refused("Event", type, property, "is a required input and is not mapped or supplied by the default payload");
+        }
     }
 
     private static PropertyInfo Property(Type owner, PropertyMapping mapping, string kind) =>

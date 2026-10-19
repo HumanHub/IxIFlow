@@ -81,4 +81,4 @@ definitions:
     dataType: IxIFlow.Generators.Tests.FlowData
     cancelWithParent: false
     input: [{target: Value, from: {kind: constant, value: 5}}]
-    output: [{source: Result, sourceContext: workflow, to: {path: workflow.Result}}]
+    output: [{source: Result, to: {path: workflow.Result}}]

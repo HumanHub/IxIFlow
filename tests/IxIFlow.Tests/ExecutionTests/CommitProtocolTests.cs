@@ -93,30 +93,31 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
         try
         {
             var first = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", TimeSpan.FromSeconds(10));
-            Assert.Equal(1, first?.Epoch);
+            Assert.True(first?.Epoch > 0);
             var instance = new WorkflowInstance
             {
                 InstanceId = instanceId, WorkflowName = "EpochFencing", Status = WorkflowStatus.Running,
                 WorkflowDataJson = "{}"
             };
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 1, 0))).Status);
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, first!.Epoch, 0))).Status);
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "first"));
 
             // A released lease keeps its epoch, so the next owner is always newer.
             var second = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", TimeSpan.FromSeconds(10));
-            Assert.Equal(2, second?.Epoch);
+            Assert.True(second?.Epoch > first!.Epoch);
             instance.Revision = 1;
             Assert.Equal(WorkflowCommitStatus.StaleEpoch,
-                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 1, 1))).Status);
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, first!.Epoch, 1))).Status);
             Assert.Equal(WorkflowCommitStatus.StaleEpoch,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 1))).Status);
 
             instance.Status = WorkflowStatus.Completed;
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 2, 1))).Status);
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, second!.Epoch, 1))).Status);
             // A terminal commit releases the lease but not the epoch.
-            Assert.Equal(3, (await repository.TryAcquireExecutionLeaseAsync(instanceId, "third", TimeSpan.FromSeconds(10)))?.Epoch);
+            var third = await repository.TryAcquireExecutionLeaseAsync(instanceId, "third", TimeSpan.FromSeconds(10));
+            Assert.True(third?.Epoch > second!.Epoch);
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "third"));
 
             // Deletion removes the lease and reserves the ID against a former owner.
@@ -125,7 +126,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
             instance.Status = WorkflowStatus.Running;
             instance.Revision = 0;
             Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-                repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 3, 0)))).Kind);
+                repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, third!.Epoch, 0)))).Kind);
 
             var elapsed = System.Diagnostics.Stopwatch.StartNew();
             ExecutionLeaseGrant? fourth = null;
@@ -136,7 +137,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
                     await Task.Delay(50);
             }
             Assert.NotNull(fourth);
-            Assert.Equal(1, fourth.Epoch);
+            Assert.True(fourth.Epoch > third!.Epoch);
         }
         finally
         {

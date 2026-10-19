@@ -111,7 +111,7 @@ internal static class ExecutionCheckpointWriter
         var storeNow = checkpoint.Clock.ToStore(now);
         var timeouts = opened.Where(wait => wait.Timeout != null)
             .Select(wait => (wait.WaitId, Timeout: wait.Timeout!.Value))
-            .Concat(armed.Select(wait => (wait.WaitId, wait.Timeout)))
+            .Concat(armed.Where(wait => wait.Timeout != null).Select(wait => (wait.WaitId, Timeout: wait.Timeout!.Value)))
             .ToDictionary(item => item.WaitId, item => item.Timeout, StringComparer.Ordinal);
         if (timeouts.Count == 0)
             return;

@@ -189,7 +189,6 @@ public sealed class YamlParityValidationTests
     [InlineData("- kind: saga\n  onError: [{compensate: unknown}]", "unknown")]
     [InlineData("- kind: saga\n  onError: [{compensate: all, then: unknown}]", "unknown")]
     [InlineData("- kind: saga\n  steps: [{kind: activity, activity: ParityWork, onError: [{then: unknown}]}]", "unknown")]
-    [InlineData("- kind: activity\n  activity: ParityEcho\n  output: [{source: Value, sourceContext: unknown, to: {path: workflow.Result}}]", "unknown")]
     [InlineData("- kind: activity\n  activity: ParityEcho\n  input: [{target: Value, from: {kind: binary, operator: unknown, left: {kind: constant, value: 1}, right: {kind: constant, value: 2}}}]", "unknown")]
     [InlineData("- kind: sequence\nschemaVersion: unknown", "unknown")]
     public void UnknownClosedValuesHaveReaderPositions(string body, string value)

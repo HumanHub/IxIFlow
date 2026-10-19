@@ -146,14 +146,16 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         string instanceId, IReadOnlyList<ArmedWait> waits, DateTime now)
     {
         await connection.ExecuteAsync("""
-                UPDATE ixiflow_workflow_waits SET deadline_utc = @Deadline
+                UPDATE ixiflow_workflow_waits SET deadline_utc = COALESCE(deadline_utc, @Deadline),
+                    default_payload_json = COALESCE(default_payload_json, @DefaultPayloadJson)
                 WHERE instance_id = @InstanceId AND wait_id = @WaitId
-                    AND close_reason IS NULL AND deadline_utc IS NULL
+                    AND close_reason IS NULL
                 """, waits.Select(wait => new
         {
             InstanceId = instanceId,
             wait.WaitId,
-            Deadline = Timestamp(now + wait.Timeout)
+            Deadline = Timestamp(now + wait.Timeout),
+            wait.DefaultPayloadJson
         }), transaction);
     }
 
@@ -394,12 +396,16 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 SELECT COUNT(*) FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId AND status = 'Running'
                 """,
         Statement.ClaimLease => """
+                UPDATE ixiflow_execution_epoch SET epoch = epoch + 1
+                WHERE id = 1 AND NOT EXISTS (
+                    SELECT 1 FROM ixiflow_workflow_leases
+                    WHERE instance_id = @InstanceId AND expires_at_utc > @Now);
                 INSERT INTO ixiflow_workflow_leases (instance_id, token, expires_at_utc, epoch, crash_count)
-                VALUES (@InstanceId, @Token, @Until, 1, 0)
+                VALUES (@InstanceId, @Token, @Until, (SELECT epoch FROM ixiflow_execution_epoch WHERE id = 1), 0)
                 ON CONFLICT (instance_id) DO UPDATE
                 SET token = excluded.token,
                     expires_at_utc = @Until,
-                    epoch = ixiflow_workflow_leases.epoch + 1,
+                    epoch = excluded.epoch,
                     crash_count = ixiflow_workflow_leases.crash_count + CASE
                         WHEN @Running AND ixiflow_workflow_leases.expires_at_utc > '0001-01-01 00:00:00.0000000' THEN 1 ELSE 0 END
                 WHERE ixiflow_workflow_leases.expires_at_utc <= @Now
@@ -684,6 +690,11 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             payload_hash BLOB NOT NULL,
             PRIMARY KEY (instance_id, commit_id)
         );
+        CREATE TABLE ixiflow_execution_epoch (
+            id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+            epoch INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0)
+        );
+        INSERT INTO ixiflow_execution_epoch (id, epoch) VALUES (1, 0);
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_leases (
             instance_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
             token TEXT COLLATE BINARY NOT NULL,
@@ -710,7 +721,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         catch (SqliteException error) when (error.SqliteErrorCode is 5 or 6)
         {
             throw new InvalidOperationException(
-                "SQLite is busy despite single-host ownership. External writers are unsupported (C-18).", error);
+                "SQLite is busy despite single-host ownership. External writers are unsupported.", error);
         }
         finally
         {
