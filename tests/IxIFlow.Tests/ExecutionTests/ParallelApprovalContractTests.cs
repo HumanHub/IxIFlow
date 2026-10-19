@@ -317,7 +317,7 @@ public class ParallelApprovalContractTests
         Assert.Equal(WorkflowCommitStatus.Applied, claimed.Status);
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(started.InstanceId, "other-host",
-            TimeSpan.FromMinutes(1)));
+            TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
 
         // The event is stored at once, and the caller waits for the owner to decide it.
         var sent = engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true), "reply-1");
@@ -1697,10 +1697,10 @@ public class ParallelApprovalContractTests
             _inner.RequestCancellationAsync(instanceId, reason);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
-        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
-            _inner.GetRunnableInstancesAsync(limit);
-        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
+            _inner.GetRunnableInstancesAsync(query);
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
+            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>

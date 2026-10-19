@@ -53,21 +53,21 @@ public sealed class StoreWideEpochContractTests
             var time = new FakeTimeProvider();
             await using var store = new SqliteWorkflowStateRepository(connection, time);
             var id = Guid.NewGuid().ToString("N");
-            var first = (await store.TryAcquireExecutionLeaseAsync(id, "owner", Duration))!;
+            var first = (await store.TryAcquireExecutionLeaseAsync(id, "owner", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(first);
             await using var observer = new SqliteConnection(new SqliteConnectionStringBuilder(connection)
                 { Pooling = false }.ConnectionString);
             await observer.OpenAsync();
             var dataVersion = await observer.ExecuteScalarAsync<long>("PRAGMA data_version");
 
-            Assert.Null(await store.TryAcquireExecutionLeaseAsync(id, "contender", Duration));
+            Assert.Null(await store.TryAcquireExecutionLeaseAsync(id, "contender", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             Assert.Equal(first.Epoch, await observer.ExecuteScalarAsync<long>(
                 "SELECT epoch FROM ixiflow_execution_epoch WHERE id = 1"));
             Assert.Equal(dataVersion, await observer.ExecuteScalarAsync<long>("PRAGMA data_version"));
             Assert.True(await store.RenewExecutionLeaseAsync(id, "owner", Duration));
 
             Assert.True(await store.ReleaseExecutionLeaseAsync(id, "owner"));
-            var next = (await store.TryAcquireExecutionLeaseAsync(id, "next", Duration))!;
+            var next = (await store.TryAcquireExecutionLeaseAsync(id, "next", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(next);
             Assert.Equal(first.Epoch + 1, next.Epoch);
         }
@@ -86,11 +86,11 @@ public sealed class StoreWideEpochContractTests
             long earlier;
             await using (var store = new SqliteWorkflowStateRepository(connection))
             {
-                earlier = (await store.TryAcquireExecutionLeaseAsync(id, "before", Duration))!.Epoch;
+                earlier = (await store.TryAcquireExecutionLeaseAsync(id, "before", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!.Epoch;
                 await store.DeleteWorkflowInstanceAsync(id);
             }
             await using var reopened = new SqliteWorkflowStateRepository(connection);
-            var current = (await reopened.TryAcquireExecutionLeaseAsync(id, "after", Duration))!;
+            var current = (await reopened.TryAcquireExecutionLeaseAsync(id, "after", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(current.Epoch > earlier);
         }
         finally { await SqliteTestFiles.DeleteAsync(folder); }
@@ -119,7 +119,7 @@ public sealed class StoreWideEpochContractTests
         Task<ExecutionLeaseGrant?>? waiting = null;
         try
         {
-            var initial = (await store.TryAcquireExecutionLeaseAsync(id, "initial", Duration))!;
+            var initial = (await store.TryAcquireExecutionLeaseAsync(id, "initial", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(initial);
             Assert.True(await store.ReleaseExecutionLeaseAsync(id, "initial"));
             await using var holder = new SqlConnection(connection);
@@ -132,7 +132,7 @@ public sealed class StoreWideEpochContractTests
                     SELECT Epoch FROM dbo.IxIFlowWorkflowLeases WITH (UPDLOCK, HOLDLOCK)
                     WHERE InstanceId = @Id
                     """, new { Id = id }, transaction));
-                waiting = store.TryAcquireExecutionLeaseAsync(id, "waiting", Duration);
+                waiting = store.TryAcquireExecutionLeaseAsync(id, "waiting", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
                 await using var observer = new SqlConnection(connection);
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 // Wait for an actual lease-row lock conflict, not a scheduling delay.
@@ -254,23 +254,23 @@ public sealed class StoreWideEpochContractTests
         var otherId = Guid.NewGuid().ToString("N");
         try
         {
-            var first = (await store.TryAcquireExecutionLeaseAsync(id, "first", Duration))!;
+            var first = (await store.TryAcquireExecutionLeaseAsync(id, "first", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(first);
             Assert.True(first.Epoch > 0);
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(Instance(id), first.Epoch, 0))).Status);
-            var other = (await store.TryAcquireExecutionLeaseAsync(otherId, "other", Duration))!;
+            var other = (await store.TryAcquireExecutionLeaseAsync(otherId, "other", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(other);
             Assert.True(other.Epoch > first.Epoch);
             Assert.True(await store.ReleaseExecutionLeaseAsync(otherId, "other"));
-            var next = (await store.TryAcquireExecutionLeaseAsync(otherId, "next", Duration))!;
+            var next = (await store.TryAcquireExecutionLeaseAsync(otherId, "next", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(next);
             Assert.True(next.Epoch > other.Epoch);
 
             await store.DeleteWorkflowInstanceAsync(id, Tombstones);
-            Assert.Null(await store.TryAcquireExecutionLeaseAsync(id, "reserved", Duration));
+            Assert.Null(await store.TryAcquireExecutionLeaseAsync(id, "reserved", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             await expire(id);
-            var recreated = (await store.TryAcquireExecutionLeaseAsync(id, "recreated", Duration))!;
+            var recreated = (await store.TryAcquireExecutionLeaseAsync(id, "recreated", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(recreated);
             Assert.All(new[] { first, other, next }, earlier => Assert.True(recreated.Epoch > earlier.Epoch));
             Assert.Equal(0, recreated.CrashCount);
@@ -293,7 +293,7 @@ public sealed class StoreWideEpochContractTests
             var claims = ids.Select(id => Task.Run(async () =>
             {
                 await start.Task;
-                return await store.TryAcquireExecutionLeaseAsync(id, "owner", Duration);
+                return await store.TryAcquireExecutionLeaseAsync(id, "owner", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             })).ToArray();
             start.SetResult();
             var grants = await Task.WhenAll(claims);
@@ -312,12 +312,12 @@ public sealed class StoreWideEpochContractTests
         var id = Guid.NewGuid().ToString("N");
         try
         {
-            var old = (await store.TryAcquireExecutionLeaseAsync(id, "host-a", Duration))!;
+            var old = (await store.TryAcquireExecutionLeaseAsync(id, "host-a", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             var late = CheckpointCommit.Create(Instance(id, "old"), old.Epoch, 0);
             Assert.Null(await store.GetWorkflowInstanceAsync(id));
             await store.DeleteWorkflowInstanceAsync(id);
             Assert.Null(await store.GetTombstoneAsync(id));
-            var current = (await store.TryAcquireExecutionLeaseAsync(id, "host-b", Duration))!;
+            var current = (await store.TryAcquireExecutionLeaseAsync(id, "host-b", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(current.Epoch > old.Epoch);
             var first = CheckpointCommit.Create(Instance(id, "replacement"), current.Epoch, 0);
 
@@ -377,14 +377,14 @@ public sealed class StoreWideEpochContractTests
         var id = Guid.NewGuid().ToString("N");
         try
         {
-            var old = (await store.TryAcquireExecutionLeaseAsync(id, "old-owner", Duration))!;
+            var old = (await store.TryAcquireExecutionLeaseAsync(id, "old-owner", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(old);
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(Instance(id, "old"), old.Epoch, 0))).Status);
             var original = (await store.GetWorkflowInstanceAsync(id))!.CopyForResume();
             await store.DeleteWorkflowInstanceAsync(id, Tombstones);
             await expire(id);
-            var current = (await store.TryAcquireExecutionLeaseAsync(id, "current-owner", Duration))!;
+            var current = (await store.TryAcquireExecutionLeaseAsync(id, "current-owner", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(current);
             Assert.True(current.Epoch > old.Epoch);
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(

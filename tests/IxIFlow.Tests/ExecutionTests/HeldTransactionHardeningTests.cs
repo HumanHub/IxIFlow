@@ -54,7 +54,7 @@ public sealed class HeldTransactionHardeningTests
             Status = WorkflowStatus.Running, WorkflowDataJson = "{\"before\":true}" };
         var child = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "LockedChild",
             Status = WorkflowStatus.Running, ParentInstanceId = parent.InstanceId, ParentWaitId = "child" };
-        var grant = (await store.TryAcquireExecutionLeaseAsync(parent.InstanceId, "owner", TimeSpan.FromHours(1)))!;
+        var grant = (await store.TryAcquireExecutionLeaseAsync(parent.InstanceId, "owner", TimeSpan.FromHours(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, grant.Epoch, 0))).Status);
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(child, (await StoreTestSupport.LeaseAsync(store, child.InstanceId)).Epoch, 0))).Status);
         var before = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
@@ -104,7 +104,7 @@ public sealed class HeldTransactionHardeningTests
         var (store, connect) = Database(sqlServer);
         var instance = await OutboxStoreContract.CompleteAsync(store);
         // Create a lease row without keeping ownership of the terminal instance.
-        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "seed", TimeSpan.FromHours(1)));
+        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "seed", TimeSpan.FromHours(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         Assert.True(await store.ReleaseExecutionLeaseAsync(instance.InstanceId, "seed"));
         await using var holder = connect();
         await holder.OpenAsync();

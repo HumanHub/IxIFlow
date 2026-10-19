@@ -63,7 +63,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         };
         try
         {
-            var first = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease))!;
+            var first = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.Equal(0, first.CrashCount);
             await CommitAsync(repository, instance, first, clearsCrashCount: true);
 
@@ -77,19 +77,19 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
 
             // A released lease is not a crash.
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "third"));
-            var fourth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", lease))!;
+            var fourth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.Equal(2, fourth.CrashCount);
 
             // Progress clears the count.
             await CommitAsync(repository, instance, fourth, clearsCrashCount: true);
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "fourth"));
-            var fifth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fifth", lease))!;
+            var fifth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "fifth", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.Equal(0, fifth.CrashCount);
 
             // An idle instance whose lease expires lost nothing in flight.
             instance.Status = WorkflowStatus.Suspended;
             await CommitAsync(repository, instance, fifth, clearsCrashCount: false);
-            var sixth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "sixth", lease))!;
+            var sixth = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "sixth", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             var seventh = await ReclaimAfterExpiryAsync(repository, instanceId, "seventh", lease, time);
             Assert.Equal(0, sixth.CrashCount);
             Assert.Equal(0, seventh.CrashCount);
@@ -101,14 +101,14 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
             Assert.Equal(1, lost.CrashCount);
             var tombstoneRetention = TimeSpan.FromSeconds(1);
             await repository.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention: tombstoneRetention);
-            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "recreated", lease));
+            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "recreated", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             time?.Advance(tombstoneRetention);
 
             var elapsed = System.Diagnostics.Stopwatch.StartNew();
             ExecutionLeaseGrant? recreated = null;
             while (recreated == null && elapsed.Elapsed < TimeSpan.FromSeconds(3))
             {
-                recreated = await repository.TryAcquireExecutionLeaseAsync(instanceId, "recreated", lease);
+                recreated = await repository.TryAcquireExecutionLeaseAsync(instanceId, "recreated", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
                 if (recreated == null)
                     await Task.Delay(50);
             }
@@ -174,7 +174,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var stop = ExecutionCheckpoint.Read(saved.ExecutionStateJson).OperatorStop!;
         Assert.Equal(OperatorStopKind.Quarantine, stop.Kind);
         Assert.Equal(3, stop.CrashCount);
-        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(100),
+        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
             instance => instance.InstanceId == instanceId);
         Assert.Equal(0, Probe(services).Runs);
 
@@ -259,7 +259,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var store = new FaultInjectingRepository(time);
         using var services = Services(store, time);
         var instanceId = await InterruptedRunAsync(services, store);
-        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short))!;
+        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         var corrupted = (await store.GetWorkflowInstanceAsync(instanceId))!;
         corrupted.WorkflowDataJson = "{ not json";
         await CommitAsync(store, corrupted, grant, clearsCrashCount: false);
@@ -283,7 +283,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         var store = new FaultInjectingRepository(time);
         using var services = Services(store, time);
         var instanceId = await InterruptedRunAsync(services, store);
-        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short))!;
+        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "corrupting", Short, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         var corrupted = (await store.GetWorkflowInstanceAsync(instanceId))!;
         corrupted.WorkflowDataJson = "{ not json";
         await CommitAsync(store, corrupted, grant, clearsCrashCount: false);
@@ -332,7 +332,7 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         {
             if (alreadyHeld || index > 0)
                 time.Advance(Short * 2);
-            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"dead-{index}", Short));
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"dead-{index}", Short, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         }
         time.Advance(Short * 2);
     }
@@ -346,14 +346,14 @@ public sealed class CrashAccountingTests : IClassFixture<SqliteTestDatabase<Cras
         if (time != null)
         {
             time.Advance(lease);
-            var reclaimed = await repository.TryAcquireExecutionLeaseAsync(instanceId, token, lease);
+            var reclaimed = await repository.TryAcquireExecutionLeaseAsync(instanceId, token, lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.NotNull(reclaimed);
             return reclaimed;
         }
         var deadline = DateTime.UtcNow + lease + TimeSpan.FromSeconds(3);
         while (true)
         {
-            if (await repository.TryAcquireExecutionLeaseAsync(instanceId, token, lease) is { } grant)
+            if (await repository.TryAcquireExecutionLeaseAsync(instanceId, token, lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())) is { } grant)
                 return grant;
             Assert.True(DateTime.UtcNow < deadline, "The lease did not expire on time");
             await Task.Delay(50);

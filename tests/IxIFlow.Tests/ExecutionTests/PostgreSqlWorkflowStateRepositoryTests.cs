@@ -164,7 +164,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
             InstanceId = instanceId, WorkflowName = "Deleted", Status = WorkflowStatus.Suspended,
             WorkflowDataJson = "{\"Value\":1}"
         };
-        var owner = await repository.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromMinutes(1));
+        var owner = await repository.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
         Assert.NotNull(owner);
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, owner.Epoch, 0,
@@ -175,14 +175,14 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         Assert.Equal(7, await CountRowsAsync(newConnection, instanceId));
 
         await repository.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention: TimeSpan.FromSeconds(1));
-        Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1)));
+        Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
 
         Assert.Equal(0, await CountRowsAsync(newConnection, instanceId));
         var elapsed = System.Diagnostics.Stopwatch.StartNew();
         ExecutionLeaseGrant? next = null;
         while (next == null && elapsed.Elapsed < TimeSpan.FromSeconds(3))
         {
-            next = await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1));
+            next = await repository.TryAcquireExecutionLeaseAsync(instanceId, "next", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             if (next == null)
                 await Task.Delay(50);
         }
@@ -270,7 +270,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
             // Releasing the active lease on a due running instance wakes a scanner.
             var running = Instance(WorkflowStatus.Running);
             var runningGrant = (await repository.TryAcquireExecutionLeaseAsync(running.InstanceId, "owner",
-                TimeSpan.FromMinutes(1)))!;
+                TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(running, runningGrant.Epoch, 0));
             await notifications.ExpectAsync(() => repository.ReleaseExecutionLeaseAsync(running.InstanceId, "owner"));
 
@@ -280,7 +280,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
             await notifications.ExpectAsync(async () => await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(repository, parent.InstanceId)).Epoch, 0, openedWaits: [new OpenedWait("child", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
                 childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child")])));
             var grant = (await repository.TryAcquireExecutionLeaseAsync(child.InstanceId, "child-owner",
-                TimeSpan.FromMinutes(1)))!;
+                TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             child = (await repository.GetWorkflowInstanceAsync(child.InstanceId))!;
             child.Status = WorkflowStatus.Completed;
             await notifications.ExpectAsync(async () => await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
@@ -332,8 +332,8 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
                     ? Task.Run(() => repository.CommitWorkflowInstanceAsync(transition))
                     : repository.CommitWorkflowInstanceAsync(transition);
                 claim = repository is SqliteWorkflowStateRepository
-                    ? Task.Run(() => repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1)))
-                    : repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1));
+                    ? Task.Run(() => repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))
+                    : repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
                 await Task.Delay(TimeSpan.FromMilliseconds(500));
                 Assert.False(commit.IsCompleted || claim.IsCompleted);
             }

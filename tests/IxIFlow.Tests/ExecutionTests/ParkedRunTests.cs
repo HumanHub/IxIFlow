@@ -58,11 +58,11 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
 
         // Running, due at the retry, and unowned: a claim now finds no crash to count.
         Assert.Equal(WorkflowStatus.Running, parked.Status);
-        var grant = await store.TryAcquireExecutionLeaseAsync(instanceId, "probe", TimeSpan.FromSeconds(5));
+        var grant = await store.TryAcquireExecutionLeaseAsync(instanceId, "probe", TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
         Assert.NotNull(grant);
         Assert.Equal(0, grant.CrashCount);
         Assert.True(await store.ReleaseExecutionLeaseAsync(instanceId, "probe"));
-        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(100), item => item.InstanceId == instanceId);
+        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)), item => item.InstanceId == instanceId);
 
         // Past the backoff, the host resumes the retry.
         time.Advance(TimeSpan.FromSeconds(2));
@@ -134,8 +134,8 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
             var repeated = await store.CommitWorkflowInstanceAsync(park);
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, repeated.Status);
             Assert.True(repeated.Parked);
-            Assert.DoesNotContain(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == parkedId);
-            var claim = await store.TryAcquireExecutionLeaseAsync(parkedId, "next", TimeSpan.FromSeconds(5));
+            Assert.DoesNotContain(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == parkedId);
+            var claim = await store.TryAcquireExecutionLeaseAsync(parkedId, "next", TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.Equal(0, claim?.CrashCount);
 
             // A cancellation waiting to be taken up keeps the owner and makes the instance due now.
@@ -146,9 +146,9 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
             Assert.Equal(WorkflowCommitStatus.Applied, refused.Status);
             Assert.False(refused.Parked);
             Assert.Equal("operator", refused.PendingCancellation?.ReasonCode);
-            Assert.Null(await store.TryAcquireExecutionLeaseAsync(cancelledId, "next", TimeSpan.FromSeconds(5)));
+            Assert.Null(await store.TryAcquireExecutionLeaseAsync(cancelledId, "next", TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             Assert.True(await store.ReleaseExecutionLeaseAsync(cancelledId, "owner"));
-            Assert.Contains(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == cancelledId);
+            Assert.Contains(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == cancelledId);
         }
         finally
         {
@@ -216,7 +216,7 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
                 InstanceId = ids[3], WorkflowName = "RunnableTimes", Status = WorkflowStatus.Suspended,
                 WorkflowDataJson = "{}"
             });
-            Assert.DoesNotContain(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == ids[0]);
+            Assert.DoesNotContain(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == ids[0]);
             if (time != null)
             {
                 time.Advance(TimeSpan.FromSeconds(8));
@@ -230,15 +230,15 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
 
             // The poll takes the earliest first, no more than it asks for. Other rows of a shared store
             // may be due earlier, so only these instances' order is checked.
-            Assert.Single(await store.GetRunnableInstancesAsync(1));
+            Assert.Single(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1)));
             Assert.Equal([ids[2], ids[1], ids[0]], await Ours(store, ids));
 
             // A cancellation request makes an idle instance runnable in the same step.
             Assert.True(await store.RequestCancellationAsync(ids[3], new CancellationReason { ReasonCode = "stop" }));
-            Assert.Contains(await store.GetRunnableInstancesAsync(1000), item => item.InstanceId == ids[3]);
+            Assert.Contains(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == ids[3]);
 
             // An owned instance is not offered, however due.
-            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(ids[2], "owner", TimeSpan.FromSeconds(30)));
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(ids[2], "owner", TimeSpan.FromSeconds(30), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             Assert.Equal([ids[1], ids[0], ids[3]], await Ours(store, ids));
         }
         finally
@@ -251,7 +251,7 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
     private static async Task<(WorkflowInstance Instance, ExecutionLeaseGrant Grant)> RunningInstanceAsync(
         IWorkflowStateRepository store, string instanceId)
     {
-        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromSeconds(30)))!;
+        var grant = (await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromSeconds(30), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "Parking", Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
@@ -267,7 +267,7 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
             wakeAfter: TimeSpan.FromHours(1));
 
     private static async Task<string[]> Ours(IWorkflowStateRepository store, string[] ids) =>
-        (await store.GetRunnableInstancesAsync(1000)).Select(item => item.InstanceId).Where(ids.Contains).ToArray();
+        (await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000))).Select(item => item.InstanceId).Where(ids.Contains).ToArray();
 
     private static async Task Commit(IWorkflowStateRepository store, WorkflowInstance instance,
         params OpenedWait[] waits) =>

@@ -156,7 +156,7 @@ public sealed class StructuredChildWaitTests
         var childId = await ChildIdAsync(services, started.InstanceId);
         await ChildWaitingAsync(services, childId, "approval");
         var foreignToken = Guid.NewGuid().ToString("N");
-        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, foreignToken, TimeSpan.FromMinutes(1)));
+        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, foreignToken, TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
 
         var waiting = await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
 
@@ -795,7 +795,7 @@ public sealed class StructuredChildWaitTests
         // The parent is held elsewhere while its child completes and a cancellation is requested, so it
         // applies the cancellation before it reads the completion.
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(started.InstanceId, "elsewhere",
-            TimeSpan.FromMinutes(1)));
+            TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         Assert.Equal(WorkflowExecutionStatus.Success, (await engine.ResumeAsync(childId, "approval", new Approval())).Status);
         Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" }));

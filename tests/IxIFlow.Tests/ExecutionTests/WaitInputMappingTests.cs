@@ -64,7 +64,7 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
             // Model an owner lost after it saved the wait: the checkpoint and waits table stay intact.
             var store = services.GetRequiredService<IWorkflowStateRepository>();
             var token = Guid.NewGuid().ToString("N");
-            var lease = (await store.TryAcquireExecutionLeaseAsync(instanceId, token, TimeSpan.FromMinutes(1)))!;
+            var lease = (await store.TryAcquireExecutionLeaseAsync(instanceId, token, TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             var instance = (await store.GetWorkflowInstanceAsync(instanceId))!;
             instance.Status = WorkflowStatus.Running;
             Assert.Equal(WorkflowCommitStatus.Applied,
