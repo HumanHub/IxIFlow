@@ -24,6 +24,8 @@ public class WorkflowExecutionResult
     public string? ErrorMessage { get; set; }
     public string? ErrorType { get; set; }
     public string? ErrorStackTrace { get; set; }
+    /// <summary>Safe identity for correlating this error with inspection and diagnostics.</summary>
+    public InspectionError? Diagnostic { get; set; }
     public TimeSpan ExecutionTime { get; set; }
     public List<ExecutionTraceEntry> TraceEntries { get; set; } = new();
     public object? WorkflowData { get; set; }

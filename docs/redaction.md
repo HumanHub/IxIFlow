@@ -22,7 +22,7 @@ The workflow build collects classified paths using the data contract walk, inclu
 
 ## Inspection behavior
 
-One `RedactingJson` projection applies to typed attempt notes before they enter committed traces, snapshot `Data`, and `GetOpenWaitsAsync` default payloads. Trace copies returned in run results and through `GetTraceAsync` contain the same projected notes. Snapshots expose execution positions and projected data.
+`InspectionRedactionPolicy.Default` defines inspection behavior. Its typed-value methods use the fail-closed `RedactingJson` projection for typed attempt notes before they enter committed traces, snapshot `Data`, and `GetOpenWaitsAsync` default payloads. Trace copies returned in run results and through `GetTraceAsync` contain the same projected notes. Snapshots expose execution positions and projected data.
 
 A classified string, number or object becomes a JSON string. A classified object is redacted as one complete serialized value. Classified lists retain their list shape and redact each element. An unclassified object retains its structure and projects its nested members. Erasure produces an empty string, including for classified nulls. Public members remain visible.
 
@@ -40,8 +40,28 @@ Use a secret, randomly generated key scoped to the deployment or tenant whose va
 
 Microsoft currently marks the HMAC API experimental (`EXTEXP0002`). See [Microsoft's redaction guidance](https://learn.microsoft.com/en-us/dotnet/core/extensions/data-redaction) for package configuration and key requirements.
 
-## Deferred free text and diagnostics
+## Errors and free-text notes
 
-Error messages and stacks, string attempt notes, operator decision notes, recovery reasons, span error descriptions and recorded exceptions, and exception logging retain their existing behavior while their treatment awaits an owner decision. They can contain sensitive values. Member classification does not sanitize these free-text surfaces. Caller-supplied identifiers, actors, schema annotations and application logs also require application policy.
+Activity trace errors and pending-activity reasons contain a safe exception type or engine code and a diagnostic ID. Snapshot `Errors` lists those identities, including workflow failures and operator stops. Raw messages, stack traces and stop descriptions stay in checkpoint diagnostic records. Trace `StackTrace` is empty. Diagnostic IDs are random correlation identifiers, independent of error contents; the same live exception keeps its ID across a span, trace and logger. Delivery inspection uses `InspectionRedactionPolicy.Delivery` to replace `LastError` with a delivery failure identity tied to the event, publisher and attempt. Store primitives continue to return original records for execution.
 
-Redaction applies to newly produced inspection output. Previously committed trace text is not rewritten.
+A plain string attempt note or operator decision note is wholly sensitive. The policy erases it by default, or passes the whole text to the registered redactor under `SensitiveAttribute.Classification`. Typed notes keep their member-by-member projection. This affects inspection copies, including traces carried by application results; execution and retry notes stay original.
+
+Error spans use `error.type` and `ixiflow.diagnostic.id`, with error status and no status description, exception event, message or stack. Ordinary engine exception logs contain `ErrorType` and `DiagnosticId`, with no exception object. This covers mapping, recovery, outbox, retention, cancellation-watch, heartbeat and runnable-time failures. Application-authored logs and caller-supplied identifiers, actors and schema annotations remain the application's responsibility.
+
+## Privileged raw diagnostics
+
+`IWorkflowDiagnostics` is a separate scoped service. Calling `ReadAsync(instanceId)` requires an application registration of `IWorkflowDiagnosticsAuthorizer`. The authorizer checks the current caller and the requested instance on **every** read, before the store is read. Missing or rejecting authorization denies access. An authorizer failure propagates without returning diagnostics. Resolve this service in the caller's scope so the authorizer can use the application's current principal or tenant.
+
+After authorization, `ReadAsync` returns checkpoint `WorkflowDiagnostic` records: diagnostic ID, error type, original message and original stack. An unknown or removed instance returns an empty list. This read neither runs the workflow nor changes state. Normal inspection never invokes it. A management or debugger integration must supply a separate application-authorized action if it offers this read; an ordinary inspect permission must not grant it.
+
+Raw checkpoint diagnostics follow checkpoint retention and can contain secrets. Protect store access and any application route returning these records. Run and await results continue to return the original error and workflow data to the application.
+
+## Opt into sensitive exception logging
+
+`AddIxIFlow` disables the exact logger category `IxIFlow.Core.SensitiveDiagnostics`, even when ordinary logging is set to Trace. To explicitly enable full exceptions, add a category filter **after** registering IxIFlow:
+
+Call `services.AddIxIFlow()` first, then call `services.AddLogging(logging => logging.AddFilter(InspectionRedactionPolicy.SensitiveDiagnosticsCategory, LogLevel.Error))`.
+
+This category receives the full exception with its safe type and diagnostic ID. Ordinary engine categories keep the safe diagnostic summary. Configure the logging provider's destination and access controls for sensitive records before opting in. Enabling this category is independent of authorizing the privileged checkpoint read.
+
+Redaction applies when producing new inspection output; it does not rewrite previously committed trace records.

@@ -313,6 +313,9 @@ public class WorkflowExecutionSnapshot
     /// <summary>Workflow data projected for inspection, with classified members redacted.</summary>
     public System.Text.Json.JsonElement? Data { get; set; }
 
+    /// <summary>Safe diagnostic identities; raw messages and stacks require the privileged diagnostics read.</summary>
+    public IReadOnlyList<InspectionError> Errors { get; set; } = [];
+
     /// <summary>When the snapshot was computed from the saved checkpoint.</summary>
     public DateTime CapturedAtUtc { get; set; }
 }
@@ -431,6 +434,9 @@ public class ExecutionTraceEntry
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? ErrorMessage { get; set; }
+
+    /// <summary>The safe type/code and diagnostic ID of this failure.</summary>
+    public InspectionError? Error { get; set; }
 
     /// <summary>
     ///     Stack trace (if error occurred)

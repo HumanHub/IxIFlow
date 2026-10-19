@@ -15,11 +15,13 @@ internal sealed class WorkflowExecutor
     private readonly ActivityAttempts _attempts;
     private readonly EventIntake _intake;
     private readonly ILogger _logger;
+    private readonly ILogger<SensitiveDiagnostics>? _sensitiveDiagnostics;
 
     public WorkflowExecutor(IServiceProvider services, IActivityExecutor activityExecutor, TimeProvider time)
     {
         _time = time;
         _logger = LogScope.Logger(services);
+        _sensitiveDiagnostics = services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>;
         _transitions = new ContinuationTransitions(services, time);
         _attempts = new ActivityAttempts(services, activityExecutor, _transitions, time);
         _intake = new EventIntake(services, time);
@@ -432,6 +434,8 @@ internal sealed class WorkflowExecutor
                 },
                 WorkflowData = checkpoint.RootData,
                 TraceEntries = checkpoint.TakeTraceResult(),
+                Diagnostic = instance.Status == WorkflowStatus.NeedsResolution ? checkpoint.Continuations
+                    .First(item => item.Status == ContinuationStatus.WaitingResolution).PendingActivity?.ResolutionDiagnostic : null,
                 ErrorMessage = instance.Status switch
                 {
                     WorkflowStatus.NeedsResolution => checkpoint.Continuations
@@ -520,6 +524,8 @@ internal sealed class WorkflowExecutor
                 checkpoint.Trace.DropFrames(continuation, 0, cancelled ? ItemEndCause.Cancelled : continuation.ItemUnwindCause ?? ItemEndCause.Failed);
                 continuation.Status = ContinuationStatus.Cancelled;
             }
+            checkpoint.RecordDiagnostic(ex);
+            InspectionRedactionPolicy.Default.LogSensitive(_sensitiveDiagnostics, ex);
             instance.LastError = ex.Message;
             instance.LastErrorStackTrace = ex.StackTrace;
             instance.CompletedAt = Now;
@@ -545,6 +551,7 @@ internal sealed class WorkflowExecutor
                 Status = cancelled ? WorkflowExecutionStatus.Cancelled : WorkflowExecutionStatus.Faulted,
                 WorkflowData = checkpoint.RootData,
                 TraceEntries = checkpoint.TakeTraceResult(),
+                Diagnostic = InspectionRedactionPolicy.Default.Error(ex),
                 ErrorMessage = ex.Message,
                 ErrorType = SerializedException.CatchType(ex).FullName,
                 ErrorStackTrace = ex.StackTrace
@@ -711,7 +718,8 @@ internal sealed class WorkflowExecutor
         abandoned.ResultTrace = null;
         checkpoint.OperatorStop = new OperatorStopState
         {
-            Kind = kind, Reason = reason, StoppedAtUtc = Now
+            Kind = kind, Reason = reason, StoppedAtUtc = Now,
+            Diagnostic = checkpoint.RecordDiagnostic(kind.ToString(), reason)
         };
         instance.Status = WorkflowStatus.NeedsResolution;
         instance.LastError = reason;
@@ -727,6 +735,7 @@ internal sealed class WorkflowExecutor
             Status = WorkflowExecutionStatus.NeedsResolution,
             WorkflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, workflowData.GetType()),
             TraceEntries = checkpoint.TakeTraceResult(),
+            Diagnostic = checkpoint.OperatorStop?.Diagnostic,
             ErrorMessage = reason,
             ExecutionTime = Now - instance.StartedAt!.Value
         };
@@ -754,7 +763,8 @@ internal sealed class WorkflowExecutor
     {
         checkpoint.OperatorStop = new OperatorStopState
         {
-            Kind = OperatorStopKind.ResourceLimit, Reason = reason, StoppedAtUtc = Now
+            Kind = OperatorStopKind.ResourceLimit, Reason = reason, StoppedAtUtc = Now,
+            Diagnostic = checkpoint.RecordDiagnostic("ResourceLimit", reason)
         };
         instance.Status = WorkflowStatus.NeedsResolution;
         instance.LastError = reason;
@@ -766,6 +776,7 @@ internal sealed class WorkflowExecutor
             Status = WorkflowExecutionStatus.NeedsResolution,
             WorkflowData = workflowData,
             TraceEntries = checkpoint.TakeTraceResult(),
+            Diagnostic = checkpoint.OperatorStop?.Diagnostic,
             ErrorMessage = reason,
             ExecutionTime = Now - instance.StartedAt!.Value
         };

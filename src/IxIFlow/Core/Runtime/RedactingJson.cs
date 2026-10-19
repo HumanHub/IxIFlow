@@ -12,6 +12,16 @@ namespace IxIFlow.Core.Runtime;
 /// <summary>The only JSON projection for workflow values exposed through inspection.</summary>
 internal sealed class RedactingJson(IServiceProvider services)
 {
+    internal string SensitiveText(string value)
+    {
+        try
+        {
+            var provider = services.GetService(typeof(IRedactorProvider)) as IRedactorProvider;
+            return provider?.GetRedactor(SensitiveAttribute.Classification)?.Redact(value) ?? "";
+        }
+        catch { return ""; }
+    }
+
     private static readonly ConditionalWeakTable<Type, ClassifiedPath[]> Paths = new();
     internal sealed record ClassifiedPath(string Path, DataClassificationSet Classifications);
 
