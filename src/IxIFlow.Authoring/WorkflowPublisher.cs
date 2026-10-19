@@ -6,6 +6,7 @@ using IxIFlow.Core;
 using IxIFlow.Dsl.Compilation;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Generators;
+using Microsoft.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using YamlDotNet.Core;
@@ -134,20 +135,38 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         foreach (var pair in configured.Workflows) result.Workflows.Add(pair);
         foreach (var pair in configured.WorkflowDataTypes) result.WorkflowDataTypes.Add(pair);
         foreach (var pair in configured.WorkflowIdentities) result.WorkflowIdentities.Add(pair);
-        var assemblies = references.Select(path => AssemblyLoadContext.Default.LoadFromAssemblyName(AssemblyName.GetAssemblyName(path))).ToArray();
+        IAssemblySymbol[]? assemblies = null;
         foreach (var key in WorkflowSourceTranslator.TypeNames(document).Distinct())
         {
             if (result.Types.ContainsKey(key)) continue;
             var name = key.Replace("global::", "", StringComparison.Ordinal);
-            var matches = assemblies.Select(assembly => FindType(assembly, name)).OfType<Type>().Distinct().ToArray();
+            assemblies ??= WorkflowCompilation.ReferenceAssemblies(references);
+            var matches = assemblies.Select(assembly => FindType(assembly, name)).OfType<INamedTypeSymbol>()
+                .Distinct<INamedTypeSymbol>(SymbolEqualityComparer.Default).ToArray();
             if (matches.Length == 1)
             {
-                result.Types[key] = "global::" + matches[0].FullName!.Replace('+', '.');
-                foreach (var property in matches[0].GetProperties())
+                // Only load the assembly containing the type needed by this workflow.
+                var assembly = AssemblyLoadContext.Default.LoadFromAssemblyName(new AssemblyName(matches[0].ContainingAssembly.Identity.ToString()));
+                var type = FindType(assembly, name)!;
+                result.Types[key] = "global::" + type.FullName!.Replace('+', '.');
+                foreach (var property in type.GetProperties())
                     result.Members.TryAdd(key + "." + char.ToLowerInvariant(property.Name[0]) + property.Name[1..], property.Name);
             }
         }
         return result;
+    }
+
+    internal static INamedTypeSymbol? FindType(IAssemblySymbol assembly, string name)
+    {
+        var type = assembly.GetTypeByMetadataName(name);
+        // YAML uses C# nested names, while metadata expects '+' between declaring types.
+        for (var dot = name.LastIndexOf('.'); type == null && dot >= 0; dot = name.LastIndexOf('.', dot - 1))
+        {
+            var nested = name[..dot] + "+" + name[(dot + 1)..].Replace('.', '+');
+            type = assembly.GetTypeByMetadataName(nested);
+            if (dot == 0) break;
+        }
+        return type;
     }
 
     internal static Type? FindType(Assembly assembly, string name)
