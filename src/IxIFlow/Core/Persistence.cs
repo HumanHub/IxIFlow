@@ -389,7 +389,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             var now = Now;
             var runnable = _instances.Values
                 .Where(instance => instance.RunnableAtUtc <= now &&
-                    DemandMatching.Meets(_demands.GetValueOrDefault(instance.InstanceId) ?? [], query.Capabilities, now) &&
+                    DemandMatching.Meets(_demands.GetValueOrDefault(instance.InstanceId) ?? [], query, now) &&
                     !(_leases.TryGetValue(instance.InstanceId, out var lease) && lease.ExpiresAtUtc > now))
                 .OrderByDescending(instance => instance.LastHostId == query.HostId)
                 .ThenBy(instance => instance.RunnableAtUtc)
@@ -415,7 +415,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                  !(candidate.RunnableAtUtc <= now || kind == ExecutionClaimKind.Operator &&
                     (candidate.Status == WorkflowStatus.NeedsResolution ||
                         ExecutionCheckpoint.IsStructured(candidate.ExecutionStateJson) && ExecutionCheckpoint.StopOf(candidate) != null)) ||
-                 !DemandMatching.Meets(_demands.GetValueOrDefault(instanceId) ?? [], query.Capabilities, now)))
+                 !DemandMatching.Meets(_demands.GetValueOrDefault(instanceId) ?? [], query, now)))
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
             if (ActiveTombstone(instanceId, now) != null)
                 return Task.FromResult<ExecutionLeaseGrant?>(null);

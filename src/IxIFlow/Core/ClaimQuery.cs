@@ -22,8 +22,8 @@ public enum ExecutionClaimKind { Runnable, Operator }
 /// <summary>The ordinal matching rule shared by hosts and the in-memory store.</summary>
 public static class DemandMatching
 {
-    public static bool Meets(IEnumerable<WorkflowDemand> demands, IReadOnlyDictionary<string, string> capabilities,
+    public static bool Meets(IEnumerable<WorkflowDemand> demands, ClaimQuery query,
         DateTime storeTimeUtc) => demands.All(demand => demand.ExpiresAtUtc <= storeTimeUtc ||
-        capabilities.Any(capability => string.Equals(capability.Key, demand.Key, StringComparison.Ordinal) &&
-            (demand.Value == null || string.Equals(capability.Value, demand.Value, StringComparison.Ordinal))));
+        query.Capabilities.TryGetValue(demand.Key, out var value) &&
+            (demand.Value == null || string.Equals(value, demand.Value, StringComparison.Ordinal)));
 }
