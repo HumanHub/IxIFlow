@@ -41,11 +41,10 @@ public static class WorkflowDefinitionValidator
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Workflow '{definition.Name}' requires a positive version");
             var steps = definition.Steps;
-            _ = RedactingJson.ClassifiedPaths(definition.WorkflowDataType);
             foreach (var type in ParallelRules.Flatten(steps).SelectMany(step => new[]
-                     { step.WorkflowDataType, step.ActivityType, step.PreviousStepDataType,
+                     { step.WorkflowDataType, step.PreviousStepDataType,
                          step.ResumeEventType, step.ReplyType, step.InvokedDataType, step.ResultType })
-                         .OfType<Type>().Distinct())
+                         .Prepend(definition.WorkflowDataType).OfType<Type>().Distinct())
                 _ = RedactingJson.ClassifiedPaths(type);
             var ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var step in ParallelRules.Flatten(steps))
