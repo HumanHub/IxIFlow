@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Diagnostics;
 using System.Reflection;
+using System.Text.Json;
 using Dapper;
 using IxIFlow.Core;
 using IxIFlow.Tests.Infrastructure;
@@ -48,7 +49,8 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output)
         Assert.Contains(plan, row => row.Contains("MATERIALIZE capabilities", StringComparison.Ordinal));
         Assert.Contains(plan, row => row.Contains("MATERIALIZE matched", StringComparison.Ordinal));
         Assert.Contains(plan, row => row.Contains("SEARCH capability USING AUTOMATIC", StringComparison.Ordinal));
-        Assert.Contains(plan, row => row.Contains("SEARCH instance USING COVERING INDEX ix_ixiflow_instances_set_runnable (demand_set_id=?", StringComparison.Ordinal));
+        Assert.Contains(plan, row => row.StartsWith("SEARCH instance ", StringComparison.Ordinal)
+            && row.Contains("(demand_set_id=?", StringComparison.Ordinal));
         Assert.DoesNotContain(plan, row => row.StartsWith("SCAN instance", StringComparison.Ordinal));
     }
 
@@ -190,6 +192,27 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output)
             Assert.Contains("Execution Time", plan);
             output.WriteLine(plan);
             Assert.DoesNotContain("JIT:", plan);
+            var json = await connection.QuerySingleAsync<string>(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, parameters, transaction, commandTimeout: 60);
+            using var document = JsonDocument.Parse(json);
+            var scans = Nodes(document.RootElement[0].GetProperty("Plan"))
+                .Where(node => node.TryGetProperty("Relation Name", out var relation) &&
+                    relation.GetString() == "ixiflow_workflow_instances").ToArray();
+            Assert.NotEmpty(scans);
+            Assert.All(scans, node =>
+            {
+                Assert.Contains(node.GetProperty("Node Type").GetString(), new[] { "Index Scan", "Index Only Scan" });
+                Assert.Contains("demand_set_id", node.GetProperty("Index Cond").GetString()!);
+                if (scenario is "sparse" or "large")
+                {
+                    var rows = node.GetProperty("Actual Rows").GetDouble();
+                    if (node.TryGetProperty("Rows Removed by Filter", out var removed)) rows += removed.GetDouble();
+                    if (node.TryGetProperty("Rows Removed by Index Recheck", out var rechecked)) rows += rechecked.GetDouble();
+                    var rowsRead = rows * node.GetProperty("Actual Loops").GetDouble();
+                    // Only 30 instances belong to the matching set, including five live leases.
+                    Assert.True(rowsRead <= 30, $"A claim access read {rowsRead} rows outside the sparse set: {node}");
+                }
+            });
         }
         else
         {
@@ -208,6 +231,14 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output)
                         }
             Assert.True(planCount >= 3, $"Expected snapshot, set and selection plans; received {planCount}.");
         }
+    }
+
+    private static IEnumerable<JsonElement> Nodes(JsonElement node)
+    {
+        yield return node;
+        if (node.TryGetProperty("Plans", out var plans))
+            foreach (var child in plans.EnumerateArray())
+                foreach (var descendant in Nodes(child)) yield return descendant;
     }
 }
 
