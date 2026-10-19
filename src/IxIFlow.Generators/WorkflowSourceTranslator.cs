@@ -417,7 +417,12 @@ public static class WorkflowSourceTranslator
                 (request == null ? "" : Quote(request.Key!) + ", ") + "setup => {");
             foreach (var pair in defaults)
                 if (!inputs.Any(input => input.Target == pair.Key))
-                    Line($"setup.Input(act => act.{Member(pair.Key, node)}).From(ctx => {Literal(pair.Value, node)});");
+                {
+                    Locate(node, "defaults." + pair.Key);
+                    var prefix = $"setup.Input(act => act.{Member(pair.Key, node)}).From(ctx => ";
+                    var literal = Literal(pair.Value, node);
+                    Line(prefix + literal + ");", prefix.Length, literal.Length);
+                }
             Mappings(inputs, outputs);
             if (node is ActivityStepDocument activity) SagaSetup(activity, activityType, previousType);
             if (request?.Subject != null)
@@ -434,14 +439,20 @@ public static class WorkflowSourceTranslator
             foreach (var input in inputs)
             {
                 Locate(input, "target");
-                Line($"{setup}.Input(act => act.{Member(input.Target!, input)})", input.Target);
+                var targetPrefix = $"{setup}.Input(act => act.";
+                var target = Member(input.Target!, input);
+                Line(targetPrefix + target + ")", targetPrefix.Length, target.Length);
                 Locate(input.From, input.From is ConstantExpressionDocument ? "value" : input.From is PathExpressionDocument ? "path" : null);
-                Line($".From({(inputContext == null ? "ctx" : "(" + inputContext + " ctx)")} => {Expression(input.From)});", input.From is ConstantExpressionDocument ? Expression(input.From) : null);
+                var fromPrefix = $".From({(inputContext == null ? "ctx" : "(" + inputContext + " ctx)")} => ";
+                var expression = Expression(input.From);
+                Line(fromPrefix + expression + ");", input.From is ConstantExpressionDocument ? fromPrefix.Length : (int?)null, expression.Length);
             }
             foreach (var output in outputs)
             {
                 Locate(output, "source");
-                Line($"{setup}.Output(act => act.{Member(output.Source!, output)})", output.Source);
+                var sourcePrefix = $"{setup}.Output(act => act.";
+                var source = Member(output.Source!, output);
+                Line(sourcePrefix + source + ")", sourcePrefix.Length, source.Length);
                 Locate(output.To, output.To is PathExpressionDocument ? "path" : null);
                 Line($".To(ctx => {Expression(output.To)});");
             }
@@ -516,7 +527,7 @@ public static class WorkflowSourceTranslator
             Line($"// {path}:{Math.Max(1, location.Line)}");
             _nextLocation = location;
         }
-        private void Line(string text, string? anchor = null)
+        private void Line(string text, int? anchorOffset = null, int anchorLength = 1)
         {
             if (_nextLocation is { } location)
             {
@@ -525,9 +536,9 @@ public static class WorkflowSourceTranslator
                 var column = Math.Max(1, location.Column);
                 // Without a token correspondence, map the entire generated span to the
                 // YAML node instead of leaking a generated C# character offset.
-                var offset = anchor == null ? text.Length + 1 : Math.Max(1, text.IndexOf(anchor, StringComparison.Ordinal) + 1);
+                var offset = anchorOffset is { } start ? start + 1 : text.Length + 1;
                 // Enhanced #line spans carry the YAML column as well as its line.
-                _source.Append($"#line ({line}, {column}) - ({line}, {column + Math.Max(1, anchor?.Length ?? 1)}) {offset} \"{path}\"\n");
+                _source.Append($"#line ({line}, {column}) - ({line}, {column + Math.Max(1, anchorOffset == null ? 1 : anchorLength)}) {offset} \"{path}\"\n");
             }
             _source.Append(text).Append('\n');
         }
