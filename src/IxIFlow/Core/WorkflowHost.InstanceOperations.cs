@@ -188,7 +188,7 @@ public sealed partial class WorkflowHost
                 checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                 OperatorTrace.ApplyCancellation(instance, checkpoint, cancellationReason, Now);
             await PersistAsync(instance, checkpoint, workflowData, scopes, assignment);
-            return await AssignAsync(instance, owner, signals, cancellationToken);
+            return await AssignAsync(instance, assignment, signals, cancellationToken);
         }
 
         public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId)
@@ -389,7 +389,7 @@ public sealed partial class WorkflowHost
                 await PersistAsync(instance, checkpoint, workflowData, scopes, assignment);
                 // The start is durable from here; a caller waiting only for acceptance continues.
                 _control.Accept(instance.InstanceId);
-                return await AssignAsync(instance, owner, signals, cancellationToken);
+                return await AssignAsync(instance, assignment, signals, cancellationToken);
             }
             catch (ExecutionOwnershipLostException)
             {
@@ -595,7 +595,7 @@ public sealed partial class WorkflowHost
                 (item.Status == ContinuationStatus.Cancelling ||
                  item.Status == ContinuationStatus.WaitingResolution && (!forEvent || stopCleared)))
                 .Select(item => item.Id).ToArray();
-            return await AssignAsync(instance, owner, signals, cancellationToken,
+            return await AssignAsync(instance, assignment, signals, cancellationToken,
                 new RecoveryPreparation(reactivated, newCancellation ? cancellationReason : null,
                     stopCleared, release, actor));
         }
@@ -672,7 +672,7 @@ public sealed partial class WorkflowHost
                 reason => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reason)),
                 sequence => Executor.Deliver(new Arrivals(signals.AssignmentId, sequence)), _time);
 
-        private sealed class RunReceipt
+        internal sealed class RunReceipt
         {
             public long Revision;
             public readonly List<ExecutionTraceEntry> Trace = [];
@@ -680,10 +680,8 @@ public sealed partial class WorkflowHost
             public WorkflowInstance? Instance;
         }
 
-        private readonly ConcurrentDictionary<string, RunReceipt> _receipts = new(StringComparer.Ordinal);
-
         private async Task<WorkflowExecutionResult> AssignAsync(WorkflowInstance instance,
-            WorkflowExecutionLease owner, ExecutionSignals signals, CancellationToken cancellationToken,
+            HostedRun assignment, ExecutionSignals signals, CancellationToken cancellationToken,
             RecoveryPreparation? preparation = null)
         {
             var depth = Interlocked.Increment(ref _runDepth);
@@ -696,7 +694,7 @@ public sealed partial class WorkflowHost
                 assigned.Incarnation = instance.Incarnation;
                 assigned.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
                 var assign = new Assign(signals.AssignmentId, assigned, instance.PartsAt(instance.Revision),
-                    checkpoint.StructureHash, owner.Epoch, signals.InboxSequence, _limits, depth == 1, [], preparation);
+                    checkpoint.StructureHash, assignment.Owner.Epoch, signals.InboxSequence, _limits, depth == 1, [], preparation);
                 var ready = await Executor.ExecuteAsync(assign, CancellationToken.None);
                 if (ready.AssignmentId != signals.AssignmentId)
                     throw new ExecutionOwnershipLostException(new InvalidOperationException("Ready is not assigned"));
@@ -711,22 +709,22 @@ public sealed partial class WorkflowHost
                 }
                 if (outcome.Kind == AssignmentOutcomeKind.RunCancelled)
                     throw new OperationCanceledException(cancellationToken);
-                _receipts.TryGetValue(instance.InstanceId, out var receipt);
+                var receipt = assignment.Receipt;
                 // Acknowledged commits reconstruct the stored instance without retaining executor objects.
                 // After ownership loss another host may have changed it, so only a fresh read is authoritative.
                 var saved = outcome.Kind == AssignmentOutcomeKind.OwnershipLost
                     ? await _store.GetWorkflowInstanceAsync(instance.InstanceId)
-                    : receipt?.Instance ?? instance;
+                    : receipt.Instance ?? instance;
                 if (saved == null || saved.Incarnation != instance.Incarnation)
                     return new WorkflowExecutionResult
                     {
                         InstanceId = instance.InstanceId,
                         Status = WorkflowExecutionStatus.Running,
                         ErrorMessage = "Execution ownership was lost; the assigned incarnation is no longer available",
-                        TraceEntries = receipt?.Trace.ToList() ?? []
+                        TraceEntries = receipt.Trace.ToList()
                     };
                 if (outcome.Kind is not (AssignmentOutcomeKind.OwnershipLost or AssignmentOutcomeKind.Interrupted) &&
-                    receipt?.WakeUtc is { } due &&
+                    receipt.WakeUtc is { } due &&
                     (outcome.Kind == AssignmentOutcomeKind.Parked ||
                      saved.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution))
                     _control.Schedule(saved.InstanceId, due);
@@ -739,7 +737,7 @@ public sealed partial class WorkflowHost
                     AssignmentOutcomeKind.Drained or AssignmentOutcomeKind.OwnershipLost or AssignmentOutcomeKind.Interrupted => WorkflowExecutionStatus.Running,
                     _ => StatusOf(saved.Status)
                 };
-                result.TraceEntries = receipt?.Trace.ToList() ?? [];
+                result.TraceEntries = receipt.Trace.ToList();
                 result.ErrorMessage = outcome.ErrorMessage ?? result.ErrorMessage;
                 result.ErrorType = outcome.ErrorType;
                 result.ErrorStackTrace = outcome.ErrorStackTrace ?? result.ErrorStackTrace;
@@ -748,7 +746,6 @@ public sealed partial class WorkflowHost
             }
             finally
             {
-                _receipts.TryRemove(instance.InstanceId, out _);
                 Interlocked.Decrement(ref _runDepth);
             }
         }
@@ -781,7 +778,7 @@ public sealed partial class WorkflowHost
         }
 
         private async Task<CheckpointReply> CommitAsync(WorkflowInstance instance, CheckpointCommit commit,
-            long epoch, Guid assignmentId)
+            long epoch, Guid assignmentId, RunReceipt receipt)
         {
             if (epoch == 0)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
@@ -807,7 +804,6 @@ public sealed partial class WorkflowHost
             switch (result.Status)
             {
                 case WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied:
-                    var receipt = _receipts.GetOrAdd(instance.InstanceId, _ => new RunReceipt());
                     // Commits are incorporated in order; a replay cannot add trace or replace newer state.
                     if (result.Revision > receipt.Revision)
                     {
@@ -988,6 +984,7 @@ public sealed partial class WorkflowHost
             WorkflowExecutionLease owner, Guid identity) : IDisposable
         {
             private readonly CommitQueue _queue = new();
+            internal readonly RunReceipt Receipt = new();
             private readonly Dictionary<string, (long Revision, string Hash, Task<CheckpointReply> Task)> _outstanding = [];
             private sealed record RetryableCommit(string CommitId, long Revision, string Hash);
             private RetryableCommit? _retryable;
@@ -1063,7 +1060,7 @@ public sealed partial class WorkflowHost
                     else
                     {
                         operations.CheckLimit(commit, _saved);
-                        reply = await operations.CommitAsync(instance, commit, owner.Epoch, identity);
+                        reply = await operations.CommitAsync(instance, commit, owner.Epoch, identity, Receipt);
                         if (reply.Kind is CheckpointReplyKind.Unknown or CheckpointReplyKind.Retry)
                         {
                             LastCommitError = reply.Error;
