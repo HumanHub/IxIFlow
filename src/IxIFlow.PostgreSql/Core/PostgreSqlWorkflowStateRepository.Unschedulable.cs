@@ -17,16 +17,16 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         candidates AS (SELECT candidate.* FROM sets CROSS JOIN LATERAL (
                 SELECT instance.instance_id, instance.runnable_at_utc FROM ixiflow_workflow_instances AS instance
                 WHERE sets.failed AND instance.demand_set_id = sets.id AND instance.runnable_at_utc <= @Now
-                  AND (@AfterTime IS NULL OR instance.runnable_at_utc > @AfterTime OR
-                      (instance.runnable_at_utc = @AfterTime AND instance.instance_id > @AfterId))
+                  AND (CAST(@AfterTime AS timestamptz) IS NULL OR instance.runnable_at_utc > CAST(@AfterTime AS timestamptz) OR
+                      (instance.runnable_at_utc = CAST(@AfterTime AS timestamptz) AND instance.instance_id > CAST(@AfterId AS text)))
                   AND COALESCE((SELECT lease.expires_at_utc <= @Now FROM ixiflow_workflow_leases AS lease
                       WHERE lease.instance_id = instance.instance_id), true)
                 ORDER BY instance.runnable_at_utc, instance.instance_id LIMIT @Limit) AS candidate
             WHERE sets.failed UNION ALL SELECT candidate.* FROM sets CROSS JOIN LATERAL (
                 SELECT instance.instance_id, instance.runnable_at_utc FROM ixiflow_workflow_instances AS instance
                 WHERE NOT sets.failed AND instance.demand_set_id = sets.id AND instance.runnable_at_utc <= @Now
-                  AND (@AfterTime IS NULL OR instance.runnable_at_utc > @AfterTime OR
-                      (instance.runnable_at_utc = @AfterTime AND instance.instance_id > @AfterId))
+                  AND (CAST(@AfterTime AS timestamptz) IS NULL OR instance.runnable_at_utc > CAST(@AfterTime AS timestamptz) OR
+                      (instance.runnable_at_utc = CAST(@AfterTime AS timestamptz) AND instance.instance_id > CAST(@AfterId AS text)))
                   AND COALESCE((SELECT lease.expires_at_utc <= @Now FROM ixiflow_workflow_leases AS lease
                       WHERE lease.instance_id = instance.instance_id), true) AND instance.pinned_host IS NOT NULL
                   AND (instance.pin_expires_at_utc IS NULL OR instance.pin_expires_at_utc > @Now)
