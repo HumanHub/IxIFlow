@@ -97,24 +97,25 @@ public class SagaExecutionTests
 
         // Act
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
 
         // Assert
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.True(workflowData.Step1Completed);
-        Assert.True(workflowData.Step2Completed);
-        Assert.True(workflowData.Step3Completed);
+        Assert.True(finished.Step1Completed);
+        Assert.True(finished.Step2Completed);
+        Assert.True(finished.Step3Completed);
 
         // No compensation should have occurred since all steps succeeded
-        Assert.False(workflowData.Step1Compensated);
-        Assert.False(workflowData.Step2Compensated);
-        Assert.False(workflowData.Step3Compensated);
+        Assert.False(finished.Step1Compensated);
+        Assert.False(finished.Step2Compensated);
+        Assert.False(finished.Step3Compensated);
 
         // Verify step outputs
-        Assert.NotEmpty(workflowData.ReservationId);
-        Assert.True(workflowData.FinalPrice > 0);
-        Assert.NotEmpty(workflowData.TransactionId);
-        Assert.True(workflowData.ValidationResult);
-        Assert.True(workflowData.AnalyticsUpdated);
+        Assert.NotEmpty(finished.ReservationId);
+        Assert.True(finished.FinalPrice > 0);
+        Assert.NotEmpty(finished.TransactionId);
+        Assert.True(finished.ValidationResult);
+        Assert.True(finished.AnalyticsUpdated);
     }
 
     [Fact]
@@ -192,23 +193,24 @@ public class SagaExecutionTests
 
         // Act
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
 
         // Assert
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status); // Workflow succeeded (caught SagaTerminatedException)
-        Assert.True(workflowData.Step1Completed);
-        Assert.True(workflowData.Step2Completed);
-        Assert.False(workflowData.Step3Completed); // Payment failed
+        Assert.True(finished.Step1Completed);
+        Assert.True(finished.Step2Completed);
+        Assert.False(finished.Step3Completed); // Payment failed
 
         // Compensation should have occurred for successful steps
-        Assert.True(workflowData.Step1Compensated);
-        Assert.True(workflowData.Step2Compensated);
-        Assert.False(workflowData.Step3Compensated); // No transaction to compensate
+        Assert.True(finished.Step1Compensated);
+        Assert.True(finished.Step2Compensated);
+        Assert.False(finished.Step3Compensated); // No transaction to compensate
 
         // Error handler should have executed
-        Assert.True(workflowData.ErrorHandlerExecuted);
+        Assert.True(finished.ErrorHandlerExecuted);
 
         // Analytics step SHOULD have executed (workflow continued after catch block)
-        Assert.True(workflowData.AnalyticsUpdated);
+        Assert.True(finished.AnalyticsUpdated);
     }
 
     [Fact]
@@ -274,20 +276,21 @@ public class SagaExecutionTests
 
         // Act
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
 
         // Assert
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status); // Workflow continued despite saga failure
-        Assert.True(workflowData.Step1Completed);
-        Assert.True(workflowData.Step2Completed);
-        Assert.False(workflowData.Step3Completed); // Payment failed
+        Assert.True(finished.Step1Completed);
+        Assert.True(finished.Step2Completed);
+        Assert.False(finished.Step3Completed); // Payment failed
 
         // NO compensation should have occurred
-        Assert.False(workflowData.Step1Compensated);
-        Assert.False(workflowData.Step2Compensated);
-        Assert.False(workflowData.Step3Compensated);
+        Assert.False(finished.Step1Compensated);
+        Assert.False(finished.Step2Compensated);
+        Assert.False(finished.Step3Compensated);
 
         // Workflow should have continued to analytics step
-        Assert.True(workflowData.AnalyticsUpdated);
+        Assert.True(finished.AnalyticsUpdated);
     }
 
     [Fact]
@@ -354,19 +357,20 @@ public class SagaExecutionTests
 
         // Act
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
 
         // Assert
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.True(workflowData.Step1Completed);
-        Assert.True(workflowData.Step2Completed);
-        Assert.True(workflowData.Step3Completed); // Should succeed on retry
+        Assert.True(finished.Step1Completed);
+        Assert.True(finished.Step2Completed);
+        Assert.True(finished.Step3Completed); // Should succeed on retry
 
         // Retry attempts should be > 0 (indicating retries occurred)
-        Assert.True(workflowData.RetryAttempts > 0);
+        Assert.True(finished.RetryAttempts > 0);
 
         // Workflow should complete successfully
-        Assert.True(workflowData.AnalyticsUpdated);
-        Assert.NotEmpty(workflowData.TransactionId);
+        Assert.True(finished.AnalyticsUpdated);
+        Assert.NotEmpty(finished.TransactionId);
     }
 
     [Fact]
@@ -422,21 +426,22 @@ public class SagaExecutionTests
 
         // Act
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
 
         // Assert
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status); // Workflow succeeded (caught SagaTerminatedException)
-        Assert.True(workflowData.Step1Completed);
-        Assert.False(workflowData.Step2Completed); // Custom exception step failed
+        Assert.True(finished.Step1Completed);
+        Assert.False(finished.Step2Completed); // Custom exception step failed
 
         // Default behavior should have compensated all successful steps
-        Assert.True(workflowData.Step1Compensated);
-        Assert.False(workflowData.Step2Compensated); // Step didn't complete
+        Assert.True(finished.Step1Compensated);
+        Assert.False(finished.Step2Compensated); // Step didn't complete
 
         // Error handler should have executed
-        Assert.True(workflowData.ErrorHandlerExecuted);
+        Assert.True(finished.ErrorHandlerExecuted);
 
         // Analytics step SHOULD have executed (workflow continued after catch block)
-        Assert.True(workflowData.AnalyticsUpdated);
+        Assert.True(finished.AnalyticsUpdated);
     }
 
     [Fact]
@@ -519,24 +524,25 @@ public class SagaExecutionTests
 
         // Act
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
 
         // Assert
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status); // Workflow succeeded (caught SagaTerminatedException)
-        Assert.True(workflowData.Step1Completed); // Step1 reserve inventory succeeded  
-        Assert.True(workflowData.Step2Completed); // Step2 calculate pricing succeeded
-        Assert.False(workflowData.Step3Completed); // Step3 payment failed
+        Assert.True(finished.Step1Completed); // Step1 reserve inventory succeeded
+        Assert.True(finished.Step2Completed); // Step2 calculate pricing succeeded
+        Assert.False(finished.Step3Completed); // Step3 payment failed
 
         // CORRECT EXPECTATIONS based on INCLUSIVE CompensateUpTo<Step1> semantics:
         // CompensateUpTo<Step1> should compensate: Step2, Step1 (INCLUSIVE target)
-        Assert.True(workflowData.Step1Compensated);  // Should be compensated (INCLUSIVE target step)
-        Assert.True(workflowData.Step2Compensated);  // Should be compensated (after target step, successful)
-        Assert.False(workflowData.Step3Compensated); // Should NOT be compensated (failed step)
+        Assert.True(finished.Step1Compensated);  // Should be compensated (INCLUSIVE target step)
+        Assert.True(finished.Step2Compensated);  // Should be compensated (after target step, successful)
+        Assert.False(finished.Step3Compensated); // Should NOT be compensated (failed step)
 
         // Error handler should have executed
-        Assert.True(workflowData.ErrorHandlerExecuted);
+        Assert.True(finished.ErrorHandlerExecuted);
 
         // Analytics step SHOULD have executed (workflow continued after catch block)
-        Assert.True(workflowData.AnalyticsUpdated);
+        Assert.True(finished.AnalyticsUpdated);
     }
 
     [Fact]
@@ -774,23 +780,24 @@ _output.WriteLine("WORKFLOW STRUCTURE:");
         }
         
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
 
         // DEBUG OUTPUT
-        _output.WriteLine($"AFTER: Step1Completed = {workflowData.Step1Completed}, Step1Compensated = {workflowData.Step1Compensated}");
+        _output.WriteLine($"AFTER: Step1Completed = {finished.Step1Completed}, Step1Compensated = {finished.Step1Compensated}");
         _output.WriteLine($"Status = {result.Status}");
-        _output.WriteLine($"ReservationId = {workflowData.ReservationId}");
+        _output.WriteLine($"ReservationId = {finished.ReservationId}");
         _output.WriteLine($"ErrorMessage = {result.ErrorMessage}");
 
         // ASSERT
-        Assert.True(workflowData.Step1Completed, "Step 1 should have completed successfully");
-        Assert.False(workflowData.Step3Completed, "Step 3 should have failed");
+        Assert.True(finished.Step1Completed, "Step 1 should have completed successfully");
+        Assert.False(finished.Step3Completed, "Step 3 should have failed");
         
         // THE KEY TEST: Is compensation working?
-        if (!workflowData.Step1Compensated)
+        if (!finished.Step1Compensated)
         {
         _output.WriteLine("COMPENSATION DID NOT EXECUTE - This is the bug we need to fix!");
             _output.WriteLine("Expected: Step1Compensated = true");
-            _output.WriteLine($"Actual: Step1Compensated = {workflowData.Step1Compensated}");
+            _output.WriteLine($"Actual: Step1Compensated = {finished.Step1Compensated}");
             Assert.Fail("Fail on purpose to show output");
         }
         else
@@ -938,24 +945,25 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
         _output.WriteLine($"PaymentMethod: {workflowData.PaymentMethod}");
 
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
 
         // Assert
         _output.WriteLine($"Status: {result.Status}");
-        _output.WriteLine($"Step1Completed: {workflowData.Step1Completed}");
-        _output.WriteLine($"ReservationId: {workflowData.ReservationId}");
-        _output.WriteLine($"Step3Completed (Card): {workflowData.Step3Completed}");
-        _output.WriteLine($"Step2Completed (Cash): {workflowData.Step2Completed}");
-        _output.WriteLine($"TransactionId: {workflowData.TransactionId}");
+        _output.WriteLine($"Step1Completed: {finished.Step1Completed}");
+        _output.WriteLine($"ReservationId: {finished.ReservationId}");
+        _output.WriteLine($"Step3Completed (Card): {finished.Step3Completed}");
+        _output.WriteLine($"Step2Completed (Cash): {finished.Step2Completed}");
+        _output.WriteLine($"TransactionId: {finished.TransactionId}");
 
         Assert.True(result.Status == WorkflowExecutionStatus.Success, "Workflow should complete successfully");
-        Assert.True(workflowData.Step1Completed, "Inventory reservation should complete");
+        Assert.True(finished.Step1Completed, "Inventory reservation should complete");
 
         // The ReservationId should start with "CARD" (based on our test activities)
         // So the Card outcome should execute
-        Assert.True(workflowData.Step3Completed, "Card payment should have executed");
-        Assert.False(workflowData.Step2Completed, "Cash payment should NOT have executed");
-        Assert.NotEmpty(workflowData.TransactionId);
-        Assert.True(workflowData.AnalyticsUpdated);
+        Assert.True(finished.Step3Completed, "Card payment should have executed");
+        Assert.False(finished.Step2Completed, "Cash payment should NOT have executed");
+        Assert.NotEmpty(finished.TransactionId);
+        Assert.True(finished.AnalyticsUpdated);
 
         _output.WriteLine("OutcomeOn pattern executed successfully - Card branch selected");
     }
@@ -1031,36 +1039,37 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
         _output.WriteLine($"PaymentMethod: {workflowData.PaymentMethod}");
 
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
 
         // Assert - Should be suspended
         _output.WriteLine($"Status: {result.Status}");
         _output.WriteLine($"Result.Status: {result.Status}");
-        _output.WriteLine($"Step1Completed: {workflowData.Step1Completed}");
-        _output.WriteLine($"ReservationId: {workflowData.ReservationId}");
+        _output.WriteLine($"Step1Completed: {finished.Step1Completed}");
+        _output.WriteLine($"ReservationId: {finished.ReservationId}");
         _output.WriteLine($"ErrorMessage: {result.ErrorMessage}");
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
-        Assert.True(workflowData.Step1Completed, "Inventory reservation should complete");
+        Assert.True(finished.Step1Completed, "Inventory reservation should complete");
 
         // The ReservationId should start with "CHCK" (based on CHECK payment method)
-        Assert.StartsWith("CHCK", workflowData.ReservationId);
+        Assert.StartsWith("CHCK", finished.ReservationId);
         
         // None of the other payment paths should have executed
-        Assert.False(workflowData.Step3Completed, "Card payment should NOT have executed");
-        Assert.False(workflowData.Step2Completed, "Cash payment should NOT have executed");
-        Assert.False(workflowData.LoggedUnknown, "Unknown payment logging should NOT have executed");
-        Assert.Empty(workflowData.TransactionId); // No transaction since suspended
+        Assert.False(finished.Step3Completed, "Card payment should NOT have executed");
+        Assert.False(finished.Step2Completed, "Cash payment should NOT have executed");
+        Assert.False(finished.LoggedUnknown, "Unknown payment logging should NOT have executed");
+        Assert.Empty(finished.TransactionId); // No transaction since suspended
 
         // Analytics should not have executed (workflow suspended)
-        Assert.False(workflowData.AnalyticsUpdated, "Analytics should NOT run - workflow is suspended");
+        Assert.False(finished.AnalyticsUpdated, "Analytics should NOT run - workflow is suspended");
 
         _output.WriteLine("OutcomeOn pattern suspended successfully - Check clearance branch selected");
         
         // TEST INPUT MAPPING: Verify that input mapping worked during suspend
         // The suspend should have received the ProductId from workflow data as ConfirmedProductId
         var suspendedWorkflowData = (SagaTestData)result.WorkflowData!;
-        _output.WriteLine($"TESTING INPUT MAPPING: Expected ProductId '{workflowData.ProductId}' should be available to suspend step");
+        _output.WriteLine($"TESTING INPUT MAPPING: Expected ProductId '{finished.ProductId}' should be available to suspend step");
         // Note: We can't directly access the suspend step's input since it's internal to the engine,
         // but we'll verify the workflow data is intact and ready for the suspend step
         Assert.Equal(workflowData.ProductId, suspendedWorkflowData.ProductId); // Input source should be preserved
@@ -1096,7 +1105,7 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
         Assert.True(finalWorkflowData.AnalyticsUpdated, "Analytics should run after resume");
 
         _output.WriteLine("SUSPEND/RESUME MAPPING TEST PASSED:");
-        _output.WriteLine($"  - Input Mapping: ProductId '{workflowData.ProductId}' available to suspend step");
+        _output.WriteLine($"  - Input Mapping: ProductId '{finished.ProductId}' available to suspend step");
         _output.WriteLine($"  - Output Mapping: Event ConfirmedProductId '{confirmationEvent.ConfirmedProductId}' -> SuspensionMessage '{finalWorkflowData.SuspensionMessage}'");
         _output.WriteLine("OutcomeOn pattern resumed and completed successfully");
     }

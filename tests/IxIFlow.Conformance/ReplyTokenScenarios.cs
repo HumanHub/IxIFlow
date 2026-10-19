@@ -12,7 +12,7 @@ public sealed class ReplyTokenScenarios
     public async Task HostsCanAnswerEachOthersReplyCapabilities(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         // SQLite permits one repository owner. Separate hosts use that same owning repository;
         // the other profiles use independently opened repositories on the shared store.
         var firstRepository = store.NewRepository();
@@ -30,7 +30,7 @@ public sealed class ReplyTokenScenarios
         }
     }
 
-    private static ServiceProvider Host(IWorkflowStateRepository repository, IWorkflowVersionRegistry registry)
+    private static ServiceProvider Host(IWorkflowStateRepository repository, IWorkflowCatalog registry)
     {
         var services = new ServiceCollection(); services.AddLogging();
         services.AddIxIFlow();

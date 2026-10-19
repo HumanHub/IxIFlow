@@ -15,7 +15,7 @@ public sealed class OperationsHttpScenarios
     public async Task SearchPagesCanBeContinuedOnAnotherHost(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await using var first = new OperationsHttpFactory(store.NewRepository(), registry);
         // SQLite has one owning host. Its HTTP page contract still runs in this profile.
         await using var second = profile == StoreProfiles.LocalSqlite ? null : new OperationsHttpFactory(store.NewRepository(), registry);
@@ -56,7 +56,7 @@ public sealed class OperationsHttpScenarios
     public async Task HttpTerminationIsAcknowledgedByTheRunningOwner(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await using var owner = new OperationsHttpFactory(store.NewRepository(), registry);
         await using var other = profile == StoreProfiles.LocalSqlite ? null : new OperationsHttpFactory(store.NewRepository(), registry);
         using var http = (other ?? owner).Operator();

@@ -25,7 +25,7 @@ public sealed class WorkflowEngineException : Exception
 
     /// <summary>True when the instance stays recoverable after this failure.</summary>
     public bool IsInterruption =>
-        Kind is WorkflowErrorKind.Infrastructure or WorkflowErrorKind.ArtifactUnavailable or
+        Kind is WorkflowErrorKind.Infrastructure or WorkflowErrorKind.ArtifactUnavailable or WorkflowErrorKind.ArtifactMismatch or
             WorkflowErrorKind.ResourceExhausted;
 
     /// <summary>

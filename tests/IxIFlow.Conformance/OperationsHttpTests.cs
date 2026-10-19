@@ -128,7 +128,7 @@ public sealed class OperationsHttpTests
         var definition = Workflow.Create<Data>("HttpResolution")
             .Step<Uncertain>(step => step.Output(activity => activity.Number).To(context => context.WorkflowData.Number))
             .Step<Block>().Build();
-        await factory.Services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await factory.Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         var pending = new ActivityInvocationState
         {
@@ -343,7 +343,7 @@ public sealed class OperationsHttpTests
         await using var owner = new OperationsHttpFactory(store);
         using var first = owner.Operator();
         var id = (await owner.Engine.RunAsync(Waiting(), new Data())).InstanceId;
-        await using var unprepared = new OperationsHttpFactory(store, new WorkflowVersionRegistry());
+        await using var unprepared = new OperationsHttpFactory(store, new WorkflowCatalog());
         using var http = unprepared.Operator();
         using var response = await http.GetAsync($"/ops/instances/{id}/snapshot");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
@@ -397,7 +397,7 @@ public sealed class OperationsHttpTests
 
     internal static async Task SeedQuarantine(OperationsHttpFactory factory, IWorkflowStateRepository store, WorkflowDefinition definition, string id)
     {
-        await factory.Services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await factory.Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         var checkpoint = new ExecutionCheckpoint
         {

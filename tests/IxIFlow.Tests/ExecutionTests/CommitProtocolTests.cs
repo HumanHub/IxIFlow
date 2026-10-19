@@ -156,16 +156,16 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
                 InstanceId = instanceId, WorkflowName = "DistinctResults", Status = WorkflowStatus.Running,
                 WorkflowDataJson = "{}"
             };
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1),
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, epoch, 0, "first")));
 
             instance.WorkflowDataJson = "\"next\"";
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1),
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, epoch, 0, "behind")));
             instance = (await repository.GetWorkflowInstanceAsync(instanceId))!;
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 1),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 1),
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, epoch + 1, 1, "future")));
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 2),
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 2),
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, epoch, 1, "second")));
         }
         finally

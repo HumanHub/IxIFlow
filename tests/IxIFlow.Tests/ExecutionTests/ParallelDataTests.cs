@@ -182,22 +182,28 @@ public sealed class ParallelDataTests
     {
         using var services = Services();
         var definition = Workflow.Create<Data>("InPlaceMerge")
-            .Step<Noop>()
+            .Step<Copy>(step => step
+                .Input(activity => activity.Value).From(_ => "kept")
+                .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Transient))
             .Parallel(parallel => parallel
                 .Do(first => first.Step<Copy>(step => step
                     .Input(activity => activity.Value).From(_ => "first")
                     .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.First)))
                 .Do(second => second.Step<ClearNote>(step => step
                     .Output(activity => activity.Note).To(ctx => ctx.WorkflowData.Note))))
+            .Step<Record>(step => step.Input(activity => activity.Value)
+                .From(ctx => ctx.WorkflowData.First + "|" + ctx.WorkflowData.Transient + "|" + (ctx.WorkflowData.Note ?? "null")))
             .Build();
         var data = new Data { Transient = "kept" };
 
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, data);
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Same(data, result.WorkflowData);
-        // A member never saved survives the join, and a value a branch set to null is applied as null.
-        Assert.Equal(("first", "kept", null), (data.First, data.Transient, data.Note));
+        var saved = Assert.IsType<Data>(result.WorkflowData);
+        Assert.Equal(("first", "", (string?)null), (saved.First, saved.Second, saved.Note));
+        // Ignored state set inside the workflow survives the join, before the result is rebuilt from storage.
+        Assert.Equal(["first|kept|null"], services.GetRequiredService<Seen>().Values);
+        Assert.Equal(("", "kept", "default"), (data.First, data.Transient, data.Note));
     }
 
     [Fact]

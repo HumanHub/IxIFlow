@@ -142,7 +142,7 @@ public sealed class RecipeTests
     {
         var gateway = new Gateway();
         await using var services = Services(gateway);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ChildApprovalRecipe.Child());
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ChildApprovalRecipe.Child());
         var client = SampleTests.Client(services);
         var start = await client.RunAsync(ChildApprovalRecipe.Parent(), new Order { OrderId = "order", Amount = 40 });
         await gateway.WaitForApprovalsAsync(1);
@@ -204,7 +204,7 @@ public sealed class RecipeTests
     {
         var gateway = new Gateway();
         await using var services = Services(gateway);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ChargeCustomersRecipe.Child());
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ChargeCustomersRecipe.Child());
         var client = SampleTests.Client(services);
         var start = await client.RunAsync(ChargeCustomersRecipe.Parent(1), new Billing { Customers = ["Ada", "Grace"] });
         await gateway.WaitForApprovalsAsync(1);

@@ -232,7 +232,9 @@ public sealed class ParallelDataContractTests
     {
         using var services = Services();
         var definition = Workflow.Create<Capped>("AssignThenRefuse")
-            .Step<Noop>()
+            .Step<SetNumber>(step => step
+                .Input(activity => activity.Value).From(_ => 5)
+                .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Max))
             .Try(attempt => attempt.Parallel(parallel => parallel
                 .Do(first => first.Step<Copy>(step => step
                     .Input(activity => activity.Value).From(_ => "first")
@@ -244,7 +246,7 @@ public sealed class ParallelDataContractTests
                 .Input(activity => activity.Value).From(ctx => $"caught '{ctx.WorkflowData.First}' {ctx.WorkflowData.Count}")))
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, new Capped { Max = 5 });
+        var result = await Engine(services).RunAsync(definition, new Capped());
 
         // Count took 7 before its setter refused it; both values were put back.
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -257,7 +259,7 @@ public sealed class ParallelDataContractTests
     {
         using var services = Services();
         var definition = Workflow.Create<Latching>("RefusedRestore")
-            .Step<Noop>()
+            .Step<Seal>(step => step.Output(activity => activity.Sealed).To(ctx => ctx.WorkflowData.Watched))
             .Try(attempt => attempt.Parallel(parallel => parallel
                 .Do(first => first.Step<Copy>(step => step
                     .Input(activity => activity.Value).From(_ => "first")
@@ -268,7 +270,7 @@ public sealed class ParallelDataContractTests
             .Catch<Exception>(handler => handler.Step<Noop>())
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, new Latching { Watched = true });
+        var result = await Engine(services).RunAsync(definition, new Latching());
 
         // First latches once it is set, so it cannot be put back after Second is refused: the data is
         // changed and no handler can be told it is not, so even a Catch of every exception does not run,
@@ -310,7 +312,7 @@ public sealed class ParallelDataContractTests
     {
         using var services = Services();
         var definition = Workflow.Create<Account>("EqualButReplaced")
-            .Step<Noop>()
+            .Step<Seal>(step => step.Output(activity => activity.Sealed).To(ctx => ctx.WorkflowData.Sealed))
             .Try(attempt => attempt.Parallel(parallel => parallel
                 .Do(first => first.Step<Rebalance>(step => step
                     .Output(activity => activity.Primary).To(ctx => ctx.WorkflowData.Primary)))
@@ -321,7 +323,7 @@ public sealed class ParallelDataContractTests
                 .Input(activity => activity.Value).From(ctx => $"caught {ctx.WorkflowData.Primary.Amount}")))
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, new Account { Sealed = true });
+        var result = await Engine(services).RunAsync(definition, new Account());
 
         // The new entity has the old one's ID, so its type calls them equal; it is still put back.
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -334,7 +336,7 @@ public sealed class ParallelDataContractTests
     {
         using var services = Services();
         var definition = Workflow.Create<StructAccount>("EqualStructsReplaced")
-            .Step<Noop>()
+            .Step<Seal>(step => step.Output(activity => activity.Sealed).To(ctx => ctx.WorkflowData.Sealed))
             .Try(attempt => attempt.Parallel(parallel => parallel
                 .Do(first => first.Step<RebalanceStruct>(step => step
                     .Output(activity => activity.Primary).To(ctx => ctx.WorkflowData.Primary)))
@@ -345,7 +347,7 @@ public sealed class ParallelDataContractTests
                 .Input(activity => activity.Value).From(ctx => $"caught {ctx.WorkflowData.Primary.Amount}")))
             .Build();
 
-        var result = await Engine(services).RunAsync(definition, new StructAccount { Sealed = true });
+        var result = await Engine(services).RunAsync(definition, new StructAccount());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(["caught 1"], services.GetRequiredService<Seen>().Values);
@@ -645,7 +647,7 @@ public sealed class ParallelDataContractTests
             instanceId = (await Engine(first).RunAsync(definition, new Sparse { Note = null })).InstanceId;
 
         using var second = Services(store);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var finished = await Engine(second).ResumeAsync(instanceId, "go", new Go());
 
         // The saved data says the note is null, so the next host reads null, not the initial value.

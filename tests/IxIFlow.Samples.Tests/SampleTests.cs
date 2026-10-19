@@ -305,7 +305,7 @@ public sealed class SampleTests
         string name, WorkflowDefinition child)
     {
         await using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var client = Client(services);
         var result = await client.RunAsync(definition, data);
         if (name == "review")

@@ -97,7 +97,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
 
     private static DateTimeOffset? Timestamp(DateTime? value) => value is { } time ? Timestamp(time) : null;
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
+        operation is Operation.Catalog or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
             or Operation.CancellationRequest or Operation.LeaseRelease or Operation.Termination
             ? await connection.BeginTransactionAsync() : null;
 
@@ -267,9 +267,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             Incarnations = children.Select(_ => Guid.NewGuid()).ToArray(),
             StopKinds = children.Select(child => child.Instance!.StopKind?.ToString()).ToArray(),
             StopCrashCounts = children.Select(child => child.Instance!.StopCrashCount).ToArray(),
-            Versions = children.Select(child => child.Instance!.WorkflowVersion).ToArray(),
             Created = children.Select(child => Timestamp(child.Instance!.CreatedAt)).ToArray(),
             Names = children.Select(child => child.Instance!.WorkflowName).ToArray(),
+            Versions = children.Select(child => child.Instance!.WorkflowVersion).ToArray(),
             Statuses = children.Select(child => child.Instance!.Status.ToString()).ToArray(),
             CorrelationIds = children.Select(child => child.Instance!.CorrelationId).ToArray(),
             Payloads = children.Select(child => child.Payload).ToArray()
@@ -519,7 +519,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // Read clock_timestamp() in the next statement so commit time follows the lock wait (D-35).
         Statement.CommitState => """
             SELECT revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
-                cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence
+                cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence, runnable_at_utc AS RunnableAtUtc
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             FOR UPDATE;
@@ -666,7 +666,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key = ANY(@Keys)
                 """,
-        _ => RegistrySql(statement) ?? AdmissionSql(statement)
+        _ => CatalogSql(statement) ?? RegistrySql(statement) ?? AdmissionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -716,6 +716,17 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_correlation_creation ON ixiflow_workflow_instances (correlation_id, created_at_utc DESC, instance_id ASC);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_parent_creation ON ixiflow_workflow_instances (parent_instance_id, created_at_utc DESC, instance_id ASC);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_ended_creation ON ixiflow_workflow_instances (ended_at_utc, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_status
+            ON ixiflow_workflow_instances (status);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_workflow_name
+            ON ixiflow_workflow_instances (workflow_name);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_unfinished_workflow
+            ON ixiflow_workflow_instances (workflow_name, workflow_version)
+            WHERE status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut');
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_correlation_id
+            ON ixiflow_workflow_instances (correlation_id);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_parent
+            ON ixiflow_workflow_instances (parent_instance_id) WHERE parent_instance_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_runnable
             ON ixiflow_workflow_instances (runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_events (
@@ -791,6 +802,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(CatalogSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }

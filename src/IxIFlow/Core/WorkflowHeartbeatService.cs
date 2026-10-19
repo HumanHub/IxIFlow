@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 namespace IxIFlow.Core;
 
 /// <summary>Publishes this process and a fresh capability snapshot for as long as its host runs.</summary>
-internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository repository, IWorkflowVersionRegistry registry,
+internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository repository, IWorkflowCatalog registry,
     HostSettings settings, TimeProvider time, ILogger<WorkflowHeartbeatService> logger) : BackgroundService
 {
     internal static bool IsAutomaticCapability(string key) =>

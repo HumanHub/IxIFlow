@@ -41,7 +41,7 @@ public sealed class ActivityInputCopyTests
         }
         store.FailCommit = _ => false;
         using var second = Services(store, probe);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
 
         var result = crash
             ? await second.GetRequiredService<IWorkflowClient>().RecoverAsync(instanceId)

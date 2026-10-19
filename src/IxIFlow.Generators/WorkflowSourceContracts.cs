@@ -2,7 +2,7 @@ using IxIFlow.Dsl.Compilation;
 
 namespace IxIFlow.Generators;
 
-internal sealed class WorkflowSourceContracts(WorkflowSourceOptions options) : IWorkflowValidationContext
+public sealed class WorkflowSourceContracts(WorkflowSourceOptions options) : IWorkflowValidationContext
 {
     public Task<ActivityDocumentContract?> FindActivityAsync(string key, CancellationToken token) =>
         Task.FromResult(KnownType(key) ? options.Activities.TryGetValue(key, out var activity)
