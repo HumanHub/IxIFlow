@@ -42,7 +42,7 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
             IWorkflowStateRepository store = postgres ? new PostgreSqlWorkflowStateRepository(cs) : new SqlWorkflowStateRepository(cs);
             await using DbConnection connection = postgres ? new NpgsqlConnection(cs) : new SqlConnection(cs);
             await connection.OpenAsync();
-            await Exercise(store, connection, postgres ? "postgres" : "sqlserver");
+            await Exercise(store, connection, postgres ? "postgres" : "sqlserver", cs);
         }
         finally
         {
@@ -51,7 +51,7 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
         }
     }
 
-    private async Task Exercise(IWorkflowStateRepository store, DbConnection connection, string provider)
+    private async Task Exercise(IWorkflowStateRepository store, DbConnection connection, string provider, string? connectionString = null)
     {
         var sqlserver = provider == "sqlserver";
         var postgres = provider == "postgres";
@@ -60,6 +60,7 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
         var metal = DemandSet.Create([new("gpu", "metal"), new("region", "eu")]);
         await store.RegisterMemberAsync(UnschedulableTests.Host(host, new Dictionary<string, string>
             { ["gpu"] = "metal", ["region"] = "eu", ["host"] = host.ToString("D") }, TimeSpan.FromMinutes(20)));
+        if (postgres) await VerifyPostgreSqlSchemaAndJitAsync(store, connection, connectionString!);
         foreach (var set in new[] { cuda, metal })
         {
             await connection.ExecuteAsync(sqlserver ? "INSERT INTO dbo.IxIFlowDemandSets (DemandSetId) VALUES (@Id)" :
@@ -122,6 +123,7 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
         var before = await Measure("300,000 instances");
         await Insert(true);
         var after = await Measure("600,000 instances; growth entirely in a schedulable set");
+        if (postgres) await PrintPostgreSqlPeriodicCostsAsync(store, connection, host, after.Page.StoreTimeUtc);
         Assert.Equal(before.Page.Items.Select(r => r.InstanceId), after.Page.Items.Select(r => r.InstanceId));
         // Print both volumes' plans before enforcing either timing budget.
         Assert.True(before.Elapsed < TimeSpan.FromMilliseconds(500),
@@ -158,10 +160,34 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
             else if (postgres)
             {
                 output.WriteLine($"{scenario}, complete production unschedulable scan");
+                await using var transaction = await PostgreSqlPeriodicPlan.BeginAsync(store, connection, "Registry");
                 var plan = string.Join(Environment.NewLine, await connection.QueryAsync<string>(
-                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) " + sql, parameters, commandTimeout: 60));
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) " + sql, parameters, transaction, commandTimeout: 60));
                 output.WriteLine(plan);
                 Assert.Contains("Execution Time", plan);
+                Assert.DoesNotContain("JIT:", plan);
+                var json = await connection.QuerySingleAsync<string>(
+                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, parameters, transaction, commandTimeout: 60);
+                using var document = JsonDocument.Parse(json);
+                var scans = Nodes(document.RootElement[0].GetProperty("Plan"))
+                    .Where(node => node.TryGetProperty("Relation Name", out var relation) &&
+                        relation.GetString() == "ixiflow_workflow_instances").ToArray();
+                Assert.All(scans, node => Assert.Contains(node.GetProperty("Node Type").GetString(),
+                    new[] { "Index Scan", "Index Only Scan" }));
+                var failed = Assert.Single(scans, node => node.GetProperty("Index Name").GetString() == "ix_ixiflow_instances_set_runnable");
+                Assert.Contains("demand_set_id", failed.GetProperty("Index Cond").GetString());
+                Assert.Contains("runnable_at_utc <=", failed.GetProperty("Index Cond").GetString());
+                var pins = scans.Where(node => node.GetProperty("Index Name").GetString() == "ix_ixiflow_instances_set_pin").ToArray();
+                Assert.Equal(2, pins.Length);
+                Assert.Contains(pins, node => node.GetProperty("Index Cond").GetString()!.Contains("pin_expires_at_utc IS NULL"));
+                Assert.Contains(pins, node => node.GetProperty("Index Cond").GetString()!.Contains("pin_expires_at_utc >"));
+                Assert.All(pins, node =>
+                {
+                    Assert.Contains("demand_set_id", node.GetProperty("Index Cond").GetString());
+                    Assert.Equal(0, node.GetProperty("Actual Rows").GetInt32());
+                });
+                Assert.All(scans, node => Assert.True(!node.TryGetProperty("Rows Removed by Filter", out var removed) || removed.GetInt32() <= 5,
+                    "An instance scan filtered unrelated schedulable rows."));
             }
             else
             {
@@ -173,5 +199,81 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
             }
             return (result, elapsed);
         }
+    }
+
+    private static async Task VerifyPostgreSqlSchemaAndJitAsync(IWorkflowStateRepository store, DbConnection connection, string connectionString)
+    {
+        var originalJit = await connection.ExecuteScalarAsync<string>("SHOW jit");
+        await connection.ExecuteAsync("SET jit = on");
+        try
+        {
+            foreach (var operation in new[] { "Registry", "RunnableRead", "RetentionRead", "OutboxClaim", "Purge" })
+            {
+                await using (await PostgreSqlPeriodicPlan.BeginAsync(store, connection, operation)) { }
+                Assert.Equal("on", await connection.ExecuteScalarAsync<string>("SHOW jit"));
+            }
+        }
+        finally { await connection.ExecuteAsync(originalJit == "on" ? "SET jit = on" : "SET jit = off"); }
+
+        foreach (var index in new[] { "ix_ixiflow_instances_set_runnable", "ix_ixiflow_instances_set_pin" })
+        {
+            var definition = await connection.QuerySingleAsync<string>("SELECT pg_get_indexdef(CAST(@Index AS regclass))", new { Index = index });
+            var invalid = new List<string> { definition.Replace("instance_id)", "instance_id COLLATE \"POSIX\")") };
+            if (index.EndsWith("set_pin")) invalid.Add(definition.Replace(" INCLUDE (pinned_host)", ""));
+            foreach (var sql in invalid)
+            {
+                Assert.NotEqual(definition, sql);
+                try
+                {
+                    await connection.ExecuteAsync($"DROP INDEX {index}; " + sql);
+                    var reopened = new PostgreSqlWorkflowStateRepository(connectionString);
+                    var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.GetWorkflowInstanceAsync("missing"));
+                    Assert.Contains("must be recreated", error.Message);
+                }
+                finally { await connection.ExecuteAsync($"DROP INDEX {index}; " + definition); }
+            }
+        }
+        Assert.Null(await new PostgreSqlWorkflowStateRepository(connectionString).GetWorkflowInstanceAsync("missing"));
+    }
+
+    private async Task PrintPostgreSqlPeriodicCostsAsync(IWorkflowStateRepository store, DbConnection connection, Guid host, DateTime now)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var runnable = (string)store.GetType().GetProperty("RunnableSql", flags)!.GetValue(store)!;
+        var claim = new ClaimQuery(host, new Dictionary<string, string> { ["gpu"] = "metal", ["region"] = "eu" }, 32);
+        var placement = store.GetType().GetMethod("PlacementParameters", flags)!.Invoke(store, [claim, now, 33]);
+        await Print("claim scan", "RunnableRead", runnable, placement);
+        var method = store.GetType().GetMethod("Sql", flags)!;
+        foreach (var statement in new[] { "RetentionCandidates", "RetentionBlockedPublishers", "ClaimDeliveries", "ExpireUnattemptedDeliveries" })
+        {
+            var kind = Enum.Parse(method.GetParameters()[0].ParameterType, statement);
+            var sql = (string)method.Invoke(store, [kind])!;
+            await Print(statement, statement == "ClaimDeliveries" ? "OutboxClaim" :
+                statement.StartsWith("Retention") ? "RetentionRead" : "Purge", sql,
+                new { Now = now, Cutoff = now.AddDays(-30), Limit = 33, Name = "missing", Error = "expired" });
+        }
+        await Print("demand-set collection", "Purge",
+            (string)store.GetType().GetProperty("CollectDemandSetsSql", flags)!.GetValue(store)!, new { Limit = 33 });
+
+        async Task Print(string label, string operation, string sql, object? parameters)
+        {
+            await using var transaction = await PostgreSqlPeriodicPlan.BeginAsync(store, connection, operation);
+            // EXPLAIN without ANALYZE neither executes mutations nor pays for compilation. Report
+            // the unmodified cost and threshold so high estimates in other periodic queries are visible.
+            var json = await connection.QuerySingleAsync<string>("EXPLAIN (FORMAT JSON) " + sql, parameters, transaction);
+            using var document = JsonDocument.Parse(json);
+            var cost = document.RootElement[0].GetProperty("Plan").GetProperty("Total Cost").GetDouble();
+            var threshold = await connection.ExecuteScalarAsync<double>("SHOW jit_above_cost", transaction: transaction);
+            output.WriteLine($"{label}: estimated cost {cost:F2}, jit_above_cost {threshold:F2}, jit=off for production transaction");
+            Assert.False(document.RootElement[0].TryGetProperty("JIT", out _));
+        }
+    }
+
+    private static IEnumerable<JsonElement> Nodes(JsonElement node)
+    {
+        yield return node;
+        if (node.TryGetProperty("Plans", out var children))
+            foreach (var child in children.EnumerateArray())
+                foreach (var descendant in Nodes(child)) yield return descendant;
     }
 }
