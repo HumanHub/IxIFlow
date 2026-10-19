@@ -368,7 +368,7 @@ public sealed class CatalogArtifactContractTests
         var keep = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
         var indirect = await artifacts.PutAsync(ArtifactKind.Template, new MemoryStream([4, 5, 6]));
         var orphan = await artifacts.PutAsync(ArtifactKind.Package, new MemoryStream([7, 8, 9]));
-        await store.RegisterWorkflowVersionAsync(new(name, 1, "artifacts", ArtifactDigest: keep, ArtifactReferences: [indirect]));
+        await store.RegisterWorkflowVersionAsync(new(name, 1, "artifacts", ArtifactDigest: keep, ArtifactReferences: [indirect]), artifacts);
         await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired);
         await age();
         Assert.Equal(1, await store.PurgeArtifactsAsync(artifacts, TimeSpan.FromDays(90), 1));
