@@ -32,7 +32,11 @@ public sealed record WorkflowAdmission(string Sender, string Trigger, string Key
 }
 
 public sealed record WorkflowAdmissionRecord(string Sender, string Trigger, string Key, string Fingerprint,
-    string InstanceId, string WorkflowName, int WorkflowVersion, DateTime ExpiresAtUtc, Guid Incarnation = default);
+    string InstanceId, string WorkflowName, int WorkflowVersion, DateTime ExpiresAtUtc, Guid Incarnation = default)
+{
+    /// <summary>The original admission's hint, retained for acknowledgement retries.</summary>
+    public RunnableNotice? Notice { get; init; }
+}
 
 /// <summary>Retained with the instance and its removal tombstone, independently of key expiry.</summary>
 public sealed record WorkflowOwnership(string InstanceId, string Sender, string Trigger, string Owner, string? Tenant,
@@ -72,6 +76,7 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
         admission.Validate();
         if (await _admission.GetWorkflowAdmissionAsync(admission.Sender, admission.Trigger, admission.Key) is { } existing)
         {
+            notifications?.Publish(existing.Notice);
             host.WakeNow(existing.InstanceId);
             return existing;
         }
@@ -102,7 +107,7 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             }
             if (result.Status is not (WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied) || result.Admission is not { } record)
                 throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "Atomic admission was not acknowledged");
-            if (result.Status == WorkflowCommitStatus.Applied) notifications?.Publish(result.Notice);
+            notifications?.Publish(result.Notice);
             host.WakeNow(record.InstanceId);
             return record;
         }

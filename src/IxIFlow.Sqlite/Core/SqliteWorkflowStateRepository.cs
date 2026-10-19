@@ -419,9 +419,18 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId
             """,
         Statement.Receipt => """
-            SELECT expected_revision AS ExpectedRevision, revision AS Revision, payload_hash AS PayloadHash
+            SELECT expected_revision AS ExpectedRevision, revision AS Revision, payload_hash AS PayloadHash,
+                notice_json AS NoticeJson, made_runnable_json AS MadeRunnableJson
             FROM ixiflow_workflow_commits
             WHERE instance_id = @InstanceId AND commit_id = @CommitId
+            """,
+        Statement.UpdateReceiptNotices => """
+            UPDATE ixiflow_workflow_commits SET notice_json = @NoticeJson, made_runnable_json = @MadeRunnableJson
+            WHERE instance_id = @InstanceId AND commit_id = @CommitId
+            """,
+        Statement.UpdateEventNotice => """
+            UPDATE ixiflow_workflow_events SET notice_json = @NoticeJson
+            WHERE instance_id = @InstanceId AND event_id = @EventId
             """,
         Statement.Lease => """
             SELECT epoch AS Epoch, crash_count AS CrashCount, expires_at_utc > @Now AS IsActive
@@ -432,7 +441,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 SELECT instance_id FROM ixiflow_workflow_instances WHERE instance_id IN @Ids LIMIT 1
                 """,
         Statement.EventHash => """
-            SELECT sequence AS Sequence, payload_hash AS PayloadHash FROM ixiflow_workflow_events
+            SELECT sequence AS Sequence, payload_hash AS PayloadHash, notice_json AS NoticeJson FROM ixiflow_workflow_events
             WHERE instance_id = @InstanceId AND event_id = @EventId
             """,
         Statement.CandidateWait => $"""
@@ -636,6 +645,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             wait_id TEXT COLLATE BINARY NULL,
             rejection INTEGER NULL,
             settled_at_utc TEXT NULL,
+            notice_json TEXT NULL,
             PRIMARY KEY (instance_id, event_id)
         );
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_events_pending
@@ -674,6 +684,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             expected_revision INTEGER NOT NULL,
             revision INTEGER NOT NULL,
             payload_hash BLOB NOT NULL,
+            notice_json TEXT NULL,
+            made_runnable_json TEXT NULL,
             PRIMARY KEY (instance_id, commit_id)
         );
         CREATE TABLE ixiflow_execution_epoch (

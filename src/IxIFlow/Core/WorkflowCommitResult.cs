@@ -41,7 +41,7 @@ public sealed record WorkflowCommitResult(
     bool UnreadEvents = false,
     IReadOnlyList<RunnableNotice>? MadeRunnable = null)
 {
-    /// <summary>The committing instance's change, captured inside the write transaction.</summary>
+    /// <summary>The committing instance's change, captured inside the write transaction and retained for replay.</summary>
     public RunnableNotice? Notice { get; init; }
 
     /// <summary>The commit left its instance due with no live owner.</summary>
@@ -52,7 +52,8 @@ public sealed record WorkflowCommitResult(
 
     /// <summary>
     /// Other instances the commit made runnable: the children it started, and a parent whose inbox took
-    /// the child's completion. A host may run them at once; the poll finds them otherwise.
+    /// the child's completion. These notices are retained for replay. A host may run them at once;
+    /// the poll finds them otherwise.
     /// </summary>
     public IReadOnlyList<RunnableNotice> MadeRunnable { get; init; } = MadeRunnable ?? [];
 

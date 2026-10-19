@@ -39,8 +39,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
         Cancellation, Cancellations, Running, ClaimLease, RenewLease, ReleaseLease, Notice,
-        LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, Lease, TakenChild,
-        EventHash, CandidateWait, AdvanceInbox, InsertEvent, PendingEvents, Event, InboxSequences,
+        LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, UpdateReceiptNotices, Lease, TakenChild,
+        EventHash, CandidateWait, AdvanceInbox, InsertEvent, UpdateEventNotice, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
         ReadInstance, ReadParts, Query, ByName, ByStatus, ByCorrelation, ByParent,
         LockAndReadPage, DeleteLease,
@@ -542,7 +542,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             new { workflowEvent.InstanceId, workflowEvent.EventId }, transaction);
         if (existing != null)
             return existing.PayloadHash.SequenceEqual(hash)
-                ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Sequence)
+                ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Sequence) { Notice = ReadNotice(existing.NoticeJson) }
                 : new EventAppendResult(EventAppendStatus.Conflict);
         if (instance == null)
             return new EventAppendResult(await TombstoneAsync(connection, transaction, workflowEvent.InstanceId, now) != null
@@ -591,9 +591,15 @@ public abstract partial class RelationalWorkflowStateRepository :
             await TraceRefusalAsync(connection, transaction, workflowEvent, refused, now, instance.TracingEnabled);
         var notice = madeRunnable && !wasClaimable
             ? await NoticeAsync(connection, transaction, workflowEvent.InstanceId, now) : null;
+        notice = notice?.Claimable == true ? notice : null;
+        if (notice != null)
+            await connection.ExecuteAsync(RequiredSql(Statement.UpdateEventNotice), new
+            {
+                workflowEvent.InstanceId, workflowEvent.EventId, NoticeJson = JsonSerializer.Serialize(notice)
+            }, transaction);
         return rejection == null
             ? new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable)
-                { Notice = notice?.Claimable == true ? notice : null }
+                { Notice = notice }
             : new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection);
     }
 
@@ -728,7 +734,8 @@ public abstract partial class RelationalWorkflowStateRepository :
             if (await ReadAdmissionAsync(connection, transaction, admission.Sender, admission.Trigger, admission.Key, admissionNow) is { } winner)
             {
                 await transaction.CommitAsync();
-                return new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 0) { Admission = winner };
+                return new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 0)
+                    { Admission = winner, Notice = winner.Notice };
             }
             admitted = new(admission.Sender, admission.Trigger, admission.Key, admission.Fingerprint,
                 commit.InstanceId, snapshot.WorkflowName, commit.ReadTrunk().WorkflowVersion, admissionNow + admission.KeyRetention, commit.Incarnation);
@@ -787,7 +794,9 @@ public abstract partial class RelationalWorkflowStateRepository :
                 ? new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision)
                 : new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
                     ReadReason(current?.CancellationJson), commit.Parks && !owns,
-                    commit.InboxReadThrough is { } replayRead && current?.InboxSequence > replayRead);
+                    commit.InboxReadThrough is { } replayRead && current?.InboxSequence > replayRead,
+                    receipt.MadeRunnableJson == null ? [] : JsonSerializer.Deserialize<RunnableNotice[]>(receipt.MadeRunnableJson))
+                    { Notice = ReadNotice(receipt.NoticeJson) };
         }
         if (!owns)
         {
@@ -930,29 +939,41 @@ public abstract partial class RelationalWorkflowStateRepository :
         // and nobody holds it, because the commit let it go or woke it with an event.
         if (madeRunnable.Count > 0 || woken || (runnableAt <= now && releases))
             await NotifyRunnableAsync(connection, transaction);
-        if (admitted != null)
-        {
-            var identity = new { admission!.Sender, admission.Trigger, admission.Key };
-            await connection.ExecuteAsync(RequiredSql(Statement.AdmissionDelete), identity, transaction);
-            await connection.ExecuteAsync(RequiredSql(Statement.AdmissionInsert), WithTimes(new
-            {
-                admission.Sender, admission.Trigger, admission.Key, admission.Fingerprint, commit.InstanceId, commit.Incarnation,
-                admitted.WorkflowName, admitted.WorkflowVersion
-            }, ("ExpiresAtUtc", admitted.ExpiresAtUtc)), transaction);
-            await connection.ExecuteAsync(RequiredSql(Statement.OwnershipDelete), new { commit.InstanceId }, transaction);
-            await connection.ExecuteAsync(RequiredSql(Statement.OwnershipInsert),
-                new { commit.InstanceId, commit.Incarnation, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, admission.OwnerKind }, transaction);
-        }
         var notices = new List<RunnableNotice>();
         foreach (var id in madeRunnable.Distinct(StringComparer.Ordinal))
             if (await NoticeAsync(connection, transaction, id, now) is { Claimable: true } runnable)
                 notices.Add(runnable);
         var changed = await NoticeAsync(connection, transaction, commit.InstanceId, now);
+        var ownNotice = changed is { Claimable: true } or { Idle: true } ? changed : null;
+        await connection.ExecuteAsync(RequiredSql(Statement.UpdateReceiptNotices), new
+        {
+            commit.InstanceId, commit.CommitId,
+            NoticeJson = ownNotice == null ? null : JsonSerializer.Serialize(ownNotice),
+            MadeRunnableJson = JsonSerializer.Serialize(notices)
+        }, transaction);
+        if (admitted != null)
+        {
+            admitted = admitted with { Notice = ownNotice };
+            var identity = new { admission!.Sender, admission.Trigger, admission.Key };
+            await connection.ExecuteAsync(RequiredSql(Statement.AdmissionDelete), identity, transaction);
+            await connection.ExecuteAsync(RequiredSql(Statement.AdmissionInsert), WithTimes(new
+            {
+                admission.Sender, admission.Trigger, admission.Key, admission.Fingerprint, commit.InstanceId, commit.Incarnation,
+                admitted.WorkflowName, admitted.WorkflowVersion,
+                NoticeJson = ownNotice == null ? null : JsonSerializer.Serialize(ownNotice)
+            }, ("ExpiresAtUtc", admitted.ExpiresAtUtc)), transaction);
+            await connection.ExecuteAsync(RequiredSql(Statement.OwnershipDelete), new { commit.InstanceId }, transaction);
+            await connection.ExecuteAsync(RequiredSql(Statement.OwnershipInsert),
+                new { commit.InstanceId, commit.Incarnation, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, admission.OwnerKind }, transaction);
+        }
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,
             ReadReason(current?.CancellationJson), parked, unread, notices)
-            { Admission = admitted, Notice = changed is { Claimable: true } or { Idle: true } ? changed : null };
+            { Admission = admitted, Notice = ownNotice };
     }
+
+    private static RunnableNotice? ReadNotice(string? json) =>
+        json == null ? null : JsonSerializer.Deserialize<RunnableNotice>(json);
 
     private async Task<RunnableNotice?> NoticeAsync(DbConnection connection, DbTransaction transaction,
         string instanceId, DateTime now)
@@ -1178,6 +1199,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     private sealed class EventHashRow
     {
+        public string? NoticeJson { get; set; }
         public long Sequence { get; set; }
         public byte[] PayloadHash { get; set; } = [];
     }
@@ -1229,6 +1251,8 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     private sealed class CommitReceipt
     {
+        public string? NoticeJson { get; set; }
+        public string? MadeRunnableJson { get; set; }
         public long ExpectedRevision { get; set; }
         public long Revision { get; set; }
         public byte[] PayloadHash { get; set; } = [];
