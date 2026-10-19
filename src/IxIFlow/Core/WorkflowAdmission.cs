@@ -59,8 +59,7 @@ public interface IWorkflowIngressClient
 }
 
 internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWorkflowVersionRegistry registry,
-    WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null,
-    IPayloadStore? payloadStore = null) : IWorkflowIngressClient
+    WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null) : IWorkflowIngressClient
 {
     private readonly IWorkflowAdmissionStore _admission = store;
 
@@ -99,9 +98,8 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             cancellationToken.ThrowIfCancellationRequested();
             if (payloads.Pending.Any())
             {
-                var transfer = new ExecutionPayloadTransfer(payloadStore ?? (store as IPayloadStoreProvider)?.PayloadStore ??
-                    throw new InvalidOperationException("No payload store configured"), limits);
-                await transfer.AcceptAsync(payloads.Pending.Select(value =>
+                var transfer = new ExecutionPayloadTransfer(store.PayloadStore, limits);
+                commit = transfer.PrepareCommit(commit, payloads.Pending.Select(value =>
                     new PayloadBody(value.Identity, value.Encoded.ToArray(), value.Dependencies)).ToArray());
             }
             // Stores classify retryable concurrency errors as Retry; arbitrary exceptions propagate.

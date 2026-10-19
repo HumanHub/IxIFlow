@@ -427,6 +427,7 @@ public sealed class WorkflowDeadlineTests
     private sealed class DelayRootCompletionRepository(FakeTimeProvider time, TimeSpan delay)
         : IWorkflowStateRepository
     {
+        public IPayloadStore PayloadStore => _inner.PayloadStore;
         public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
             _inner.RegisterMemberAsync(member, cancellationToken);
         public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,

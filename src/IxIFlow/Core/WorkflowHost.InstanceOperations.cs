@@ -32,8 +32,7 @@ public sealed partial class WorkflowHost
         private readonly ChildWorkflows _children = new(services, registry, timeProvider ?? TimeProvider.System);
         private readonly ExecutionLeaseSettings _leaseSettings = leaseSettings ?? ExecutionLeaseSettings.Default;
         private readonly ExecutionLimits _limits = limits ?? ExecutionLimits.Default;
-        private IPayloadStore PayloadStore => (services.GetService(typeof(IPayloadStore)) as IPayloadStore) ??
-            (repository as IPayloadStoreProvider)?.PayloadStore ?? throw new InvalidOperationException("No payload store configured");
+        private IPayloadStore PayloadStore => repository.PayloadStore;
         private PayloadReader NewPayloadReader() => new(ReadPayloadBodyAsync, new(_limits.MaxHydratedPayloadBytes));
         private async Task<ExecutionCheckpoint> ReadCheckpointAsync(WorkflowInstance instance, PayloadReader? reader = null) =>
             ExecutionCheckpoint.Read(await StoredCheckpoint.WholeStateAsync(instance, reader ?? NewPayloadReader()));
@@ -1198,7 +1197,7 @@ public sealed partial class WorkflowHost
                     else
                     {
                         operations.CheckLimit(commit, _saved);
-                        if (request.Payloads is { Count: > 0 } payloads) await PayloadTransfer.AcceptAsync(payloads);
+                        if (request.Payloads is { Count: > 0 } payloads) commit = PayloadTransfer.PrepareCommit(commit, payloads);
                         reply = await operations.CommitAsync(instance, commit, owner.Epoch, identity, _saved);
                         if (reply.Kind == CheckpointReplyKind.Ack && reply.Revision >= _saved.Revision)
                         {

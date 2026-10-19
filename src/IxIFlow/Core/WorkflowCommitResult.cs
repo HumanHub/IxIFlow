@@ -89,7 +89,7 @@ public sealed class CheckpointCommit
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
         ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
-        IReadOnlyList<PayloadReference> payloadReferences, bool preservesPayloadPins)
+        IReadOnlyList<PayloadReference> payloadReferences, bool preservesPayloadPins, IReadOnlyList<PayloadBody> payloadBodies)
     {
         Instance = instance;
         InstanceId = instance.InstanceId;
@@ -116,6 +116,7 @@ public sealed class CheckpointCommit
         TraceEntries = traceEntries;
         PayloadReferences = payloadReferences;
         PreservesPayloadPins = preservesPayloadPins;
+        PayloadBodies = payloadBodies;
         _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes(
             $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}{(stopped ? 1 : 0)}\n" +
             $"{inboxReadThrough?.ToString() ?? "-"}\n{wakeAfter?.Ticks.ToString() ?? "-"}\n" +
@@ -124,7 +125,7 @@ public sealed class CheckpointCommit
             $"{JsonSerializer.Serialize(childStarts)}\n{JsonSerializer.Serialize(childCancellations)}\n" +
             $"{JsonSerializer.Serialize(parentNotice)}\n{JsonSerializer.Serialize(traceEntries)}\n" +
             $"{(replacesParts ? 1 : 0)}\n{JsonSerializer.Serialize(deletedParts)}\n{JsonSerializer.Serialize(parts)}\n" +
-            $"{JsonSerializer.Serialize(payloadReferences)}\n{preservesPayloadPins}\n" + payload));
+            $"{JsonSerializer.Serialize(payloadReferences)}\n{preservesPayloadPins}\n{JsonSerializer.Serialize(payloadBodies.Select(body => new { body.Reference, body.Dependencies }))}\n" + payload));
     }
 
     /// <summary>The longest timeout, delay or park a commit may carry.</summary>
@@ -148,6 +149,15 @@ public sealed class CheckpointCommit
     public IReadOnlyList<PayloadReference> PayloadReferences { get; }
     /// <summary>A fenced metadata-only stop retains existing parts and pins, even if their bodies are unreadable.</summary>
     public bool PreservesPayloadPins { get; }
+    /// <summary>New bodies written atomically with this checkpoint and its pins.</summary>
+    public IReadOnlyList<PayloadBody> PayloadBodies { get; }
+
+    public CheckpointCommit WithPayloadBodies(IReadOnlyList<PayloadBody> bodies) =>
+        FromFields(Instance, Payload, Parts, DeletedParts, ReplacesParts, Incarnation, Epoch, CommitId,
+            ExpectedRevision, ClearsCrashCount, Parks, Settlements, InboxReadThrough, OpenedWaits,
+            ArmedWaits, ClosedWaits, WakeAfter, Stopped, ChildStarts, ChildCancellations, ParentNotice,
+            TraceEntries, PayloadReferences, PreservesPayloadPins, bodies);
+
     public PayloadOwner PayloadOwner => new("checkpoint", $"{InstanceId}/{Incarnation:N}");
 
     /// <summary>The keys of the parts this commit deletes, in order.</summary>
@@ -307,7 +317,8 @@ public sealed class CheckpointCommit
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
         ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
-        IReadOnlyList<PayloadReference>? payloadReferences = null, bool preservesPayloadPins = false)
+        IReadOnlyList<PayloadReference>? payloadReferences = null, bool preservesPayloadPins = false,
+        IReadOnlyList<PayloadBody>? payloadBodies = null)
     {
         ArgumentNullException.ThrowIfNull(metadata);
         ArgumentNullException.ThrowIfNull(payload);
@@ -446,7 +457,11 @@ public sealed class CheckpointCommit
             Array.AsReadOnly(closed), wakeAfter, stopped, Array.AsReadOnly(started), Array.AsReadOnly(cancelled),
             parentNotice, Array.AsReadOnly(traceEntries.ToArray()),
             Array.AsReadOnly((payloadReferences ?? []).Distinct().OrderBy(r => r.Digest, StringComparer.Ordinal).ToArray()),
-            preservesPayloadPins);
+            preservesPayloadPins, Array.AsReadOnly((payloadBodies ?? []).Select(body =>
+            {
+                body.Reference.Verify(body.Body);
+                return new PayloadBody(body.Reference, body.Body.ToArray(), Array.AsReadOnly(body.Dependencies.ToArray()));
+            }).ToArray()));
     }
 
     internal static CheckpointCommit PayloadStop(WorkflowInstance saved, long epoch, string reason, DateTime now,
