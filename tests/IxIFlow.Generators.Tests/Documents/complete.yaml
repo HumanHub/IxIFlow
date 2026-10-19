@@ -23,7 +23,6 @@ activities:
         to: {path: workflow.Receipt}
 steps:
   notify:
-    kind: block
     parameters:
       channel: {type: string, required: true, default: email}
     steps:
@@ -47,7 +46,6 @@ definitions:
   - kind: activityRef
     id: charge
     name: Charge
-    description: Charges the order through the activity template.
     ref: charge
   - kind: stepRef
     id: notify
