@@ -93,7 +93,6 @@ public class DslDocumentTests
                 ["taxFormula"] = new()
                 {
                     Language = "csharp-expression",
-                    Returns = "decimal",
                     Source = "workflow.amount * 0.20m"
                 }
             }

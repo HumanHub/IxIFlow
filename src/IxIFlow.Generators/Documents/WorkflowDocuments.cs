@@ -90,13 +90,9 @@ public sealed record TemplateParameterDocument : DocumentNode
 [Description("A code asset referenced by name from function expressions.")]
 public sealed record CodeAssetDocument : DocumentNode
 {
-    [Description("The code language, with local expressions requiring csharp-expression.")]
+    [Description("The code language, which must be csharp-expression.")]
     [DocumentRequired]
     public string Language { get; init; } = string.Empty;
-    [Description("The declared return type retained for publishing.")]
-    public string? Returns { get; init; }
-    [Description("The declared entry point retained for publishing.")]
-    public string? EntryPoint { get; init; }
     [Description("The code source rewritten against the expression context.")]
     [DocumentRequired]
     public string Source { get; init; } = string.Empty;
@@ -218,9 +214,9 @@ public abstract record WaitStepDocument : WorkflowStepDocument
     public string Event { get; init; } = string.Empty;
     [Description("The optional expression deciding whether an event is accepted.")]
     public ExpressionDocument? ResumeCondition { get; init; }
-    [Description("A suggested event payload for discovery UIs, never applied automatically.")]
+    [Description("The initial suggested event payload, overlaid with input mappings when the wait opens; never used as an answer automatically.")]
     public object? DefaultPayload { get; init; }
-    [Description("Input mappings configured for the wait.")]
+    [Description("Pure input mappings evaluated once against workflow data and the previous step when the wait opens, overlaid on defaultPayload or a new event instance and saved as the suggested payload.")]
     public List<InputMappingDocument> Input { get; init; } = [];
     [Description("Mappings from the event or reply to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
@@ -277,12 +273,9 @@ public sealed record InputMappingDocument : DocumentNode
 [Description("An output property mapped to a workflow path.")]
 public sealed record OutputMappingDocument : DocumentNode
 {
-    [Description("The CLR output property name.")]
+    [Description("The CLR output property name, read from the activity, the wait event or the invoked child workflow data according to the step kind.")]
     [DocumentRequired]
     public string Source { get; init; } = string.Empty;
-    [Description("The output context declared by the document.")]
-    [DocumentValues("activity", "event", "workflow")]
-    public string SourceContext { get; init; } = "activity";
     [Description("The workflow path receiving the output value.")]
     [DocumentRequired]
     public PathExpressionDocument To { get; init; } = new();
@@ -325,15 +318,13 @@ public sealed record BinaryExpressionDocument : ExpressionDocument
     public ExpressionDocument Right { get; init; } = new ConstantExpressionDocument();
 }
 
-[Description("A named code asset or C# method invocation.")]
+[Description("A reference to a named csharp-expression code asset, taking no arguments.")]
 [DocumentKind("function")]
 public sealed record FunctionExpressionDocument : ExpressionDocument
 {
-    [Description("The code asset key or C# method name.")]
+    [Description("The key of a code asset whose language is csharp-expression; method calls belong in the asset source.")]
     [DocumentRequired]
     public string Function { get; init; } = string.Empty;
-    [Description("Arguments for a C# method, with local code assets taking none.")]
-    public List<ExpressionDocument> Arguments { get; init; } = [];
 }
 
 [Description("Parallel branches whose output changes are merged when the join completes.")]

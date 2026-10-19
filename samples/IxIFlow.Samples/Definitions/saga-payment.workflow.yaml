@@ -32,7 +32,6 @@ definitions:
         resumeCondition: { path: 'event.Status != "pending"' }
         output:
           - source: Status
-            sourceContext: event
             to: { path: workflow.PaymentStatus }
     onError:
       - exception: IxIFlow.Recipes.StockUnavailable

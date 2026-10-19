@@ -211,11 +211,11 @@ public sealed record OpenedWait(string WaitId, WaitKind Kind, string Key, string
     string? DefaultPayloadJson = null);
 
 /// <summary>
-/// An open wait a commit gives its deadline: a request's reply wait, when its <c>WaitFor</c> is reached.
-/// The deadline is the store's time at that commit plus <paramref name="Timeout"/>; a wait that has a
-/// deadline keeps it.
+/// A request's reserved reply wait activated when its <c>WaitFor</c> is reached, with an optional
+/// timeout and saved suggested payload. A deadline or suggestion already stored is kept.
+/// The deadline is the store's time at that commit plus <paramref name="Timeout"/>.
 /// </summary>
-public sealed record ArmedWait(string WaitId, TimeSpan Timeout);
+public sealed record ArmedWait(string WaitId, TimeSpan? Timeout, string? DefaultPayloadJson = null);
 
 /// <summary>A wait a commit closes, and why.</summary>
 public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
