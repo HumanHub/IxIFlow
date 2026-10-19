@@ -61,6 +61,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
         operation is Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
+            or Operation.Termination
             ? await connection.BeginTransactionAsync() : null;
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)

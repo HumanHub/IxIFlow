@@ -12,10 +12,11 @@ public abstract partial class RelationalWorkflowStateRepository
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         await EnsureSchemaAsync();
-        return await ExecuteOperationAsync(Operation.CancellationRequest, async () =>
+        return await ExecuteOperationAsync(Operation.Termination, async () =>
         {
             await using var connection = await OpenConnectionAsync(ownership: true);
-            await using var transaction = (await BeginTransactionAsync(connection, Operation.CancellationRequest))!;
+            await using var transaction = await BeginTransactionAsync(connection, Operation.Termination)
+                ?? throw new InvalidOperationException("Termination requires a store transaction");
             var receipt = await RequestTerminationAsync(connection, transaction, instanceId, reason);
             if (receipt.Accepted) await NotifyRunnableAsync(connection, transaction);
             await transaction.CommitAsync();
