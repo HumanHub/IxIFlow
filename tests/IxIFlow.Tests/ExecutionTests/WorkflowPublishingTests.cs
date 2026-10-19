@@ -12,7 +12,10 @@ using IxIFlow.Tests.Infrastructure;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "registration")]
-[Trait("Spec", "D-49")]
+[Trait("Spec", "F-01")]
+[Trait("Spec", "F-04")]
+[Trait("Spec", "F-09")]
+[Trait("Spec", "F-11")]
 public sealed class WorkflowPublishingTests
 {
     private const string Yaml = """
@@ -128,7 +131,7 @@ public sealed class WorkflowPublishingTests
                 Assert.NotNull(await store.GetDefinitionAsync(draft.Name, draft.Version));
                 await store.SaveDefinitionAsync(draft with { Source = Yaml + "\n# edited" }, draft.Revision);
             });
-            var result = await new WorkflowPublisher((IWorkflowPublicationStore)store, upload, Options()).PublishAsync(draft.Id);
+            var result = await new WorkflowPublisher(store, upload, Options()).PublishAsync(draft.Id);
             Assert.False(result.Success);
             Assert.Equal(WorkflowPublishStage.Publish, Assert.Single(result.Diagnostics).Stage);
             Assert.Equal(2, (await store.GetDefinitionAsync(draft.Name, draft.Version))!.Revision);

@@ -1307,6 +1307,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             inner.GetWorkflowVersionsAsync(name);
         public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>
             inner.SetWorkflowVersionStateAsync(name, version, state);
+        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version) =>
+            inner.PublishDefinitionAsync(draftId, version);
         public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
             inner.PurgeArtifactsAsync(ReferenceEquals(artifacts, this) ? inner : artifacts, retention, batchSize, cancellationToken);
         public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
