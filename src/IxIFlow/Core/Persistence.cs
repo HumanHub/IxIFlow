@@ -452,6 +452,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     {
         ArgumentNullException.ThrowIfNull(commit);
         var snapshot = commit.ReadTrunk();
+        WorkflowCommitResult Result(WorkflowCommitStatus status, long revision,
+            CancellationReason? cancellation = null, bool parked = false, bool unread = false,
+            IReadOnlyList<string>? runnable = null) => new(status, revision, cancellation, parked, unread, runnable,
+                _instances.TryGetValue(commit.InstanceId, out var current) ? current.RunnableAtUtc : null, Now);
         lock (_claimLock)
         {
             WorkflowAdmissionRecord? admitted = null;
@@ -460,10 +464,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 admission.ValidateCommit(commit);
                 var identity = (admission.Sender, admission.Trigger, admission.Key);
                 if (_admissions.TryGetValue(identity, out var winner) && winner.ExpiresAtUtc > Now)
-                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 0) { Admission = winner });
+                    return Task.FromResult(Result(WorkflowCommitStatus.AlreadyApplied, 0) with { Admission = winner });
                 if (_instances.ContainsKey(commit.InstanceId) ||
                     _leases.TryGetValue(commit.InstanceId, out var owner) && owner.ExpiresAtUtc > Now)
-                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 0));
+                    return Task.FromResult(Result(WorkflowCommitStatus.Conflict, 0));
                 admitted = new(admission.Sender, admission.Trigger, admission.Key, admission.Fingerprint,
                     commit.InstanceId, snapshot.WorkflowName, snapshot.WorkflowVersion, Now + admission.KeyRetention, commit.Incarnation);
             }
@@ -478,29 +482,29 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
                 // A terminal or parking commit released the lease; only a running owner must still hold it.
                 if (snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks)
-                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+                    return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
                 // The same commit gets the same answer, including arrivals it has not read.
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
+                return Task.FromResult(Result(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
                     PendingCancellation(commit.InstanceId), commit.Parks && !owns, Unread(commit)));
             }
 
             // Receipts are deleted with the instance, so any replay above belongs to its current creation.
             if (commit.ExpectedRevision > 0 && stored != null &&
                 stored.Incarnation != commit.Incarnation)
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+                return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
             if (!owns)
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+                return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
             // An event this commit settles must still be pending.
             if (commit.Settlements.Any(settlement =>
                     !_events.TryGetValue((commit.InstanceId, settlement.EventId), out var pending) ||
                     pending.Event.Outcome != EventOutcome.Pending))
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, revision));
+                return Task.FromResult(Result(WorkflowCommitStatus.EventsChanged, revision));
             if (revision != commit.ExpectedRevision ||
                 ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or
                     WorkflowStatus.TimedOut) &&
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+                return Task.FromResult(Result(WorkflowCommitStatus.Conflict, revision));
             foreach (var child in commit.ChildStarts)
                 RefuseRemoved(child.ChildInstanceId, Now);
             // A child's ID is new; a commit that names an existing instance changes nothing.
@@ -616,8 +620,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 _admissions[(admission!.Sender, admission.Trigger, admission.Key)] = admitted;
                 _ownership[commit.InstanceId] = (commit.Incarnation, new(commit.InstanceId, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, commit.Incarnation, admission.OwnerKind));
             }
-            return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
-                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable) { Admission = admitted });
+            return Task.FromResult(Result(WorkflowCommitStatus.Applied, snapshot.Revision,
+                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable) with { Admission = admitted });
         }
     }
 

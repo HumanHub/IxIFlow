@@ -88,7 +88,7 @@ public sealed class LeaseIncarnationContractTests
                 contender.WorkflowDataJson = "{\"contender\":true}";
                 var different = CheckpointCommit.Create(contender, epoch, 0);
                 Assert.NotEqual(first.Incarnation, different.Incarnation);
-                Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1),
+                CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1),
                     await store.CommitWorkflowInstanceAsync(different));
                 Assert.Equal(first.Incarnation, (await store.GetWorkflowInstanceAsync(id))!.Incarnation);
 
@@ -116,7 +116,7 @@ public sealed class LeaseIncarnationContractTests
                 Assert.NotEqual(first.Incarnation, replacementFirst.Incarnation);
                 foreach (var late in stale)
                 {
-                    Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 1),
+                    CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 1),
                         await store.CommitWorkflowInstanceAsync(late));
                     var unchanged = (await store.GetWorkflowInstanceAsync(id))!;
                     Assert.Equal(1, unchanged.Revision);
@@ -200,7 +200,7 @@ public sealed class LeaseIncarnationContractTests
         try
         {
             await VerifyAbsentDelete(store, id + "-absent", duration, open);
-            await VerifyFirstInsertReplay(store, id + "-retry", duration);
+            await VerifyFirstInsertReplay(store, id + "-retry", duration, advance);
             var original = NewInstance(id);
             await Apply(store, CheckpointCommit.Create(original, (await StoreTestSupport.LeaseAsync(store, original.InstanceId)).Epoch, 0));
             await StoreTestSupport.ReleaseAsync(store, id);
@@ -343,7 +343,8 @@ public sealed class LeaseIncarnationContractTests
             Assert.Equal(commit.Incarnation, row.Incarnation);
     }
 
-    private static async Task VerifyFirstInsertReplay(IWorkflowStateRepository store, string prefix, TimeSpan duration)
+    private static async Task VerifyFirstInsertReplay(IWorkflowStateRepository store, string prefix, TimeSpan duration,
+        Func<string, TimeSpan, Task> advance)
     {
         foreach (var kind in new[] { "running", "parking", "completed" })
         {
@@ -359,10 +360,16 @@ public sealed class LeaseIncarnationContractTests
                 Assert.NotEqual(Guid.Empty, commit.Incarnation);
                 Assert.Equal(commit.Incarnation, instance.Incarnation);
                 var applied = await store.CommitWorkflowInstanceAsync(commit); // The acknowledgement is lost.
-                Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1,
+                CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1,
                     Parked: kind == "parking"), applied);
+                await CommitAssert.SchedulingAsync(store, id, applied);
+                await advance(id, TimeSpan.FromSeconds(1));
+                await Task.Delay(20); // Separate server clock samples too.
                 var receipt = await store.CommitWorkflowInstanceAsync(commit); // Resend the same immutable commit.
-                Assert.Equal(applied with { Status = WorkflowCommitStatus.AlreadyApplied }, receipt);
+                CommitAssert.Equal(applied with { Status = WorkflowCommitStatus.AlreadyApplied }, receipt);
+                await CommitAssert.SchedulingAsync(store, id, receipt);
+                Assert.Equal(applied.RunnableAtUtc, receipt.RunnableAtUtc);
+                Assert.True(receipt.StoreTimeUtc > applied.StoreTimeUtc);
                 var row = (await store.GetWorkflowInstanceAsync(id))!;
                 Assert.Equal(1, row.Revision);
                 Assert.Equal(commit.Incarnation, row.Incarnation);
@@ -375,7 +382,13 @@ public sealed class LeaseIncarnationContractTests
                 Assert.NotEqual(commit.Incarnation, recreated.Incarnation);
                 Assert.Equal(recreated.Incarnation, instance.Incarnation);
                 Assert.Equal(commit.ContentHash, recreated.ContentHash);
-                Assert.Equal(receipt, await store.CommitWorkflowInstanceAsync(recreated));
+                await advance(id, TimeSpan.FromSeconds(1));
+                await Task.Delay(20);
+                var recreatedReceipt = await store.CommitWorkflowInstanceAsync(recreated);
+                CommitAssert.Equal(receipt, recreatedReceipt);
+                await CommitAssert.SchedulingAsync(store, id, recreatedReceipt);
+                Assert.Equal(receipt.RunnableAtUtc, recreatedReceipt.RunnableAtUtc);
+                Assert.True(recreatedReceipt.StoreTimeUtc > receipt.StoreTimeUtc);
                 Assert.Equal(commit.Incarnation, (await store.GetWorkflowInstanceAsync(id))!.Incarnation);
             }
             finally { await store.DeleteWorkflowInstanceAsync(id); }

@@ -3,6 +3,9 @@ namespace IxIFlow.Core.Runtime;
 /// <summary>How many instances the host runs at once and how long it drains on stop.</summary>
 internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan PollInterval, string Name)
 {
+    public const int DefaultMaxCrashes = 3;
+    public int MaxCrashes { get; init; } = DefaultMaxCrashes;
+
     public Guid Id { get; } = Guid.NewGuid();
     public TimeSpan HeartbeatInterval { get; init; } = MemberRegistry.DefaultHeartbeatInterval;
     public IReadOnlyDictionary<string, string> Capabilities { get; init; } =
