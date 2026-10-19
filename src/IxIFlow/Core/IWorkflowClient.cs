@@ -8,6 +8,10 @@ namespace IxIFlow.Core;
 /// </summary>
 public interface IWorkflowClient
 {
+    /// <summary>Operator read of due, unleased work that no live host can run. Applications control access.</summary>
+    Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Starts an instance of the definition and runs it until it is idle.</summary>
     Task<WorkflowExecutionResult> RunAsync<TWorkflowData>(
         WorkflowDefinition definition,

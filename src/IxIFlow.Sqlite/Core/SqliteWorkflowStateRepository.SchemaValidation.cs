@@ -33,6 +33,8 @@ public sealed partial class SqliteWorkflowStateRepository
                 SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
+            if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sqlite_schema WHERE type='index' AND name='ix_ixiflow_instances_set_pin'", transaction: transaction) != 1)
+                throw EarlierBuild();
         }
         catch (Exception error) when (error is SqliteException { SqliteErrorCode: 1 })
         {

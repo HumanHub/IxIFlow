@@ -6,8 +6,11 @@ namespace IxIFlow.Core;
 /// The client every application uses: calls become work for the <see cref="WorkflowHost"/>, which runs
 /// them in slots. Reads and cancellation requests take no slot.
 /// </summary>
-internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time) : IWorkflowClient
+internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time, IWorkflowOperations operations) : IWorkflowClient
 {
+    public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default) => operations.GetUnschedulableAsync(limit, cursor, cancellationToken);
+
     // AwaitAsync also notices work finished on another host; until the store can notify (D-05,
     // D-12), it checks the saved state at this interval.
     private static readonly TimeSpan AwaitPollInterval = TimeSpan.FromSeconds(1);

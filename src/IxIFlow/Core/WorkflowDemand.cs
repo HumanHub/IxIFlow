@@ -88,9 +88,7 @@ internal static class WorkflowDemands
     internal static async Task RefuseUnschedulableAsync(IWorkflowStateRepository store,
         IReadOnlyList<WorkflowDemand> demands, CancellationToken token)
     {
-        var members = await store.GetLiveMembersAsync(token);
-        if (!members.Any(host => host.Kind == MemberKind.Host && demands.All(demand =>
-                host.Capabilities.TryGetValue(demand.Key, out var value) && (demand.Value == null || demand.Value == value))))
+        if (!await store.CanScheduleAsync(demands, token))
             throw new WorkflowEngineException(WorkflowErrorKind.Unschedulable,
                 "No live host advertises all the workflow's demands");
     }

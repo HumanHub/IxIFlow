@@ -10,7 +10,7 @@ namespace IxIFlow.Core;
 /// Wakes due waits and deadlines, and recovers interrupted instances. It polls the store and, when the store can wake
 /// it, also claims as soon as the store says an instance became claimable.
 /// </summary>
-internal sealed class WorkflowRecoveryService(
+internal sealed partial class WorkflowRecoveryService(
     IServiceScopeFactory scopes,
     IWorkflowStateRepository repository,
     ILogger<WorkflowRecoveryService> logger,
@@ -148,6 +148,7 @@ internal sealed class WorkflowRecoveryService(
     {
         var passes = new List<Task>();
         var waking = wakeSource == null ? Task.CompletedTask : WakeAsync(wakeSource, passes, stoppingToken);
+        var diagnostics = UnschedulableAsync(stoppingToken);
         // A pass runs until the work it handed out is idle or parked; the next tick does not wait for
         // it, and skips the instances it is still recovering.
         using var timer = new PeriodicTimer(_settings.PollInterval, _time);
@@ -162,6 +163,7 @@ internal sealed class WorkflowRecoveryService(
         {
         }
         await waking;
+        await diagnostics;
         Task[] running;
         lock (passes)
             running = passes.ToArray();
