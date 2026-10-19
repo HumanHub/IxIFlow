@@ -24,7 +24,8 @@ public sealed partial class WorkflowHost
         TimeProvider? timeProvider = null,
         ExecutionLimits? limits = null,
         RunControl? control = null,
-        CancellationWatch? watch = null)
+        CancellationWatch? watch = null,
+        HostSettings? hostSettings = null)
     {
         private readonly IWorkflowStateRepository _store = GuardedStateRepository.Wrap(repository);
         private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
@@ -33,8 +34,9 @@ public sealed partial class WorkflowHost
         private readonly ExecutionLimits _limits = limits ?? ExecutionLimits.Default;
         private readonly RunControl _control = control ?? new RunControl();
         private readonly CancellationWatch _watch = watch ?? new CancellationWatch(repository, timeProvider);
-        private readonly WorkflowExecutor _executor = new(services, activityExecutor,
-            timeProvider ?? TimeProvider.System);
+        private WorkflowExecutor? _executor;
+        private WorkflowExecutor Executor => LazyInitializer.EnsureInitialized(ref _executor,
+            () => new WorkflowExecutor(services, new ExecutionHost(this)));
 
         private readonly string? _defaultActor = (services.GetService(typeof(ClientActor)) as ClientActor)?.Name;
 
@@ -163,11 +165,12 @@ public sealed partial class WorkflowHost
             var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
 
-            using var signals = _executor.OpenRun();
-            using var recycle = _control.Register(signals.RunId, _executor.Deliver);
+            using var signals = Executor.PrepareAssignment(Guid.NewGuid());
+            using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
             await using var owner = await AcquireAsync(instance, signals);
             if (owner == null)
                 return Busy(instanceId);
+            using var assignment = Admit(instance, owner, signals.AssignmentId);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             if (current?.Incarnation != instance.Incarnation || current.Revision != instance.Revision ||
                 current.Status != instance.Status)
@@ -185,9 +188,8 @@ public sealed partial class WorkflowHost
             if (cancellationReason != null && !checkpoint.CancellationRequested &&
                 checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                 OperatorTrace.ApplyCancellation(instance, checkpoint, cancellationReason, Now);
-            await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
-            return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-                owner, signals, cancellationToken);
+            await PersistAsync(instance, checkpoint, workflowData, scopes, assignment);
+            return await AssignAsync(instance, owner, signals, cancellationToken);
         }
 
         public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId)
@@ -352,7 +354,7 @@ public sealed partial class WorkflowHost
             if (options.ExecutionTimeout is { } executionTimeout && executionTimeout <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(options),
                     "Execution timeout must be positive");
-            var (instance, checkpoint, scopes) = NewInstance(definition, workflowData, options, Now);
+            var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, workflowData, options, Now);
 
             try
             {
@@ -364,8 +366,8 @@ public sealed partial class WorkflowHost
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } started)
                     return ExistingStart(started, definition, scopes);
-                using var signals = _executor.OpenRun();
-                using var recycle = _control.Register(signals.RunId, _executor.Deliver);
+                using var signals = Executor.PrepareAssignment(Guid.NewGuid());
+                using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
                 await using var owner = await AcquireAsync(instance, signals)
                         ?? (options.InstanceId == null
                             ? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
@@ -373,6 +375,7 @@ public sealed partial class WorkflowHost
                             : null);
                 if (owner == null)
                     return Busy(instance.InstanceId);
+                using var assignment = Admit(instance, owner, signals.AssignmentId);
                 // Another start may have saved the instance since the first read.
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } existing)
@@ -384,11 +387,10 @@ public sealed partial class WorkflowHost
                         $"Workflow {definition.Name} v{definition.Version} is deactivated");
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
                 await registry.RegisterWorkflowAsync(definition);
-                await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, assignment);
                 // The start is durable from here; a caller waiting only for acceptance continues.
                 _control.Accept(instance.InstanceId);
-                return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
-                    owner, signals, cancellationToken);
+                return await AssignAsync(instance, owner, signals, cancellationToken);
             }
             catch (ExecutionOwnershipLostException)
             {
@@ -399,48 +401,6 @@ public sealed partial class WorkflowHost
                 error.At(instance.InstanceId);
                 throw;
             }
-        }
-
-        /// <summary>
-        /// A new instance of <paramref name="definition"/> with <paramref name="workflowData"/>, as a start
-        /// saves it, and its initial checkpoint: a client's start, or a child a parent's commit starts.
-        /// </summary>
-        public static (WorkflowInstance Instance, ExecutionCheckpoint Checkpoint, WorkflowScopeCatalog Scopes)
-            NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now)
-        {
-            WorkflowDefinitionValidator.Validate(definition);
-            var instance = new WorkflowInstance
-            {
-                InstanceId = options.InstanceId ?? Guid.NewGuid().ToString("N"),
-                WorkflowName = definition.Name,
-                WorkflowVersion = definition.Version,
-                WorkflowDataType = workflowData.GetType().AssemblyQualifiedName!,
-                WorkflowDataJson = BranchData.Snapshot(workflowData),
-                Status = WorkflowStatus.Running,
-                CorrelationId = options.CorrelationId ?? Guid.NewGuid().ToString("N"),
-                ParentInstanceId = options.ParentInstanceId,
-                CreatedAt = now,
-                StartedAt = now,
-                TracingEnabled = options.EnableTracing,
-                Properties = new Dictionary<string, object>(options.Properties)
-            };
-            var scopes = WorkflowDefinitionValidator.ForExecution(definition);
-            var checkpoint = new ExecutionCheckpoint
-            {
-                StructureHash = scopes.StructureHash,
-                // The store stamps the execution deadline when the start is committed (D-35).
-                ExecutionTimeout = options.ExecutionTimeout,
-                ExecutionTimerId = options.ExecutionTimeout != null ? Guid.NewGuid().ToString("N") : null,
-                ExecutionDeadlineUtc = instance.StartedAt + options.ExecutionTimeout,
-                Continuations =
-                [
-                    new ContinuationState
-                    {
-                        Stack = [new ScopePosition { ScopeId = "root" }]
-                    }
-                ]
-            };
-            return (instance, checkpoint, scopes);
         }
 
         /// <summary>
@@ -610,11 +570,12 @@ public sealed partial class WorkflowHost
             var scopes = checkedScopes!;
             // Ownership comes before the workflow data is read, so an instance whose data or code kills
             // its host is still counted by the next claim, and quarantined (B-08).
-            using var signals = _executor.OpenRun();
-            using var recycle = _control.Register(signals.RunId, _executor.Deliver);
+            using var signals = Executor.PrepareAssignment(Guid.NewGuid());
+            using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
             await using var owner = await AcquireAsync(instance, signals);
             if (owner == null)
                 return Busy(instanceId);
+            using var assignment = Admit(instance, owner, signals.AssignmentId);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             if (current?.Incarnation != instance.Incarnation || current.Revision != instance.Revision ||
                 current.Status != instance.Status)
@@ -627,42 +588,17 @@ public sealed partial class WorkflowHost
                 Telemetry.BacklogAge.Record(waited.TotalSeconds, Telemetry.Workflow(instance));
             // Only a claim of a running instance can see crashes: every commit that leaves Running
             // records progress and clears the count, and other entry points refuse running instances.
-            if (owner.CrashCount >= _limits.MaxCrashes)
-                return await QuarantineAsync(instance, checkpoint, scopes, owner);
-            checkpoint.Trace.Configure(instance, checkpoint, _limits, _time, scopes);
+            if (owner.CrashCount >= (hostSettings ?? HostSettings.Default).MaxCrashes)
+                return await QuarantineAsync(instance, checkpoint, scopes, assignment);
             var stopCleared = checkpoint.OperatorStop != null;
-            if (stopCleared)
-            {
-                checkpoint.OperatorStop = null;
-                instance.LastError = null;
-                instance.LastErrorStackTrace = null;
-                if (release)
-                    OperatorTrace.Released(checkpoint, actor, Now);
-            }
-            // A run for an event only takes it: an activity waiting for an operator stays waiting.
-            foreach (var continuation in checkpoint.Continuations.Where(item =>
-                         item.PendingActivity is { ChildWorkflowId: null } &&
-                         (item.Status == ContinuationStatus.Cancelling ||
-                          item.Status == ContinuationStatus.WaitingResolution && (!forEvent || stopCleared))))
-                continuation.Status = ContinuationStatus.Active;
-            instance.Status = WorkflowStatus.Running;
-            if (newCancellation)
-                OperatorTrace.ApplyCancellation(instance, checkpoint, cancellationReason!, Now);
-            if (stopCleared)
-            {
-                // Leaving a stop is saved before any workflow code runs, so a crash after it is counted
-                // and a cancellation is not left waiting. It saves the stopped checkpoint without its
-                // marker, so no limit applies; a run that still exceeds a limit stops again at its next commit.
-                await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner), instance,
-                    checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
-            }
-            var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-            var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
-            return await RunAndSaveAsync(definition, instance, checkpoint,
-                workflowData, owner, signals, cancellationToken);
+            var reactivated = checkpoint.Continuations.Where(item =>
+                item.PendingActivity is { ChildWorkflowId: null } &&
+                (item.Status == ContinuationStatus.Cancelling ||
+                 item.Status == ContinuationStatus.WaitingResolution && (!forEvent || stopCleared)))
+                .Select(item => item.Id).ToArray();
+            return await AssignAsync(instance, owner, signals, cancellationToken,
+                new RecoveryPreparation(reactivated, newCancellation ? cancellationReason : null,
+                    stopCleared, release, actor));
         }
 
         // An idle instance has work when an event waits for it or the store finds one of its deadlines due
@@ -733,9 +669,9 @@ public sealed partial class WorkflowHost
 
         private Task<WorkflowExecutionLease?> AcquireAsync(WorkflowInstance instance, ExecutionSignals signals) =>
             WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch,
-                _ => _executor.Deliver(new Cancel(signals.RunId, CancelKind.Ownership)),
-                reason => _executor.Deliver(new Cancel(signals.RunId, CancelKind.Workflow, reason)),
-                sequence => _executor.Deliver(new Arrivals(signals.RunId, sequence)), _time);
+                _ => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Ownership)),
+                reason => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reason)),
+                sequence => Executor.Deliver(new Arrivals(signals.AssignmentId, sequence)), _time);
 
         private sealed class RunReceipt
         {
@@ -747,29 +683,47 @@ public sealed partial class WorkflowHost
 
         private readonly ConcurrentDictionary<string, RunReceipt> _receipts = new(StringComparer.Ordinal);
 
-        private async Task<WorkflowExecutionResult> RunAndSaveAsync(WorkflowDefinition definition,
-            WorkflowInstance instance, ExecutionCheckpoint checkpoint, object workflowData,
-            WorkflowExecutionLease owner, ExecutionSignals signals, CancellationToken cancellationToken)
+        private async Task<WorkflowExecutionResult> AssignAsync(WorkflowInstance instance,
+            WorkflowExecutionLease owner, ExecutionSignals signals, CancellationToken cancellationToken,
+            RecoveryPreparation? preparation = null)
         {
             var depth = Interlocked.Increment(ref _runDepth);
             using var cancellation = cancellationToken.Register(() =>
-                _executor.Deliver(new Cancel(signals.RunId, CancelKind.Run)));
+                Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Run)));
             try
             {
-                var outcome = await _executor.RunAsync(definition, instance, checkpoint, workflowData,
-                    new HostedRun(this, instance, owner, canPark: depth == 1), signals.RunId);
+                var checkpoint = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
+                var assigned = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!;
+                assigned.Incarnation = instance.Incarnation;
+                assigned.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
+                var assign = new Assign(signals.AssignmentId, assigned, instance.PartsAt(instance.Revision),
+                    checkpoint.StructureHash, owner.Epoch, signals.InboxSequence, _limits, depth == 1, [], preparation);
+                var ready = await Executor.ExecuteAsync(assign, CancellationToken.None);
+                if (ready.AssignmentId != signals.AssignmentId)
+                    throw new ExecutionOwnershipLostException(new InvalidOperationException("Ready is not assigned"));
+                var outcome = ready.Outcome;
+                if (AdmitReady(ready) == ConflictReason.NotAssigned)
+                    outcome = new(AssignmentOutcomeKind.OwnershipLost);
+                if (outcome.Kind == AssignmentOutcomeKind.Interrupted)
+                {
+                    // Unknown may have applied. Neither the executor's last Ack nor the receipt projection
+                    // is authoritative; recovery always starts with a new store read.
+                    _ = await _store.GetWorkflowInstanceAsync(instance.InstanceId);
+                    throw _assignments[signals.AssignmentId].LastCommitError ?? new WorkflowEngineException(
+                        WorkflowErrorKind.Infrastructure, outcome.ErrorMessage ?? "Execution was interrupted");
+                }
                 if (outcome.Kind == AssignmentOutcomeKind.RunCancelled)
                     throw new OperationCanceledException(cancellationToken);
                 _receipts.TryGetValue(instance.InstanceId, out var receipt);
                 // Acknowledged commits reconstruct the stored instance without retaining executor objects.
                 // After ownership loss another host may have changed it, so only a fresh read is authoritative.
-                var saved = outcome.Kind == AssignmentOutcomeKind.OwnershipLost
+                var saved = outcome.Kind is AssignmentOutcomeKind.OwnershipLost or AssignmentOutcomeKind.Interrupted
                     ? await _store.GetWorkflowInstanceAsync(instance.InstanceId)
                     : receipt?.Instance;
                 if (saved == null)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                         "The running workflow instance is missing from the store");
-                if (outcome.Kind is not AssignmentOutcomeKind.OwnershipLost &&
+                if (outcome.Kind is not (AssignmentOutcomeKind.OwnershipLost or AssignmentOutcomeKind.Interrupted) &&
                     receipt?.WakeUtc is { } due &&
                     (outcome.Kind == AssignmentOutcomeKind.Parked ||
                      saved.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution))
@@ -780,7 +734,7 @@ public sealed partial class WorkflowHost
                 result.Status = outcome.Kind switch
                 {
                     AssignmentOutcomeKind.Parked => WorkflowExecutionStatus.Scheduled,
-                    AssignmentOutcomeKind.Drained or AssignmentOutcomeKind.OwnershipLost => WorkflowExecutionStatus.Running,
+                    AssignmentOutcomeKind.Drained or AssignmentOutcomeKind.OwnershipLost or AssignmentOutcomeKind.Interrupted => WorkflowExecutionStatus.Running,
                     _ => StatusOf(saved.Status)
                 };
                 result.TraceEntries = receipt?.Trace.ToList() ?? [];
@@ -806,12 +760,17 @@ public sealed partial class WorkflowHost
 
         // A request whose checkpoint would exceed a limit is refused; the instance keeps its saved state.
         private async Task PersistAsync(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
-            object workflowData, WorkflowScopeCatalog scopes, WorkflowExecutionLease owner)
+            object workflowData, WorkflowScopeCatalog scopes, HostedRun assignment)
         {
             try
             {
-                await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner), instance,
+                await ExecutionCheckpointWriter.CommitAsync(assignment.Session, instance,
                     checkpoint, workflowData, scopes, Now);
+            }
+            catch (CheckpointInterruptedException error) when (error.InnerException != null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error.InnerException).Throw();
+                throw;
             }
             catch (CheckpointLimitExceededException error)
             {
@@ -820,7 +779,7 @@ public sealed partial class WorkflowHost
         }
 
         private async Task<CheckpointReply> CommitAsync(WorkflowInstance instance, CheckpointCommit commit,
-            long epoch)
+            long epoch, Guid assignmentId)
         {
             if (epoch == 0)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
@@ -829,7 +788,7 @@ public sealed partial class WorkflowHost
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"A commit for workflow instance '{commit.InstanceId}' reached the run of '{instance.InstanceId}'");
             if (commit.Epoch != epoch || commit.Incarnation != instance.Incarnation)
-                return new CheckpointReply(CheckpointReplyKind.Conflict, Error: new WorkflowEngineException(
+                return new CheckpointReply(assignmentId, CheckpointReplyKind.Conflict, Error: new WorkflowEngineException(
                     WorkflowErrorKind.InvalidState,
                     $"A commit from incarnation {commit.Incarnation} at execution epoch {commit.Epoch} cannot change " +
                     $"workflow instance '{commit.InstanceId}' in incarnation {instance.Incarnation} owned at epoch {epoch}"));
@@ -840,7 +799,7 @@ public sealed partial class WorkflowHost
             }
             catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure)
             {
-                return new CheckpointReply(CheckpointReplyKind.Unknown, Error: error);
+                return new CheckpointReply(assignmentId, CheckpointReplyKind.Unknown, Error: error);
             }
 
             switch (result.Status)
@@ -862,24 +821,24 @@ public sealed partial class WorkflowHost
                     // for the poll (D-17).
                     foreach (var runnable in result.MadeRunnable)
                         _control.Runnable(runnable);
-                    return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision,
+                    return new CheckpointReply(assignmentId, CheckpointReplyKind.Ack, result.Revision,
                         PendingCancellation: result.PendingCancellation, Parked: result.Parked,
                         UnreadEvents: result.UnreadEvents);
                 case WorkflowCommitStatus.EventsChanged:
-                    return new CheckpointReply(CheckpointReplyKind.EventsChanged, result.Revision,
+                    return new CheckpointReply(assignmentId, CheckpointReplyKind.Conflict, result.Revision,
                         new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                            $"An inbox event workflow instance '{commit.InstanceId}' settles is no longer pending"));
+                            $"An inbox event workflow instance '{commit.InstanceId}' settles is no longer pending"), Conflict: ConflictReason.EventsChanged);
                 case WorkflowCommitStatus.Conflict:
-                    return new CheckpointReply(CheckpointReplyKind.Conflict, result.Revision,
+                    return new CheckpointReply(assignmentId, CheckpointReplyKind.Conflict, result.Revision,
                         new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                            $"Workflow instance '{commit.InstanceId}' changed at revision {result.Revision}"));
+                            $"Workflow instance '{commit.InstanceId}' changed at revision {result.Revision}"), Conflict: ConflictReason.Revision);
                 case WorkflowCommitStatus.StaleEpoch:
-                    return new CheckpointReply(CheckpointReplyKind.Conflict, result.Revision,
+                    return new CheckpointReply(assignmentId, CheckpointReplyKind.Conflict, result.Revision,
                         new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                             $"Workflow instance '{commit.InstanceId}' is no longer owned by incarnation {commit.Incarnation} " +
-                            $"at execution epoch {commit.Epoch}"));
+                            $"at execution epoch {commit.Epoch}"), Conflict: ConflictReason.StaleEpoch);
                 default:
-                    return new CheckpointReply(CheckpointReplyKind.Retry, Error: new WorkflowEngineException(
+                    return new CheckpointReply(assignmentId, CheckpointReplyKind.Retry, Error: new WorkflowEngineException(
                         WorkflowErrorKind.Infrastructure,
                         $"Saving workflow instance '{commit.InstanceId}' was not applied; the store asked for a retry"));
             }
@@ -898,8 +857,9 @@ public sealed partial class WorkflowHost
         // it (B-08). Nothing of the workflow runs and its data is not read; the last checkpoint stays.
         // The stop clears the live count, so a released instance gets MaxCrashes new attempts.
         private async Task<WorkflowExecutionResult> QuarantineAsync(WorkflowInstance instance,
-            ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes, WorkflowExecutionLease owner)
+            ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes, HostedRun assignment)
         {
+            var owner = assignment.Owner;
             var stop = new OperatorStopState
             {
                 Kind = OperatorStopKind.Quarantine,
@@ -912,40 +872,194 @@ public sealed partial class WorkflowHost
             instance.LastError = stop.Reason;
             instance.LastErrorStackTrace = null;
             // Like the resource stop, this saves the last checkpoint plus a marker, so no limit applies.
-            await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner), instance,
+            await ExecutionCheckpointWriter.CommitAsync(assignment.Session, instance,
                 checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
             return Stopped(instance, stop);
         }
 
-        /// <summary>The host side of one run: the instance's lease, its saved state and its children.</summary>
-        private sealed class HostedRun(InstanceOperations operations, WorkflowInstance instance, WorkflowExecutionLease owner,
-            bool canPark = false) : IExecutionHost
+        private void CheckLimit(CheckpointCommit commit, WorkflowInstance saved)
         {
-            public bool CanPark => canPark;
-            public long Epoch => owner.Epoch;
-            public ExecutionLimits Limits => operations._limits;
-
-            public async Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
+            var trunk = commit.ReadTrunk().ExecutionStateJson;
+            var parts = commit.ApplyParts(saved.PartsAt(saved.Revision));
+            var size = Encoding.UTF8.GetByteCount(trunk) + parts.Values.Sum(value => (long)Encoding.UTF8.GetByteCount(value));
+            if (size <= _limits.MaxCheckpointBytes) return;
+            // A stop marker may exceed the limit only when it keeps the entire saved checkpoint.
+            // A terminal serialization failure may discard continuations while keeping saved data.
+            var proposed = ExecutionCheckpoint.Read(StoredCheckpoint.AssembleState(trunk, parts));
+            var previous = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(saved));
+            var sameData = parts.GetValueOrDefault(CheckpointParts.DataKey) == saved.WorkflowDataJson;
+            if (sameData && (commit.Stopped || previous.OperatorStop != null))
             {
-                // Epoch equality alone cannot admit a request after the lease expired locally.
-                owner.ThrowIfLost();
-                var reply = await operations.CommitAsync(instance, commit, Epoch);
-                if (reply.PendingCancellation is { } reason) owner.ObserveCancellation(reason);
-                return reply;
+                proposed.OperatorStop = null;
+                previous.OperatorStop = null;
+                if (JsonSerializer.Serialize(proposed) == JsonSerializer.Serialize(previous)) return;
+            }
+            if (sameData && commit.Instance.Status == WorkflowStatus.Failed && proposed.Continuations.Count == 0 &&
+                proposed.Waits.Count == 0 && proposed.Joins.Count == 0) return;
+            throw new CheckpointLimitExceededException(size, _limits.MaxCheckpointBytes);
+        }
+
+        private async Task<StartChildReply> ValidateChildAsync(StartChild request, WorkflowInstance child)
+        {
+            var definition = await registry.GetWorkflowDefinitionAsync(child.WorkflowName, child.WorkflowVersion);
+            if (definition == null)
+                return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
+                    Message: $"Workflow definition not found: {child.WorkflowName} v{child.WorkflowVersion}");
+            if (definition.Metadata.TryGetValue("IsActive", out var active) && active is false)
+                return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
+                    Message: $"Workflow {definition.Name} v{definition.Version} is deactivated");
+            if (definition.Name != child.WorkflowName || definition.Version != child.WorkflowVersion)
+                return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
+                    Message: "The child definition has a different declared identity");
+            _ = WorkflowDefinitionValidator.ForExecution(definition);
+            var hash = await registry.GetWorkflowStructureHashAsync(child.WorkflowName, child.WorkflowVersion);
+            var checkpoint = ExecutionCheckpoint.Read(child.ExecutionStateJson);
+            if (hash != request.StructureHash || checkpoint.StructureHash != hash ||
+                child.WorkflowDataType != definition.WorkflowDataType!.AssemblyQualifiedName)
+                return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
+                    Message: "The child workflow structure hash or data type differs from its registered definition");
+            var size = StoredCheckpoint.Of(child).Bytes;
+            if (size > _limits.MaxCheckpointBytes)
+                return new(request.AssignmentId, Refusal: WorkflowErrorKind.ResourceExhausted,
+                    Message: new CheckpointLimitExceededException(size, _limits.MaxCheckpointBytes).Message);
+            return new(request.AssignmentId, request.Start);
+        }
+
+        private readonly ConcurrentDictionary<Guid, HostedRun> _assignments = new();
+        private sealed class CommitQueue
+        {
+            public readonly object Sync = new();
+            public Task Tail = Task.CompletedTask;
+        }
+        private readonly ConcurrentDictionary<string, CommitQueue> _commitQueues = new(StringComparer.Ordinal);
+
+        internal ConflictReason? AdmitReady(Ready ready) =>
+            _assignments.TryGetValue(ready.AssignmentId, out var assignment) && assignment.IsActive(assignment.InstanceId)
+                ? null : ConflictReason.NotAssigned;
+
+        internal HostedRun Admit(WorkflowInstance instance, WorkflowExecutionLease owner, Guid identity)
+        {
+            var run = new HostedRun(this, instance, owner, identity);
+            if (!_assignments.TryAdd(identity, run)) throw new InvalidOperationException("Assignment already admitted");
+            return run;
+        }
+
+        /// <summary>Routes requests only to the currently active assignment. No rejection touches the store.</summary>
+        internal sealed class ExecutionHost(InstanceOperations operations) : IExecutionHost
+        {
+            private HostedRun? Find(Guid id, string instanceId) =>
+                operations._assignments.TryGetValue(id, out var run) && run.IsActive(instanceId) ? run : null;
+
+            public Task<CheckpointReply> CheckpointAsync(Checkpoint request) =>
+                Find(request.AssignmentId, request.Commit.InstanceId) is { } run
+                    ? run.CheckpointAsync(request)
+                    : Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Conflict,
+                        Conflict: ConflictReason.NotAssigned));
+            public Task<StartChildReply> StartChildAsync(StartChild request) =>
+                Find(request.AssignmentId, request.InstanceId) is { } run
+                    ? run.StartChildAsync(request)
+                    : Task.FromResult(new StartChildReply(request.AssignmentId, Conflict: ConflictReason.NotAssigned));
+            public async Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) =>
+                Find(request.AssignmentId, request.InstanceId) is { }
+                    ? new(request.AssignmentId, await operations._store.GetPendingEventsAsync(
+                        request.InstanceId, request.AfterSequence, request.Limit))
+                    : new(request.AssignmentId, Conflict: ConflictReason.NotAssigned);
+            public async Task<ReadWaitReply> ReadWaitAsync(ReadWait request) =>
+                Find(request.AssignmentId, request.InstanceId) is { }
+                    ? new(request.AssignmentId, await operations._store.GetWaitAsync(request.InstanceId, request.WaitId))
+                    : new(request.AssignmentId, Conflict: ConflictReason.NotAssigned);
+        }
+
+        internal sealed class HostedRun(InstanceOperations operations, WorkflowInstance instance,
+            WorkflowExecutionLease owner, Guid identity) : IDisposable
+        {
+            private readonly CommitQueue _queue = operations._commitQueues.GetOrAdd(instance.InstanceId, _ => new());
+            private readonly Dictionary<string, (long Revision, string Hash, Task<CheckpointReply> Task)> _outstanding = [];
+            private WorkflowInstance _saved = instance;
+            public Exception? LastCommitError { get; private set; }
+            public WorkflowExecutionLease Owner => owner;
+            public string InstanceId => instance.InstanceId;
+            public ExecutionSession Session { get; } = new(new ExecutionHost(operations), identity,
+                instance.InstanceId, owner.Epoch, operations._limits, false);
+
+            public void Dispose() => operations._assignments.TryRemove(identity, out _);
+
+            public bool IsActive(string instanceId)
+            {
+                if (instanceId != instance.InstanceId || !operations._assignments.ContainsKey(identity)) return false;
+                try { owner.ThrowIfLost(); return true; }
+                catch (ExecutionOwnershipLostException) { return false; }
             }
 
-            public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) =>
-                operations._children.ResolveAsync(step, starting);
+            public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
+            {
+                var commit = request.Commit;
+                if (request.AssignmentId != identity || !IsActive(commit.InstanceId) ||
+                    commit.Epoch != owner.Epoch || commit.Incarnation != instance.Incarnation)
+                    return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Conflict,
+                        Conflict: ConflictReason.NotAssigned));
+                lock (_queue.Sync)
+                {
+                    var hash = Convert.ToHexString(commit.ContentHash);
+                    if (_outstanding.TryGetValue(commit.CommitId, out var pending))
+                        return pending.Revision == commit.ExpectedRevision && pending.Hash == hash
+                            ? pending.Task
+                            : Task.FromResult(new CheckpointReply(identity, CheckpointReplyKind.Conflict,
+                                Conflict: ConflictReason.Revision));
+                    var completion = new TaskCompletionSource<CheckpointReply>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var preceding = _queue.Tail;
+                    _outstanding.Add(commit.CommitId, (commit.ExpectedRevision, hash, completion.Task));
+                    _queue.Tail = completion.Task;
+                    _ = ApplyAsync(preceding, request, completion);
+                    return completion.Task;
+                }
+            }
 
-            public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
-                string childInstanceId, string parentWaitId) =>
-                operations._children.Start(definition, data, parent, childInstanceId, parentWaitId, operations._limits);
+            private async Task ApplyAsync(Task preceding, Checkpoint request, TaskCompletionSource<CheckpointReply> completion)
+            {
+                // Yield before entering the store so admission, dedup registration and ordering are established first.
+                await Task.Yield();
+                try
+                {
+                    try { await preceding; } catch { /* A failed request does not break the queue. */ }
+                    var commit = request.Commit;
+                    CheckpointReply reply;
+                    if (!IsActive(commit.InstanceId) || request.AssignmentId != identity ||
+                        commit.Epoch != owner.Epoch || commit.Incarnation != instance.Incarnation)
+                        reply = new(identity, CheckpointReplyKind.Conflict, Conflict: ConflictReason.NotAssigned);
+                    else
+                    {
+                        operations.CheckLimit(commit, _saved);
+                        reply = await operations.CommitAsync(instance, commit, owner.Epoch, identity);
+                        if (reply.Kind is CheckpointReplyKind.Unknown or CheckpointReplyKind.Retry) LastCommitError = reply.Error;
+                        if (reply.Kind == CheckpointReplyKind.Ack && reply.Revision >= _saved.Revision)
+                        {
+                            _saved = commit.ReadInstance(_saved);
+                            _saved.Incarnation = commit.Incarnation;
+                        }
+                        if (reply.PendingCancellation is { } reason) owner.ObserveCancellation(reason);
+                    }
+                    lock (_queue.Sync) _outstanding.Remove(commit.CommitId);
+                    completion.TrySetResult(reply);
+                }
+                catch (Exception error)
+                {
+                    lock (_queue.Sync) _outstanding.Remove(request.Commit.CommitId);
+                    completion.TrySetException(error);
+                }
+            }
 
-            public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) =>
-                operations._store.GetPendingEventsAsync(instance.InstanceId, afterSequence, limit);
-
-            public Task<StoredWait?> ReadWaitAsync(string waitId) =>
-                operations._store.GetWaitAsync(instance.InstanceId, waitId);
+            public async Task<StartChildReply> StartChildAsync(StartChild request)
+            {
+                if (request.AssignmentId != identity || request.Epoch != owner.Epoch || !IsActive(request.InstanceId))
+                    return new(identity, Conflict: ConflictReason.NotAssigned);
+                var child = request.Start.Child;
+                if (child == null || child.ParentInstanceId != instance.InstanceId ||
+                    child.InstanceId != request.Start.ChildInstanceId || child.ParentWaitId != request.Start.ParentWaitId)
+                    return new(identity, Refusal: WorkflowErrorKind.InvalidRequest, Message: "Invalid child start");
+                // Identity, activation and the registered hash are host decisions. No executor definition crosses here.
+                return await operations.ValidateChildAsync(request, child);
+            }
         }
     }
 }

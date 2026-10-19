@@ -105,29 +105,7 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
         return published;
     }
 
-    /// <summary>
-    /// The start of a child: its initial instance, as a client start would save it, for the parent's
-    /// commit to carry. A child whose initial checkpoint is over <paramref name="limits"/> is refused with
-    /// <see cref="CheckpointLimitExceededException"/>.
-    /// </summary>
-    public ChildStart Start(WorkflowDefinition definition, object data, WorkflowInstance parent, string childId,
-        string parentWaitId, ExecutionLimits limits)
-    {
-        var now = time.GetUtcNow().UtcDateTime;
-        var (child, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(definition, data, new WorkflowOptions
-        {
-            InstanceId = childId,
-            CorrelationId = parent.CorrelationId,
-            ParentInstanceId = parent.InstanceId
-        }, now);
-        child.ParentWaitId = parentWaitId;
-        var size = ExecutionCheckpointWriter.Prepare(child, checkpoint, data, scopes, now).Bytes;
-        if (size > limits.MaxCheckpointBytes)
-            throw new CheckpointLimitExceededException(size, limits.MaxCheckpointBytes);
-        // The store saves a child's start whole, as one instance with no parts.
-        child.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-        return new ChildStart(childId, JsonSerializer.Serialize(child), parentWaitId);
-    }
+
 }
 
 /// <summary>The data a child invocation starts its child with.</summary>

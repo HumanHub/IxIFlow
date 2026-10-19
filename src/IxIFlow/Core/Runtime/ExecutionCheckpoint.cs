@@ -448,6 +448,8 @@ internal sealed class ActivityInvocationState
     public ActivityInputSnapshot Inputs { get; set; } = new();
     public SerializedValue? RecoveryState { get; set; }
     public string? ChildWorkflowId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ChildDataType { get; set; }
     public List<ActivityAttemptState> Attempts { get; set; } = [];
     public string? ResolutionReason { get; set; }
     public ActivityResolutionState? Resolution { get; set; }
