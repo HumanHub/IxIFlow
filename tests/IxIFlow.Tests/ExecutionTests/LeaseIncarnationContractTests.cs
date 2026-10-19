@@ -263,7 +263,7 @@ public sealed class LeaseIncarnationContractTests
             var first = (await store.TryAcquireExecutionLeaseAsync(id, "new-first", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(first.Epoch > oldGrant.Epoch);
             Assert.Equal(0, first.CrashCount);
-            Assert.True(await store.ReleaseExecutionLeaseAsync(id, "new-first"));
+            Assert.True((await store.ReleaseExecutionLeaseAsync(id, "new-first")).Released);
             var current = (await store.TryAcquireExecutionLeaseAsync(id, "new-owner", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(current.Epoch > first.Epoch);
             Assert.Equal(0, current.CrashCount);
@@ -280,7 +280,7 @@ public sealed class LeaseIncarnationContractTests
                 Assert.Equal(WorkflowStatus.Running, unchanged.Status);
                 Assert.Equal(replacement.Incarnation, unchanged.Incarnation);
             }
-            Assert.False(await store.ReleaseExecutionLeaseAsync(id, "old-owner"));
+            Assert.False((await store.ReleaseExecutionLeaseAsync(id, "old-owner")).Released);
             Assert.False(await store.RenewExecutionLeaseAsync(id, "old-owner", duration));
 
             // A leased commit after the first must also name the row's incarnation.
@@ -403,7 +403,7 @@ public sealed class LeaseIncarnationContractTests
             await AssertLeaseRows(open, id, 0);
             Assert.Null(await store.GetTombstoneAsync(id));
             Assert.False(await store.RenewExecutionLeaseAsync(id, "orphan", duration));
-            Assert.False(await store.ReleaseExecutionLeaseAsync(id, "orphan"));
+            Assert.False((await store.ReleaseExecutionLeaseAsync(id, "orphan")).Released);
             var grant = (await store.TryAcquireExecutionLeaseAsync(id, "after-delete", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(grant.Epoch > orphan.Epoch);
             Assert.Equal(0, grant.CrashCount);

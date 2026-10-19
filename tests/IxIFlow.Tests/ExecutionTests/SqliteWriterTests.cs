@@ -22,7 +22,7 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
         time.Pause = true;
         var writing = Task.Run(() => store.CommitWorkflowInstanceAsync(commit));
         await time.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        Task<bool> queued;
+        Task<CancellationRequestResult> queued;
         try
         {
             queued = store.RequestCancellationAsync("another-instance", new CancellationReason { ReasonCode = "stop" });
@@ -34,7 +34,7 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
             time.Release.Set();
         }
         await writing.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.False(await queued.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False((await queued.WaitAsync(TimeSpan.FromSeconds(10))).Accepted);
     }
 
     [Theory]

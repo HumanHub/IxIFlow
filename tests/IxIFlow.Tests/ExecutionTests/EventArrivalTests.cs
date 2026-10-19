@@ -79,7 +79,7 @@ public sealed class EventArrivalTests
         Assert.Equal(EventOutcome.Pending, (await repository.GetEventAsync(childId, "approval-1"))!.Outcome);
 
         // Once the child is free, it takes the event, and its completion wakes its parent.
-        Assert.True(await repository.ReleaseExecutionLeaseAsync(childId, "other-host"));
+        Assert.True((await repository.ReleaseExecutionLeaseAsync(childId, "other-host")).Released);
         await engine.RecoverAsync(childId);
         Assert.Equal(EventOutcome.Consumed,
             (await EventAssert.DecidedAsync(repository, childId, "approval-1")).Outcome);

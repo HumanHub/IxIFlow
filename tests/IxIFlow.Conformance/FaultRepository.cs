@@ -88,7 +88,7 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         return result;
     }
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
+    public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
         inner.RequestCancellationAsync(instanceId, reason);
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         inner.GetCancellationRequestAsync(instanceId);
@@ -100,7 +100,7 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) => inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
     public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         inner.RenewExecutionLeaseAsync(instanceId, token, duration);
-    public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+    public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         inner.ReleaseExecutionLeaseAsync(instanceId, token);
 
     public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>

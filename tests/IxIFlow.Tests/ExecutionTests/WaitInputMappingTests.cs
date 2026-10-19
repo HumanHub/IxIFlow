@@ -77,7 +77,7 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
                 (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, lease.Epoch, instance.Revision,
                     openedWaits: [new OpenedWait(savedWait.WaitId, savedWait.Kind, savedWait.Key, savedWait.EventType, null,
                         DefaultPayloadJson: savedWait.DefaultPayloadJson)]))).Status);
-            Assert.True(await store.ReleaseExecutionLeaseAsync(instanceId, token));
+            Assert.True((await store.ReleaseExecutionLeaseAsync(instanceId, token)).Released);
         }
         Assert.Equal(1, _reads);
         _failReads = true;

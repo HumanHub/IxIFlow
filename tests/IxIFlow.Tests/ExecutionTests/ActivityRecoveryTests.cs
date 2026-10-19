@@ -415,8 +415,8 @@ public sealed class ActivityRecoveryTests
         var running = Assert.Single(await store.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
         await engine.RecoverAsync(running.InstanceId);
         var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
-        Assert.True(await store.RequestCancellationAsync(running.InstanceId,
-            new CancellationReason { ReasonCode = "withdrawn" }));
+        Assert.True((await store.RequestCancellationAsync(running.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
         var awaitingResolution = await engine.RecoverAsync(running.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, awaitingResolution.Status);
         Assert.Null((await store.GetWorkflowInstanceAsync(running.InstanceId))!.RunnableAtUtc);
@@ -934,7 +934,7 @@ public sealed class ActivityRecoveryTests
             _inner.GetOpenWaitsAsync(query);
 
         private readonly InMemoryWorkflowStateRepository _inner = new();
-        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
+        public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
             _inner.RequestCancellationAsync(instanceId, reason);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
@@ -944,7 +944,7 @@ public sealed class ActivityRecoveryTests
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
-        public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
         public int FailNextCommits { get; set; }
         public int FailStartAfterApply { get; set; }

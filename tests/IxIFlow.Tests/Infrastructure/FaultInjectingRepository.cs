@@ -100,7 +100,7 @@ public class FaultInjectingRepository : IWorkflowStateRepository
         throw new IOException($"Injected commit failure for '{instance.InstanceId}'");
     }
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
+    public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
         _inner.RequestCancellationAsync(instanceId, reason);
     public virtual Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         _inner.GetCancellationRequestAsync(instanceId);
@@ -113,7 +113,7 @@ public class FaultInjectingRepository : IWorkflowStateRepository
         _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
     public virtual Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
-    public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+    public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         _inner.ReleaseExecutionLeaseAsync(instanceId, token);
 
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>

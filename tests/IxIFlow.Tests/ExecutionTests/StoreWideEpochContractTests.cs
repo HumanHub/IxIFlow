@@ -66,7 +66,7 @@ public sealed class StoreWideEpochContractTests
             Assert.Equal(dataVersion, await observer.ExecuteScalarAsync<long>("PRAGMA data_version"));
             Assert.True(await store.RenewExecutionLeaseAsync(id, "owner", Duration));
 
-            Assert.True(await store.ReleaseExecutionLeaseAsync(id, "owner"));
+            Assert.True((await store.ReleaseExecutionLeaseAsync(id, "owner")).Released);
             var next = (await store.TryAcquireExecutionLeaseAsync(id, "next", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(next);
             Assert.Equal(first.Epoch + 1, next.Epoch);
@@ -121,7 +121,7 @@ public sealed class StoreWideEpochContractTests
         {
             var initial = (await store.TryAcquireExecutionLeaseAsync(id, "initial", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(initial);
-            Assert.True(await store.ReleaseExecutionLeaseAsync(id, "initial"));
+            Assert.True((await store.ReleaseExecutionLeaseAsync(id, "initial")).Released);
             await using var holder = new SqlConnection(connection);
             await holder.OpenAsync();
             var session = await holder.ExecuteScalarAsync<int>("SELECT @@SPID");
@@ -262,7 +262,7 @@ public sealed class StoreWideEpochContractTests
             var other = (await store.TryAcquireExecutionLeaseAsync(otherId, "other", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(other);
             Assert.True(other.Epoch > first.Epoch);
-            Assert.True(await store.ReleaseExecutionLeaseAsync(otherId, "other"));
+            Assert.True((await store.ReleaseExecutionLeaseAsync(otherId, "other")).Released);
             var next = (await store.TryAcquireExecutionLeaseAsync(otherId, "next", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.NotNull(next);
             Assert.True(next.Epoch > other.Epoch);

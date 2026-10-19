@@ -504,7 +504,7 @@ public sealed class WorkflowDeadlineTests
             return await _inner.CommitWorkflowInstanceAsync(commit);
         }
 
-        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
+        public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
             _inner.RequestCancellationAsync(instanceId, reason);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
@@ -514,7 +514,7 @@ public sealed class WorkflowDeadlineTests
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
-        public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
