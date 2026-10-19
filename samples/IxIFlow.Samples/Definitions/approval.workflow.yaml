@@ -25,10 +25,8 @@ definitions:
     event: IxIFlow.Recipes.ApprovalDecision
     output:
       - source: Approved
-        sourceContext: event
         to: { path: workflow.Approved }
       - source: By
-        sourceContext: event
         to: { path: workflow.ApprovedBy }
     timeout: '01:00:00'
     onTimeout:

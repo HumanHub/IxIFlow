@@ -176,7 +176,7 @@ public sealed partial class YamlParityTests
               event: Answer
               resumeCondition: {path: event.Value > 0}
               input: [{target: Value, from: {path: workflow.Value}}]
-              output: [{source: Value, sourceContext: event, to: {path: workflow.Result}}]
+              output: [{source: Value, to: {path: workflow.Result}}]
               timeout: '01:00:00'
               onTimeout:
                 - kind: activity
@@ -233,7 +233,7 @@ public sealed partial class YamlParityTests
               workflow: {name: Child, version: 3}
               cancelWithParent: CANCEL
               input: [{target: Value, from: {kind: constant, value: 5}}]
-              output: [{source: Result, sourceContext: workflow, to: {path: workflow.Result}}]
+              output: [{source: Result, to: {path: workflow.Result}}]
             """.Replace("CANCEL", cancel ? "true" : "false", StringComparison.Ordinal));
         Assert.True(Schema.Evaluate(WorkflowYamlSchemaValueTests.Read(yaml)).IsValid);
         var options = new WorkflowSourceOptions();
@@ -297,7 +297,7 @@ public sealed partial class YamlParityTests
               dataType: IxIFlow.Generators.Tests.FlowData
               cancelWithParent: CANCEL
               input: [{target: Value, from: {kind: constant, value: 5}}]
-              output: [{source: Result, sourceContext: workflow, to: {path: workflow.Result}}]
+              output: [{source: Result, to: {path: workflow.Result}}]
             """.Replace("CANCEL", cancel ? "true" : "false", StringComparison.Ordinal));
         var fluent = Start().Invoke<ParityChildWorkflow, FlowData>(setup => setup.CancelWithParent(cancel)
             .Input(a => a.Value).From(ctx => 5).Output(a => a.Result).To(ctx => ctx.WorkflowData.Result)).WithId("child").Build();
