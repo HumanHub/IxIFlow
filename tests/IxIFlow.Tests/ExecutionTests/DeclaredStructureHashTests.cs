@@ -9,6 +9,7 @@ using IxIFlow.Builders.Interfaces;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
 
 namespace IxIFlow.Tests.ExecutionTests.StructureHashFixtures;
 
@@ -231,39 +232,58 @@ public sealed class DeclaredStructureHashTests
         var original = Waiting();
         var changed = insert ? Waiting(insert: true) : Waiting(reverse: true);
         Assert.NotEqual(Hash(original), Hash(changed));
+        using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         string id;
         using (var first = Services(store))
         {
-            var started = await first.GetRequiredService<IWorkflowClient>().RunAsync(original, new StructureHashData());
+            var started = await first.GetRequiredService<IWorkflowClient>().RunAsync(original, new StructureHashData(),
+                cancellationToken: patience.Token);
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             id = started.InstanceId;
         }
-        using var second = Services(store);
+        var before = (await store.GetWorkflowInstanceAsync(id))!;
+        var noExecution = new Mock<IActivityExecutor>(MockBehavior.Strict);
+        using var second = Services(store, noExecution.Object);
         await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(changed);
         var client = second.GetRequiredService<IWorkflowClient>();
         if (operation == "start")
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(changed,
-                new StructureHashData(), new WorkflowOptions { InstanceId = id }));
+                new StructureHashData(), new WorkflowOptions { InstanceId = id }, patience.Token));
             AssertMismatch(error.Message, original, changed);
         }
-        else
+        using (var scope = second.CreateScope())
         {
+            var operations = scope.ServiceProvider.GetRequiredService<WorkflowHost.InstanceOperations>();
             WorkflowExecutionResult result;
             if (operation == "resume")
-                result = await client.ResumeAsync(id, "go", new StructureHashAnswer());
+                result = await operations.ResumeAsync(id, "go", new StructureHashAnswer(), patience.Token, "ready")
+                    .WaitAsync(patience.Token);
             else
             {
                 if (operation == "recover")
                     await store.AppendEventAsync(new WorkflowEvent(id, "ready", typeof(StructureHashAnswer).AssemblyQualifiedName!, "{}", "go"));
-                result = await client.RecoverAsync(id);
+                result = await client.RecoverAsync(id, patience.Token).WaitAsync(patience.Token);
             }
-            Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
-            AssertMismatch(result.ErrorMessage!, original, changed);
+            Assert.Equal(WorkflowExecutionStatus.Scheduled, result.Status);
+            if (operation is "resume" or "recover")
+                Assert.Equal(EventOutcome.Pending, (await store.GetEventAsync(id, "ready"))!.Outcome);
         }
+        noExecution.VerifyNoOtherCalls();
         var saved = (await store.GetWorkflowInstanceAsync(id))!;
         Assert.Equal(Hash(original), ExecutionCheckpoint.ReadTrunk(saved.ExecutionStateJson).StructureHash);
         Assert.Equal(WorkflowStatus.Suspended, saved.Status);
+        Assert.Equal(before.ExecutionStateJson, saved.ExecutionStateJson);
+        Assert.Equal(before.WorkflowDataJson, saved.WorkflowDataJson);
+        Assert.Equal(before.Revision, saved.Revision);
+        Assert.Equal(before.LastHostId, saved.LastHostId);
+
+        using var correct = Services(store);
+        await correct.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(original);
+        var completed = await correct.GetRequiredService<IWorkflowClient>()
+            .ResumeAsync(id, "go", new StructureHashAnswer(), "ready", patience.Token).WaitAsync(patience.Token);
+        Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+        Assert.Equal(EventOutcome.Consumed, (await store.GetEventAsync(id, "ready"))!.Outcome);
     }
 
     [Fact]
@@ -294,11 +314,12 @@ public sealed class DeclaredStructureHashTests
         return definition;
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository store)
+    private static ServiceProvider Services(IWorkflowStateRepository store, IActivityExecutor? executor = null)
     {
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(store);
         services.AddIxIFlow();
+        if (executor != null) services.AddSingleton(executor);
         return services.BuildServiceProvider();
     }
 

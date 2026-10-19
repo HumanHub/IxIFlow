@@ -45,7 +45,7 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
     public async Task AParkedRunReleasesItsLeaseInItsCommit()
     {
         var time = new FakeTimeProvider();
-        var store = new InMemoryWorkflowStateRepository(time);
+        var store = new LeaseRecordingStore(time);
         using var services = Services(store, slots: 4, time);
         var probe = services.GetRequiredService<ParkProbe>();
         var instanceId = Guid.NewGuid().ToString("N");
@@ -56,17 +56,18 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
             await store.GetWorkflowInstanceAsync(instanceId) is { RunnableAtUtc: { } due } saved &&
             due > time.GetUtcNow().UtcDateTime ? saved : null);
 
-        // Running, due at the retry, and unowned: a claim now finds no crash to count.
+        // The parking commit releases ownership, but a matching host still cannot claim before due.
         Assert.Equal(WorkflowStatus.Running, parked.Status);
-        var grant = await store.TryAcquireExecutionLeaseAsync(instanceId, "probe", TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
-        Assert.NotNull(grant);
-        Assert.Equal(0, grant.CrashCount);
-        Assert.True(await store.ReleaseExecutionLeaseAsync(instanceId, "probe"));
-        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)), item => item.InstanceId == instanceId);
+        var formerToken = store.OwnerToken!;
+        var query = await StoreTestSupport.ClaimAsync(services);
+        Assert.Null(await store.TryAcquireExecutionLeaseAsync(instanceId, "probe", TimeSpan.FromSeconds(5), query));
+        Assert.False(await store.RenewExecutionLeaseAsync(instanceId, formerToken, TimeSpan.FromSeconds(5)));
+        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(query), item => item.InstanceId == instanceId);
 
         // Past the backoff, the host resumes the retry.
         time.Advance(TimeSpan.FromSeconds(2));
         Assert.Equal(WorkflowExecutionStatus.Success, (await retrying.WaitAsync(Patience)).Status);
+        Assert.Equal(0, store.LastGrant!.CrashCount);
     }
 
     [Fact]
@@ -95,7 +96,11 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
 
     [Fact]
     [Trait("Spec", "C-03")]
-    public Task MemoryStoreParksAtomically() => VerifyParking(new InMemoryWorkflowStateRepository());
+    public Task MemoryStoreParksAtomically()
+    {
+        var time = new FakeTimeProvider();
+        return VerifyParking(new InMemoryWorkflowStateRepository(time), time);
+    }
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
@@ -115,11 +120,12 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
     [Trait("Spec", "C-03")]
     public async Task SqliteStoreParksAtomically()
     {
-        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ParkedRunTests>.ConnectionString);
-        await VerifyParking(repository);
+        var time = new FakeTimeProvider();
+        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ParkedRunTests>.ConnectionString, time);
+        await VerifyParking(repository, time);
     }
 
-    private static async Task VerifyParking(IWorkflowStateRepository store)
+    private static async Task VerifyParking(IWorkflowStateRepository store, FakeTimeProvider? time = null)
     {
         var parkedId = Guid.NewGuid().ToString("N");
         var cancelledId = Guid.NewGuid().ToString("N");
@@ -127,7 +133,8 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
         {
             // A park releases the lease in its commit, and a repeated park is acknowledged.
             var parked = await RunningInstanceAsync(store, parkedId);
-            var park = Park(parked.Instance, parked.Grant);
+            var delay = time != null ? TimeSpan.FromHours(1) : TimeSpan.FromSeconds(3);
+            var park = Park(parked.Instance, parked.Grant, delay);
             var applied = await store.CommitWorkflowInstanceAsync(park);
             Assert.Equal(WorkflowCommitStatus.Applied, applied.Status);
             Assert.True(applied.Parked);
@@ -136,7 +143,17 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
             Assert.True(repeated.Parked);
             Assert.DoesNotContain(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == parkedId);
             var claim = await store.TryAcquireExecutionLeaseAsync(parkedId, "next", TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
-            Assert.Equal(0, claim?.CrashCount);
+            Assert.Null(claim);
+            Assert.False(await store.RenewExecutionLeaseAsync(parkedId, "owner", TimeSpan.FromSeconds(5)));
+            if (time != null) time.Advance(delay);
+            else await WaitForAsync(async () =>
+                (await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)))
+                .Any(item => item.InstanceId == parkedId) ? parked.Instance : null);
+            var dueClaim = await store.TryAcquireExecutionLeaseAsync(parkedId, "next", TimeSpan.FromSeconds(5),
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+            Assert.NotNull(dueClaim);
+            Assert.Equal(0, dueClaim.CrashCount);
+            Assert.True(await store.ReleaseExecutionLeaseAsync(parkedId, "next"));
 
             // A cancellation waiting to be taken up keeps the owner and makes the instance due now.
             var cancelled = await RunningInstanceAsync(store, cancelledId);
@@ -262,9 +279,27 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
         return (instance, grant);
     }
 
-    private static CheckpointCommit Park(WorkflowInstance instance, ExecutionLeaseGrant grant) =>
+    private static CheckpointCommit Park(WorkflowInstance instance, ExecutionLeaseGrant grant, TimeSpan? delay = null) =>
         CheckpointCommit.Create(instance, grant.Epoch, instance.Revision, parks: true,
-            wakeAfter: TimeSpan.FromHours(1));
+            wakeAfter: delay ?? TimeSpan.FromHours(1));
+
+    private sealed class LeaseRecordingStore(TimeProvider time) : InMemoryWorkflowStateRepository(time), IWorkflowStateRepository
+    {
+        public string? OwnerToken { get; private set; }
+        public ExecutionLeaseGrant? LastGrant { get; private set; }
+
+        public new async Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+            TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
+        {
+            var grant = await base.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
+            if (grant != null)
+            {
+                OwnerToken = token;
+                LastGrant = grant;
+            }
+            return grant;
+        }
+    }
 
     private static async Task<string[]> Ours(IWorkflowStateRepository store, string[] ids) =>
         (await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000))).Select(item => item.InstanceId).Where(ids.Contains).ToArray();

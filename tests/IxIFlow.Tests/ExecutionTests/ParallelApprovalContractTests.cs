@@ -5,6 +5,7 @@ using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json.Serialization;
 using IxIFlow.Tests.Infrastructure;
+using Moq;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -512,12 +513,13 @@ public class ParallelApprovalContractTests
     [Fact]
     public async Task RecoveryRejectsChangedDefinitionWithoutLosingTheCheckpoint()
     {
+        using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var recording = new RecordingRepository();
         using (var firstProvider = CreateServices(recording))
         {
             var started = await firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(CreateRecoverWorkflow(),
-                    new ApprovalData { RequestId = "request-1" });
+                    new ApprovalData { RequestId = "request-1" }, cancellationToken: patience.Token);
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         }
 
@@ -525,7 +527,9 @@ public class ParallelApprovalContractTests
         var repository = new InMemoryWorkflowStateRepository();
         await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
-        using (var wrongProvider = CreateServices(repository))
+        var before = (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!;
+        var noExecution = new Mock<IActivityExecutor>(MockBehavior.Strict);
+        using (var wrongProvider = CreateServices(repository, noExecution.Object))
         {
             var changed = Workflow.Create<ApprovalData>("RecoverApproval")
                 .Step<StartActivity>()
@@ -534,17 +538,22 @@ public class ParallelApprovalContractTests
             await wrongProvider.GetRequiredService<IWorkflowVersionRegistry>()
                 .RegisterWorkflowAsync(changed);
             var rejected = await wrongProvider.GetRequiredService<IWorkflowClient>()
-                .RecoverAsync(saved.InstanceId);
-            Assert.Equal(WorkflowExecutionStatus.Faulted, rejected.Status);
+                .RecoverAsync(saved.InstanceId, patience.Token).WaitAsync(patience.Token);
+            Assert.Equal(WorkflowExecutionStatus.Scheduled, rejected.Status);
         }
+        noExecution.VerifyNoOtherCalls();
 
         var stillSaved = await repository.GetWorkflowInstanceAsync(saved.InstanceId);
         Assert.Equal(WorkflowStatus.Running, stillSaved!.Status);
+        Assert.Equal(before.ExecutionStateJson, stillSaved.ExecutionStateJson);
+        Assert.Equal(before.WorkflowDataJson, stillSaved.WorkflowDataJson);
+        Assert.Equal(before.Revision, stillSaved.Revision);
+        Assert.Equal(before.LastHostId, stillSaved.LastHostId);
         using var correctProvider = CreateServices(repository);
         await correctProvider.GetRequiredService<IWorkflowVersionRegistry>()
             .RegisterWorkflowAsync(CreateRecoverWorkflow());
         var recovered = await correctProvider.GetRequiredService<IWorkflowClient>()
-            .RecoverAsync(saved.InstanceId);
+            .RecoverAsync(saved.InstanceId, patience.Token).WaitAsync(patience.Token);
         Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
         Assert.Equal(1, GetData(recovered).FinanceStarted);
     }
@@ -1344,13 +1353,14 @@ public class ParallelApprovalContractTests
         BranchProgress.ReadAsync<ApprovalData>(services.GetRequiredService<IWorkflowStateRepository>(),
             result.InstanceId, branch);
 
-    private static ServiceProvider CreateServices(IWorkflowStateRepository? repository = null)
+    private static ServiceProvider CreateServices(IWorkflowStateRepository? repository = null, IActivityExecutor? executor = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         if (repository != null)
             services.AddSingleton(repository);
         services.AddIxIFlow();
+        if (executor != null) services.AddSingleton(executor);
         return services.BuildServiceProvider();
     }
 
