@@ -14,7 +14,7 @@ public class CompleteWorkflowSyntaxTests
     public void Build_CompleteWorkflowAllPatterns_ShouldCompileSuccessfully()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("CompleteWorkflowAllPatternsTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -189,8 +189,8 @@ public class CompleteWorkflowSyntaxTests
                 .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Success).From(ctx => ctx.WorkflowData.ErrorHandled == false)
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus)),
-            "CompleteWorkflowAllPatternsTest");
+                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -204,7 +204,7 @@ public class CompleteWorkflowSyntaxTests
     public void Build_CompleteWorkflowWithSequentialActivities_ShouldCompileSuccessfully()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("CompleteSequentialTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -217,8 +217,8 @@ public class CompleteWorkflowSyntaxTests
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Success)
                     .From(ctx => ctx.PreviousStep.InStock) // CheckInventoryAsyncActivity.InStock
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus)),
-            "CompleteSequentialTest");
+                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Build();
 
         // Assert - Verify workflow definition was created successfully
         Assert.NotNull(definition);
@@ -232,7 +232,7 @@ public class CompleteWorkflowSyntaxTests
     public void Build_WorkflowWithTryCatchAndConditionals_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that try/catch with conditionals compile correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("TryCatchConditionalTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -264,8 +264,8 @@ public class CompleteWorkflowSyntaxTests
                             .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)
                             .Input(act => act.ValidationResult).From(ctx => ctx.WorkflowData.ValidationResult)
                             .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
-                    }),
-            "TryCatchConditionalTest");
+                    })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -276,7 +276,7 @@ public class CompleteWorkflowSyntaxTests
     public void Build_WorkflowWithParallelExecution_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that parallel execution compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("ParallelExecutionTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -302,8 +302,8 @@ public class CompleteWorkflowSyntaxTests
                 .Step<VerifyNotificationsAsyncActivity>(setup => setup
                     .Input(act => act.EmailStatus).From(ctx => ctx.WorkflowData.EmailStatus)
                     .Input(act => act.SmsStatus).From(ctx => ctx.WorkflowData.SmsStatus)
-                    .Output(act => act.AllNotificationsSent).To(ctx => ctx.WorkflowData.NotificationComplete)),
-            "ParallelExecutionTest");
+                    .Output(act => act.AllNotificationsSent).To(ctx => ctx.WorkflowData.NotificationComplete))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -314,7 +314,7 @@ public class CompleteWorkflowSyntaxTests
     public void Build_WorkflowStructure_ShouldHaveCorrectStepTypes()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("WorkflowStructureTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Try(tryBlock =>
@@ -335,8 +335,8 @@ public class CompleteWorkflowSyntaxTests
                      branch.Step<SendEmailAsyncActivity>(setup => setup
                          .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail));
                  });
-             }),
-            "WorkflowStructureTest");
+             })
+            .Build();
 
         // Assert - Verify step types and structure
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
@@ -353,7 +353,7 @@ public class CompleteWorkflowSyntaxTests
     public void Build_ChainedExceptionHandling_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that chained exception handling compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("ChainedExceptionHandlingTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Try(tryBlock =>
@@ -371,8 +371,8 @@ public class CompleteWorkflowSyntaxTests
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
                         .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                         .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId));
-                }),
-            "ChainedExceptionHandlingTest");
+                })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -385,7 +385,7 @@ public class CompleteWorkflowSyntaxTests
     public void Build_NestedParallelInConditional_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that nested parallel execution in conditional compiles
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("NestedParallelInConditionalTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -411,8 +411,8 @@ public class CompleteWorkflowSyntaxTests
                     {
                         @else.Step<RejectOrderAsyncActivity>(setup => setup
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId));
-                    }),
-            "NestedParallelInConditionalTest");
+                    })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
