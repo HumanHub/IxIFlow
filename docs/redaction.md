@@ -5,11 +5,12 @@ description: Classify workflow values and control their inspection projection.
 
 IxIFlow erases classified members when it projects workflow values for inspection. Mark properties on workflow data, events, activity outputs used as `Previous`, and typed activity notes. `[Sensitive]` ships in `IxIFlow.Abstractions`, under `IxIFlow.Core`:
 
+<!-- snippet: samples/IxIFlow.Samples/DocumentationExamples.cs#sensitive-member -->
 ```csharp
-public sealed class Note
+public sealed class PaymentNote
 {
-    [Sensitive] public string Secret { get; set; } = "";
-    public string Public { get; set; } = "visible";
+    [Sensitive] public string CardNumber { get; set; } = "";
+    public string Outcome { get; set; } = "";
 }
 ```
 
@@ -21,7 +22,7 @@ The workflow build collects classified paths using the data contract walk, inclu
 
 ## Inspection behavior
 
-One `RedactingJson` projection applies to typed attempt notes before they enter committed traces, snapshot `Data`, and `GetOpenWaitsAsync` default payloads. Trace copies returned in run results and through `GetTraceAsync` contain the same projected notes. Snapshots expose execution positions and projected data; the former unused `Values` dictionary has been removed.
+One `RedactingJson` projection applies to typed attempt notes before they enter committed traces, snapshot `Data`, and `GetOpenWaitsAsync` default payloads. Trace copies returned in run results and through `GetTraceAsync` contain the same projected notes. Snapshots expose execution positions and projected data.
 
 A classified string, number or object becomes a JSON string. A classified object is redacted as one complete serialized value. Classified lists retain their list shape and redact each element. An unclassified object retains its structure and projects its nested members. Erasure produces an empty string, including for classified nulls. Public members remain visible.
 
