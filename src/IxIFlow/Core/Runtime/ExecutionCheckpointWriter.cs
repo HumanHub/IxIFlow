@@ -66,7 +66,18 @@ internal static class ExecutionCheckpointWriter
         for (var attempt = 1; ; attempt++)
         {
             checkpoint.Signals?.ThrowIfOwnershipLost();
-            var reply = await host.CheckpointAsync(commit);
+            CheckpointReply reply;
+            try
+            {
+                reply = await host.CheckpointAsync(commit);
+            }
+            catch (CheckpointLimitExceededException)
+            {
+                lastCommitted.RestoreTo(instance);
+                checkpoint.RestoreMarks(stored.Marks);
+                checkpoint.Trace.DiscardPending();
+                throw;
+            }
             switch (reply.Kind)
             {
                 case CheckpointReplyKind.Ack:

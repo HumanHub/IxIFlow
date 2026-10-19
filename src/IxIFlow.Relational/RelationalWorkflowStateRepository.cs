@@ -597,9 +597,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         }
         catch (Exception error) when (IsRetryableCommit(error))
         {
-            await using var connection = await OpenConnectionAsync();
-            return new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0,
-                StoreTimeUtc: await OutboxNowAsync(connection, null));
+            return new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0);
         }
     }
 
