@@ -26,7 +26,7 @@ var definition = Workflow.Create<QuoteData>("QuickStart")
 WorkflowDefinitionValidator.Validate(definition);
 
 var result = await client.RunAsync(definition, new QuoteData());
-if (!result.IsSuccess)
+if (result.Status != WorkflowExecutionStatus.Success)
     throw new InvalidOperationException(result.ErrorMessage);
 Console.WriteLine(((QuoteData)result.WorkflowData!).Amount); // 12.50
 ```
@@ -49,7 +49,7 @@ Both console modes run the quote. The [sample map](../samples/README.md) covers 
 
 ## Understand the result
 
-`RunAsync` returns when the instance is idle, including `Suspended` at a wait or `NeedsResolution` for an operator. `IsSuccess` means `Status == Success`; a suspended result still has useful saved data and an instance ID.
+`RunAsync` returns when the instance is idle, including `Suspended` at a wait or `NeedsResolution` for an operator. A successful result has `Status == WorkflowExecutionStatus.Success`; a suspended result still has useful saved data and an instance ID.
 
 `StartAsync` saves a durable start and normally returns its ID without waiting for execution. Inside a running host slot it executes inline and returns only when that nested run ends. `AwaitAsync(id)` waits for idle; `AwaitAsync(id, WorkflowAwaitCondition.Finished)` waits for a terminal result. Terminal results remain readable for the configured [retention period](retention-and-tombstones.md).
 

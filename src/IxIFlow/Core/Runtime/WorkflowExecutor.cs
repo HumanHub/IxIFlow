@@ -276,7 +276,7 @@ internal sealed class WorkflowExecutor
                             scopes, host, host.ObservedCancellation))
                         continue;
                     // Events that arrived since the last read are taken before the run goes idle.
-                    if (host.PersistsState && checkpoint.Inbox.MayHaveUnread && limitStop == null &&
+                    if (checkpoint.Inbox.MayHaveUnread && limitStop == null &&
                         !host.Drain.IsCancellationRequested && !CancellationPending(checkpoint, host))
                         continue;
                     break;
@@ -326,7 +326,7 @@ internal sealed class WorkflowExecutor
                     checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                     runningTasks.Add(cancellationSignal);
                 // An event that arrives while the run waits for an activity is taken at once (D-32).
-                var inboxChanged = host.PersistsState && !CancellationPending(checkpoint, host)
+                var inboxChanged = !CancellationPending(checkpoint, host)
                     ? host.InboxChanged : null;
                 if (inboxChanged != null)
                 {
@@ -523,24 +523,21 @@ internal sealed class WorkflowExecutor
             instance.LastError = ex.Message;
             instance.LastErrorStackTrace = ex.StackTrace;
             instance.CompletedAt = Now;
-            if (host.PersistsState)
+            try
             {
-                try
-                {
-                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
-                }
-                catch (Exception error) when (error is ExecutionCheckpointWriter.CheckpointDataException or
-                                                  CheckpointLimitExceededException)
-                {
-                    // A terminal failure cannot resume. Retain the last committed data and the
-                    // execution history even if live state cannot be serialized or is over the limit.
-                    checkpoint.RemoveContinuations(_ => true);
-                    checkpoint.UnhandledError = null;
-                    // The failure record is the last committed data without continuations; it is
-                    // not held to the limit, so a failure is never lost.
-                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
-                        preserveSavedWorkflowData: true, enforceLimit: false);
-                }
+                await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+            }
+            catch (Exception error) when (error is ExecutionCheckpointWriter.CheckpointDataException or
+                                              CheckpointLimitExceededException)
+            {
+                // A terminal failure cannot resume. Retain the last committed data and the
+                // execution history even if live state cannot be serialized or is over the limit.
+                checkpoint.RemoveContinuations(_ => true);
+                checkpoint.UnhandledError = null;
+                // The failure record is the last committed data without continuations; it is
+                // not held to the limit, so a failure is never lost.
+                await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
+                    preserveSavedWorkflowData: true, enforceLimit: false);
             }
             return new WorkflowExecutionResult
             {
@@ -565,7 +562,7 @@ internal sealed class WorkflowExecutor
         // A run learns of requests from the host's cancellation watch and from its own commit
         // replies (B-10); it never reads them itself.
         var requested = observedReason;
-        if (!host.PersistsState || checkpoint.CancellationRequested || requested == null)
+        if (checkpoint.CancellationRequested || requested == null)
             return false;
         var root = checkpoint.Continuations[0];
         if (root.Status == ContinuationStatus.Completed)

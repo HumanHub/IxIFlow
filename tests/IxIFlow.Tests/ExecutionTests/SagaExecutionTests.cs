@@ -99,7 +99,7 @@ public class SagaExecutionTests
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.True(workflowData.Step1Completed);
         Assert.True(workflowData.Step2Completed);
         Assert.True(workflowData.Step3Completed);
@@ -194,7 +194,7 @@ public class SagaExecutionTests
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess); // Workflow succeeded (caught SagaTerminatedException)
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status); // Workflow succeeded (caught SagaTerminatedException)
         Assert.True(workflowData.Step1Completed);
         Assert.True(workflowData.Step2Completed);
         Assert.False(workflowData.Step3Completed); // Payment failed
@@ -276,7 +276,7 @@ public class SagaExecutionTests
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess); // Workflow continued despite saga failure
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status); // Workflow continued despite saga failure
         Assert.True(workflowData.Step1Completed);
         Assert.True(workflowData.Step2Completed);
         Assert.False(workflowData.Step3Completed); // Payment failed
@@ -356,7 +356,7 @@ public class SagaExecutionTests
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.True(workflowData.Step1Completed);
         Assert.True(workflowData.Step2Completed);
         Assert.True(workflowData.Step3Completed); // Should succeed on retry
@@ -424,7 +424,7 @@ public class SagaExecutionTests
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess); // Workflow succeeded (caught SagaTerminatedException)
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status); // Workflow succeeded (caught SagaTerminatedException)
         Assert.True(workflowData.Step1Completed);
         Assert.False(workflowData.Step2Completed); // Custom exception step failed
 
@@ -521,7 +521,7 @@ public class SagaExecutionTests
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess); // Workflow succeeded (caught SagaTerminatedException)
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status); // Workflow succeeded (caught SagaTerminatedException)
         Assert.True(workflowData.Step1Completed); // Step1 reserve inventory succeeded  
         Assert.True(workflowData.Step2Completed); // Step2 calculate pricing succeeded
         Assert.False(workflowData.Step3Completed); // Step3 payment failed
@@ -583,7 +583,7 @@ public class SagaExecutionTests
 
         // Assert. The retry backoffs park the run, which resumes from its saved data, so the
         // outcome is read from the result rather than from the object passed in.
-        Assert.True(result.IsSuccess); // Should succeed after retries
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status); // Should succeed after retries
         var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
         Assert.True(finished.Step1Completed);
         Assert.True(finished.RetryAttempts > 0); // Should show retry attempts occurred
@@ -674,7 +674,7 @@ public class SagaExecutionTests
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - This will be suspended, so check suspension state
-        Assert.False(result.IsSuccess); // Should be suspended
+        Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status); // Should be suspended
         Assert.False(workflowData.Step1Completed); // Should be FALSE - suspend happens FIRST
         Assert.False(workflowData.Step2Completed); // Should be FALSE - suspend happens FIRST
 
@@ -696,7 +696,7 @@ public class SagaExecutionTests
             Notes = "Order confirmed for testing"
         };
         var resumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, confirmationEvent);
-        Assert.True(resumeResult.IsSuccess, $"Resume returned {resumeResult.Status}: {resumeResult.ErrorMessage}"); // Should succeed after resume
+        Assert.True(resumeResult.Status == WorkflowExecutionStatus.Success, $"Resume returned {resumeResult.Status}: {resumeResult.ErrorMessage}"); // Should succeed after resume
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SagaTestData)resumeResult.WorkflowData!;
         Assert.Equal(workflowData.ProductId, finalWorkflowData.SuspensionMessage); // Should contain the confirmed product ID
@@ -777,7 +777,7 @@ _output.WriteLine("WORKFLOW STRUCTURE:");
 
         // DEBUG OUTPUT
         _output.WriteLine($"AFTER: Step1Completed = {workflowData.Step1Completed}, Step1Compensated = {workflowData.Step1Compensated}");
-        _output.WriteLine($"Result.IsSuccess = {result.IsSuccess}");
+        _output.WriteLine($"Status = {result.Status}");
         _output.WriteLine($"ReservationId = {workflowData.ReservationId}");
         _output.WriteLine($"ErrorMessage = {result.ErrorMessage}");
 
@@ -854,12 +854,12 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
 
         // Debug output
         _output.WriteLine($"AFTER: Step1Completed = {workflowData.Step1Completed}");
-        _output.WriteLine($"Result.IsSuccess = {result.IsSuccess}");
+        _output.WriteLine($"Status = {result.Status}");
         _output.WriteLine($"Result.Status = {result.Status}");
         _output.WriteLine($"ErrorMessage = {result.ErrorMessage}");
 
         // Assert - Should be suspended
-        Assert.False(result.IsSuccess, "Workflow should be suspended (IsSuccess = false)");
+        Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
         Assert.Contains("suspended", result.ErrorMessage ?? "", StringComparison.OrdinalIgnoreCase);
 
@@ -940,14 +940,14 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert
-        _output.WriteLine($"Result.IsSuccess: {result.IsSuccess}");
+        _output.WriteLine($"Status: {result.Status}");
         _output.WriteLine($"Step1Completed: {workflowData.Step1Completed}");
         _output.WriteLine($"ReservationId: {workflowData.ReservationId}");
         _output.WriteLine($"Step3Completed (Card): {workflowData.Step3Completed}");
         _output.WriteLine($"Step2Completed (Cash): {workflowData.Step2Completed}");
         _output.WriteLine($"TransactionId: {workflowData.TransactionId}");
 
-        Assert.True(result.IsSuccess, "Workflow should complete successfully");
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, "Workflow should complete successfully");
         Assert.True(workflowData.Step1Completed, "Inventory reservation should complete");
 
         // The ReservationId should start with "CARD" (based on our test activities)
@@ -1033,13 +1033,13 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
 
         // Assert - Should be suspended
-        _output.WriteLine($"Result.IsSuccess: {result.IsSuccess}");
+        _output.WriteLine($"Status: {result.Status}");
         _output.WriteLine($"Result.Status: {result.Status}");
         _output.WriteLine($"Step1Completed: {workflowData.Step1Completed}");
         _output.WriteLine($"ReservationId: {workflowData.ReservationId}");
         _output.WriteLine($"ErrorMessage: {result.ErrorMessage}");
 
-        Assert.False(result.IsSuccess, "Workflow should be suspended (IsSuccess = false)");
+        Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
         Assert.True(workflowData.Step1Completed, "Inventory reservation should complete");
 
@@ -1083,10 +1083,10 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
         var resumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, confirmationEvent);
         
         // Assert resume success
-        _output.WriteLine($"Resume Result.IsSuccess: {resumeResult.IsSuccess}");
+        _output.WriteLine($"Resume Status: {resumeResult.Status}");
         _output.WriteLine($"Resume Result.Status: {resumeResult.Status}");
         
-        Assert.True(resumeResult.IsSuccess, "Workflow should complete successfully after resume");
+        Assert.True(resumeResult.Status == WorkflowExecutionStatus.Success, "Workflow should complete successfully after resume");
         Assert.Equal(WorkflowExecutionStatus.Success, resumeResult.Status);
         
         // TEST OUTPUT MAPPING: Use the resumed workflow data

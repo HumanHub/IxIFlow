@@ -52,7 +52,7 @@ public class ParallelApprovalContractTests
 
         Assert.True(started.Status == WorkflowExecutionStatus.Suspended, started.ErrorMessage);
         Assert.Equal(1, (await Saved(services, started)).FinanceStarted);
-        Assert.Equal(1, (await Saved(services, started)).LegalStarted);
+        Assert.Equal(1, (await Saved(services, started, 1)).LegalStarted);
         Assert.Equal(2, (await engine.GetSnapshotAsync(started.InstanceId))!
             .Pointers.Count(pointer => pointer.Status == "Waiting"));
 
@@ -60,12 +60,13 @@ public class ParallelApprovalContractTests
             Reply(first, approved: true));
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, firstReply.Status);
-        var halfway = await Saved(services, firstReply);
-        Assert.Equal(1, halfway.FinanceStarted);
-        Assert.Equal(1, halfway.LegalStarted);
-        Assert.Equal(first == "finance" ? 1 : 0, halfway.FinanceCompleted);
-        Assert.Equal(first == "legal" ? 1 : 0, halfway.LegalCompleted);
-        Assert.Equal(0, halfway.Finished);
+        var finance = await Saved(services, firstReply);
+        var legal = await Saved(services, firstReply, 1);
+        Assert.Equal(1, finance.FinanceStarted);
+        Assert.Equal(1, legal.LegalStarted);
+        Assert.Equal(first == "finance" ? 1 : 0, finance.FinanceCompleted);
+        Assert.Equal(first == "legal" ? 1 : 0, legal.LegalCompleted);
+        Assert.Equal(0, GetData(firstReply).Finished);
 
         var completed = await engine.ResumeAsync(started.InstanceId, second,
             Reply(second, approved: true));
@@ -102,7 +103,7 @@ public class ParallelApprovalContractTests
             Reply("finance", approved: true));
         Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
         Assert.Equal(1, (await Saved(services, first)).FinanceCompleted);
-        Assert.Equal(0, (await Saved(services, first)).LegalCompleted);
+        Assert.Equal(0, (await Saved(services, first, 1)).LegalCompleted);
 
         var second = await engine.ResumeAsync(started.InstanceId, "approval",
             Reply("legal", approved: true));
@@ -151,7 +152,7 @@ public class ParallelApprovalContractTests
         await engine.AwaitAsync(started.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
-        Assert.Equal(1, (await BranchProgress.ViewAsync<ApprovalData>(repository, started.InstanceId)).FinanceCompleted);
+        Assert.Equal(1, (await BranchProgress.ReadAsync<ApprovalData>(repository, started.InstanceId, 0)).FinanceCompleted);
     }
 
     [Fact]
@@ -349,7 +350,7 @@ public class ParallelApprovalContractTests
         Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
         var data = await Saved(services, started);
         Assert.Equal(1, data.FinanceCompleted);
-        Assert.Equal(0, data.LegalCompleted);
+        Assert.Equal(0, (await Saved(services, started, 1)).LegalCompleted);
 
         var completed = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
@@ -658,7 +659,8 @@ public class ParallelApprovalContractTests
         var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
         Assert.Equal(expectedStatus, started.Status);
-        Assert.Equal(1, (await Saved(services, started)).FinanceCompleted);
+        Assert.Equal(1, (joinMode == ParallelJoinMode.WaitAny ? GetData(started)
+            : await Saved(services, started)).FinanceCompleted);
         Assert.Equal(joinMode == ParallelJoinMode.WaitAny ? 1 : 0, GetData(started).Finished);
 
         if (joinMode == ParallelJoinMode.WaitAll)
@@ -994,7 +996,7 @@ public class ParallelApprovalContractTests
             while (DateTime.UtcNow < triggerDeadline)
             {
                 var saved = (await repository.GetWorkflowInstancesByNameAsync(definition.Name)).Single();
-                if ((await BranchProgress.ViewAsync<ApprovalData>(repository, saved.InstanceId))
+                if ((await BranchProgress.ReadAsync<ApprovalData>(repository, saved.InstanceId, 1))
                     .FinanceCompleted == 1)
                     break;
                 await Task.Delay(25);
@@ -1007,7 +1009,7 @@ public class ParallelApprovalContractTests
             {
                 var saved = (await repository.GetWorkflowInstancesByNameAsync(definition.Name)).Single();
                 // The branch's commit is read from its saved changes; the instance's data waits for the join.
-                if ((await BranchProgress.ViewAsync<ApprovalData>(repository, saved.InstanceId))
+                if ((await BranchProgress.ReadAsync<ApprovalData>(repository, saved.InstanceId, 2))
                     .LegalCompleted == 1)
                 {
                     otherCommittedBeforeLoserEnded = true;
@@ -1332,9 +1334,9 @@ public class ParallelApprovalContractTests
         Assert.IsType<ApprovalData>(result.WorkflowData);
 
     // What the branches have committed while the parallel step is still open (D-14).
-    private static Task<ApprovalData> Saved(IServiceProvider services, WorkflowExecutionResult result) =>
-        BranchProgress.ViewAsync<ApprovalData>(services.GetRequiredService<IWorkflowStateRepository>(),
-            result.InstanceId);
+    private static Task<ApprovalData> Saved(IServiceProvider services, WorkflowExecutionResult result, int branch = 0) =>
+        BranchProgress.ReadAsync<ApprovalData>(services.GetRequiredService<IWorkflowStateRepository>(),
+            result.InstanceId, branch);
 
     private static ServiceProvider CreateServices(IWorkflowStateRepository? repository = null)
     {

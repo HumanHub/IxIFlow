@@ -19,19 +19,12 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     /// <summary>
     /// Reads and decides the events that arrived since the last read, and records which deadlines the
     /// store found due; true when it decided any event. A due execution deadline is recorded before any
-    /// event is decided, and the events stay unread until the run has applied it. A run that saves
-    /// nothing has no store, so its own clock decides its execution deadline.
+    /// event is decided, and the events stay unread until the run has applied it.
     /// </summary>
     public async Task<bool> TakeAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         IExecutionHost host, WorkflowInstance instance)
     {
         var inbox = checkpoint.Inbox;
-        if (!host.PersistsState)
-        {
-            inbox.Due(checkpoint.ExecutionTimerOpen && checkpoint.ExecutionDeadlineUtc <= Now
-                ? [checkpoint.ExecutionTimerId!] : []);
-            return false;
-        }
         if (!inbox.MayHaveUnread)
             return false;
         checkpoint.CloseEndedRequests();

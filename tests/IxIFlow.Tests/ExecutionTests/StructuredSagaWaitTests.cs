@@ -197,8 +197,8 @@ public class StructuredSagaWaitTests
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(definition, new SagaData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        Assert.Equal(1, (await BranchProgress.ViewAsync<SagaData>(
-            services.GetRequiredService<IWorkflowStateRepository>(), started.InstanceId)).Reserved);
+        Assert.Equal(1, (await BranchProgress.ReadAsync<SagaData>(
+            services.GetRequiredService<IWorkflowStateRepository>(), started.InstanceId, 0)).Reserved);
 
         var result = await engine.ResumeAsync(started.InstanceId, "winner", new Approval());
 

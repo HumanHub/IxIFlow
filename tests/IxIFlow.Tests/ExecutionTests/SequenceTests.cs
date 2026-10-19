@@ -70,7 +70,7 @@ public class SequenceTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (SequenceWorkflowData)result.WorkflowData;
@@ -139,7 +139,7 @@ public class SequenceTests
         var result = await _workflowEngine.RunAsync(definition, workflowData);
 
         // Assert
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(result.WorkflowData);
 
         var finalData = (SequenceWorkflowData)result.WorkflowData;
@@ -212,7 +212,7 @@ public class SequenceTests
         var highValueResult = await _workflowEngine.RunAsync(definition, highValueData);
 
         // Assert
-        Assert.True(highValueResult.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, highValueResult.Status);
         Assert.NotNull(highValueResult.WorkflowData);
 
         var highValueFinalData = (SequenceWorkflowData)highValueResult.WorkflowData;
@@ -234,7 +234,7 @@ public class SequenceTests
         var lowValueResult = await _workflowEngine.RunAsync(definition, lowValueData);
 
         // Assert
-        Assert.True(lowValueResult.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, lowValueResult.Status);
         Assert.NotNull(lowValueResult.WorkflowData);
 
         var lowValueFinalData = (SequenceWorkflowData)lowValueResult.WorkflowData;

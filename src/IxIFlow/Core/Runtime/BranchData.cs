@@ -94,14 +94,6 @@ internal static class BranchData
     }
 
     /// <summary>
-    /// <paramref name="root"/> with the committed changes of every live branch laid over it, in fork
-    /// order: a view of what the branches of the open joins have done so far, for operators and tests.
-    /// It is not a merge; branches that changed the same data show the later one.
-    /// </summary>
-    public static object Overlay(object root, ExecutionCheckpoint checkpoint) =>
-        Rebuild(root, checkpoint.Continuations.SelectMany(item => item.DataChanges ?? []).ToList());
-
-    /// <summary>
     /// Merges the branches, given in declaration order, into a copy of <paramref name="baseline"/>, or
     /// throws <see cref="JoinConflictException"/> when branches changed the same data, or a property and
     /// one inside it, without a combiner that merges them, or when the data type cannot hold the merge.
