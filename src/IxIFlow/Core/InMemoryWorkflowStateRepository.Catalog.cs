@@ -119,13 +119,11 @@ public partial class InMemoryWorkflowStateRepository
             {
                 if (state == WorkflowVersionState.Retired)
                 {
-                    var versions = _versions.Values.ToArray();
                     var reference = new WorkflowVersionReference(name, version);
-                    var callers = versions.Where(caller => (caller.Dependencies ?? []).Contains(reference))
-                        .Select(caller => caller.Name).ToHashSet(StringComparer.Ordinal);
-                    WorkflowCatalogRules.CheckRetirement(row, versions, _instances.Values.Where(instance =>
-                        !WorkflowStoreRules.IsTerminal(instance.Status) && callers.Contains(instance.WorkflowName))
-                        .Select(instance => new WorkflowVersionReference(instance.WorkflowName, instance.WorkflowVersion)));
+                    var callers = _versions.Values.Where(caller => (caller.Dependencies ?? []).Contains(reference)).ToArray();
+                    WorkflowCatalogRules.CheckRetirement(row, callers, null);
+                    var pairs = callers.Select(caller => new WorkflowVersionReference(caller.Name, caller.Version)).ToHashSet();
+                    WorkflowCatalogRules.CheckRetirement(row, callers, FindUnfinishedCaller(_instances.Select(entry => entry.Value), pairs));
                 }
                 if (state == WorkflowVersionState.Published)
                     foreach (var dependency in row.Dependencies ?? [])
@@ -135,6 +133,19 @@ public partial class InMemoryWorkflowStateRepository
             }
         }
         finally { _catalogLock.Release(); }
+    }
+
+    internal static WorkflowVersionReference? FindUnfinishedCaller(IEnumerable<WorkflowInstance> instances,
+        IReadOnlySet<WorkflowVersionReference> callers)
+    {
+        if (callers.Count == 0) return null;
+        foreach (var instance in instances)
+        {
+            if (WorkflowStoreRules.IsTerminal(instance.Status)) continue;
+            var pair = new WorkflowVersionReference(instance.WorkflowName, instance.WorkflowVersion);
+            if (callers.Contains(pair)) return pair;
+        }
+        return null;
     }
 
     // Called only for first writes and child insertions, while holding the same lock as retirement.
