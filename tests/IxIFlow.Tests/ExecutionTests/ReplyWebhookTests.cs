@@ -10,7 +10,11 @@ public sealed partial class IncomingWebhookEndpointTests
     public async Task AnInvalidReplyTokenIsRefusedBeforeTheWebhookReadsTheStore(bool signedWebhook)
     {
         var store = new Mock<IWorkflowStateRepository>(MockBehavior.Strict);
+        // The harness registers its definitions in the catalog at setup; only the requests must not reach the store.
+        store.Setup(repository => repository.RegisterWorkflowVersionAsync(It.IsAny<WorkflowVersion>(), It.IsAny<IArtifactStore?>()))
+            .Returns(Task.CompletedTask);
         await using var host = new Harness(store.Object);
+        store.Invocations.Clear();
         foreach (var token in new[] { "not-a-token", "tampered-token",
                      ReplyToken.Create("another-instance", "wait") })
         {
