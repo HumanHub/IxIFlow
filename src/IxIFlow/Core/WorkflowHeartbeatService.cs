@@ -8,7 +8,7 @@ namespace IxIFlow.Core;
 
 /// <summary>Publishes this process and a fresh capability snapshot for as long as its host runs.</summary>
 internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository repository, IWorkflowVersionRegistry registry,
-    HostSettings settings, TimeProvider time, ILogger<WorkflowHeartbeatService> logger) : BackgroundService
+    HostSettings settings, TimeProvider time, ILogger<WorkflowHeartbeatService> logger, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null) : BackgroundService
 {
     internal static bool IsAutomaticCapability(string key) =>
         key is "os" or "arch" or "runtime" or "host" || key.StartsWith("workflow:", StringComparison.Ordinal);
@@ -60,7 +60,7 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
                         await RegisterAsync(capabilities, stoppingToken);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception error) { logger.LogWarning(error, "Could not heartbeat host {HostId}", settings.Id); }
+                catch (Exception error) { InspectionRedactionPolicy.Default.Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Could not heartbeat host {HostId}", settings.Id); }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }

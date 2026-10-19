@@ -90,6 +90,22 @@ internal sealed class ExecutionCheckpoint
     public DateTime? ExecutionDeadlineUtc { get; set; }
     public bool TimedOut { get; set; }
     public SerializedException? UnhandledError { get; set; }
+    public List<WorkflowDiagnostic> Diagnostics { get; set; } = [];
+
+    public InspectionError RecordDiagnostic(Exception error)
+    {
+        var safe = InspectionRedactionPolicy.Default.Error(error);
+        if (Diagnostics.All(item => item.DiagnosticId != safe.DiagnosticId))
+            Diagnostics.Add(new(safe.DiagnosticId, safe.ErrorType, error.Message, error.StackTrace));
+        return safe;
+    }
+
+    public InspectionError RecordDiagnostic(string code, string message)
+    {
+        var safe = new InspectionError(code, Guid.NewGuid().ToString("N"));
+        Diagnostics.Add(new(safe.DiagnosticId, safe.ErrorType, message, null));
+        return safe;
+    }
     public bool CancellationRequested { get; set; }
 
     /// <summary>
@@ -353,6 +369,7 @@ internal sealed class ExecutionCheckpoint
 
 internal sealed class OperatorStopState
 {
+    public InspectionError? Diagnostic { get; set; }
     public OperatorStopKind Kind { get; set; }
     public string Reason { get; set; } = "";
     public DateTime StoppedAtUtc { get; set; }
@@ -470,6 +487,7 @@ internal sealed class ActivityInvocationState
     public string? ChildWorkflowId { get; set; }
     public List<ActivityAttemptState> Attempts { get; set; } = [];
     public string? ResolutionReason { get; set; }
+    public InspectionError? ResolutionDiagnostic { get; set; }
     public ActivityResolutionState? Resolution { get; set; }
 }
 

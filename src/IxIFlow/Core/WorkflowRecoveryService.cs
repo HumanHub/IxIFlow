@@ -16,7 +16,7 @@ internal sealed class WorkflowRecoveryService(
     ILogger<WorkflowRecoveryService> logger,
     TimeProvider? timeProvider = null,
     HostSettings? settings = null,
-    IRunnableWakeSource? wakeSource = null) : BackgroundService
+    IRunnableWakeSource? wakeSource = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null) : BackgroundService
 {
     private readonly HostSettings _settings = settings ?? HostSettings.Default;
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
@@ -107,10 +107,10 @@ internal sealed class WorkflowRecoveryService(
                     .RecoverAsync(instance.InstanceId, token);
                 if (result.Status == WorkflowExecutionStatus.Faulted)
                     logger.LogWarning("Recovery of workflow {InstanceId} was rejected: {Reason}",
-                        instance.InstanceId, result.ErrorMessage);
+                        instance.InstanceId, InspectionRedactionPolicy.Default.ResultError(result));
                 else if (result.Status == WorkflowExecutionStatus.NeedsResolution && result.ErrorMessage != null)
                     logger.LogWarning("Workflow {InstanceId} needs an operator: {Reason}",
-                        instance.InstanceId, result.ErrorMessage);
+                        instance.InstanceId, InspectionRedactionPolicy.Default.ResultError(result));
                 // A row this host rejected, or left stopped, may still be due; let others go first.
                 if (result.Status is WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.NeedsResolution)
                     Defer(instance.InstanceId);
@@ -128,7 +128,7 @@ internal sealed class WorkflowRecoveryService(
             }
             catch (Exception error)
             {
-                logger.LogError(error, "Could not recover workflow {InstanceId}", instance.InstanceId);
+                InspectionRedactionPolicy.Default.Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not recover workflow {InstanceId}", instance.InstanceId);
                 // A row whose recovery throws, such as unreadable data, must not hold the poll.
                 Defer(instance.InstanceId);
             }
@@ -197,7 +197,7 @@ internal sealed class WorkflowRecoveryService(
                 }
                 catch (Exception error)
                 {
-                    logger.LogError(error, "Could not claim the workflows the store woke this host for");
+                    InspectionRedactionPolicy.Default.Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not claim the workflows the store woke this host for");
                     continue;
                 }
                 Track(passes, PassAsync(recovering, stoppingToken));
@@ -224,7 +224,7 @@ internal sealed class WorkflowRecoveryService(
             }
             catch (Exception error)
             {
-                logger.LogWarning(error, "Lost the store's wake-ups; polling every {PollInterval} until they return",
+                InspectionRedactionPolicy.Default.Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Lost the store's wake-ups; polling every {PollInterval} until they return",
                     _settings.PollInterval);
             }
             try
@@ -249,7 +249,7 @@ internal sealed class WorkflowRecoveryService(
         }
         catch (Exception error)
         {
-            logger.LogError(error, "Could not scan running workflows for recovery");
+            InspectionRedactionPolicy.Default.Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not scan running workflows for recovery");
         }
     }
 }

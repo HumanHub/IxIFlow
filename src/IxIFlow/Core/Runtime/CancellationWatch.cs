@@ -19,6 +19,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     private readonly IWorkflowStateRepository _store;
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
+    private readonly ILogger<SensitiveDiagnostics>? _sensitiveDiagnostics;
     private readonly object _lock = new();
     private readonly Dictionary<string, List<Subscriber>> _watched = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _stop = new();
@@ -31,11 +32,12 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         _read;
 
     public CancellationWatch(IWorkflowStateRepository store, TimeProvider? time = null,
-        ILogger<CancellationWatch>? logger = null)
+        ILogger<CancellationWatch>? logger = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null)
     {
         _store = GuardedStateRepository.Wrap(store);
         _time = time ?? TimeProvider.System;
         _logger = logger ?? NullLogger<CancellationWatch>.Instance;
+        _sensitiveDiagnostics = sensitiveDiagnostics;
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
@@ -103,7 +105,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
             catch (Exception error)
             {
                 // Keep watching: a fault here must not leave leases without cancellation or loss.
-                _logger.LogError(error, "The cancellation watch failed");
+                InspectionRedactionPolicy.Default.Log(_logger, _sensitiveDiagnostics, LogLevel.Error, error, "The cancellation watch failed");
             }
             try
             {
@@ -137,7 +139,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
             // wait; then a fresh read may succeed where it did not.
             if (error is not TimeoutException || Now - readAt >= LongestTolerance())
                 _read = null;
-            _logger.LogWarning(error, "Could not read cancellation requests for {Count} workflow instances",
+            InspectionRedactionPolicy.Default.Log(_logger, _sensitiveDiagnostics, LogLevel.Warning, error, "Could not read cancellation requests for {Count} workflow instances",
                 instanceIds.Length);
             // Each lease has its own outage clock, counted from its last confirmed read. Every lease
             // watched now is judged, including ones added while the read was out.

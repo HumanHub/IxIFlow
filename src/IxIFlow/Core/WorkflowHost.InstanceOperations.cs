@@ -213,7 +213,7 @@ public sealed partial class WorkflowHost
                 var child = pending.ChildWorkflowId == null
                     ? null : await _store.GetWorkflowInstanceSummaryAsync(pending.ChildWorkflowId);
                 pendingActivities.Add(new PendingActivityInfo(pending.Id, pending.StepId,
-                    step.ActivityType?.Name ?? step.Name, pending.ResolutionReason,
+                    step.ActivityType?.Name ?? step.Name, InspectionRedactionPolicy.Default.Reason(pending.ResolutionDiagnostic),
                     pending.StartedAtUtc,
                     step.OutputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Output)
                         .Select(mapping => mapping.TargetProperty).Distinct().ToArray(),
@@ -257,8 +257,8 @@ public sealed partial class WorkflowHost
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     scopes.Mismatch(definition, checkpoint.StructureHash));
             var snapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
-            snapshot.Data = JsonSerializer.Deserialize<JsonElement>(new RedactingJson(services).Serialize(
-                instance.WorkflowDataJson, instance.WorkflowDataType));
+            snapshot.Data = InspectionRedactionPolicy.Default.StoredValue(
+                instance.WorkflowDataJson, instance.WorkflowDataType, services);
             return snapshot;
         }
 
@@ -507,10 +507,9 @@ public sealed partial class WorkflowHost
         public async Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
         {
             var waits = await _store.GetOpenWaitsAsync(query);
-            var projection = new RedactingJson(services);
             return waits.Select(wait => wait.DefaultPayloadJson == null ? wait : wait with
             {
-                DefaultPayloadJson = projection.Serialize(wait.DefaultPayloadJson, wait.EventType)
+                DefaultPayloadJson = InspectionRedactionPolicy.Default.StoredValue(wait.DefaultPayloadJson, wait.EventType, services).GetRawText()
             }).ToArray();
         }
 
@@ -839,6 +838,7 @@ public sealed partial class WorkflowHost
             InstanceId = instance.InstanceId,
             Status = WorkflowExecutionStatus.NeedsResolution,
             TraceEntries = [],
+            Diagnostic = stop.Diagnostic,
             ErrorMessage = stop.Describe()
         };
 
@@ -855,6 +855,7 @@ public sealed partial class WorkflowHost
                 StoppedAtUtc = Now,
                 CrashCount = owner.CrashCount
             };
+            stop.Diagnostic = checkpoint.RecordDiagnostic("Quarantine", stop.Reason);
             checkpoint.OperatorStop = stop;
             instance.Status = WorkflowStatus.NeedsResolution;
             instance.LastError = stop.Reason;

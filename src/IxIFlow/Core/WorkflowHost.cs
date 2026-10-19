@@ -41,6 +41,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     // earliest (C-12). Work saved by other hosts, and anything lost here, is found by the poll.
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
+    private readonly ILogger<SensitiveDiagnostics>? _sensitiveDiagnostics;
     private readonly SortedSet<(DateTime Due, string InstanceId)> _due = new(Comparer<(DateTime Due, string InstanceId)>
         .Create((left, right) => left.Due != right.Due
             ? left.Due.CompareTo(right.Due)
@@ -53,13 +54,14 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     private DateTime? _armedFor;
 
     internal WorkflowHost(IServiceScopeFactory scopes, HostSettings settings, TimeProvider? time = null,
-        ILogger<WorkflowHost>? logger = null)
+        ILogger<WorkflowHost>? logger = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null)
     {
         _scopes = scopes;
         _settings = settings;
         _slots = new SemaphoreSlim(settings.Slots, settings.Slots);
         _time = time ?? TimeProvider.System;
         _logger = logger ?? NullLogger<WorkflowHost>.Instance;
+        _sensitiveDiagnostics = sensitiveDiagnostics;
         // The timer must not carry the context of whoever first scheduled something: its callbacks
         // would then look like calls from inside that run.
         using (ExecutionContext.SuppressFlow())
@@ -185,7 +187,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         }
         catch (Exception error)
         {
-            _logger.LogError(error, "Could not resume workflow {InstanceId} at its runnable time", instanceId);
+            InspectionRedactionPolicy.Default.Log(_logger, _sensitiveDiagnostics, LogLevel.Error, error, "Could not resume workflow {InstanceId} at its runnable time", instanceId);
         }
         lock (_lock)
         {

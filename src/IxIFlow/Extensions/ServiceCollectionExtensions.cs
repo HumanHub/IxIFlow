@@ -23,12 +23,14 @@ public static class ServiceCollectionExtensions
     /// <returns>The builder, whose <see cref="IIxIFlowBuilder.Services"/> continues the service collection</returns>
     public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services)
     {
+        services.AddLogging(logging => logging.AddFilter(InspectionRedactionPolicy.SensitiveDiagnosticsCategory, LogLevel.None));
+        services.AddScoped<IWorkflowDiagnostics, WorkflowDiagnostics>();
         // Core workflow services
         services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
         services.TryAddSingleton(RetentionSettings.Default);
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
-            provider.GetService<ILogger<WorkflowHost>>()));
+            provider.GetService<ILogger<WorkflowHost>>(), provider.GetService<ILogger<SensitiveDiagnostics>>()));
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();

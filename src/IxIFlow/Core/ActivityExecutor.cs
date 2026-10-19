@@ -302,7 +302,7 @@ public class ActivityExecutor : IActivityExecutor
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to apply typed input mapping for property {Property}",
+                InspectionRedactionPolicy.Default.Log(_logger, _serviceProvider.GetService<ILogger<SensitiveDiagnostics>>(), LogLevel.Error, ex, "Failed to apply typed input mapping for property {Property}",
                     mapping.TargetProperty);
                 throw;
             }
@@ -355,7 +355,7 @@ public class ActivityExecutor : IActivityExecutor
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to apply typed output mapping for property {Property}",
+                InspectionRedactionPolicy.Default.Log(_logger, _serviceProvider.GetService<ILogger<SensitiveDiagnostics>>(), LogLevel.Error, ex, "Failed to apply typed output mapping for property {Property}",
                     mapping.TargetProperty);
                 throw;
             }

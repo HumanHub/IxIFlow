@@ -8,7 +8,7 @@ namespace IxIFlow.Core;
 /// <summary>One batch poller per publisher. Shutdown finishes only deliveries already in flight.</summary>
 internal sealed class WorkflowOutboxService(IWorkflowStateRepository repository, IEnumerable<IOutboxPublisher> publishers,
     HostSettings settings, OutboxSettings options, TimeProvider time, ILogger<WorkflowOutboxService> logger,
-    IEnumerable<OutboxPublisherStart>? starts = null, IEnumerable<OutboxPublisherRemoval>? removals = null) : IHostedService, IDisposable
+    IEnumerable<OutboxPublisherStart>? starts = null, IEnumerable<OutboxPublisherRemoval>? removals = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null) : IHostedService, IDisposable
 {
     private readonly IOutboxPublisher[] _publishers = publishers.ToArray();
     private readonly CancellationTokenSource _stopPolling = new();
@@ -65,7 +65,7 @@ internal sealed class WorkflowOutboxService(IWorkflowStateRepository repository,
                 }
                 catch (Exception error)
                 {
-                    logger.LogError(error, "Could not claim workflow outbox deliveries for {PublisherName}", publisher.Name);
+                    InspectionRedactionPolicy.Default.Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not claim workflow outbox deliveries for {PublisherName}", publisher.Name);
                 }
                 finally { if (reserved > 0) _slots.Release(reserved); }
                 await Task.Delay(settings.PollInterval, time, _stopPolling.Token);
@@ -79,7 +79,7 @@ internal sealed class WorkflowOutboxService(IWorkflowStateRepository repository,
     {
         try { await DeliverAsync(publisher, delivery, _stopDelivery.Token); }
         catch (OperationCanceledException) when (_stopDelivery.IsCancellationRequested) { }
-        catch (Exception error) { logger.LogError(error, "Could not deliver workflow outbox event {EventId}", delivery.Event.Id); }
+        catch (Exception error) { InspectionRedactionPolicy.Default.Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not deliver workflow outbox event {EventId}", delivery.Event.Id); }
         finally { _slots.Release(); }
     }
 
@@ -111,7 +111,7 @@ internal sealed class WorkflowOutboxService(IWorkflowStateRepository repository,
             catch (OperationCanceledException) when (attempt.IsCancellationRequested) { throw; }
             catch (Exception error)
             {
-                logger.LogWarning(error, "Outbox publisher failed; delivery will retry");
+                InspectionRedactionPolicy.Default.Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Outbox publisher failed; delivery will retry");
                 result = OutboxPublishResult.RetryLater(error.Message);
             }
             // A completed renewal cannot race settlement or report a lease lost to our own settle.
@@ -126,7 +126,7 @@ internal sealed class WorkflowOutboxService(IWorkflowStateRepository repository,
             {
                 if (result.Outcome != OutboxPublishOutcome.Delivered) throw;
                 Telemetry.OutboxSettleFailures.Add(1, tags);
-                logger.LogWarning(error, "Published outbox event {EventId}, but settlement failed; it may be delivered again", item.Id);
+                InspectionRedactionPolicy.Default.Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Published outbox event {EventId}, but settlement failed; it may be delivered again", item.Id);
                 return;
             }
             if (!settled)
@@ -142,7 +142,8 @@ internal sealed class WorkflowOutboxService(IWorkflowStateRepository repository,
             tags.Add(Telemetry.Outcome, result.Outcome.ToString());
             Telemetry.OutboxDeliveries.Add(1, tags);
             if (result.Outcome != OutboxPublishOutcome.Delivered)
-                logger.LogWarning("Outbox delivery {Outcome}: {Error}", result.Outcome, result.Error);
+                logger.LogWarning("Outbox delivery {Outcome}: {Error}", result.Outcome,
+                    InspectionRedactionPolicy.Default.Delivery(delivery with { LastError = result.Error }).LastError);
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested && attempt.IsCancellationRequested)
         {
@@ -182,7 +183,7 @@ internal sealed class WorkflowOutboxService(IWorkflowStateRepository repository,
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception error)
         {
-            logger.LogWarning(error, "Could not renew outbox delivery lease for {EventId}", delivery.Event.Id);
+            InspectionRedactionPolicy.Default.Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Could not renew outbox delivery lease for {EventId}", delivery.Event.Id);
             attempt.Cancel();
         }
     }

@@ -13,7 +13,8 @@ internal static class ExecutionSnapshotFactory
             InstanceId = instance.InstanceId,
             WorkflowName = instance.WorkflowName,
             WorkflowVersion = instance.WorkflowVersion,
-            Status = instance.Status
+            Status = instance.Status,
+            Errors = checkpoint.Diagnostics.Select(InspectionRedactionPolicy.Default.Error).ToArray()
         };
         foreach (var continuation in checkpoint.Continuations)
         {
