@@ -32,7 +32,7 @@ public sealed class IncomingWebhookScenarios
     public async Task StartIsDurableBeforeAcceptedWithLocationAndPinnedVersion(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        await using var factory = new IngressFactory(store.NewRepository());
+        await using var factory = new IngressFactory(store, store.NewRepository());
         using var http = factory.AuthenticatedClient();
         using var response = await Start(http);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
@@ -50,7 +50,7 @@ public sealed class IncomingWebhookScenarios
     public async Task SynchronousReplyCompletesOrReturnsADurableStatusLocation(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        await using var factory = new IngressFactory(store.NewRepository());
+        await using var factory = new IngressFactory(store, store.NewRepository());
         using var http = factory.AuthenticatedClient();
         using var response = await Start(http, route: "/sync");
         Assert.Contains(response.StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.Accepted });
@@ -65,7 +65,7 @@ public sealed class IncomingWebhookScenarios
     public async Task IdempotentRepeatAfterALostResponseReturnsTheWinner(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        await using var factory = new IngressFactory(store.NewRepository());
+        await using var factory = new IngressFactory(store, store.NewRepository());
         using var http = factory.AuthenticatedClient();
         using var first = await Start(http, key: "lost-response");
         var id = await Id(first);
@@ -80,7 +80,7 @@ public sealed class IncomingWebhookScenarios
     public async Task ReusingAKeyWithDifferentInputIsAConflict(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        await using var factory = new IngressFactory(store.NewRepository());
+        await using var factory = new IngressFactory(store, store.NewRepository());
         using var http = factory.AuthenticatedClient();
         using var first = await Start(http, key: "conflict");
         using var conflict = await Start(http, key: "conflict", value: 9);
@@ -93,7 +93,7 @@ public sealed class IncomingWebhookScenarios
     public async Task BadSignatureDoesNotMapOrAdmitAStart(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        await using var factory = new IngressFactory(store.NewRepository());
+        await using var factory = new IngressFactory(store, store.NewRepository());
         using var http = factory.CreateClient();
         using var request = new HttpRequestMessage(HttpMethod.Post, "/signed") { Content = JsonContent.Create(new { value = 1 }) };
         request.Headers.Add("webhook-id", "bad");
@@ -109,7 +109,7 @@ public sealed class IncomingWebhookScenarios
     public async Task EventIsInTheDurableInboxBeforeAccepted(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        await using var factory = new IngressFactory(store.NewRepository());
+        await using var factory = new IngressFactory(store, store.NewRepository());
         using var http = factory.AuthenticatedClient();
         using var start = await Start(http);
         var id = await Id(start);
@@ -127,7 +127,7 @@ public sealed class IncomingWebhookScenarios
     public async Task EventToAnUnopenedKeyIsRefusedWithTheReason(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        await using var factory = new IngressFactory(store.NewRepository());
+        await using var factory = new IngressFactory(store, store.NewRepository());
         using var http = factory.AuthenticatedClient();
         using var start = await Start(http);
         var id = await Id(start);
@@ -143,7 +143,7 @@ public sealed class IncomingWebhookScenarios
     public async Task AllEndpointsRequireAuthenticationAndStatusRequiresTheInstanceOwner(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        await using var factory = new IngressFactory(store.NewRepository());
+        await using var factory = new IngressFactory(store, store.NewRepository());
         using var alice = factory.AuthenticatedClient();
         using var anonymous = factory.CreateClient();
         using var start = await Start(alice);
@@ -166,8 +166,8 @@ public sealed class IncomingWebhookScenarios
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
         var registry = new WorkflowVersionRegistry();
-        await using var first = new IngressFactory(store.NewRepository(), registry);
-        await using var second = new IngressFactory(store.NewRepository(), registry);
+        await using var first = new IngressFactory(store, store.NewRepository(), registry);
+        await using var second = new IngressFactory(store, store.NewRepository(), registry);
         using var firstHttp = first.AuthenticatedClient();
         using var secondHttp = second.AuthenticatedClient();
         using var start = await Start(firstHttp);
@@ -236,7 +236,7 @@ public sealed class IncomingWebhookScenarios
     }
     public sealed class Application { }
 
-    private sealed class IngressFactory(IWorkflowStateRepository repository, IWorkflowVersionRegistry? registry = null)
+    private sealed class IngressFactory(ProfileStore profile, IWorkflowStateRepository repository, IWorkflowVersionRegistry? registry = null)
         : WebApplicationFactory<Application>
     {
         public IWorkflowStateRepository Repository => repository;
@@ -255,6 +255,7 @@ public sealed class IncomingWebhookScenarios
                 services.Replace(ServiceDescriptor.Singleton(registry ?? new WorkflowVersionRegistry()));
                 services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
                 services.AddTransient<Noop>();
+                profile.ConfigureHost(services);
                 services.AddAuthentication("test").AddScheme<AuthenticationSchemeOptions, TestAuthentication>("test", _ => { });
                 services.AddAuthorization(options =>
                 {
