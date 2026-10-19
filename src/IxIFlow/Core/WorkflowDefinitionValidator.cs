@@ -8,6 +8,30 @@ namespace IxIFlow.Core;
 /// <summary>Checks the build rules of a definition.</summary>
 public static class WorkflowDefinitionValidator
 {
+    /// <summary>Validates executable shape and returns the compiler-independent structure hash.</summary>
+    public static string Inspect(WorkflowDefinition definition)
+    {
+        Validate(definition);
+        return ForExecution(definition).StructureHash;
+    }
+
+    public static string GetCombinerSignature(WorkflowDefinition definition)
+    {
+        Validate(definition);
+        return BranchData.CombinerSignature(definition.WorkflowDataType);
+    }
+
+    public const int CheckpointContractVersion = 4;
+
+    public static IReadOnlyList<WorkflowVersionReference> GetDependencies(WorkflowDefinition definition)
+    {
+        Validate(definition);
+        return ForExecution(definition).AllSteps.Select(pair => pair.Value)
+            .Where(step => step.WorkflowName != null && step.WorkflowVersion != null)
+            .Select(step => new WorkflowVersionReference(step.WorkflowName!, step.WorkflowVersion!.Value))
+            .Distinct().OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
+    }
+
     private static readonly ConditionalWeakTable<WorkflowDefinition, Lazy<Validation>> Validated = new();
     private static readonly ConditionalWeakTable<Type, string[]> UnrestorableProperties = new();
 

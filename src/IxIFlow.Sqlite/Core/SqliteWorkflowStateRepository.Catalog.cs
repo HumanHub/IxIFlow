@@ -52,6 +52,9 @@ public sealed partial class SqliteWorkflowStateRepository
         Statement.CatalogDefinitionUpdate => """
             UPDATE ixiflow_definitions SET kind=@Kind, source=@Source, revision=@Revision WHERE name=@Name AND version=@Version
             """,
+        Statement.CatalogDefinitionDelete => """
+            DELETE FROM ixiflow_definitions WHERE name=@Name AND version=@Version AND revision=@Revision
+            """,
         Statement.ArtifactPut => """
             INSERT INTO ixiflow_artifacts (digest, kind, content, created_at_utc) VALUES (@Digest,@Kind,@Content,@Now) ON CONFLICT (digest) DO NOTHING
             """,

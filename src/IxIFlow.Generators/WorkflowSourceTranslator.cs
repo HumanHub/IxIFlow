@@ -52,7 +52,7 @@ public static class WorkflowSourceTranslator
         "Workflow_" + string.Concat(Path.GetFileNameWithoutExtension(sourcePath)
             .Select(character => char.IsLetterOrDigit(character) ? character : '_'));
 
-    internal static IEnumerable<string> TypeNames(WorkflowDocument document)
+    public static IEnumerable<string> TypeNames(WorkflowDocument document)
     {
         yield return document.Workflow.DataType;
         foreach (var activity in document.Activities.Values) yield return activity.Activity;

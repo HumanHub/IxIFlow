@@ -56,6 +56,9 @@ public sealed partial class SqlWorkflowStateRepository
         Statement.CatalogDefinitionUpdate => """
             UPDATE dbo.IxIFlowDefinitions SET Kind=@Kind, Source=@Source, Revision=@Revision WHERE Name=@Name AND Version=@Version
             """,
+        Statement.CatalogDefinitionDelete => """
+            DELETE FROM dbo.IxIFlowDefinitions WHERE Name=@Name AND Version=@Version AND Revision=@Revision
+            """,
         Statement.ArtifactPut => """
             INSERT INTO dbo.IxIFlowArtifacts (Digest, Kind, Content, CreatedAtUtc) SELECT @Digest,@Kind,@Content,@Now WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowArtifacts WITH (UPDLOCK,HOLDLOCK) WHERE Digest=@Digest)
             """,
