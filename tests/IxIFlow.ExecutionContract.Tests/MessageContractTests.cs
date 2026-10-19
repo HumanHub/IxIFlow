@@ -18,7 +18,8 @@ public sealed class MessageContractTests
         typeof(Assign), typeof(Ready), typeof(Cancel), typeof(Arrivals), typeof(Recycle),
         typeof(Checkpoint), typeof(CheckpointReply), typeof(StartChild), typeof(StartChildReply),
         typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
-        typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome)
+        typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome),
+        typeof(BreakpointSource), typeof(BreakpointStop), typeof(BreakpointHitTrace)
     ];
     public static TheoryData<Type> MessageTypes => new(MessageTypeList);
 
@@ -37,7 +38,8 @@ public sealed class MessageContractTests
         assign = assign with
         {
             Recovery = new(["root"], reason, true, true, "operator"),
-            Breakpoints = [new("root/0", "value == 1", 3)]
+            Breakpoints = [new("stop", "root/0", new("flow.yaml", 4), ">= 3")
+                { StructureHash = assign.StructureHash, VerifiedSource = new("flow.yaml", 7) }]
         };
         var now = DateTime.UtcNow;
         var commit = CheckpointCommit.Create(assign.Instance, assign.Epoch, assign.Instance.Revision,
@@ -65,6 +67,8 @@ public sealed class MessageContractTests
             new ReadWaitReply(assign.AssignmentId, new(assign.Instance.InstanceId, "wait", WaitKind.Event,
                 "go", "event-type", now.AddMinutes(1), 3, now, DefaultPayloadJson: StoredJson.Inline("{\"Default\":true}"))),
             assign.Breakpoints[0], assign.Recovery!, new AcknowledgedCommit("commit", 5),
+            new BreakpointSource("flow.yaml", 4), new BreakpointStop("root", "root/0", "stop", "activation", 2, 3, now),
+            new BreakpointHitTrace("root", "root/0", "stop", 3, 1),
             new AssignmentOutcome(AssignmentOutcomeKind.Interrupted, "error", "type", "stack", "root/0", "attempt")
         ];
         var message = Assert.Single(messages, value => value.GetType() == type);

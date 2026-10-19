@@ -105,15 +105,32 @@ public sealed class SerializedExecutorTests
     }
 
     [Fact]
-    public async Task NonemptyBreakpointsAreRefusedBeforeAnyHostRequest()
+    public async Task BreakpointsInAssignPauseBeforeTheirStep()
     {
         using var harness = new MessageHarness();
-        var assign = await harness.AssignAsync(Workflow.Create<Data>("breakpoints").Step<Noop>().Build());
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            harness.ExecuteAsync(assign with { Breakpoints = [new("root/0", "true", 1)] }));
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
-        Assert.Equal([typeof(Assign)], harness.Crossed);
-        Assert.Equal(0, harness.Host.StoreCalls);
+        var definition = Workflow.Create<Data>("breakpoints").Step<Noop>().Build();
+        var assign = await harness.AssignAsync(definition);
+        var ready = await harness.ExecuteAsync(assign with
+        {
+            DebuggingEnabled = true,
+            Breakpoints = BreakpointResolver.Resolve(definition, [new("first", "root/0")])
+        });
+        Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome!.Kind);
+        Assert.Equal(WorkflowStatus.Paused, Assert.Single(harness.Host.Requests).Commit.Instance.Status);
+        Assert.Equal(WorkflowStatus.Paused, harness.Host.Saved!.Status);
+        Assert.Equal(harness.Host.Saved.Revision, ready.LastAcknowledgedCommit!.Revision);
+        var debug = WorkflowDebugRules.Checkpoint(harness.Host.Saved);
+        var hit = Assert.IsType<BreakpointStop>(debug.Stop);
+        Assert.Equal("root", hit.BranchId);
+        Assert.Equal("root/0", hit.StepId);
+        Assert.Equal("first", hit.BreakpointId);
+        Assert.Equal(1, hit.HitCount);
+        Assert.Equal(1, Assert.Single(debug.Breakpoints).HitCount);
+        Assert.Single(await harness.Host.Store.GetTraceAsync(assign.Instance.InstanceId),
+            entry => entry.Entry.EntryType == TraceEntryType.BreakpointHit);
+        Assert.Equal(0, harness.Probe.Noops);
+        Assert.Equal([typeof(Assign), typeof(ReadInbox), typeof(ReadInboxReply),
+            typeof(Checkpoint), typeof(CheckpointReply), typeof(Ready)], harness.Crossed);
     }
 
     [Fact]

@@ -18,6 +18,7 @@ public sealed class PublicApiGuardTests
             typeof(Checkpoint), typeof(CheckpointReply), typeof(StartChild), typeof(StartChildReply),
             typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
             typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome),
+            typeof(BreakpointSource), typeof(BreakpointStop), typeof(BreakpointHitTrace),
             typeof(CancelKind), typeof(AssignmentOutcomeKind), typeof(CheckpointReplyKind), typeof(ConflictReason),
             typeof(ExecutionContract), typeof(ExecutionMessageContext)
         ];

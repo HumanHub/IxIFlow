@@ -207,15 +207,34 @@ public sealed class AssignmentRequestTests
     }
 
     [Fact]
-    public async Task NonEmptyBreakpointsAreRefusedBeforeAnyHostRequest()
+    public async Task BreakpointsInAssignAreAppliedByTheExecutor()
     {
-        using var services = Services();
+        var activities = new Moq.Mock<IActivityExecutor>(Moq.MockBehavior.Strict);
+        var collection = new ServiceCollection().AddLogging();
+        collection.AddIxIFlow(options => options.Debugging = true);
+        collection.AddSingleton(activities.Object);
+        using var services = collection.BuildServiceProvider();
+        var definition = Definition("breakpoints");
+        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
         var endpoint = new ExecutorHost();
-        var assign = NewAssign(Definition("breakpoints")) with { Breakpoints = [new("root/0")] };
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            new WorkflowExecutor(services, endpoint).ExecuteAsync(assign, CancellationToken.None));
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
-        Assert.Empty(endpoint.Statuses);
+        var assign = NewAssign(definition) with
+        {
+            DebuggingEnabled = true,
+            Breakpoints = BreakpointResolver.Resolve(definition, [new("first", "root/0")])
+        };
+        var ready = await new WorkflowExecutor(services, endpoint).ExecuteAsync(assign, CancellationToken.None);
+        Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome.Kind);
+        Assert.Equal(WorkflowStatus.Paused, Assert.Single(endpoint.Statuses));
+        Assert.Equal(WorkflowStatus.Paused, endpoint.Saved!.Status);
+        Assert.Equal(endpoint.Acknowledged, ready.LastAcknowledgedCommit);
+        var debug = WorkflowDebugRules.Checkpoint(endpoint.Saved);
+        var hit = Assert.IsType<BreakpointStop>(debug.Stop);
+        Assert.Equal(ExecutionCheckpoint.Read(assign.Instance.ExecutionStateJson).Continuations[0].Id, hit.BranchId);
+        Assert.Equal("root/0", hit.StepId);
+        Assert.Equal("first", hit.BreakpointId);
+        Assert.Equal(1, hit.HitCount);
+        Assert.Equal(1, Assert.Single(debug.Breakpoints).HitCount);
+        Assert.Empty(activities.Invocations);
     }
 
     [Theory]
