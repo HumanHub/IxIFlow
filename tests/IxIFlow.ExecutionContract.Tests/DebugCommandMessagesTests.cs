@@ -7,6 +7,51 @@ namespace IxIFlow.ContractTests;
 [Trait("Feature", "host")]
 public sealed class DebugCommandMessagesTests
 {
+    [Fact]
+    [Trait("Spec", "G-08")]
+    public async Task EditRequestsReceiptsAndAuditCrossAssignmentAndDelivery()
+    {
+        using var harness = new MessageHarness();
+        var assign = await harness.AssignAsync(Workflow.Create<MessageHarness.Data>("EditMessages").Step<MessageHarness.Noop>().Build());
+        var edit = new DataEditRequest(5, new(3, "branch"),
+            [new(["Value"], JsonSerializer.SerializeToElement(7)), new(["Name"], JsonSerializer.SerializeToElement<string?>(null), true)]);
+        var receipt = new DataEditResult(assign.Instance.InstanceId, "edit", 6, edit.Target);
+        var command = new DebugCommand("edit", 7, DebugCommandKind.EditData, 3, "editor", 6, Edit: edit, EditResult: receipt);
+        var state = new WorkflowDebugState(8, 3, [command]);
+        var copy = harness.Cross(assign with { DebugState = state, DebuggingEnabled = true });
+        var delivered = harness.Cross(new DebugCommands(assign.AssignmentId, state));
+        foreach (var crossed in new[] { copy.DebugState!.Commands[0], delivered.State.Commands[0] })
+        {
+            Assert.Equal(command.Order, crossed.Order); Assert.Equal(command.AcknowledgedRevision, crossed.AcknowledgedRevision);
+            Assert.Equal(receipt, crossed.EditResult); Assert.Equal(5, crossed.Edit!.ExpectedRevision);
+            Assert.Equal(["Value"], crossed.Edit.Patches[0].Path); Assert.Equal(7, crossed.Edit.Patches[0].Value.GetInt32());
+            Assert.True(crossed.Edit.Patches[1].Remove);
+        }
+        var audit = new DataEditedTrace("editor", "edit", edit.Target, 6, [new(["Value"], new string('A', 64), new string('B', 64))]);
+        var json = JsonSerializer.Serialize(audit, ExecutionMessageContext.Default.DataEditedTrace);
+        var read = JsonSerializer.Deserialize(json, ExecutionMessageContext.Default.DataEditedTrace)!;
+        Assert.Equal(audit.EditId, read.EditId); Assert.Equal(audit.Target, read.Target);
+        Assert.Equal(audit.Changes[0].Path, read.Changes[0].Path);
+        Assert.Equal(audit.Changes[0].AfterDigest, read.Changes[0].AfterDigest);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("Spec", "G-08")]
+    public async Task SerializedExecutorHoldsAnEditForTheHostWithoutConsumingItsFollowingContinue(bool enabled)
+    {
+        using var harness = new MessageHarness();
+        var assign = await harness.AssignAsync(Workflow.Create<MessageHarness.Data>("HeldEditMessages").Step<MessageHarness.Noop>().Build());
+        assign.Instance.Status = WorkflowStatus.Paused;
+        var request = new DataEditRequest(assign.Instance.Revision, new(0), [new(["Value"], JsonSerializer.SerializeToElement(7))]);
+        var ready = await harness.ExecuteAsync(assign with { DebuggingEnabled = enabled,
+            DebugState = new(2, 0, [new("edit", 1, DebugCommandKind.EditData, 0, "editor", Edit: request),
+                new("continue", 2, DebugCommandKind.Continue, 0, "continuer")]) });
+        Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome!.Kind);
+        Assert.Empty(harness.Host.Requests); Assert.Equal(0, harness.Probe.Noops);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
