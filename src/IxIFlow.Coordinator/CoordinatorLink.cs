@@ -73,7 +73,17 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
             var started = time.GetTimestamp();
             try { await SessionAsync(_stop.Token); }
             catch (OperationCanceledException) when (_stop.IsCancellationRequested) { break; }
-            catch (Exception error) { logger.LogDebug(error, "Coordinator link to {Endpoint} closed", endpoint); }
+            catch (Exception error)
+            {
+                // Transport/RPC exceptions can contain peer-controlled metadata. Never log them.
+                var category = error is RpcException rpc ? rpc.StatusCode switch
+                {
+                    StatusCode.Unauthenticated or StatusCode.PermissionDenied => "authentication",
+                    StatusCode.FailedPrecondition or StatusCode.InvalidArgument => "protocol",
+                    _ => "transport"
+                } : error is TimeoutException ? "timeout" : "transport";
+                logger.LogDebug("Coordinator link to {Endpoint} closed: {ReasonCategory}", CoordinatorSecurity.EndpointName(endpoint), category);
+            }
             if (_stop.IsCancellationRequested) break;
             if (time.GetElapsedTime(started) >= options.LinkTimeout) failures = 0;
             var delay = ReconnectDelay(options, failures++);
@@ -88,6 +98,7 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
     private async Task SessionAsync(CancellationToken stoppingToken)
     {
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var authenticatedServer = 0;
         using var handler = new SocketsHttpHandler
         {
             KeepAlivePingDelay = TimeSpan.FromSeconds(Math.Max(1, options.LinkHeartbeatInterval.TotalSeconds)),
@@ -97,11 +108,22 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
             AllowAutoRedirect = false,
             UseProxy = false
         };
+        if (endpoint.Scheme == "https") handler.SslOptions = CoordinatorSecurity.ClientTls(options, endpoint, accepted =>
+        {
+            Volatile.Write(ref authenticatedServer, accepted ? 1 : 0);
+            if (!accepted) logger.LogWarning("Coordinator link to {Endpoint} refused: {ReasonCategory}",
+                CoordinatorSecurity.EndpointName(endpoint), "server-identity");
+        });
         using var channel = GrpcChannel.ForAddress(endpoint, new GrpcChannelOptions
         {
             HttpHandler = handler, MaxReceiveMessageSize = LinkProtocol.MaxMessageBytes, MaxSendMessageSize = LinkProtocol.MaxMessageBytes
         });
-        using var call = channel.CreateCallInvoker().AsyncDuplexStreamingCall(LinkProtocol.Link, null, new(cancellationToken: stop.Token));
+        // HTTP headers are transmitted only after TLS validates the configured server identity.
+        var headers = new Metadata();
+        if (endpoint.Scheme == "https" && options.AuthenticationMode == CoordinatorAuthenticationMode.SharedKey)
+            headers.Add("authorization", "Bearer " + options.SharedKey);
+        using var call = channel.CreateCallInvoker().AsyncDuplexStreamingCall(LinkProtocol.Link, null,
+            new(headers: headers, cancellationToken: stop.Token));
         var queue = new SendQueue<HostMessage>(options.SendQueueCapacity);
         var capabilities = new Dictionary<string, string>(await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings));
         queue.TrySend(Hello(capabilities));
@@ -140,6 +162,8 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
                 {
                     if (message.Kind != CoordinatorMessageKind.Welcome || message.CoordinatorId == Guid.Empty ||
                         message.ContractVersion != LinkProtocol.Version) throw LinkProtocol.Invalid("Compatible Welcome is required first");
+                    if (endpoint.Scheme == "https" && Volatile.Read(ref authenticatedServer) == 0)
+                        throw new RpcException(new(StatusCode.Unauthenticated, "Coordinator identity was not authenticated"));
                     welcomed = true;
                     lock (_gate) _ready = true;
                     Ready();

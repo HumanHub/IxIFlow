@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -31,17 +32,46 @@ internal sealed class CoordinatorService(CoordinatorOptions options, Coordinator
         {
             server.Limits.Http2.KeepAlivePingDelay = TimeSpan.FromSeconds(Math.Max(1, options.LinkHeartbeatInterval.TotalSeconds));
             server.Limits.Http2.KeepAlivePingTimeout = TimeSpan.FromSeconds(Math.Max(1, options.LinkTimeout.TotalSeconds));
-            server.Listen(IPAddress.Parse(options.ListenEndpoint.Host), options.ListenEndpoint.Port,
-                listen => listen.Protocols = HttpProtocols.Http2);
+            server.Listen(IPAddress.Parse(options.ListenEndpoint.Host.Trim('[', ']')), options.ListenEndpoint.Port, listen =>
+            {
+                listen.Protocols = HttpProtocols.Http2;
+                if (options.ListenEndpoint.Scheme == "https") listen.UseHttps(https =>
+                {
+                    https.ServerCertificate = options.ServerCertificate;
+                    https.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13;
+                    https.OnAuthenticate = (_, ssl) =>
+                    {
+                        ssl.AllowTlsResume = false;
+                        ssl.CertificateChainPolicy = new System.Security.Cryptography.X509Certificates.X509ChainPolicy
+                        {
+                            DisableCertificateDownloads = true,
+                            RevocationMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck
+                        };
+                    };
+                    if (options.AuthenticationMode == CoordinatorAuthenticationMode.MutualTls)
+                    {
+                        https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+                        https.ClientCertificateValidation = (certificate, chain, _) =>
+                        {
+                            var accepted = CoordinatorSecurity.ValidateCertificate(certificate, chain, options.ClientCertificateTrust, server: false);
+                            if (!accepted) logger.LogWarning("Coordinator link to {Endpoint} refused: {ReasonCategory}",
+                                CoordinatorSecurity.EndpointName(options.ListenEndpoint), "client-identity");
+                            return accepted;
+                        };
+                    }
+                });
+            });
         });
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(identity);
         builder.Services.AddSingleton(matcher);
         builder.Services.AddSingleton(time);
+        builder.Services.AddSingleton(new CoordinatorAuthenticationInterceptor(options, logger));
         builder.Services.AddGrpc(grpc =>
         {
             grpc.MaxReceiveMessageSize = LinkProtocol.MaxMessageBytes;
             grpc.MaxSendMessageSize = LinkProtocol.MaxMessageBytes;
+            grpc.Interceptors.Add<CoordinatorAuthenticationInterceptor>();
         });
         builder.Services.AddSingleton<IServiceMethodProvider<CoordinatorRpcService>, CoordinatorMethods>();
         _application = builder.Build();
