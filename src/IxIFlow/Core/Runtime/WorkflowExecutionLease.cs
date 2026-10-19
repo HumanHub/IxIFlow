@@ -14,6 +14,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _renewal;
     private readonly IDisposable _cancellationWatch;
+    private Action<ExecutionLeaseReleaseResult>? _released;
 
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
         string token, ExecutionLeaseGrant grant, DateTime requestedAtUtc, ExecutionLeaseSettings settings,
@@ -81,7 +82,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     public static async Task<WorkflowExecutionLease?> TryAcquireAsync(
         IWorkflowStateRepository repository, WorkflowInstance instance,
         ExecutionLeaseSettings settings, CancellationWatch watch, ClaimQuery query, TimeProvider? time = null,
-        ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
+        ExecutionClaimKind kind = ExecutionClaimKind.Runnable, Action<ExecutionLeaseReleaseResult>? released = null)
     {
         if (settings.Duration <= TimeSpan.Zero || settings.RenewalInterval <= TimeSpan.Zero ||
             settings.RenewalInterval >= settings.Duration)
@@ -96,7 +97,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                 settings.Duration, query, kind) is not { } grant)
             return null;
         return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, requestedAtUtc, settings,
-            time, watch);
+            time, watch) { _released = released };
     }
 
     /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>
@@ -191,7 +192,8 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         _stop.Dispose();
         try
         {
-            await _repository.ReleaseExecutionLeaseAsync(_instanceId, _token).WaitAsync(ReleaseTimeout, _time);
+            var result = await _repository.ReleaseExecutionLeaseAsync(_instanceId, _token).WaitAsync(ReleaseTimeout, _time);
+            _released?.Invoke(result);
         }
         catch
         {

@@ -61,7 +61,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     // sp_getapplock reports a deadlock through its return code, translated to 51001 by interning.
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 or 51001 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
+        operation is Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease
             ? await connection.BeginTransactionAsync() : null;
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
@@ -98,12 +98,14 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 WHEN @Changed = 1 AND EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances
                     WHERE InstanceId = @InstanceId AND CancellationAcknowledged = 0) THEN 1
                 WHEN NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId) THEN 2
+                WHEN @Changed = 1 THEN 3
                 ELSE 0 END AS TINYINT);
             """, parameters, transaction);
         return outcome switch
         {
             1 => CancellationOutcome.MadeRunnable,
             2 => CancellationOutcome.Gone,
+            3 => CancellationOutcome.Recorded,
             _ => CancellationOutcome.Unchanged
         };
     }
@@ -397,6 +399,16 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             SET Status=2, LastError=@Error, LeaseToken=NULL, LeaseUntilUtc=NULL
             WHERE PublisherName=@Name
               AND Status=0;
+            """,
+        Statement.Notice => """
+            SELECT i.DemandSetId, i.PinnedHost, i.PinExpiresAtUtc, i.PinInherit, i.LastHostId,
+                CAST(CASE WHEN i.RunnableAtUtc <= @Now AND NOT EXISTS
+                    (SELECT 1 FROM dbo.IxIFlowWorkflowLeases l WHERE l.InstanceId = i.InstanceId AND l.ExpiresAtUtc > @Now)
+                    THEN 1 ELSE 0 END AS bit) AS Claimable,
+                CAST(CASE WHEN i.Status <> 'Running' AND NOT EXISTS
+                    (SELECT 1 FROM dbo.IxIFlowWorkflowLeases l WHERE l.InstanceId = i.InstanceId AND l.ExpiresAtUtc > @Now)
+                    THEN 1 ELSE 0 END AS bit) AS Idle
+            FROM dbo.IxIFlowWorkflowInstances i WHERE i.InstanceId = @InstanceId
             """,
         Statement.Cancellation => """
             SELECT CancellationJson FROM dbo.IxIFlowWorkflowInstances

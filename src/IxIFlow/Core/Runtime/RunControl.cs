@@ -29,6 +29,10 @@ internal sealed class RunControl
 
     public void Runnable(string instanceId) => _runnable?.Invoke(instanceId);
 
+    private Action<string>? _changed;
+    public void OnChanged(Action<string> changed) => _changed = changed;
+    public void Changed(string instanceId) => _changed?.Invoke(instanceId);
+
     /// <summary>Cancelled when the host drains; runs stop starting new steps.</summary>
     public CancellationToken Drain { get; set; }
 

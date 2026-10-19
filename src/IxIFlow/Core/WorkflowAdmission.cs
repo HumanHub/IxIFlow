@@ -59,7 +59,8 @@ public interface IWorkflowIngressClient
 }
 
 internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWorkflowVersionRegistry registry,
-    WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null) : IWorkflowIngressClient
+    WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null,
+    RunnableNotifications? notifications = null) : IWorkflowIngressClient
 {
     private readonly IWorkflowAdmissionStore _admission = store;
 
@@ -101,6 +102,7 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             }
             if (result.Status is not (WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied) || result.Admission is not { } record)
                 throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "Atomic admission was not acknowledged");
+            if (result.Status == WorkflowCommitStatus.Applied) notifications?.Publish(result.Notice);
             host.WakeNow(record.InstanceId);
             return record;
         }
@@ -111,6 +113,7 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
     {
         cancellationToken.ThrowIfCancellationRequested();
         var receipt = await store.AppendEventAsync(workflowEvent);
+        notifications?.Publish(receipt.Notice);
         if (receipt.MadeRunnable) host.WakeNow(workflowEvent.InstanceId);
         return receipt;
     }
