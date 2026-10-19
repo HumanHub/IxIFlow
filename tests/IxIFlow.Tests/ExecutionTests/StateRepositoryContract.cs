@@ -5,7 +5,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 internal static class StateRepositoryContract
 {
-    internal static async Task VerifySuspendedDeadlineRecoveryScan(IWorkflowStateRepository repository)
+    internal static async Task VerifySuspendedDeadlineRecoveryScan(IWorkflowStateRepository repository, Func<string, Task> makeDue)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         try
@@ -20,8 +20,7 @@ internal static class StateRepositoryContract
             Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 candidate => candidate.InstanceId == instanceId);
 
-            instance.RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1);
-            await repository.SeedAsync(instance, TimeSpan.Zero);
+            await makeDue(instanceId);
             Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 candidate => candidate.InstanceId == instanceId);
 
@@ -109,7 +108,7 @@ internal static class StateRepositoryContract
                 CorrelationId = "correlation-1",
                 WorkflowDataJson = "{\"Value\":42}"
             };
-            await firstRepository.SeedAsync(instance);
+            await firstRepository.SeedAsync(instance, TimeSpan.Zero);
 
             var secondRepository = newRepository();
             var restored = await secondRepository.GetWorkflowInstanceAsync(instanceId);

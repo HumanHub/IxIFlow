@@ -309,15 +309,18 @@ public class ParallelApprovalContractTests
             .WaitFor<ApprovalReply>("finance")
             .Build();
         var started = await engine.RunAsync(definition, new ApprovalData());
+        // The delivery makes the next execution pass due before its owner claims it.
+        await repository.AppendEventAsync(new WorkflowEvent(started.InstanceId, "reply-1",
+            typeof(ApprovalReply).AssemblyQualifiedName!, System.Text.Json.JsonSerializer.Serialize(Reply("finance", true)), "finance"));
         // Another host owns the instance and is running it.
         var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         saved.Status = WorkflowStatus.Running;
         var claimed = await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
+            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId, await StoreTestSupport.ClaimAsync(services))).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, claimed.Status);
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(started.InstanceId, "other-host",
-            TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+            TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)));
 
         // The event is stored at once, and the caller waits for the owner to decide it.
         var sent = engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true), "reply-1");

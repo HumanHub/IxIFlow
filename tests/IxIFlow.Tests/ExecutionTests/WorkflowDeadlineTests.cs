@@ -200,7 +200,7 @@ public sealed class WorkflowDeadlineTests
         Assert.Contains(services.GetServices<IHostedService>(),
             service => service is WorkflowRecoveryService);
         time.Advance(TimeSpan.FromMinutes(2));
-        Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
+        Assert.Contains(await repository.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(services)),
             instance => instance.InstanceId == instanceId);
         using var scanner = new WorkflowRecoveryService(
             services.GetRequiredService<IServiceScopeFactory>(), repository,

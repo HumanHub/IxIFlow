@@ -138,7 +138,7 @@ public sealed class FaultScenarios
         var store = cluster.NewRepository();
         for (var owner = 0; owner < 3; owner++)
         {
-            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"lost-{owner}", LeaseDuration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"lost-{owner}", LeaseDuration, await StoreTestSupport.ClaimAsync(cluster.Registry)));
             await ExpireLeaseAsync(cluster, time, instanceId);
         }
         var second = cluster.AddHost();

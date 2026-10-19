@@ -345,7 +345,7 @@ public sealed class StoreWideEpochContractTests
             var original = Instance(id, "old");
             original.Status = WorkflowStatus.Suspended;
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(original, (await StoreTestSupport.LeaseAsync(store, original.InstanceId)).Epoch, 0))).Status);
+                CheckpointCommit.Create(original, (await StoreTestSupport.LeaseAsync(store, original.InstanceId)).Epoch, 0, wakeAfter: TimeSpan.Zero))).Status);
             original = (await store.GetWorkflowInstanceAsync(id))!.CopyForResume();
             original.Status = WorkflowStatus.Completed;
             var late = CheckpointCommit.Create(original, (await StoreTestSupport.LeaseAsync(store, original.InstanceId)).Epoch, original.Revision);
@@ -354,7 +354,7 @@ public sealed class StoreWideEpochContractTests
             var replacement = Instance(id, "replacement");
             replacement.Status = WorkflowStatus.Suspended;
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(store, replacement.InstanceId)).Epoch, 0))).Status);
+                CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(store, replacement.InstanceId)).Epoch, 0, wakeAfter: TimeSpan.Zero))).Status);
             replacement = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.Equal(late.ExpectedRevision, replacement.Revision);
             Assert.NotEqual(late.Incarnation, replacement.Incarnation);

@@ -324,6 +324,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var inner = new InMemoryWorkflowStateRepository();
         var instanceId = Guid.NewGuid().ToString("N");
+        ClaimQuery completionClaim;
         using (var setup = CreateHost(inner, new WorkflowVersionRegistry(), new ActivityProbe()))
         {
             var started = await setup.GetRequiredService<IWorkflowClient>().RunAsync(
@@ -331,11 +332,13 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                     .Suspend<LeaseEvent>("completion").Build(), new LeaseData(),
                 new WorkflowOptions { InstanceId = instanceId });
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            completionClaim = await StoreTestSupport.ClaimAsync(setup);
         }
         var repository = new PausedReadRepository(inner)
         {
             PauseFirstRead = false,
-            CompleteOnCancellationRequest = true
+            CompleteOnCancellationRequest = true,
+            CompletionClaim = completionClaim
         };
         using var host = CreateHost(repository, new WorkflowVersionRegistry(), new ActivityProbe());
 
@@ -1366,6 +1369,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         public TaskCompletionSource LeaseLost { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool CompleteOnCancellationRequest { get; set; }
+        public ClaimQuery? CompletionClaim { get; set; }
         public bool PauseFirstRead { get; set; } = true;
         public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
         {
@@ -1374,7 +1378,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             {
                 var instance = (await inner.GetWorkflowInstanceAsync(instanceId))!;
                 instance.Status = WorkflowStatus.Completed;
-                await inner.SeedAsync(instance);
+                await inner.SeedAsync(instance, query: CompletionClaim);
             }
             return accepted;
         }
