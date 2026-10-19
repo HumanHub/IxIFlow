@@ -13,7 +13,7 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class StoredCheckpoint
 {
-    private StoredCheckpoint(string trunk, Dictionary<string, string> parts, PartMarks marks)
+    private StoredCheckpoint(string trunk, Dictionary<string, StoredJson> parts, PartMarks marks)
     {
         Trunk = trunk;
         Parts = parts;
@@ -33,11 +33,11 @@ internal sealed class StoredCheckpoint
     public string Trunk { get; }
 
     /// <summary>Every part by key, the workflow data's included.</summary>
-    public Dictionary<string, string> Parts { get; }
+    public Dictionary<string, StoredJson> Parts { get; }
 
     /// <summary>The size a checkpoint limit applies to: the trunk and every part, as UTF-8.</summary>
     public long Bytes => Encoding.UTF8.GetByteCount(Trunk) +
-                         Parts.Values.Sum(part => (long)Encoding.UTF8.GetByteCount(part));
+                         Parts.Values.Sum(part => part.Bytes);
 
     public static string BranchKey(string continuationId) => $"c/{continuationId}";
     public static string ListKey(string forEachId) => $"f/{forEachId}";
@@ -51,8 +51,8 @@ internal sealed class StoredCheckpoint
     /// only when <paramref name="saved"/> lacks it. With <paramref name="verify"/>, the result is checked against a
     /// split that serializes everything.
     /// </summary>
-    public static StoredCheckpoint Split(ExecutionCheckpoint checkpoint, string dataJson,
-        IReadOnlyDictionary<string, string>? saved = null, PartMarks? marks = null, bool verify = false)
+    public static StoredCheckpoint Split(ExecutionCheckpoint checkpoint, StoredJson dataJson,
+        IReadOnlyDictionary<string, StoredJson>? saved = null, PartMarks? marks = null, bool verify = false)
     {
         marks ??= PartMarks.All;
         var stored = Build(checkpoint, dataJson, saved, marks);
@@ -67,10 +67,10 @@ internal sealed class StoredCheckpoint
         return stored;
     }
 
-    private static StoredCheckpoint Build(ExecutionCheckpoint checkpoint, string dataJson,
-        IReadOnlyDictionary<string, string>? saved, PartMarks marks)
+    private static StoredCheckpoint Build(ExecutionCheckpoint checkpoint, StoredJson dataJson,
+        IReadOnlyDictionary<string, StoredJson>? saved, PartMarks marks)
     {
-        var parts = new Dictionary<string, string>(StringComparer.Ordinal)
+        var parts = new Dictionary<string, StoredJson>(StringComparer.Ordinal)
         {
             [CheckpointParts.DataKey] = dataJson
         };
@@ -97,27 +97,27 @@ internal sealed class StoredCheckpoint
                 parts[BranchKey(branch.Id)] = saved != null && !marks.Has(branch.Id) &&
                                               saved.TryGetValue(BranchKey(branch.Id), out var kept)
                     ? kept
-                    : JsonSerializer.Serialize(new BranchPart
+                    : StoredJson.Inline(JsonSerializer.Serialize(new BranchPart
                 {
                     Continuation = branch,
                     Joins = joins[branch.Id].ToList() is { Count: > 0 } ownJoins ? ownJoins : null,
                     Waits = waits[branch.Id].ToList() is { Count: > 0 } ownWaits ? ownWaits : null,
                     BoundReplies = replies[branch.Id].ToList() is { Count: > 0 } ownReplies ? ownReplies : null
-                }, Stored);
+                }, Stored));
         }
         foreach (var frame in checkpoint.Continuations.SelectMany(continuation => continuation.Stack))
         {
             if (frame.ForEach is not { } state)
                 continue;
             parts[ListKey(state.Id)] = saved?.GetValueOrDefault(ListKey(state.Id)) ??
-                                       JsonSerializer.Serialize(state.Items);
+                                       StoredJson.Inline(JsonSerializer.Serialize(state.Items));
             for (var index = 0; index < (state.Results?.Count ?? 0); index++)
                 if (state.Results![index] is { } result)
                     parts[ResultKey(state.Id, index)] = saved?.GetValueOrDefault(ResultKey(state.Id, index)) ?? result;
             // The finished items are written in chunks every time: each is small, and a commit stores only those
             // that changed.
             foreach (var (chunk, bits) in state.Finished?.Chunks() ?? [])
-                parts[FinishedKey(state.Id, chunk)] = JsonSerializer.Serialize(bits);
+                parts[FinishedKey(state.Id, chunk)] = StoredJson.Inline(JsonSerializer.Serialize(bits));
         }
         return new StoredCheckpoint(trunk, parts, marks);
     }
@@ -148,14 +148,14 @@ internal sealed class StoredCheckpoint
     /// <summary>
     /// The whole checkpoint from its trunk and parts. A whole schema-4 checkpoint is returned as it is.
     /// </summary>
-    public static string AssembleState(string trunkJson, IReadOnlyDictionary<string, string> parts)
+    public static string AssembleState(string trunkJson, IReadOnlyDictionary<string, StoredJson> parts)
     {
         if (!IsTrunk(trunkJson))
             return trunkJson;
         var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(trunkJson, Stored)!;
         // Branches take their places in the order they started, which is the order they were saved in.
         var branches = parts.Where(part => part.Key.StartsWith("c/", StringComparison.Ordinal))
-            .Select(part => JsonSerializer.Deserialize<BranchPart>(part.Value, Stored)!)
+            .Select(part => JsonSerializer.Deserialize<BranchPart>(part.Value.InlineText, Stored)!)
             .OrderBy(branch => branch.Continuation.Sequence);
         foreach (var branch in branches)
         {
@@ -168,14 +168,14 @@ internal sealed class StoredCheckpoint
         var chunks = parts.Where(part => part.Key.StartsWith("b/", StringComparison.Ordinal))
             .Select(part => (Key: part.Key.Split('/'), part.Value))
             .ToLookup(part => part.Key[1], part => (Chunk: int.Parse(part.Key[2],
-                System.Globalization.CultureInfo.InvariantCulture), Bits: JsonSerializer.Deserialize<string>(part.Value)!),
+                System.Globalization.CultureInfo.InvariantCulture), Bits: JsonSerializer.Deserialize<string>(part.Value.InlineText)!),
                 StringComparer.Ordinal);
         foreach (var frame in checkpoint.Continuations.SelectMany(continuation => continuation.Stack))
         {
             if (frame.ForEach is not { } state)
                 continue;
             state.Items = parts.TryGetValue(ListKey(state.Id), out var items)
-                ? JsonSerializer.Deserialize<List<string>>(items)!
+                ? JsonSerializer.Deserialize<List<StoredJson>>(items.InlineText)!
                 : throw new InvalidOperationException($"The saved list of ForEach '{state.Id}' is missing");
             for (var index = 0; index < (state.Results?.Count ?? 0); index++)
                 state.Results![index] = parts.GetValueOrDefault(ResultKey(state.Id, index));
@@ -268,7 +268,7 @@ internal sealed class StoredCheckpoint
             var count = type.CreateJsonPropertyInfo(typeof(int?), "ResultCount");
             count.Get = value => ((ForEachState)value).Results?.Count;
             count.Set = (value, results) => ((ForEachState)value).Results =
-                results is int length ? Enumerable.Repeat<string?>(null, length).ToList() : null;
+                results is int length ? Enumerable.Repeat<StoredJson?>(null, length).ToList() : null;
             count.ShouldSerialize = (_, results) => results != null;
             type.Properties.Add(count);
         }

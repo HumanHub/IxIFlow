@@ -4,7 +4,7 @@ using IxIFlow.Core.Runtime;
 namespace IxIFlow.Core;
 
 /// <summary>One stored part of an instance's state: its key and its JSON.</summary>
-public sealed record CheckpointPart(string Key, string Json);
+public sealed record CheckpointPart(string Key, StoredJson Json);
 
 /// <summary>
 /// How a store turns what it holds of an instance back into the instance. A commit's payload is the
@@ -24,7 +24,7 @@ public static class CheckpointParts
     {
         ArgumentNullException.ThrowIfNull(payload);
         ArgumentNullException.ThrowIfNull(parts);
-        var stored = new Dictionary<string, string>(StringComparer.Ordinal);
+        var stored = new Dictionary<string, StoredJson>(StringComparer.Ordinal);
         foreach (var part in parts)
             stored.Add(part.Key, part.Json);
         var instance = Read(payload);
@@ -41,7 +41,7 @@ public static class CheckpointParts
     /// workflow data and the trunk of its execution state. Enough for a status, a result or a stop check, never to run
     /// it.
     /// </summary>
-    public static WorkflowInstance Summarize(string payload, string? data, long revision)
+    public static WorkflowInstance Summarize(string payload, StoredJson? data, long revision)
     {
         ArgumentNullException.ThrowIfNull(payload);
         var instance = Read(payload);

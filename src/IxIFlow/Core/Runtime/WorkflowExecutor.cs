@@ -77,7 +77,7 @@ public sealed class WorkflowExecutor
             var instance = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
                 System.Text.Json.JsonSerializer.Serialize(assign.Instance))!;
             instance.Incarnation = assign.Incarnation;
-            if (assign.Parts != null) instance.Saved(new Dictionary<string, string>(assign.Parts), instance.Revision);
+            if (assign.Parts != null) instance.Saved(new Dictionary<string, StoredJson>(assign.Parts), instance.Revision);
             instance.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
             checkpoint.Signals = signals;
@@ -87,7 +87,7 @@ public sealed class WorkflowExecutor
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-            var data = System.Text.Json.JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
+            var data = System.Text.Json.JsonSerializer.Deserialize(instance.WorkflowDataJson.InlineText, dataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
             signals.Deliver(new Arrivals(assign.AssignmentId, assign.InboxSequence));
             if (checkpoint.StructureHash == WorkflowDefinitionValidator.ForExecution(definition).StructureHash &&

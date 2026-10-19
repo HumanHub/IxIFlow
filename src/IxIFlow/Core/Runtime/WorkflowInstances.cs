@@ -18,7 +18,7 @@ internal static class WorkflowInstances
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
             WorkflowDataType = workflowData.GetType().AssemblyQualifiedName!,
-            WorkflowDataJson = BranchData.Snapshot(workflowData),
+            WorkflowDataJson = StoredJson.Inline(BranchData.Snapshot(workflowData)),
             Status = WorkflowStatus.Running,
             CorrelationId = options.CorrelationId ?? Guid.NewGuid().ToString("N"),
             ParentInstanceId = options.ParentInstanceId,

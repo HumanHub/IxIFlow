@@ -132,7 +132,7 @@ internal static class ExecutionCheckpointWriter
             checkpoint.RecordBranchChanges();
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson
-                : BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData)));
+                : StoredJson.Inline(BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData))));
             var stored = StoredCheckpoint.Split(checkpoint, dataJson, instance.PartsAt(instance.Revision),
                 checkpoint.TakeMarks(),
                 verify);
@@ -150,7 +150,7 @@ internal static class ExecutionCheckpointWriter
     public sealed class CheckpointDataException(Exception inner) : Exception(
         $"The workflow state could not be checkpointed: {inner.Message}", inner);
 
-    private sealed record SavedForm(string WorkflowDataJson, string ExecutionStateJson, StoredCheckpoint? Stored)
+    private sealed record SavedForm(StoredJson WorkflowDataJson, string ExecutionStateJson, StoredCheckpoint? Stored)
     {
         public static SavedForm Of(WorkflowInstance instance) => new(instance.WorkflowDataJson,
             instance.ExecutionStateJson, instance.Stored);

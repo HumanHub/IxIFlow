@@ -579,7 +579,7 @@ internal sealed class ActivityInputValue
                 return (new ActivityInputValue(), null);
             var type = SavedType(input, value);
             var json = JsonSerializer.Serialize(value, type, OptionsFor(input));
-            var saved = new ActivityInputValue { Value = new SerializedValue { Type = type.AssemblyQualifiedName!, Json = json } };
+            var saved = new ActivityInputValue { Value = new SerializedValue { Type = type.AssemblyQualifiedName!, Json = StoredJson.Inline(json) } };
             return (saved, saved.ReadAs(type, input, services));
         }
         catch (Exception problem)
@@ -610,8 +610,8 @@ internal sealed class ActivityInputValue
 
     private object? ReadAs(Type type, PropertyInfo input, IServiceProvider services) =>
         typeof(IAsyncActivity).IsAssignableFrom(type) && !HasConverter(input)
-            ? SerializedValue.ReadActivity(type, Value!.Json, services)
-            : JsonSerializer.Deserialize(Value!.Json, type, OptionsFor(input));
+            ? SerializedValue.ReadActivity(type, Value!.Json.InlineText, services)
+            : JsonSerializer.Deserialize(Value!.Json.InlineText, type, OptionsFor(input));
 
     // A value is saved under its own type, read back by name, which keeps a derived value whole. A non-public
     // collection, such as a LINQ iterator, is saved under the input's declared type: what it holds is its elements, and
@@ -700,7 +700,7 @@ internal sealed class ScopePosition
 
     /// <summary>For an item's frame, the value its result step gave, as JSON of the result type.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ForEachResult { get; set; }
+    public StoredJson? ForEachResult { get; set; }
 
     [JsonIgnore]
     public object? RuntimeEntryPrevious { get; set; }
@@ -724,11 +724,11 @@ internal sealed class ForEachState
     /// <summary>This run of the step, which names its list and results where they are stored.</summary>
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
-    public List<string> Items { get; set; } = [];
+    public List<StoredJson> Items { get; set; } = [];
     public int Next { get; set; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public List<string?>? Results { get; set; }
+    public List<StoredJson?>? Results { get; set; }
 
     /// <summary>In parallel, the items whose branches completed.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -925,7 +925,7 @@ internal sealed class WaitState
     public string Key { get; set; } = "";
     public string EventType { get; set; } = "";
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? DefaultPayloadJson { get; set; }
+    public StoredJson? DefaultPayloadJson { get; set; }
     public DateTime RegisteredAtUtc { get; set; }
 
     /// <summary>
@@ -1009,14 +1009,14 @@ internal sealed class AcceptedWaitState
 internal sealed class SerializedValue
 {
     public string Type { get; set; } = "";
-    public string Json { get; set; } = "";
+    public StoredJson Json { get; set; } = StoredJson.Inline("");
 
     public static SerializedValue? From(object? value) => value == null
         ? null
         : new SerializedValue
         {
             Type = value.GetType().AssemblyQualifiedName!,
-            Json = JsonSerializer.Serialize(value, value.GetType())
+            Json = StoredJson.Inline(JsonSerializer.Serialize(value, value.GetType()))
         };
 
     public object? Read(IServiceProvider services)
@@ -1025,8 +1025,8 @@ internal sealed class SerializedValue
             ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Saved value type '{Type}' is unavailable");
         return typeof(IAsyncActivity).IsAssignableFrom(type)
-            ? ReadActivity(type, Json, services)
-            : JsonSerializer.Deserialize(Json, type);
+            ? ReadActivity(type, Json.InlineText, services)
+            : JsonSerializer.Deserialize(Json.InlineText, type);
     }
 
     /// <summary>An activity created through the container, with each saved property set as its own attributes read it.</summary>

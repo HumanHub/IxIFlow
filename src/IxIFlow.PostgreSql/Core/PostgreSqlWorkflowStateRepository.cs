@@ -13,6 +13,8 @@ namespace IxIFlow.Core;
 /// </summary>
 public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkflowStateRepository, IRunnableWakeSource
 {
+    internal override PayloadDialect PayloadSqlDialect => PayloadDialect.PostgreSql;
+
     private readonly string _connectionString;
     private readonly string _ownershipConnectionString;
     private readonly string _listenerConnectionString;
@@ -29,7 +31,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     /// delivers cancellation. With pooling turned off the reservation has no effect.
     /// </summary>
     public PostgreSqlWorkflowStateRepository(string connectionString,
-        int ownershipPoolSize = DefaultOwnershipPoolSize, OutboxSettings? outboxSettings = null) : base(outboxSettings)
+        int ownershipPoolSize = DefaultOwnershipPoolSize, OutboxSettings? outboxSettings = null, PayloadStoreSettings? payloadSettings = null) : base(outboxSettings, payloadSettings)
     {
         _connectionString = string.IsNullOrWhiteSpace(connectionString)
             ? throw new ArgumentException("A PostgreSQL connection string is required", nameof(connectionString))
@@ -157,7 +159,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             Kinds = waits.Select(wait => (short)wait.Kind).ToArray(),
             Keys = waits.Select(wait => wait.Key).ToArray(),
             EventTypes = waits.Select(wait => wait.EventType).ToArray(),
-            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson).ToArray(),
+            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson?.InlineText).ToArray(),
             Deadlines = waits.Select(wait => Timestamp(now + wait.Timeout)).ToArray()
         }, transaction);
     }
@@ -177,7 +179,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             InstanceId = instanceId,
             WaitIds = waits.Select(wait => wait.WaitId).ToArray(),
             Deadlines = waits.Select(wait => Timestamp(now + wait.Timeout)).ToArray(),
-            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson).ToArray()
+            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson?.InlineText).ToArray()
         }, transaction);
     }
 
@@ -209,7 +211,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         {
             InstanceId = instanceId,
             Keys = parts.Select(part => part.Key).ToArray(),
-            Jsons = parts.Select(part => part.Json).ToArray()
+            Jsons = parts.Select(part => part.Json.InlineText).ToArray()
         }, transaction);
     }
 
@@ -762,6 +764,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(PayloadSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }

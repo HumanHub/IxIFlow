@@ -12,6 +12,8 @@ namespace IxIFlow.Core;
 /// </summary>
 public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowStateRepository
 {
+    internal override PayloadDialect PayloadSqlDialect => PayloadDialect.SqlServer;
+
     private readonly string _connectionString;
 
     public const int DefaultOwnershipPoolSize = 16;
@@ -23,7 +25,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     /// delivers cancellation. With pooling turned off the reservation has no effect.
     /// </summary>
     public SqlWorkflowStateRepository(string connectionString, int ownershipPoolSize = DefaultOwnershipPoolSize,
-        OutboxSettings? outboxSettings = null) : base(outboxSettings)
+        OutboxSettings? outboxSettings = null, PayloadStoreSettings? payloadSettings = null) : base(outboxSettings, payloadSettings)
     {
         _connectionString = string.IsNullOrWhiteSpace(connectionString)
             ? throw new ArgumentException("A SQL Server connection string is required", nameof(connectionString))
@@ -123,7 +125,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             parameters.Add($"OK{index}", (byte)wait.Kind);
             parameters.Add($"OY{index}", wait.Key);
             parameters.Add($"OT{index}", wait.EventType);
-            parameters.Add($"OP{index}", wait.DefaultPayloadJson, DbType.String, size: -1);
+            parameters.Add($"OP{index}", wait.DefaultPayloadJson?.InlineText, DbType.String, size: -1);
             parameters.Add($"OD{index}", now + wait.Timeout, DbType.DateTime2);
         }
         await connection.ExecuteAsync($"""
@@ -148,7 +150,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             rows.Add($"(@AW{index}, @AD{index}, @AP{index})");
             parameters.Add($"AW{index}", waits[index].WaitId);
             parameters.Add($"AD{index}", now + waits[index].Timeout, DbType.DateTime2);
-            parameters.Add($"AP{index}", waits[index].DefaultPayloadJson, DbType.String, size: -1);
+            parameters.Add($"AP{index}", waits[index].DefaultPayloadJson?.InlineText, DbType.String, size: -1);
         }
         await connection.ExecuteAsync($"""
                 UPDATE stored SET DeadlineUtc = COALESCE(stored.DeadlineUtc, armed.DeadlineUtc),
@@ -188,7 +190,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         {
             rows.Add($"(@InstanceId, @K{index}, @J{index})");
             parameters.Add($"K{index}", parts[index].Key);
-            parameters.Add($"J{index}", parts[index].Json, DbType.String, size: -1);
+            parameters.Add($"J{index}", parts[index].Json.InlineText, DbType.String, size: -1);
         }
         await connection.ExecuteAsync($"""
                 INSERT INTO dbo.IxIFlowWorkflowParts (InstanceId, PartKey, Json) VALUES {string.Join(", ", rows)}
@@ -791,6 +793,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(PayloadSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }
