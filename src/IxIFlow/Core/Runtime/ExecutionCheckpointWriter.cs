@@ -88,29 +88,11 @@ internal static class ExecutionCheckpointWriter
                     Telemetry.CommitSize.Record(size, tags);
                     instance.Revision = reply.Revision;
                     instance.Saved(commit.ApplyParts(instance.SavedParts), reply.Revision);
-                    if (reply.Timers is { } timers)
-                    {
-                        var parts = new Dictionary<string, StoredJson>(instance.SavedParts!);
-                        WorkflowTimerRules.ShiftRetries(instance, parts, timers.RetryDeadlines);
-                        WorkflowTimerRules.SetDebug(instance, timers.Debug);
-                        instance.Saved(parts, reply.Revision);
-                        checkpoint.Debug = timers.Debug;
-                        foreach (var continuation in checkpoint.Continuations)
-                            if (timers.RetryDeadlines.TryGetValue(continuation.Id, out var retry))
-                            {
-                                continuation.RetryAfterUtc = retry;
-                                checkpoint.Touch(continuation);
-                            }
-                        checkpoint.ReadDeadlines(new InboxPage([], 0, new Dictionary<string, long>(), timers.Deadlines));
-                        checkpoint.Inbox.Due([]);
-                        checkpoint.Inbox.ExpectArrivals();
-                        foreach (var continuation in checkpoint.Continuations) checkpoint.Touch(continuation);
-                    }
                     checkpoint.Trace.Committed();
                     checkpoint.ChildStarts.Clear();
                     checkpoint.ChildCancellations.Clear();
                     checkpoint.Inbox.Acknowledged(checkpoint, reply.UnreadEvents);
-                    if (reply.Timers == null) EstimateDeadlines(checkpoint, opened, armed, now);
+                    EstimateDeadlines(checkpoint, opened, armed, now);
                     if (reply.PendingCancellation != null && checkpoint.Signals is { } signals)
                         signals.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reply.PendingCancellation));
                     return reply.Parked;

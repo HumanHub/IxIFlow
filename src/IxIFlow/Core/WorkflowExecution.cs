@@ -586,8 +586,6 @@ public enum TraceEntryType
     BreakpointsChanged,
     /// <summary>A mandatory, value-free audit of a paused data edit.</summary>
     DataEdited,
-    TimersFrozen,
-    TimersShifted,
     ReplayOrigin,
     ThreadPosition
 }

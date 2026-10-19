@@ -156,7 +156,6 @@ public sealed class DebugAdapterTests
             frame = (await dap.Ok("stackTrace", new { threadId = await dap.Thread() }))["body"]!["stackFrames"]![0]!.Value<int>("id");
             await dap.Ok("variables", new { variablesReference = await dap.DataReference(frame) });
         }
-        await dap.Ok("ixiflow/freezeTimers"); await dap.Ok("ixiflow/unfreezeTimers");
         await dap.Ok("loadedSources");
         await dap.Ok("stepBack", new { threadId = await dap.Thread() }); await dap.Event("stopped");
         await dap.Ok("disconnect");
@@ -317,7 +316,6 @@ public sealed class DebugAdapterTests
         await dap.Ok("configurationDone"); await dap.Event("stopped");
         await dap.Ok("reverseContinue", new { threadId = 0 }); await dap.Event("stopped");
         Assert.False((await dap.Request("setExpression", new { expression = "data.Value", value = "3" })).Value<bool>("success"));
-        Assert.False((await dap.Request("ixiflow/freezeTimers")).Value<bool>("success"));
         await dap.Ok("disconnect");
         var waiting = await client.RunAsync(new WorkflowBuilder<Data, object>([], "NoticesDap").WaitFor<Go>("go").Build(), new Data());
         var changes = 0; var unrelated = 0;

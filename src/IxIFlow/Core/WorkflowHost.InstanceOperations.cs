@@ -151,7 +151,7 @@ public sealed partial class WorkflowHost
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "The selected continuation is not live");
             }
             var state = (await _store.GetDebugStatesAsync([instanceId]))[instanceId];
-            var generation = state.PauseGeneration + (kind is DebugCommandKind.Continue or DebugCommandKind.Step or DebugCommandKind.FreezeTimers or DebugCommandKind.UnfreezeTimers && instance.Status != WorkflowStatus.Paused &&
+            var generation = state.PauseGeneration + (kind is DebugCommandKind.Continue or DebugCommandKind.Step && instance.Status != WorkflowStatus.Paused &&
                 (state.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause) ||
                  WorkflowDebugRules.Checkpoint(instance).Stop != null) ? 1 : 0);
             var requested = await _store.RequestDebugCommandAsync(instanceId,
@@ -724,7 +724,7 @@ public sealed partial class WorkflowHost
             var page = await _store.GetPendingEventsAsync(instanceId, 0, 1);
             if (page.Events.Count > 0 || page.Deadlines?.Keys.Any(page.IsDue) == true)
                 return true;
-            if (page is { TimersFrozen: false, StoreTimeUtc: { } storeTime, Deadlines.Count: > 0 })
+            if (page is { StoreTimeUtc: { } storeTime, Deadlines.Count: > 0 })
                 _control.Schedule(instanceId, Now + (page.Deadlines.Values.Min() - storeTime));
             return false;
         }
@@ -959,7 +959,7 @@ public sealed partial class WorkflowHost
                         _control.Runnable(runnable);
                     return new CheckpointReply(assignmentId, CheckpointReplyKind.Ack, result.Revision,
                         PendingCancellation: result.PendingCancellation, Parked: result.Parked,
-                        UnreadEvents: result.UnreadEvents, Timers: result.Timers);
+                        UnreadEvents: result.UnreadEvents);
                 case WorkflowCommitStatus.EventsChanged:
                     return new CheckpointReply(assignmentId, CheckpointReplyKind.Conflict, result.Revision,
                         $"An inbox event workflow instance '{commit.InstanceId}' settles is no longer pending", Conflict: ConflictReason.EventsChanged);

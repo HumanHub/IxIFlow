@@ -9,7 +9,7 @@ internal static class InspectionMessageExamples
         var frame = new InspectionFrame("activation", "scope", "Sequence", "root/0/sequence", null, 1, 2, 3);
         var thread = new InspectionThread("root", "Root", null, null, 0, null, "root/0", "author", 0, "Active", "activation", [frame]);
         var summary = new InspectionSummary("instance", "workflow", 1, WorkflowStatus.Paused, "parent", now, null, "error");
-        var debug = new InspectionDebugState(1, 2, null, null, now);
+        var debug = new InspectionDebugState(1, 2, null, null);
         var attempt = new InspectionAttempt("root", "invocation", "root/0", "attempt", "Execute", "host", now, null);
         var wait = new InspectionWait("ref", "root", "root/0", WaitKind.Event, "key", now, "child");
         var data = new InspectionData("root", JsonSerializer.SerializeToElement(new { Value = 42 }));

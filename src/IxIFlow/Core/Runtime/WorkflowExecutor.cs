@@ -270,16 +270,6 @@ public sealed class WorkflowExecutor
                     if (instance.Status == WorkflowStatus.Paused) return new(AssignmentOutcomeKind.Idle);
                     continue;
                 }
-                if (debuggingEnabled && !checkpoint.CancellationRequested && signals.Cancellation == null &&
-                    checkpoint.Debug.Evaluation == null && command != null &&
-                    command.Kind is DebugCommandKind.FreezeTimers or DebugCommandKind.UnfreezeTimers &&
-                    command.PauseGeneration == checkpoint.Debug.PauseGeneration)
-                {
-                    checkpoint.Debug = checkpoint.Debug with { AppliedOrder = command.Order };
-                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
-                    if (instance.Status == WorkflowStatus.Paused) return new(AssignmentOutcomeKind.Idle);
-                    continue;
-                }
                 if (instance.Status == WorkflowStatus.Paused && checkpoint.Debug.Stop != null &&
                     command is { Kind: DebugCommandKind.Pause } && command.PauseGeneration == checkpoint.Debug.PauseGeneration - 1 &&
                     !checkpoint.CancellationRequested && signals.Cancellation == null)
@@ -497,7 +487,7 @@ public sealed class WorkflowExecutor
                     var ready = checkpoint.Continuations.Where(item =>
                         item.Status == ContinuationStatus.Active && SteppingPolicy.Allows(checkpoint, item.Id) &&
                         !inFlight.ContainsKey(item.Id) &&
-                        (item.RetryAfterUtc == null || checkpoint.Debug.Timers == null && item.RetryAfterUtc <= checkpoint.Clock.ToStore(Now))).ToList();
+                        (item.RetryAfterUtc == null || item.RetryAfterUtc <= checkpoint.Clock.ToStore(Now))).ToList();
                     var runnable = ready.FirstOrDefault(item => item.Id == checkpoint.Debug.Evaluation?.BranchId) ?? (activitiesFull
                         ? ready.FirstOrDefault(item => NextStep(scopes, item)?.StepType != WorkflowStepType.Activity)
                         : ready.Where(item => waitingForActivity.ContainsKey(item.Id))
@@ -610,7 +600,7 @@ public sealed class WorkflowExecutor
                 // differs retries when the one that scheduled the retry would have (D-35). A retry that
                 // fell due since the branches were advanced wakes the run at once.
                 var nextRetry = checkpoint.Continuations
-                    .Where(item => item.Status == ContinuationStatus.Active && SteppingPolicy.Allows(checkpoint, item.Id) && checkpoint.Debug.Timers == null && item.RetryAfterUtc != null)
+                    .Where(item => item.Status == ContinuationStatus.Active && SteppingPolicy.Allows(checkpoint, item.Id) && item.RetryAfterUtc != null)
                     .Min(item => item.RetryAfterUtc) is { } retryTime
                     ? checkpoint.Clock.ToLocal(retryTime) : (DateTime?)null;
                 if (inFlight.Count == 0 &&
@@ -724,8 +714,7 @@ public sealed class WorkflowExecutor
             {
                 instance.Status = WorkflowStatus.NeedsResolution;
             }
-            else if (checkpoint.Waits.Count > 0 || checkpoint.Debug.Timers != null &&
-                     checkpoint.Continuations.Any(c => c.RetryAfterUtc != null))
+            else if (checkpoint.Waits.Count > 0)
             {
                 instance.Status = WorkflowStatus.Suspended;
             }

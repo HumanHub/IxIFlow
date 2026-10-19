@@ -21,8 +21,7 @@
             "sessionToken": { "type": "string", "description": "Application-issued TCP token. Prefer a password input." },
             "sourceRoots": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Build source directories mapped to local checkout directories." },
             "continueOnDisconnect": { "type": "boolean", "default": false },
-            "replay": { "type": "boolean", "default": false },
-            "freezeTimers": { "type": "boolean", "default": false }
+            "replay": { "type": "boolean", "default": false }
           }
         },
         "launch": {

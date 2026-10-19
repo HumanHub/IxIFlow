@@ -167,7 +167,7 @@ internal sealed class ExecutionCheckpoint
     }
 
     /// <summary>The earliest time, in the host's clock, at which a wait or the execution deadline may be due.</summary>
-    public DateTime? NextDeadlineLocal() => Debug.Timers != null ? null :
+    public DateTime? NextDeadlineLocal() =>
         Waits.Where(wait => SteppingPolicy.Allows(this, wait.ContinuationId)).Select(wait => wait.DeadlineUtc is { } deadline ? Clock.ToLocal(deadline) : (DateTime?)null)
             .Append(Debug.Stepping == null && ExecutionTimerOpen && ExecutionDeadlineUtc is { } execution ? Clock.ToLocal(execution) : null)
             .Min();

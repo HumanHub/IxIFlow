@@ -405,8 +405,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             workflowEvent.TargetWaitId,
             workflowEvent.Key
         }, ("Event", (short)WaitKind.Event)), ("Now", now)), transaction)).Select(row => row.Read(ReadTime)).ToArray();
-        var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent, waits.SingleOrDefault(), waits, now,
-            await TimersFrozenAsync(connection, transaction, workflowEvent.InstanceId))
+        var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent, waits.SingleOrDefault(), waits, now)
             ?? (finished ? EventRejection.InstanceFinished : null);
         var sequence = rejection == null ? instance.InboxSequence + 1 : 0;
         var madeRunnable = rejection == null && instance.Status is "Running" or "Suspended";
@@ -481,12 +480,11 @@ public abstract partial class RelationalWorkflowStateRepository :
                 events = (await results.ReadAsync<EventRow>()).Select(row => row.Read(ReadTime)).ToArray();
                 waits = (await results.ReadAsync<PageWait>()).ToArray();
             }
-            var frozen = await TimersFrozenAsync(connection, transaction, instanceId);
             await transaction.CommitAsync();
             return InboxPage.Of(events, limit, afterSequence, through,
                 waits.ToDictionary(wait => wait.WaitId, wait => wait.OpenedSequence, StringComparer.Ordinal),
                 waits.Where(wait => wait.DeadlineUtc != null).ToDictionary(wait => wait.WaitId,
-                    wait => ReadTime(wait.DeadlineUtc!.Value), StringComparer.Ordinal), now) with { TimersFrozen = frozen };
+                    wait => ReadTime(wait.DeadlineUtc!.Value), StringComparer.Ordinal), now);
         });
     }
 
@@ -628,11 +626,6 @@ public abstract partial class RelationalWorkflowStateRepository :
             if (receipt.ExpectedRevision != commit.ExpectedRevision ||
                 !receipt.PayloadHash.SequenceEqual(commit.ContentHash))
                 throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
-            var replayInstance = current?.StateJson == null ? null : JsonSerializer.Deserialize<WorkflowInstance>(current.StateJson);
-            var replayTimers = !commit.PreservesPayloadPins && replayInstance != null && (WorkflowTimerRules.Frozen(replayInstance) ||
-                WorkflowTimerRules.Frozen(commit.ReadTrunk()) || (await ReadDebugCommandsAsync(connection, transaction, commit.InstanceId))
-                    .Any(c => c.AcknowledgedRevision == receipt.Revision && c.Kind is DebugCommandKind.FreezeTimers or DebugCommandKind.UnfreezeTimers))
-                ? await ReadTimersAsync(connection, transaction, replayInstance) : null;
             await transaction.CommitAsync();
             // A terminal or parking commit released the lease; only a running owner must still hold it.
             // The same commit gets the same answer, including arrivals it has not read.
@@ -642,7 +635,7 @@ public abstract partial class RelationalWorkflowStateRepository :
                 : new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
                     ReadReason(current?.CancellationJson), commit.Parks && !owns,
                     commit.InboxReadThrough is { } replayRead && current?.InboxSequence > replayRead,
-                    RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now) { Timers = replayTimers };
+                    RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
         if (!owns)
         {
@@ -677,8 +670,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         var debugCommands = await ReadDebugCommandsAsync(connection, transaction, commit.InstanceId);
         var previousDebugInstance = current?.StateJson == null ? null : JsonSerializer.Deserialize<WorkflowInstance>(current.StateJson);
         if (previousDebugInstance != null) previousDebugInstance.Revision = currentRevision;
-        var timerInstance = commit.ReadTrunk();
-        var acknowledgedDebug = WorkflowDebugRules.Acknowledge(previousDebugInstance, timerInstance, debugCommands, revision, commit.TraceEntries);
+        var nextDebugInstance = commit.ReadTrunk();
+        var acknowledgedDebug = WorkflowDebugRules.Acknowledge(previousDebugInstance, nextDebugInstance, debugCommands, revision, commit.TraceEntries);
         var debugWake = WorkflowDebugRules.NeedsWake(snapshot.Status, acknowledgedDebug);
         var unacknowledged = current is { CancellationJson: not null, CancellationAcknowledged: false };
         // A run that has not read every arrival neither parks nor goes idle out of reach.
@@ -695,14 +688,10 @@ public abstract partial class RelationalWorkflowStateRepository :
             await payloadPins.ReplaceAsync(commit.PayloadOwner, commit.PayloadReferences);
         }
         await ApplyPartsAsync(connection, transaction, commit);
-        var traces = commit.TraceEntries.ToList();
-        TimerCommitResult? timers = null;
-        if (!commit.PreservesPayloadPins && WorkflowTimerRules.Changes(previousDebugInstance, timerInstance, debugCommands))
-            timers = await ApplyTimersAsync(connection, transaction, previousDebugInstance, timerInstance, debugCommands, now, traces);
         // An idle instance is next due at the earliest deadline of its open waits (D-31, D-35).
         var runnableNow = debugWake || (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
             WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.AcknowledgesCancellation, unacknowledged);
-        var earliestDeadline = !WorkflowTimerRules.Frozen(timerInstance) && !runnableNow && !commit.Stopped &&
+        var earliestDeadline = !runnableNow && !commit.Stopped &&
                                snapshot.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution
             ? await connection.ExecuteScalarAsync<DateTime?>(RequiredSql(Statement.EarliestDeadline), new { commit.InstanceId }, transaction)
             : null;
@@ -717,7 +706,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             commit.Incarnation,
             Status = snapshot.Status.ToString(),
             commit.InboxReadThrough,
-            StateJson = timers == null ? commit.Payload : JsonSerializer.Serialize(timerInstance),
+            StateJson = commit.Payload,
             Revision = revision,
             commit.ExpectedRevision,
             commit.CommitId,
@@ -731,8 +720,8 @@ public abstract partial class RelationalWorkflowStateRepository :
             : RequiredSql(Statement.UpdateCommit), values, transaction);
         await WriteDebugAcknowledgementsAsync(connection, transaction, commit.InstanceId, debugCommands, acknowledgedDebug);
         await RecordCompletionAsync(connection, transaction, WorkflowStoreRules.IsTerminal(snapshot.Status) ? commit.ReadTrunk() : null, revision, now);
-        if (traces.Count > 0)
-            await AppendTraceAsync(connection, transaction, commit.InstanceId, traces, revision, snapshot.Status);
+        if (commit.TraceEntries.Count > 0)
+            await AppendTraceAsync(connection, transaction, commit.InstanceId, commit.TraceEntries, revision, snapshot.Status);
         // The lease row is written only when something changes, so most commits touch only their
         // instance row. An idle owner that has not read every arrival keeps the lease and reads them.
         var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
@@ -806,7 +795,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,
             ReadReason(current?.CancellationJson), parked, unread, madeRunnable,
-            woken ? now : runnableAt, now) { Admission = admitted, Timers = timers };
+            woken ? now : runnableAt, now) { Admission = admitted };
     }
 
     // Replaced and removed parts go before inserts, in the same transaction as the trunk.

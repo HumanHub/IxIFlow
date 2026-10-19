@@ -21,7 +21,7 @@ public sealed class PublicApiGuardTests
             typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
             typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome),
             typeof(BreakpointSource), typeof(BreakpointStop), typeof(BreakpointHitTrace),
-            typeof(FrozenRetry), typeof(TimerFreeze), typeof(TimerCommitResult), typeof(TimersTrace), typeof(DebugStepKind), typeof(DataEditTarget), typeof(DataPatch), typeof(DataEditRequest), typeof(DataEditResult), typeof(DataEditDigest), typeof(DataEditedTrace),
+            typeof(DebugStepKind), typeof(DataEditTarget), typeof(DataPatch), typeof(DataEditRequest), typeof(DataEditResult), typeof(DataEditDigest), typeof(DataEditedTrace),
             typeof(DebugStepPosition), typeof(DebugStepping), typeof(BreakpointEvaluation), typeof(BreakpointConditionDiagnostic), typeof(IBreakpointConditionCompiler),
             typeof(BreakpointConditionRequest), typeof(BreakpointConditionCompilation), typeof(BreakpointConditionException),
             typeof(BreakpointConditionContext<,,>),

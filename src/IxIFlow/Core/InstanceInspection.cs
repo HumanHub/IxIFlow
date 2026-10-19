@@ -10,9 +10,9 @@ public sealed record InstanceInspection(InspectionSummary Summary, long Revision
 
 public sealed record InspectionSummary(string InstanceId, string WorkflowName, int WorkflowVersion,
     WorkflowStatus Status, string? ParentInstanceId, DateTime CreatedAt, DateTime? CompletedAt, string? Error);
-// TimerFreeze and DebugCommand deliberately do not cross this projection: they contain wait keys and edit values.
+// DebugCommand deliberately does not cross this projection: it contains edit values.
 public sealed record InspectionDebugState(long PauseGeneration, long AppliedOrder, BreakpointStop? Stop,
-    DebugStepping? Stepping, DateTime? TimersFrozenAtUtc)
+    DebugStepping? Stepping)
 {
     public BreakpointEvaluation? Evaluation { get; init; }
     public IReadOnlyList<BreakpointStop> SkipOnce { get; init; } = [];
