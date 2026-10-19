@@ -83,7 +83,7 @@ public sealed class CheckpointLimitTests
         using (var services = Services(measured, 8_000))
         {
             var first = await Engine(services).RunAsync(GrowingWorkflow(), new LimitData());
-            stopBytes = ExecutionCheckpointWriter.CheckpointBytes(
+            stopBytes = CheckpointInspection.CheckpointBytes(
                 (await measured.GetWorkflowInstanceAsync(first.InstanceId))!);
         }
 

@@ -74,7 +74,7 @@ public sealed class YamlSampleTests
                 result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished)
                     .WaitAsync(TimeSpan.FromSeconds(10));
             }
-            Assert.True(result.IsSuccess, result.ErrorMessage);
+            Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
             switch (result.WorkflowData)
             {
                 case StockData stock:
@@ -153,7 +153,7 @@ public sealed class YamlSampleTests
                     (await client.ReplyAsync(request.ReplyToken, new ApprovalDecision())).Event!.Rejection);
                 result = await client.ResumeAsync(start.InstanceId, "dispatched", new OrderDispatched());
             }
-            Assert.True(result.IsSuccess, result.ErrorMessage);
+            Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
             var order = Assert.IsType<Order>(result.WorkflowData);
             Assert.Equal(answer == "approve", order.Approved);
             Assert.Equal(answer == "timeout", order.Escalated);
@@ -198,7 +198,7 @@ public sealed class YamlSampleTests
             Assert.Equal(EventRejection.NotMatched,
                 (await client.ReplyAsync(tokens[^1], new PaymentReceived { Status = "pending" })).Event!.Rejection);
             var result = await client.ReplyAsync(tokens[^1], new PaymentReceived { Status = "paid" });
-            Assert.True(result.IsSuccess, result.ErrorMessage);
+            Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
             var payment = Assert.IsType<Payment>(result.WorkflowData);
             Assert.Equal(stockFails ? "pay-2" : "pay-1", payment.PaymentReference);
             Assert.Equal("paid", payment.PaymentStatus);

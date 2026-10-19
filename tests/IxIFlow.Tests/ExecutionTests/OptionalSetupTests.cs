@@ -24,7 +24,7 @@ public sealed class OptionalSetupTests
 
         var result = await Engine(services).RunToEndAsync(definition, new ParentData());
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(["activity-default"], Probe(services).Seen);
     }
 
@@ -40,7 +40,7 @@ public sealed class OptionalSetupTests
 
         var result = await Engine(services).RunAsync(definition, new ParentData { Value = "from-parent" });
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(["from-parent"], Probe(services).Seen);
         Assert.Equal("from-parent", ((ParentData)result.WorkflowData!).Result);
     }
@@ -57,7 +57,7 @@ public sealed class OptionalSetupTests
 
         var result = await Engine(services).RunToEndAsync(definition, new ParentData());
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(["activity-default", "child-default"], Probe(services).Seen);
     }
 
@@ -72,7 +72,7 @@ public sealed class OptionalSetupTests
 
         var result = await Engine(services).RunToEndAsync(definition, new ParentData());
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(["activity-default", "child-default"], Probe(services).Seen);
     }
 
@@ -90,7 +90,7 @@ public sealed class OptionalSetupTests
 
         var result = await Engine(services).RunToEndAsync(definition, new ParentData { Value = "from-parent" });
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(["activity-default", "from-parent"], Probe(services).Seen);
         Assert.Equal("from-parent", ((ParentData)result.WorkflowData!).Result);
     }
@@ -111,7 +111,7 @@ public sealed class OptionalSetupTests
 
         var result = await Engine(services).RunToEndAsync(definition, new ParentData());
 
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(["activity-default", "child-default", "activity-default", "child-default"],
             Probe(services).Seen);
     }

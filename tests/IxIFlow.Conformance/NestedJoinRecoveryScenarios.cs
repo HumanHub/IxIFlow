@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
@@ -52,7 +53,7 @@ public sealed class NestedJoinRecoveryScenarios
             WorkflowExecutionResult? interruptedResult = null;
             var error = await Record.ExceptionAsync(async () => interruptedResult = await first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new Data { Total = 10 }, new WorkflowOptions { InstanceId = id }));
-            if (point == "after") Assert.False(interruptedResult?.IsSuccess ?? true);
+            if (point == "after") Assert.Equal(WorkflowExecutionStatus.Running, interruptedResult?.Status);
             else Assert.True(error != null, "No interruption; joins observed: " + string.Join(",", fault.Seen));
             Assert.True(fault.Interrupted, "The test must hit the inner-join commit, not an earlier activity");
             Assert.Equal(point == "before" ? 0 : 1, fault.Applied);
@@ -63,7 +64,7 @@ public sealed class NestedJoinRecoveryScenarios
         var secondStore = profile.NewRepository();
         await using var second = Services(secondStore, registry, effects);
         var finished = await second.GetRequiredService<IWorkflowClient>().RecoverAsync(id).WaitAsync(TimeSpan.FromSeconds(20));
-        Assert.True(finished.IsSuccess, finished.ErrorMessage);
+        Assert.True(finished.Status == WorkflowExecutionStatus.Success, finished.ErrorMessage);
         Assert.Equal(22, Assert.IsType<Data>(finished.WorkflowData).Total);
         Assert.Equal(new[] { "after-inner", "after-outer", "inner-a", "inner-b", "outer-sibling" }, effects.Counts.Keys.Order());
         Assert.All(effects.Counts.Values, count => Assert.Equal(1, count));

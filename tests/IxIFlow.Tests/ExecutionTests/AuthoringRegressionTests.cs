@@ -289,7 +289,7 @@ public sealed class AuthoringRegressionTests
             .Build();
         using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, new RegistrationData());
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.True(Assert.IsType<RegistrationData>(result.WorkflowData).Completed);
     }
 

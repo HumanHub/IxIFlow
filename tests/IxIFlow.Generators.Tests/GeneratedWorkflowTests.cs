@@ -119,7 +119,7 @@ public sealed class GeneratedWorkflowTests
         }
         if (result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
             result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
         return (Assert.IsAssignableFrom<FlowData>(result.WorkflowData), checkpoint.RootElement.GetProperty("DefinitionFingerprint").GetString()!);
