@@ -13,5 +13,8 @@
     <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
     <ProjectReference Include="../IxIFlow/IxIFlow.csproj" />
   </ItemGroup>
-  <ItemGroup><InternalsVisibleTo Include="IxIFlow.Tests" /></ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="IxIFlow.Tests" />
+    <InternalsVisibleTo Include="IxIFlow.Conformance" />
+  </ItemGroup>
 </Project>
