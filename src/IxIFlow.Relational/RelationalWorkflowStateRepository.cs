@@ -38,7 +38,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         RetentionLock, RetentionCandidates, RetentionBlockedPublishers, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
-        Cancellation, Cancellations, Runnable, Running, ClaimLease, RenewLease, ReleaseLease,
+        Cancellation, Cancellations, Running, ClaimLease, RenewLease, ReleaseLease,
         LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
@@ -361,35 +361,56 @@ public abstract partial class RelationalWorkflowStateRepository :
         return requests;
     }
 
-    public async Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit)
+    public async Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(limit);
+        ArgumentNullException.ThrowIfNull(query);
+        if (query.Limit == 0) return [];
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<RunnableRow>(RequiredSql(Statement.Runnable), WithLocalTime(new { Limit = limit }));
-        return rows.Select(row => new RunnableInstance(row.InstanceId, row.RunnableAtUtc)).ToArray();
+        var now = await OutboxNowAsync(connection, null);
+        var rows = (await connection.QueryAsync<RunnableRow>(RunnableSql(true),
+            PlacementParameters(query, now, query.Limit))).ToList();
+        if (rows.Count < query.Limit)
+            rows.AddRange(await connection.QueryAsync<RunnableRow>(RunnableSql(false),
+                PlacementParameters(query, now, query.Limit - rows.Count)));
+        // A concurrent claim/commit can move a row between the two statements.
+        return rows.DistinctBy(row => row.InstanceId).Select(row =>
+            new RunnableInstance(row.InstanceId, ReadTime(row.RunnableAtUtc))).ToArray();
     }
 
-    public async Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration)
+    public async Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
+        TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
     {
+        ArgumentNullException.ThrowIfNull(query);
+        if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
         var milliseconds = LeaseMilliseconds(instanceId, token, duration);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync<ExecutionLeaseGrant?>(Operation.LeaseClaim, async () =>
         {
             await using var connection = await OpenConnectionAsync(ownership: true);
             await using var transaction = (await BeginTransactionAsync(connection, Operation.LeaseClaim))!;
-            var parameters = ClaimParameters(instanceId, token, TimeSpan.FromMilliseconds(milliseconds));
             await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { InstanceId = instanceId });
             var running = await connection.ExecuteScalarAsync<int>(RequiredSql(Statement.Running),
                 new { InstanceId = instanceId }, transaction) > 0;
             var now = await OutboxNowAsync(connection, transaction);
-            if (await TombstoneAsync(connection, transaction, instanceId, now) != null)
+            var eligibility = PlacementParameters(query, now, query.Limit);
+            eligibility.Add("InstanceId", instanceId);
+            eligibility.Add("Operator", kind == ExecutionClaimKind.Operator);
+            if (await TombstoneAsync(connection, transaction, instanceId, now) != null ||
+                await connection.ExecuteScalarAsync<int>(ClaimEligibilitySql, eligibility, transaction) != 1)
             {
                 await transaction.CommitAsync();
                 return null;
             }
+            // Capture SQLite's lease clock only after its writer and instance locks.
+            var parameters = ClaimParameters(instanceId, token, TimeSpan.FromMilliseconds(milliseconds));
             parameters.Add("Running", running);
             var grant = await connection.QuerySingleOrDefaultAsync<LeaseGrantRow>(RequiredSql(Statement.ClaimLease), parameters, transaction);
+            if (grant != null)
+            {
+                await connection.ExecuteAsync(SetLeaseHostSql, new { InstanceId = instanceId, query.HostId }, transaction);
+                await connection.ExecuteAsync(StampHostSql, new { InstanceId = instanceId }, transaction);
+            }
             await transaction.CommitAsync();
             return grant == null ? null : new ExecutionLeaseGrant(grant.Epoch, grant.CrashCount);
         });
@@ -492,7 +513,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         var rejection = WorkflowStoreRules.RejectOnArrival(workflowEvent, waits.SingleOrDefault(), waits, now)
             ?? (finished ? EventRejection.InstanceFinished : null);
         var sequence = rejection == null ? instance.InboxSequence + 1 : 0;
-        var madeRunnable = rejection == null && instance.Status is "Running" or "Suspended";
+        var madeRunnable = rejection == null && !instance.Stopped &&
+            instance.Status is "Running" or "Suspended" or "NeedsResolution";
         var advanceSql = Sql(Statement.AdvanceInbox);
         var parameters = WithTimes(WithIntegers(new
         {
@@ -778,6 +800,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         await connection.ExecuteAsync(current == null
             ? RequiredSql(Statement.InsertCommit)
             : RequiredSql(Statement.UpdateCommit), values, transaction);
+        if (admission == null)
+            await connection.ExecuteAsync(StampHostSql, new { commit.InstanceId }, transaction);
         if (current == null)
             await InsertDemandsAsync(connection, transaction, StampStartPayload(commit.Payload, now));
         await ApplyPartsAsync(connection, transaction, commit);
@@ -900,7 +924,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         "deadline_utc AS DeadlineUtc, opened_sequence AS OpenedSequence, opened_at_utc AS OpenedAtUtc, " +
         "close_reason AS CloseReason, closed_at_utc AS ClosedAtUtc, default_payload_json AS DefaultPayloadJson";
     internal const string RowColumns =
-        "instance_id AS InstanceId, state_json AS StateJson, runnable_at_utc AS RunnableAtUtc, revision AS Revision";
+        "instance_id AS InstanceId, state_json AS StateJson, runnable_at_utc AS RunnableAtUtc, revision AS Revision, last_host_id AS LastHostId";
 
     internal const string StampedRowColumns = RowColumns + ", incarnation AS Incarnation";
 
@@ -1054,6 +1078,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     private sealed class InboxRow
     {
+        public bool Stopped { get; set; }
         public bool TracingEnabled { get; set; }
         public string Status { get; set; } = "";
         public long InboxSequence { get; set; }
@@ -1160,6 +1185,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         public DateTime? RunnableAtUtc { get; set; }
         public long Revision { get; set; }
         public Guid Incarnation { get; set; }
+        public Guid? LastHostId { get; set; }
 
         public bool Same(StoredStamp stamp) => stamp.Revision == Revision && stamp.Incarnation == Incarnation;
 
@@ -1171,6 +1197,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         private WorkflowInstance Runnable(WorkflowInstance instance, bool normalize)
         {
             instance.Incarnation = Incarnation;
+            instance.LastHostId = LastHostId;
             instance.RunnableAtUtc = normalize && RunnableAtUtc is { } runnableAt ? Utc(runnableAt) : RunnableAtUtc;
             return instance;
         }

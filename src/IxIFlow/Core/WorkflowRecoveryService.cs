@@ -61,7 +61,11 @@ internal sealed class WorkflowRecoveryService(
             skipped = new HashSet<string>(_recovering.Concat(_deferred.Where(item => item.Value.Until > now)
                 .Select(item => item.Key)), StringComparer.Ordinal);
         }
-        var candidates = await repository.GetRunnableInstancesAsync(limit + skipped.Count);
+        ClaimQuery query;
+        using (var probe = scopes.CreateScope())
+            query = new ClaimQuery(_settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(
+                probe.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>(), _settings), limit + skipped.Count);
+        var candidates = await repository.GetRunnableInstancesAsync(query);
         // Reserve against the live sets, so a pass running alongside cannot take the same instance.
         var instances = new List<RunnableInstance>();
         lock (_lock)

@@ -381,17 +381,6 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             SELECT instance_id, cancellation_json FROM ixiflow_workflow_instances
             WHERE instance_id IN @InstanceIds AND cancellation_json IS NOT NULL
             """,
-        Statement.Runnable => """
-            WITH store AS (SELECT @Now AS now)
-            SELECT instance.instance_id AS InstanceId, instance.runnable_at_utc AS RunnableAtUtc
-            FROM store, ixiflow_workflow_instances AS instance
-            LEFT JOIN ixiflow_workflow_leases AS lease
-                ON lease.instance_id = instance.instance_id
-            WHERE instance.runnable_at_utc <= store.now
-              AND (lease.instance_id IS NULL OR lease.expires_at_utc <= store.now)
-            ORDER BY instance.runnable_at_utc, instance.instance_id
-            LIMIT @Limit
-            """,
         Statement.Running => """
                 SELECT COUNT(*) FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId AND status = 'Running'
                 """,
@@ -423,7 +412,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 """,
         Statement.LockInbox or Statement.ParentInbox or Statement.DeleteParentInbox => """
             SELECT status AS Status, inbox_sequence AS InboxSequence,
-                COALESCE(json_extract(state_json, '$.TracingEnabled'), 1) AS TracingEnabled
+                COALESCE(json_extract(state_json, '$.TracingEnabled'), 1) AS TracingEnabled,
+                COALESCE(json_type(state_json, '$.ExecutionStateJson.OperatorStop') = 'object', 0) AS Stopped
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             """,
@@ -601,6 +591,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             status TEXT COLLATE BINARY NOT NULL,
             correlation_id TEXT COLLATE BINARY NULL,
             runnable_at_utc TEXT NULL,
+            last_host_id TEXT NULL,
             ended_at_utc TEXT NULL,
             state_json TEXT NOT NULL,
             cancellation_json TEXT NULL,
@@ -619,7 +610,9 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_parent
             ON ixiflow_workflow_instances (parent_instance_id) WHERE parent_instance_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_runnable
-            ON ixiflow_workflow_instances (runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
+            ON ixiflow_workflow_instances (runnable_at_utc, instance_id, last_host_id) WHERE runnable_at_utc IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_affinity
+            ON ixiflow_workflow_instances (last_host_id, runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_events (
             instance_id TEXT COLLATE BINARY NOT NULL,
             event_id TEXT COLLATE BINARY NOT NULL,
@@ -685,6 +678,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             token TEXT COLLATE BINARY NOT NULL,
             expires_at_utc TEXT NOT NULL,
             epoch INTEGER NOT NULL,
+            host_id TEXT NULL,
             crash_count INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_leases_expires_at

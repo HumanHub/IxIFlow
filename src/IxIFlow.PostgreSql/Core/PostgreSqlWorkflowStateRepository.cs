@@ -424,17 +424,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             SELECT instance_id, cancellation_json FROM ixiflow_workflow_instances
             WHERE instance_id = ANY(@InstanceIds) AND cancellation_json IS NOT NULL
             """,
-        Statement.Runnable => """
-            WITH store AS (SELECT clock_timestamp() AS now)
-            SELECT instance.instance_id AS InstanceId, instance.runnable_at_utc AS RunnableAtUtc
-            FROM store, ixiflow_workflow_instances AS instance
-            LEFT JOIN ixiflow_workflow_leases AS lease
-                ON lease.instance_id = instance.instance_id
-            WHERE instance.runnable_at_utc <= store.now
-              AND (lease.instance_id IS NULL OR lease.expires_at_utc <= store.now)
-            ORDER BY instance.runnable_at_utc, instance.instance_id
-            LIMIT @Limit
-            """,
         // Lock the instance regardless of status before touching its lease; aggregate only after the lock.
         Statement.Running => """
             SELECT COUNT(CASE WHEN status = 'Running' THEN 1 END) FROM (
@@ -474,14 +463,17 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // waits for a lock would otherwise carry a time from before it was granted (D-35).
         Statement.LockInbox or Statement.DeleteParentInbox => """
             SELECT status AS Status, inbox_sequence AS InboxSequence,
-                COALESCE((state_json::jsonb ->> 'TracingEnabled')::boolean, true) AS TracingEnabled
+                COALESCE((state_json::jsonb ->> 'TracingEnabled')::boolean, true) AS TracingEnabled,
+                COALESCE(jsonb_typeof(state_json::jsonb -> 'ExecutionStateJson' -> 'OperatorStop') = 'object', false) AS Stopped
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             FOR UPDATE;
             SELECT clock_timestamp();
             """,
         Statement.ParentInbox => """
-            SELECT status AS Status, inbox_sequence AS InboxSequence FROM ixiflow_workflow_instances
+            SELECT status AS Status, inbox_sequence AS InboxSequence,
+                COALESCE(jsonb_typeof(state_json::jsonb -> 'ExecutionStateJson' -> 'OperatorStop') = 'object', false) AS Stopped
+            FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             FOR UPDATE
             """,
@@ -673,6 +665,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             status varchar(50) COLLATE "C" NOT NULL,
             correlation_id varchar(100) COLLATE "C" NULL,
             runnable_at_utc timestamptz NULL,
+            last_host_id uuid NULL,
             ended_at_utc timestamptz NULL,
             state_json text NOT NULL,
             cancellation_json text NULL,
@@ -692,7 +685,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_parent
             ON ixiflow_workflow_instances (parent_instance_id) WHERE parent_instance_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_runnable
-            ON ixiflow_workflow_instances (runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
+            ON ixiflow_workflow_instances (runnable_at_utc, instance_id) INCLUDE (last_host_id) WHERE runnable_at_utc IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_affinity
+            ON ixiflow_workflow_instances (last_host_id, runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_events (
             instance_id varchar(100) COLLATE "C" NOT NULL,
             event_id varchar(100) COLLATE "C" NOT NULL,
@@ -754,6 +749,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             token varchar(100) COLLATE "C" NOT NULL,
             expires_at_utc timestamptz NOT NULL,
             epoch bigint NOT NULL,
+            host_id uuid NULL,
             crash_count integer NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_leases_expires_at

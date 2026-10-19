@@ -132,6 +132,10 @@ public class WorkflowOptions
 /// </summary>
 public class WorkflowInstance
 {
+    /// <summary>The host that most recently claimed or committed this instance.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Guid? LastHostId { get; internal set; }
+
     /// <summary>The identity of this creation of the instance, independent of its reusable ID.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Guid Incarnation { get; internal set; }

@@ -13,7 +13,7 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
     internal static bool IsAutomaticCapability(string key) =>
         key is "os" or "arch" or "runtime" or "host" || key.StartsWith("workflow:", StringComparison.Ordinal);
 
-    private async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync()
+    internal static async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowVersionRegistry registry, HostSettings settings)
     {
         var capabilities = new Dictionary<string, string>(settings.Capabilities, StringComparer.Ordinal)
         {
@@ -37,7 +37,7 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        await RegisterAsync(await CapabilitiesAsync(), cancellationToken);
+        await RegisterAsync(await CapabilitiesAsync(registry, settings), cancellationToken);
         try { await base.StartAsync(cancellationToken); }
         catch
         {
@@ -55,7 +55,7 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
             {
                 try
                 {
-                    var capabilities = await CapabilitiesAsync();
+                    var capabilities = await CapabilitiesAsync(registry, settings);
                     if (!await repository.HeartbeatAsync(settings.Id, capabilities, stoppingToken))
                         await RegisterAsync(capabilities, stoppingToken);
                 }

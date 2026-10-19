@@ -42,7 +42,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     private const string ServerWaitColumns =
         "InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, CloseReason, " +
         "ClosedAtUtc, DefaultPayloadJson";
-    private const string ServerRowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation";
+    private const string ServerRowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation, LastHostId";
 
     // Lock and revalidate the instance before its lease and tombstone, including absent-key admission.
     internal override string DeleteRevalidationSql => """
@@ -422,15 +422,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 SELECT InstanceId, CancellationJson FROM dbo.IxIFlowWorkflowInstances
                 WHERE InstanceId IN @InstanceIds AND CancellationJson IS NOT NULL
                 """,
-        Statement.Runnable => """
-            SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
-            FROM dbo.IxIFlowWorkflowInstances AS instance
-            LEFT JOIN dbo.IxIFlowWorkflowLeases AS lease
-                ON lease.InstanceId = instance.InstanceId
-            WHERE instance.RunnableAtUtc <= SYSUTCDATETIME()
-              AND (lease.InstanceId IS NULL OR lease.ExpiresAtUtc <= SYSUTCDATETIME())
-            ORDER BY instance.RunnableAtUtc, instance.InstanceId
-            """,
         // The instance row is locked before the lease row, in the same order as a commit. No range
         // lock: a missing row is not a running instance, and a range lock would block other claims.
         // Lock terminal rows too, so a claim reads any tombstone after concurrent deletion finishes.
@@ -477,14 +468,17 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         // its time when it starts, so the time is read by the statement after the lock.
         Statement.LockInbox => """
             SELECT Status, InboxSequence,
-                CAST(COALESCE(JSON_VALUE(StateJson, '$.TracingEnabled'), 'true') AS bit) AS TracingEnabled
+                CAST(COALESCE(JSON_VALUE(StateJson, '$.TracingEnabled'), 'true') AS bit) AS TracingEnabled,
+                CAST(CASE WHEN JSON_QUERY(StateJson, '$.ExecutionStateJson.OperatorStop') IS NULL THEN 0 ELSE 1 END AS bit) AS Stopped
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId;
             SELECT SYSUTCDATETIME();
             """,
         // Only row locks here: a range lock on a missing parent can block unrelated child commits.
         Statement.ParentInbox => """
-                SELECT Status, InboxSequence FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
+                SELECT Status, InboxSequence,
+                    CAST(CASE WHEN JSON_QUERY(StateJson, '$.ExecutionStateJson.OperatorStop') IS NULL THEN 0 ELSE 1 END AS bit) AS Stopped
+                FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
                 WHERE InstanceId = @InstanceId
                 """,
         // A first commit must exclude another insertion of this ID. Read the clock in the next
@@ -616,7 +610,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId
             """,
         Statement.DeleteParentInbox => """
-                SELECT Status, InboxSequence FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
+                SELECT Status, InboxSequence,
+                    CAST(CASE WHEN JSON_QUERY(StateJson, '$.ExecutionStateJson.OperatorStop') IS NULL THEN 0 ELSE 1 END AS bit) AS Stopped
+                FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
                 WHERE InstanceId = @InstanceId;
                 SELECT SYSUTCDATETIME();
                 """,
@@ -685,6 +681,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 Status NVARCHAR(50) NOT NULL,
                 CorrelationId NVARCHAR(100) NULL,
                 RunnableAtUtc DATETIME2 NULL,
+                LastHostId UNIQUEIDENTIFIER NULL,
                 EndedAtUtc DATETIME2 NULL,
                 StateJson NVARCHAR(MAX) NOT NULL,
                 CancellationJson NVARCHAR(MAX) NULL,
@@ -704,11 +701,14 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_Parent
                 ON dbo.IxIFlowWorkflowInstances (ParentInstanceId) WHERE ParentInstanceId IS NOT NULL');
             EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_Runnable
-                ON dbo.IxIFlowWorkflowInstances (RunnableAtUtc, InstanceId)
+                ON dbo.IxIFlowWorkflowInstances (RunnableAtUtc, InstanceId) INCLUDE (LastHostId)
                 WHERE RunnableAtUtc IS NOT NULL');
             EXEC(N'CREATE INDEX IX_IxIFlowInstances_Ended
                 ON dbo.IxIFlowWorkflowInstances (EndedAtUtc, InstanceId) WHERE EndedAtUtc IS NOT NULL');
         END
+        CREATE INDEX IX_IxIFlowWorkflowInstances_Affinity
+            ON dbo.IxIFlowWorkflowInstances (LastHostId, RunnableAtUtc, InstanceId)
+            WHERE RunnableAtUtc IS NOT NULL;
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowEvents', N'U') IS NULL
         BEGIN
             CREATE TABLE dbo.IxIFlowWorkflowEvents (
@@ -782,6 +782,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 Token NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 ExpiresAtUtc DATETIME2 NOT NULL,
                 Epoch BIGINT NOT NULL,
+                HostId UNIQUEIDENTIFIER NULL,
                 CrashCount INT NOT NULL CONSTRAINT DF_IxIFlowWorkflowLeases_CrashCount DEFAULT 0
             );
             CREATE INDEX IX_IxIFlowWorkflowLeases_ExpiresAt

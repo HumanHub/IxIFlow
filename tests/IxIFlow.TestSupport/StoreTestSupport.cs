@@ -34,7 +34,7 @@ public static class StoreTestSupport
             var duration = TimeSpan.FromMinutes(5);
             if (owner.Grant != null && await store.RenewExecutionLeaseAsync(instanceId, owner.Token, duration))
                 return owner.Grant;
-            owner.Grant = await store.TryAcquireExecutionLeaseAsync(instanceId, owner.Token, duration);
+            owner.Grant = await store.TryAcquireExecutionLeaseAsync(instanceId, owner.Token, duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             return owner.Grant ?? throw new InvalidOperationException($"The test could not claim '{instanceId}'");
         }
         finally { owner.Gate.Release(); }
