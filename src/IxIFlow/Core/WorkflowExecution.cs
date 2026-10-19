@@ -326,6 +326,11 @@ public class WorkflowExecutionSnapshot
 /// </summary>
 public class ExecutionPointer
 {
+    public string Name { get; set; } = "";
+    public string? ParentPointerId { get; set; }
+    public string? ParentJoinId { get; set; }
+    public int Sequence { get; set; }
+    public string? ForkActivationId { get; set; }
     /// <summary>The author-supplied step identity.</summary>
     public string AuthorStepId { get; set; } = string.Empty;
     /// <summary>
@@ -359,6 +364,7 @@ public class ExecutionPointer
 /// </summary>
 public class ExecutionFrame
 {
+    public string Name { get; set; } = "";
     public int LoopIteration { get; set; }
     public int? ForEachItemIndex { get; set; }
     /// <summary>

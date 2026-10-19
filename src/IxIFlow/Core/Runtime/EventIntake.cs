@@ -38,7 +38,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             // A cancellation request the host learned of meanwhile goes first; the events stay unread.
             if (ContinuationTransitions.CancellationPending(checkpoint))
                 return decided;
-            if (checkpoint.ExecutionTimerOpen && page.IsDue(checkpoint.ExecutionTimerId!))
+            if (checkpoint.Debug.Stepping == null && checkpoint.ExecutionTimerOpen && page.IsDue(checkpoint.ExecutionTimerId!))
             {
                 inbox.Due([checkpoint.ExecutionTimerId!]);
                 return decided;
@@ -47,6 +47,17 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             {
                 if (inbox.IsDecided(stored.EventId))
                     continue;
+                if (checkpoint.Debug.Stepping != null)
+                {
+                    // Defer the entire event if it addresses any held branch. Do not run its
+                    // predicate, reject it, or turn an ambiguous delivery into a single match.
+                    var addressed = checkpoint.Waits.Where(w => stored.TargetWaitId != null
+                        ? w.Id == stored.TargetWaitId
+                        : w.TableKind == WaitKind.Event && (stored.Key == null || w.Key == stored.Key) &&
+                          page.OpenWaits.TryGetValue(w.Id, out var opened) && opened < stored.Sequence).ToArray();
+                    if (addressed.Length == 0 || addressed.Any(w => !SteppingPolicy.Allows(checkpoint, w.ContinuationId)))
+                        continue;
+                }
                 await DecideAsync(scopes, checkpoint, host, stored, page, instance);
                 decided = true;
             }

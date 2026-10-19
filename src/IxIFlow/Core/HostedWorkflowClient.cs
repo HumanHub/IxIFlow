@@ -258,6 +258,15 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
         return await RecoverAsync(instanceId, cancellationToken);
     }
 
+    public async Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
+        string actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(continuationId);
+        if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
+        await host.ReadAsync(client => client.RequestStepAsync(instanceId, continuationId, kind, actor, cancellationToken));
+        return await RecoverAsync(instanceId, cancellationToken);
+    }
+
     public async Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
         string actor, CancellationToken cancellationToken = default)
     {

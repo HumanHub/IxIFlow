@@ -120,7 +120,7 @@ public sealed partial class WorkflowHost
         }
 
         public async Task<WorkflowExecutionResult> RequestDebugAsync(string instanceId, DebugCommandKind kind,
-            string actor, CancellationToken cancellationToken)
+            string actor, CancellationToken cancellationToken, string? continuationId = null, DebugStepKind? stepKind = null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(actor);
@@ -129,12 +129,19 @@ public sealed partial class WorkflowHost
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Debugging is disabled on this host");
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow instance does not exist");
+            if (kind == DebugCommandKind.Step)
+            {
+                var selected = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance)).Continuations
+                    .SingleOrDefault(c => c.Id == continuationId);
+                if (selected == null || selected.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "The selected continuation is not live");
+            }
             var state = (await _store.GetDebugStatesAsync([instanceId]))[instanceId];
-            var generation = state.PauseGeneration + (kind == DebugCommandKind.Continue && instance.Status != WorkflowStatus.Paused &&
+            var generation = state.PauseGeneration + (kind is DebugCommandKind.Continue or DebugCommandKind.Step && instance.Status != WorkflowStatus.Paused &&
                 (state.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause) ||
                  WorkflowDebugRules.Checkpoint(instance).Stop != null) ? 1 : 0);
             var requested = await _store.RequestDebugCommandAsync(instanceId,
-                new(Guid.NewGuid().ToString("N"), kind, generation, actor));
+                new(Guid.NewGuid().ToString("N"), kind, generation, actor, ContinuationId: continuationId, StepKind: stepKind));
             if (requested.Status is not (DebugCommandStatus.Accepted or DebugCommandStatus.AlreadyAccepted))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, $"Debug command refused: {requested.Status}");
             if (kind != DebugCommandKind.Pause || instance.Status == WorkflowStatus.Running) return ExistingResult(instance);
@@ -592,6 +599,16 @@ public sealed partial class WorkflowHost
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
             var debugState = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);
             var pendingDebug = debugState?.Commands.Any(c => c.AcknowledgedRevision == null) == true;
+            var debugCheckpoint = checkedCheckpoint?.Debug ?? new DebugCheckpoint();
+            var pendingResume = debugState?.Commands.Any(c => c.AcknowledgedRevision == null &&
+                c.Kind is DebugCommandKind.Continue or DebugCommandKind.Step) == true;
+            var hasConditions = debugCheckpoint.Breakpoints.Any(b => b.Condition != null) ||
+                debugState?.Commands.Any(c => c.AcknowledgedRevision == null &&
+                    c.Breakpoints?.Any(b => b.Condition != null) == true) == true;
+            if (cancellationReason == null && (debugCheckpoint.Stepping != null || pendingResume) &&
+                (!(hostSettings ?? HostSettings.Default).Debugging ||
+                 hasConditions && services.GetService(typeof(IBreakpointConditionCompiler)) == null))
+                return ExistingResult(instance!);
             var canApplyPausedDebug = (hostSettings ?? HostSettings.Default).Debugging && pendingDebug;
             if (instance?.Status == WorkflowStatus.Paused && cancellationReason == null && !canApplyPausedDebug)
                 return ExistingResult(instance);
