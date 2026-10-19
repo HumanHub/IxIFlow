@@ -14,7 +14,7 @@ using Npgsql;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "durability")]
-[Trait("Spec", "D-51")]
+[Trait("Spec", "H-06")]
 [Trait("Spec", "H-06")]
 public sealed class PayloadStoreTests
 {
