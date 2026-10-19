@@ -3,7 +3,7 @@ title: Hosting
 description: Configure the core host, slots, storage, recovery and graceful drain.
 ---
 
-`AddIxIFlow()` registers the core host, client and hosted recovery, outbox and retention services. The executor runs activities in that process. Use the .NET generic host to start background services and stop them in order.
+`AddIxIFlow()` registers the core host, client and hosted heartbeat, recovery, outbox and retention services. The executor runs activities in that process. Use the .NET generic host to start background services and stop them in order.
 
 ## Start the host
 
@@ -37,6 +37,18 @@ The [store guide](stores.md) covers their operational differences. [Hosting.Serv
 
 Load definitions into the in-memory `IWorkflowVersionRegistry` before recovery can need them. Every host sharing a database must have the matching definition versions and activity code. [Review's sample setup](../tests/IxIFlow.Samples.Tests/SampleTests.cs) registers its pinned child before starting the parent.
 
+## Host registry and capabilities
+
+Starting the generic host registers a member in the store before recovery starts. Each host has a fresh GUID identity; `HostName` is a display name and defaults to `pid@machine`. Reusing a display name after restarting does not reuse the old identity. The registry records the member's kind (`host` or `coordinator`), name, optional endpoint, configured slot count, engine version, heartbeat interval and store-stamped start and heartbeat times. Slots advertise configured capacity, rather than a history of current activity or health measurements.
+
+`HeartbeatInterval` defaults to five seconds and accepts one millisecond through twenty minutes. The upper bound ensures a member misses three beats before the one-hour pruning horizon. A member becomes stale after three missed intervals, using the interval it registered and the store's clock. Registry operations remove rows silent for over an hour, including their capability rows. A heartbeat can renew a stale row until pruning; a pruned host registers again on its next heartbeat. On shutdown, heartbeats continue while workflow work drains, then the member unregisters. Registry liveness is independent of execution-lease ownership.
+
+Automatic capabilities are `os` (`windows`, `linux`, `macos`, or an OS description), `arch` (the process architecture in lowercase), `runtime` (the .NET runtime description), `host` (the GUID), and `workflow:<name>@<version>` (the definition's fingerprint) for each registered definition. Set user values through `IxIFlowOptions.Capabilities`, for example `options.Capabilities["region"] = "eu"`. Keys and values are case-sensitive; an empty value can represent a presence-only capability. Configured values cannot replace automatic keys or use the `workflow:` prefix.
+
+Every heartbeat rebuilds the automatic capabilities from `IWorkflowVersionRegistry` and republishes the complete capability snapshot atomically with the heartbeat. A definition registered at runtime appears on the next heartbeat. User values are copied when services are configured. Register only definitions and activity code the host can actually load.
+
+The store exposes `RegisterMemberAsync(MemberRegistration)`, `HeartbeatAsync(id, capabilities)`, `UnregisterMemberAsync(id)` and `GetLiveMembersAsync()`. Live-member reads return immutable capability snapshots with store timestamps. The relational providers persist advertisements in `ixiflow_hosts` and `ixiflow_host_capabilities`; memory provides the same contract. SQL Server and PostgreSQL use database time. Memory and SQLite use the store's injected `TimeProvider`. SQLite advertises one host, replaces any advertisement left by its previous process after exclusive file ownership is acquired, and refuses coordinator registration.
+
 ## Recovery and ownership
 
 A host schedules its own saved runnable times locally. The recovery service polls the store every `PollInterval` (one second by default), up to available slots, for due work with no active owner. PostgreSQL `LISTEN`/`NOTIFY` supplies additional wake-ups; polling remains the fallback.
@@ -55,4 +67,4 @@ Outbox workers stop claiming new deliveries and drain those already in flight. I
 
 ## Planned hosting work
 
-There is no coordinator yet. Process slots and isolation, the executor message protocol and pipe transport, capabilities and demands, placement and affinity, coordinator discovery and secured links remain planned for 1.0. See the [roadmap](roadmap.md).
+There is no coordinator yet. Process slots and isolation, the executor message protocol and pipe transport, demands, placement and affinity, coordinator discovery and secured links remain planned for 1.0. The registry currently advertises capabilities; it does not filter workflow claims. See the [roadmap](roadmap.md).
