@@ -122,7 +122,7 @@ public sealed class DemandSetTests
             else secondCommit = kind == "ingress" ? CheckpointCommit.CreateAdmission(second) : await NewCommit(second);
             var firstSet = DemandSet.Create(demands).Id;
             var secondSet = DemandSet.Create(WorkflowDemands.Saved(second)).Id;
-            Assert.Equal(0, await observer.ExecuteScalarAsync<int>($"SELECT count(*) FROM {sets} WHERE {setColumn} IN @Ids",
+            Assert.Equal(0, await observer.ExecuteScalarAsync<int>($"SELECT count(*) FROM {sets} WHERE {setColumn} " + (server ? "IN @Ids" : "= ANY(@Ids)"),
                 new { Ids = new[] { firstSet, secondSet } }));
 
             // Pause the actual first creation after its header, rows and instance were inserted,
