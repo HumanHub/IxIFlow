@@ -8,6 +8,8 @@ public sealed partial class WorkflowHost
 {
     internal sealed partial class InstanceOperations
     {
+        public async Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName) =>
+            await _store.GetDeliveryAsync(eventId, publisherName) is { } delivery ? DeliverySummary.From(delivery) : null;
         public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => _store.ListDeliveriesAsync(query);
         public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => _store.RetryDeliveryAsync(eventId, publisherName, actor);
         public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => _store.ListPublishersAsync();

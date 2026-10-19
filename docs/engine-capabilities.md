@@ -25,4 +25,4 @@ All activity and compensation code currently executes inside the host process. D
 
 Expressions and combiners must be pure, and external effects need application idempotency or explicit recovery. The engine cannot make a remote service participate in its checkpoint transaction.
 
-Outgoing webhooks are built. Incoming HTTP triggers, management endpoints, process executors, published workflow bundles and interactive debugger controls remain planned.
+Outgoing webhooks, [incoming HTTP triggers](incoming-webhooks.md) and [management endpoints](operations-http.md) are built. Process executors, published workflow bundles and interactive debugger controls remain planned.
