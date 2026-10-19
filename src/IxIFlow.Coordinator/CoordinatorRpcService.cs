@@ -1,6 +1,5 @@
 using Grpc.AspNetCore.Server.Model;
 using Grpc.Core;
-using Microsoft.AspNetCore.Http;
 
 namespace IxIFlow.Coordinator;
 
@@ -16,10 +15,6 @@ internal sealed class CoordinatorRpcService(CoordinatorMatcher matcher, Coordina
     internal async Task Link(IAsyncStreamReader<HostMessage> input, IServerStreamWriter<CoordinatorMessage> output,
         ServerCallContext context)
     {
-        var http = context.GetHttpContext();
-        if (!options.AllowInsecure || http.Request.IsHttps || http.Connection.RemoteIpAddress is not { } remote ||
-            !System.Net.IPAddress.IsLoopback(remote))
-            throw new RpcException(new(StatusCode.Unauthenticated, "Only explicitly trusted loopback links are enabled"));
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
         var queue = new SendQueue<CoordinatorMessage>(options.SendQueueCapacity);
         var lastSeen = time.GetTimestamp();

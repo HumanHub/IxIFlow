@@ -93,7 +93,8 @@ internal sealed class CoordinatorLinks(CoordinatorClientOptions options, IWorkfl
                         if (member.Kind == MemberKind.Coordinator && Uri.TryCreate(member.Endpoint, UriKind.Absolute, out var endpoint))
                             try { options.ValidateEndpoint(endpoint); desired.Add(endpoint); }
                             catch (Exception error) when (error is ArgumentException or InvalidOperationException)
-                            { logger.LogWarning("Refused untrusted coordinator endpoint {Endpoint}", endpoint); }
+                            { logger.LogWarning("Coordinator link to {Endpoint} refused: {ReasonCategory}",
+                                CoordinatorSecurity.EndpointName(endpoint), "endpoint-policy"); }
                     registryAvailable = true;
                 }
                 catch (Exception error) when (error is not OperationCanceledException)
