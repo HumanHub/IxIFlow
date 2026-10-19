@@ -157,7 +157,7 @@ public sealed class IncomingWebhookScenarios
         Assert.Equal(HttpStatusCode.Unauthorized, unauthorizedEvent.StatusCode);
         using var bob = factory.AuthenticatedClient("bob");
         using var forbidden = await bob.GetAsync("/workflows/" + id);
-        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, forbidden.StatusCode);
     }
 
     [Theory]

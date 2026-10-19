@@ -44,7 +44,6 @@ public sealed record WorkflowCommitResult(
     /// <summary>The winning admission, also returned to a losing duplicate for fingerprint comparison.</summary>
     public WorkflowAdmissionRecord? Admission { get; init; }
 
-
     /// <summary>
     /// Other instances the commit made runnable: the children it started, and a parent whose inbox took
     /// the child's completion. A host may run them at once; the poll finds them otherwise.

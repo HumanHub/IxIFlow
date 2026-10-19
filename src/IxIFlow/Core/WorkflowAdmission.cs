@@ -1,22 +1,25 @@
 using IxIFlow.Core.Runtime;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
 
 /// <summary>Trusted identity and request identity supplied by an ingress adapter.</summary>
 public sealed record WorkflowAdmission(string Sender, string Trigger, string Key, string Fingerprint,
-    string Owner, string? Tenant = null, TimeSpan? Retention = null)
+    string Owner, string? Tenant = null, TimeSpan? Retention = null, WorkflowOwnerKind OwnerKind = WorkflowOwnerKind.Principal)
 {
+    public const int MaxKeyLength = 128;
     public TimeSpan KeyRetention => Retention ?? TimeSpan.FromHours(24);
 
     public void Validate()
     {
         foreach (var value in new[] { Sender, Trigger, Key, Owner })
-            if (string.IsNullOrWhiteSpace(value) || value.Length > 128 || value != value.Trim())
+            if (string.IsNullOrWhiteSpace(value) || value.Length > MaxKeyLength || value != value.Trim())
                 throw new ArgumentException("Admission identities must contain 1 to 128 characters");
         if (Tenant?.Length > 200 || Fingerprint == null || Fingerprint.Length != 64 || !Fingerprint.All(Uri.IsHexDigit))
             throw new ArgumentException("Admission requires a SHA-256 fingerprint and a tenant of at most 200 characters");
         if (KeyRetention <= TimeSpan.Zero || KeyRetention > CheckpointCommit.MaxDuration)
             throw new ArgumentOutOfRangeException(nameof(Retention));
+        if (!Enum.IsDefined(OwnerKind)) throw new ArgumentOutOfRangeException(nameof(OwnerKind));
     }
 
     public void ValidateCommit(CheckpointCommit commit)
@@ -32,7 +35,10 @@ public sealed record WorkflowAdmissionRecord(string Sender, string Trigger, stri
     string InstanceId, string WorkflowName, int WorkflowVersion, DateTime ExpiresAtUtc, Guid Incarnation = default);
 
 /// <summary>Retained with the instance and its removal tombstone, independently of key expiry.</summary>
-public sealed record WorkflowOwnership(string InstanceId, string Sender, string Trigger, string Owner, string? Tenant, Guid Incarnation = default);
+public sealed record WorkflowOwnership(string InstanceId, string Sender, string Trigger, string Owner, string? Tenant,
+    Guid Incarnation = default, WorkflowOwnerKind OwnerKind = WorkflowOwnerKind.Principal);
+
+public enum WorkflowOwnerKind { Principal, SignedSender }
 
 /// <summary>Atomic admission through the store's checkpoint commit protocol.</summary>
 public interface IWorkflowAdmissionStore
@@ -53,7 +59,7 @@ public interface IWorkflowIngressClient
 }
 
 internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWorkflowVersionRegistry registry,
-    WorkflowHost host, ExecutionLimits limits, TimeProvider time) : IWorkflowIngressClient
+    WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null) : IWorkflowIngressClient
 {
     private readonly IWorkflowAdmissionStore _admission = store;
 
@@ -79,15 +85,20 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "The admission checkpoint exceeds the configured limit");
         var commit = CheckpointCommit.CreateAdmission(instance);
         await registry.RegisterWorkflowAsync(definition);
-        // Keep the exact commit on an unknown outcome; no key reservation or separate instance insert.
+        // Keep the exact commit across store-classified retries; no key reservation or separate instance insert.
         for (var attempt = 1; ; attempt++)
         {
-            WorkflowCommitResult result;
-            try { result = await _admission.AdmitWorkflowInstanceAsync(commit, admission); }
-            catch (Exception error) when (attempt < 3 && error is not ArgumentException &&
-                error is not WorkflowEngineException { Kind: not WorkflowErrorKind.Infrastructure }) { continue; }
-            if (result.Status == WorkflowCommitStatus.Retry && attempt < 3) continue;
-            if (result.Admission is not { } record)
+            cancellationToken.ThrowIfCancellationRequested();
+            // Stores classify retryable concurrency errors as Retry; arbitrary exceptions propagate.
+            var result = await _admission.AdmitWorkflowInstanceAsync(commit, admission);
+            if (result.Status == WorkflowCommitStatus.Retry && attempt < 3)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                logger?.LogWarning("Retrying workflow admission for trigger {Trigger}, instance {InstanceId}, attempt {Attempt}: store returned {CommitStatus}",
+                    admission.Trigger, commit.InstanceId, attempt + 1, result.Status);
+                continue;
+            }
+            if (result.Status is not (WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied) || result.Admission is not { } record)
                 throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "Atomic admission was not acknowledged");
             host.WakeNow(record.InstanceId);
             return record;

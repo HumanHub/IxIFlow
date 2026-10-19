@@ -670,6 +670,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     if (await connection.ExecuteScalarAsync<bool>(
         "SELECT CASE WHEN OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction))
     {
+        await ValidateCurrentSchemaAsync(connection, transaction);
         await transaction.CommitAsync();
         return;
     }

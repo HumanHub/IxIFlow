@@ -19,8 +19,10 @@ public static class IncomingWebhookExamples
             options.AddPolicy("orders-api", policy => policy.RequireAuthenticatedUser());
             options.AddPolicy("order-instance", policy => policy.RequireAssertion(context =>
                 context.Resource is WorkflowOwnership resource &&
-                (resource.Owner == context.User.FindFirstValue(ClaimTypes.NameIdentifier) ||
-                 resource.Tenant != null && resource.Tenant == context.User.FindFirstValue("tenant"))));
+                (resource.OwnerKind == WorkflowOwnerKind.SignedSender
+                    ? resource.Owner == context.User.FindFirstValue("ixiflow:sender")
+                    : resource.Owner == context.User.FindFirstValue(ClaimTypes.NameIdentifier) ||
+                      resource.Tenant != null && resource.Tenant == context.User.FindFirstValue("tenant"))));
         });
 
         var app = builder.Build();

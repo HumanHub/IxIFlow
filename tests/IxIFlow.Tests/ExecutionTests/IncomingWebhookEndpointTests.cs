@@ -23,6 +23,9 @@ public sealed class IncomingWebhookEndpointTests
     public const string OldSecret = "whsec_AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
     public const string NewSecret = "whsec_AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
 
+    public const string EventOldSecret = "whsec_" + "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=";
+    public const string EventNewSecret = "whsec_" + "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=";
+
     public sealed class Data
     {
         public int Value { get; set; }
@@ -101,14 +104,15 @@ public sealed class IncomingWebhookEndpointTests
             }
             triggers.Events("events").Allow<Approval>("approved").Authorize("api").AuthorizeInstance("instance");
             triggers.Events("signed-events", "/signed/workflows/{id}/events/{key}").Allow<Approval>("approved")
-                .VerifyStandardWebhook("vendor", NewSecret, OldSecret).Authorize("vendor").AuthorizeInstance("instance");
+                .VerifyStandardWebhook("vendor", EventNewSecret, EventOldSecret).Authorize("vendor").AuthorizeInstance("instance");
             triggers.Status().Authorize("api").AuthorizeInstance("instance");
         }
 
         public async Task<Response> Send(string pattern, string body = "{}", string? user = "alice", string? key = null,
             string orderId = "1", string? instanceId = null, string eventKey = "approval", string query = "",
             string contentType = "application/json", string? secret = null, string deliveryId = "delivery",
-            DateTimeOffset? timestamp = null, string? tenant = null, Dictionary<string, string>? headers = null)
+            DateTimeOffset? timestamp = null, string? tenant = null, Dictionary<string, string>? headers = null,
+            bool contentLength = true, CancellationToken requestAborted = default)
         {
             var endpoint = ((IEndpointRouteBuilder)App).DataSources.SelectMany(source => source.Endpoints)
                 .OfType<RouteEndpoint>().Single(e => e.RoutePattern.RawText == pattern);
@@ -126,7 +130,8 @@ public sealed class IncomingWebhookEndpointTests
             http.Request.ContentType = contentType;
             var bytes = Encoding.UTF8.GetBytes(body);
             http.Request.Body = new MemoryStream(bytes);
-            http.Request.ContentLength = bytes.Length;
+            if (contentLength) http.Request.ContentLength = bytes.Length;
+            http.RequestAborted = requestAborted;
             http.Response.Body = new MemoryStream();
             if (user != null)
             {
@@ -161,6 +166,209 @@ public sealed class IncomingWebhookEndpointTests
     }
     private static string Cloud(string id = "event", string source = "urn:test", string type = "approved", string data = "{\"approved\":true}") =>
         JsonSerializer.Serialize(new { specversion = "1.0", id, source, type, data = JsonSerializer.Deserialize<JsonElement>(data) });
+
+    [Fact]
+    public async Task SenderAndPrincipalWithTheSameNameCannotAccessEachOthersInstances()
+    {
+        await using var host = new Harness();
+        var vendor = await host.Send("/signed/{orderId}", user: null, secret: OldSecret);
+        Assert.Equal(WorkflowOwnerKind.SignedSender, (await host.App.Services.GetRequiredService<IWorkflowIngressClient>()
+            .GetOwnershipAsync(vendor.Id))!.OwnerKind);
+        Assert.Equal(404, (await host.Send("/workflows/{id}", user: "vendor", instanceId: vendor.Id)).Status);
+        Assert.Equal(404, (await host.Send("/workflows/{id}/events/{key}", Cloud(), user: "vendor", instanceId: vendor.Id,
+            contentType: "application/cloudevents+json")).Status);
+        var principal = await host.Send("/orders/{orderId}", user: "vendor");
+        Assert.Equal(WorkflowOwnerKind.Principal, (await host.App.Services.GetRequiredService<IWorkflowIngressClient>()
+            .GetOwnershipAsync(principal.Id))!.OwnerKind);
+        Assert.Equal(404, (await host.Send("/signed/workflows/{id}/events/{key}", Cloud(), user: null,
+            secret: EventOldSecret, instanceId: principal.Id, contentType: "application/cloudevents+json")).Status);
+    }
+
+    [Fact]
+    public async Task InstancesStartedWithoutHttpOwnershipAreInvisibleToStatusAndEvents()
+    {
+        await using var host = new Harness();
+        var definition = Workflow.Create<Data>("DirectStart").Step<Noop>().WaitFor<Approval>("approval").Build();
+        var id = await host.Client.StartAsync(definition, new Data());
+        Assert.NotNull(await host.Store.GetWorkflowInstanceAsync(id));
+        Assert.Equal(404, (await host.Send("/workflows/{id}", instanceId: id)).Status);
+        Assert.Equal(404, (await host.Send("/workflows/{id}/events/{key}", Cloud(), instanceId: id,
+            contentType: "application/cloudevents+json")).Status);
+        Assert.Empty((await host.Store.GetPendingEventsAsync(id, 0, 100)).Events);
+    }
+
+    [Fact]
+    public async Task RetryingAStartWhileItsRemovalTombstoneIsRetainedReturnsGone()
+    {
+        await using var host = new Harness();
+        var first = await host.Send("/orders/{orderId}", key: "removed");
+        await host.Client.AwaitAsync(first.Id).WaitAsync(TimeSpan.FromSeconds(10));
+        await host.Store.DeleteWorkflowInstanceAsync(first.Id, TimeSpan.FromHours(1));
+        Assert.NotNull(await host.Store.GetWorkflowOwnershipAsync(first.Id));
+        Assert.NotNull(await host.Store.GetTombstoneAsync(first.Id));
+        var retry = await host.Send("/orders/{orderId}", key: "removed");
+        Assert.Equal(410, retry.Status);
+        Assert.Empty(retry.Location);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HostedStartupFailsForConflictsMappedAfterWorkflowTriggers(bool secondMapping)
+    {
+        await using var host = new Harness();
+        if (secondMapping)
+        {
+            host.App.MapWorkflowTriggers(triggers => triggers.Start<Data>("later", "/later/{id}",
+                Workflow.Create<Data>("Later").Step<Noop>().Build()).FromBody<Data>((data, _) => data).Authorize("api"));
+            host.App.MapPost("/later/{other}", () => "conflict");
+        }
+        else host.App.MapPost("/orders/{other}", () => "conflict");
+        host.App.Urls.Add("http://127.0.0.1:0");
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => host.App.StartAsync());
+        Assert.Contains("Conflicting", error.ToString());
+    }
+
+    [Fact]
+    public async Task ValidatorSerializesConcurrentEndpointMaterialization()
+    {
+        await using var host = new Harness();
+        host.App.MapPost("/orders/{other}", () => "conflict");
+        var validator = ((IEndpointRouteBuilder)host.App).DataSources.Last();
+        using var barrier = new Barrier(2);
+        await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Task.Run(() =>
+        {
+            barrier.SignalAndWait();
+            Assert.Throws<InvalidOperationException>(() => validator.Endpoints);
+        })));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SignedStartRetentionMustCoverToleranceRegardlessOfBuilderCallOrder(bool retentionFirst)
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => new Harness(registrations: triggers =>
+        {
+            var start = triggers.Start<Data>("short", "/short", Workflow.Create<Data>("Short").Step<Noop>().Build())
+                .FromBody<Data>((data, _) => data).Authorize("api");
+            if (retentionFirst) start.IdempotencyRetention(TimeSpan.FromMinutes(1));
+            start.VerifyStandardWebhook("vendor", OldSecret).TimestampTolerance(TimeSpan.FromMinutes(5));
+            if (!retentionFirst) start.IdempotencyRetention(TimeSpan.FromMinutes(1));
+            triggers.Status().Authorize("api").AuthorizeInstance("instance");
+        }));
+        Assert.Contains("retention", error.Message);
+    }
+
+    [Fact]
+    public async Task MappingRejectsASecretSharedWithAnyPreviouslyMappedTriggerIncludingRotationKeys()
+    {
+        await using var host = new Harness();
+        var error = Assert.Throws<InvalidOperationException>(() => host.App.MapWorkflowTriggers(triggers =>
+            triggers.Events("another", "/another/{id}/{key}").Allow<Approval>("approved")
+                .VerifyStandardWebhook("another-vendor", EventNewSecret, OldSecret).Authorize("api").AuthorizeInstance("instance")));
+        Assert.Contains("signing secret", error.Message);
+    }
+
+    [Fact]
+    public async Task MaximumSignedDeliveryIdIsAlsoAValidAdmissionKey()
+    {
+        await using var host = new Harness();
+        var id = new string('x', WorkflowAdmission.MaxKeyLength);
+        var first = await host.Send("/signed/{orderId}", secret: OldSecret, deliveryId: id);
+        Assert.Equal(202, first.Status);
+        Assert.Equal(first.Id, (await host.Send("/signed/{orderId}", secret: NewSecret, deliveryId: id)).Id);
+        Assert.Equal(401, (await host.Send("/signed/{orderId}", secret: OldSecret, deliveryId: id + "x")).Status);
+    }
+
+    [Fact]
+    public async Task StreamingBodyLimitIsEnforcedWithoutContentLengthBeforeMapping()
+    {
+        await using var host = new Harness();
+        var response = await host.Send("/orders/{orderId}", new string('x', 1024 * 1024 + 1), contentLength: false);
+        Assert.Equal(413, response.Status);
+        Assert.Equal(0, host.Mappings);
+        Assert.Empty(await host.Store.GetWorkflowInstancesByNameAsync("IncomingWait"));
+    }
+
+    [Fact]
+    public async Task ClientDisconnectDuringSynchronousWaitDoesNotCancelAdmittedWork()
+    {
+        await using var host = new Harness(registrations: triggers =>
+        {
+            triggers.Start<Data>("disconnect", "/disconnect", Workflow.Create<Data>("Disconnect")
+                    .Step<Noop>().WaitFor<Approval>("approval").Build())
+                .FromBody<Data>((data, _) => data).Authorize("api").Synchronous(TimeSpan.FromSeconds(30));
+            triggers.Events("events").Allow<Approval>("approved").Authorize("api").AuthorizeInstance("instance");
+            triggers.Status().Authorize("api").AuthorizeInstance("instance");
+        });
+        using var disconnected = new CancellationTokenSource();
+        var pending = host.Send("/disconnect", requestAborted: disconnected.Token);
+        var instance = Assert.Single(await host.Store.GetWorkflowInstancesByNameAsync("Disconnect"));
+        await host.Client.AwaitAsync(instance.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.False(pending.IsCompleted);
+        disconnected.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        Assert.Null(await host.Store.GetCancellationRequestAsync(instance.InstanceId));
+        Assert.Equal(202, (await host.Send("/workflows/{id}/events/{key}", Cloud(), instanceId: instance.InstanceId,
+            contentType: "application/cloudevents+json")).Status);
+        Assert.Equal(WorkflowExecutionStatus.Success, (await host.Client.AwaitAsync(instance.InstanceId, WorkflowAwaitCondition.Finished)
+            .WaitAsync(TimeSpan.FromSeconds(10))).Status);
+    }
+
+    [Fact]
+    public async Task CloudEventRedeliveriesIgnoreFormattingQueryKeyMetadataAndPayload()
+    {
+        await using var host = new Harness();
+        var first = await host.Send("/signed/{orderId}", secret: OldSecret);
+        await host.Client.AwaitAsync(first.Id).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(202, (await host.Send("/signed/workflows/{id}/events/{key}", Cloud(), instanceId: first.Id,
+            secret: EventOldSecret, contentType: "application/cloudevents+json")).Status);
+        var redelivery = "{ \"data\": {\"approved\": false}, \"type\": \"approved\", \"source\": \"urn:test\", \"id\": \"event\", \"specversion\": \"1.0\" }";
+        foreach (var delivery in new[] { "delivery", "new-delivery" })
+            Assert.Equal(202, (await host.Send("/signed/workflows/{id}/events/{key}", redelivery, instanceId: first.Id,
+                secret: EventNewSecret, deliveryId: delivery, eventKey: "other-key", query: "?redelivered=true",
+                contentType: "application/cloudevents+json")).Status);
+        var eventId = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(
+            JsonSerializer.Serialize(new[] { "urn:test", "event" }))));
+        Assert.Contains("true", (await host.Store.GetEventAsync(first.Id, eventId))!.PayloadJson);
+    }
+
+    [Fact]
+    public void MappingContextDoesNotExposeTheHttpRequestOrUnsignedHeaders()
+    {
+        Assert.Equal(new[] { nameof(WorkflowTriggerContext.CloudEvent) }, typeof(WorkflowTriggerContext).GetProperties().Select(p => p.Name));
+        Assert.DoesNotContain(typeof(WorkflowTriggerContext).GetMethods(), method => method.ReturnType == typeof(HttpContext));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(24)]
+    public async Task EventDeliveryRetentionUsesConfiguredDurationOrThe24HourDefault(int hours)
+    {
+        var time = new FakeTimeProvider();
+        await using var host = new Harness(time: time, registrations: triggers =>
+        {
+            triggers.Start<Data>("signed", "/signed", Workflow.Create<Data>("DeliveryRetention")
+                    .Step<Noop>().WaitFor<Approval>("approval").Build())
+                .FromBody<Data>((data, _) => data).Authorize("api").VerifyStandardWebhook("vendor", OldSecret);
+            var events = triggers.Events("signed-events", "/events/{id}/{key}").Allow<Approval>("approved")
+                .Authorize("api").AuthorizeInstance("instance").VerifyStandardWebhook("vendor", EventOldSecret);
+            if (hours != 24) events.DeliveryRetention(TimeSpan.FromHours(hours));
+            triggers.Status().Authorize("api").AuthorizeInstance("instance");
+        });
+        var first = await host.Send("/signed", secret: OldSecret);
+        await host.Client.AwaitAsync(first.Id).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(409, (await host.Send("/events/{id}/{key}", Cloud(), instanceId: first.Id, eventKey: "wrong",
+            secret: EventOldSecret, contentType: "application/cloudevents+json")).Status);
+        time.Advance(TimeSpan.FromHours(hours) - TimeSpan.FromMinutes(1));
+        Assert.Equal(409, (await host.Send("/events/{id}/{key}", Cloud(id: "new-event"), instanceId: first.Id,
+            secret: EventOldSecret, contentType: "application/cloudevents+json")).Status);
+        time.Advance(TimeSpan.FromMinutes(1));
+        await host.Store.PurgeAsync(TimeSpan.FromDays(30), TimeSpan.FromDays(90), 100);
+        Assert.Equal(202, (await host.Send("/events/{id}/{key}", Cloud(id: "new-event"), instanceId: first.Id,
+            secret: EventOldSecret, contentType: "application/cloudevents+json")).Status);
+    }
 
     [Fact]
     public async Task StartRepeatLostResponseAndConflictAreDurableAndScoped()
@@ -261,13 +469,13 @@ public sealed class IncomingWebhookEndpointTests
         Assert.Equal(401, (await host.Send("/workflows/{id}", user: null, instanceId: "unknown")).Status);
         Assert.Equal(401, (await host.Send("/workflows/{id}/events/{key}", user: null, instanceId: "unknown")).Status);
         var first = await host.Send("/orders/{orderId}", tenant: "tenant-a");
-        Assert.Equal(403, (await host.Send("/workflows/{id}", user: "bob", instanceId: first.Id)).Status);
-        Assert.Equal(403, (await host.Send("/workflows/{id}/events/{key}", Cloud(), user: "bob", instanceId: first.Id,
+        Assert.Equal(404, (await host.Send("/workflows/{id}", user: "bob", instanceId: first.Id)).Status);
+        Assert.Equal(404, (await host.Send("/workflows/{id}/events/{key}", Cloud(), user: "bob", instanceId: first.Id,
             contentType: "application/cloudevents+json")).Status);
         Assert.Equal(200, (await host.Send("/workflows/{id}", user: "bob", tenant: "tenant-a", instanceId: first.Id)).Status);
         await host.Store.DeleteWorkflowInstanceAsync(first.Id);
         Assert.Equal(410, (await host.Send("/workflows/{id}", instanceId: first.Id)).Status);
-        Assert.Equal(403, (await host.Send("/workflows/{id}", user: "bob", instanceId: first.Id)).Status);
+        Assert.Equal(404, (await host.Send("/workflows/{id}", user: "bob", instanceId: first.Id)).Status);
         Assert.Equal(404, (await host.Send("/workflows/{id}", instanceId: "unknown")).Status);
     }
 
@@ -309,7 +517,7 @@ public sealed class IncomingWebhookEndpointTests
             contentType: "application/cloudevents+json");
         Assert.Equal(409, refused.Status);
         Assert.Contains("NoOpenWait", refused.Body);
-        // Same source/id at another key is a conflict, so a new delivery needs a new event identity.
+        // Same source/id returns the recorded refusal even when sent to another key.
         Assert.Equal(409, (await host.Send("/workflows/{id}/events/{key}", Cloud(), instanceId: first.Id,
             contentType: "application/cloudevents+json")).Status);
         var accepted = await host.Send("/workflows/{id}/events/{key}", "{\"approved\":true}", instanceId: first.Id,
@@ -320,7 +528,7 @@ public sealed class IncomingWebhookEndpointTests
         Assert.NotNull(await host.Store.GetEventAsync(first.Id, eventId));
         Assert.Equal(202, (await host.Send("/workflows/{id}/events/{key}", "{\"approved\":true}", instanceId: first.Id,
             headers: new() { ["ce-specversion"] = "1.0", ["ce-source"] = "urn:binary", ["ce-id"] = "event", ["ce-type"] = "approved" })).Status);
-        Assert.Equal(409, (await host.Send("/workflows/{id}/events/{key}", "{\"approved\":true}", instanceId: first.Id,
+        Assert.Equal(202, (await host.Send("/workflows/{id}/events/{key}", "{\"approved\":true}", instanceId: first.Id,
             headers: new() { ["ce-specversion"] = "1.0", ["ce-source"] = "urn:binary", ["ce-id"] = "event", ["ce-type"] = "approved", ["ce-subject"] = "changed" })).Status);
     }
 
@@ -359,12 +567,12 @@ public sealed class IncomingWebhookEndpointTests
         var first = await host.Send("/signed/{orderId}", user: null, secret: OldSecret);
         await host.Client.AwaitAsync(first.Id).WaitAsync(TimeSpan.FromSeconds(10));
         var accepted = await host.Send("/signed/workflows/{id}/events/{key}", Cloud(), user: null,
-            instanceId: first.Id, contentType: "application/cloudevents+json", secret: OldSecret);
+            instanceId: first.Id, contentType: "application/cloudevents+json", secret: EventOldSecret);
         Assert.Equal(202, accepted.Status);
         Assert.Equal(202, (await host.Send("/signed/workflows/{id}/events/{key}", Cloud(), user: null,
-            instanceId: first.Id, contentType: "application/cloudevents+json", secret: NewSecret)).Status);
+            instanceId: first.Id, contentType: "application/cloudevents+json", secret: EventNewSecret)).Status);
         Assert.Equal(409, (await host.Send("/signed/workflows/{id}/events/{key}", Cloud(id: "another"), user: null,
-            instanceId: first.Id, contentType: "application/cloudevents+json", secret: NewSecret)).Status);
+            instanceId: first.Id, contentType: "application/cloudevents+json", secret: EventNewSecret)).Status);
     }
 
     [Fact]
@@ -381,12 +589,12 @@ public sealed class IncomingWebhookEndpointTests
             await host.Client.AwaitAsync(first.Id).WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Equal("vendor", (await ((IWorkflowAdmissionStore)repository).GetWorkflowOwnershipAsync(first.Id))!.Owner);
             var accepted = await host.Send("/signed/workflows/{id}/events/{key}", Cloud(), user: null,
-                instanceId: first.Id, contentType: "application/cloudevents+json", secret: OldSecret);
+                instanceId: first.Id, contentType: "application/cloudevents+json", secret: EventOldSecret);
             Assert.Equal(202, accepted.Status);
             Assert.Equal(202, (await host.Send("/signed/workflows/{id}/events/{key}", Cloud(), user: null,
-                instanceId: first.Id, contentType: "application/cloudevents+json", secret: NewSecret)).Status);
+                instanceId: first.Id, contentType: "application/cloudevents+json", secret: EventNewSecret)).Status);
             Assert.Equal(409, (await host.Send("/signed/workflows/{id}/events/{key}", Cloud(id: "other"), user: null,
-                instanceId: first.Id, contentType: "application/cloudevents+json", secret: NewSecret)).Status);
+                instanceId: first.Id, contentType: "application/cloudevents+json", secret: EventNewSecret)).Status);
         }
         finally { await Infrastructure.SqliteTestFiles.DeleteAsync(folder); }
     }

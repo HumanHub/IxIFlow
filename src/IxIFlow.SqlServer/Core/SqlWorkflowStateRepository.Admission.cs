@@ -21,6 +21,7 @@ public sealed partial class SqlWorkflowStateRepository
             [InstanceId] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Sender] NVARCHAR(128) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Trigger] NVARCHAR(128) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [OwnerKind] INT NOT NULL,
             [Owner] NVARCHAR(128) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Tenant] NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NULL,
             PRIMARY KEY ([InstanceId])
@@ -51,10 +52,10 @@ public sealed partial class SqlWorkflowStateRepository
             DELETE FROM dbo.IxIFlowWorkflowOwnership WHERE [InstanceId]=@InstanceId
             """,
         Statement.OwnershipInsert => """
-            INSERT INTO dbo.IxIFlowWorkflowOwnership ([Incarnation], [InstanceId], [Sender], [Trigger], [Owner], [Tenant]) VALUES (@Incarnation, @InstanceId, @Sender, @Trigger, @Owner, @Tenant)
+            INSERT INTO dbo.IxIFlowWorkflowOwnership ([Incarnation], [InstanceId], [Sender], [Trigger], [Owner], [Tenant], [OwnerKind]) VALUES (@Incarnation, @InstanceId, @Sender, @Trigger, @Owner, @Tenant, @OwnerKind)
             """,
         Statement.OwnershipRead => """
-            SELECT [InstanceId] AS [InstanceId], [Sender] AS [Sender], [Trigger] AS [Trigger], [Owner] AS [Owner], [Tenant] AS [Tenant], [Incarnation] AS [Incarnation] FROM dbo.IxIFlowWorkflowOwnership o WHERE o.[InstanceId]=@InstanceId AND (EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances i WHERE i.InstanceId=o.[InstanceId] AND i.Incarnation=o.[Incarnation]) OR EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowTombstones t WHERE t.InstanceId=o.[InstanceId] AND t.ExpiresAtUtc>@Now))
+            SELECT [InstanceId] AS [InstanceId], [Sender] AS [Sender], [Trigger] AS [Trigger], [Owner] AS [Owner], [Tenant] AS [Tenant], [Incarnation] AS [Incarnation], [OwnerKind] AS [OwnerKind] FROM dbo.IxIFlowWorkflowOwnership o WHERE o.[InstanceId]=@InstanceId AND (EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances i WHERE i.InstanceId=o.[InstanceId] AND i.Incarnation=o.[Incarnation]) OR EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowTombstones t WHERE t.InstanceId=o.[InstanceId] AND t.ExpiresAtUtc>@Now))
             """,
         Statement.AdmissionExpire => """
             DELETE TOP (@Limit) FROM dbo.IxIFlowWorkflowAdmissions WHERE [ExpiresAtUtc]<=@Now

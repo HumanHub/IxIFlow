@@ -21,6 +21,28 @@ public sealed class IncomingWebhookAdmissionTests
     private static WorkflowAdmission Request(TimeSpan? retention = null) =>
         new("sender", "stable-trigger", "request-key", Fingerprint, "owner", "tenant", retention);
 
+    [Fact]
+    public async Task DuplicateSignedDeliveryDoesNotMakeTheInMemoryInstanceRunnableAgain()
+    {
+        var repository = new InMemoryWorkflowStateRepository();
+        var instance = Instance();
+        await repository.SeedAsync(instance);
+        var grant = await StoreTestSupport.LeaseAsync(repository, instance.InstanceId);
+        var opened = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, grant.Epoch, instance.Revision,
+            parks: true, wakeAfter: TimeSpan.FromHours(1), openedWaits: [new("wait", WaitKind.Event, "approval", "Approved", null)]));
+        Assert.Equal(WorkflowCommitStatus.Applied, opened.Status);
+        await StoreTestSupport.ReleaseAsync(repository, instance.InstanceId);
+        var workflowEvent = new WorkflowEvent(instance.InstanceId, "event", "Approved", "{}", "approval",
+            DeliveryIdentity: new string('B', 64), Source: "urn:vendor");
+        var first = await repository.AppendEventAsync(workflowEvent);
+        Assert.Equal(EventAppendStatus.Stored, first.Status);
+        Assert.True(first.MadeRunnable);
+        var duplicate = await repository.AppendEventAsync(workflowEvent);
+        Assert.Equal(EventAppendStatus.Duplicate, duplicate.Status);
+        Assert.Equal(first.Sequence, duplicate.Sequence);
+        Assert.False(duplicate.MadeRunnable);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
