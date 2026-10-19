@@ -597,7 +597,9 @@ public abstract partial class RelationalWorkflowStateRepository :
         }
         catch (Exception error) when (IsRetryableCommit(error))
         {
-            return new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0);
+            await using var connection = await OpenConnectionAsync();
+            return new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0,
+                StoreTimeUtc: await OutboxNowAsync(connection, null));
         }
     }
 
@@ -617,7 +619,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             if (await ReadAdmissionAsync(connection, transaction, admission.Sender, admission.Trigger, admission.Key, admissionNow) is { } winner)
             {
                 await transaction.CommitAsync();
-                return new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 0) { Admission = winner };
+                return new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 0, StoreTimeUtc: admissionNow) { Admission = winner };
             }
             admitted = new(admission.Sender, admission.Trigger, admission.Key, admission.Fingerprint,
                 commit.InstanceId, snapshot.WorkflowName, commit.ReadTrunk().WorkflowVersion, admissionNow + admission.KeyRetention, commit.Incarnation);
@@ -637,6 +639,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         else
             (current, now) = await LockAsync<CommitState>(connection, transaction, Statement.CommitState, commit.InstanceId);
         await RefuseRemovedAsync(connection, transaction, commit.InstanceId, now);
+        DateTime? CurrentRunnable() => NormalizeRunnableTime && current?.RunnableAtUtc is { } due
+            ? Utc(due) : current?.RunnableAtUtc;
         var currentRevision = current?.Revision ?? 0;
         var receipt = await connection.QuerySingleOrDefaultAsync<CommitReceipt>(RequiredSql(Statement.Receipt), new { commit.InstanceId, commit.CommitId }, transaction);
         // Receipts are deleted with the instance, so a present receipt belongs to its current creation.
@@ -644,7 +648,8 @@ public abstract partial class RelationalWorkflowStateRepository :
             current != null && current.Incarnation != commit.Incarnation)
         {
             await transaction.CommitAsync();
-            return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision);
+            return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision,
+                RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
         // Replays answer their receipt without re-admitting children that may already be removed.
         if (receipt == null && commit.ChildStarts.Count > 0)
@@ -673,22 +678,26 @@ public abstract partial class RelationalWorkflowStateRepository :
             // A terminal or parking commit released the lease; only a running owner must still hold it.
             // The same commit gets the same answer, including arrivals it has not read.
             return snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks
-                ? new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision)
+                ? new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision,
+                RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now)
                 : new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
                     ReadReason(current?.CancellationJson), commit.Parks && !owns,
-                    commit.InboxReadThrough is { } replayRead && current?.InboxSequence > replayRead);
+                    commit.InboxReadThrough is { } replayRead && current?.InboxSequence > replayRead,
+                    RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
         if (!owns)
         {
             await transaction.CommitAsync();
-            return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision);
+            return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision,
+                RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
         if (currentRevision != commit.ExpectedRevision ||
             (current?.CancellationJson != null && !snapshot.AcknowledgesCancellation &&
              snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut))
         {
             await transaction.CommitAsync();
-            return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision);
+            return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision,
+                RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
         // A child's ID is new; a commit that names an existing instance changes nothing.
         if (commit.ChildStarts.Count > 0 && await connection.ExecuteScalarAsync<string?>(RequiredSql(Statement.TakenChild), new { Ids = commit.ChildStarts.Select(child => child.ChildInstanceId).ToArray() }, transaction)
@@ -703,7 +712,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         if (settled != commit.Settlements.Count)
         {
             await transaction.RollbackAsync();
-            return new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, currentRevision);
+            return new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, currentRevision,
+                RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
         var unacknowledged = current is { CancellationJson: not null, CancellationAcknowledged: false };
         // A run that has not read every arrival neither parks nor goes idle out of reach.
@@ -821,7 +831,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         }
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,
-            ReadReason(current?.CancellationJson), parked, unread, madeRunnable) { Admission = admitted };
+            ReadReason(current?.CancellationJson), parked, unread, madeRunnable,
+            woken ? now : runnableAt, now) { Admission = admitted };
     }
 
     // Replaced and removed parts go before inserts, in the same transaction as the trunk.
@@ -1096,6 +1107,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     internal sealed class CommitState
     {
+        public DateTime? RunnableAtUtc { get; set; }
         public Guid Incarnation { get; set; }
         public long Revision { get; set; }
         public string? CancellationJson { get; set; }

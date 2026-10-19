@@ -1,36 +1,12 @@
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
-/// What the executor needs from the host for one run: committing checkpoints, observing
-/// cancellation and ownership, and preparing the children its commits start. The executor never
+/// What the executor requests from the host for one run: committing checkpoints, reading its inbox
+/// and preparing the children its commits start. The executor never
 /// touches the state store, the lease or another instance directly.
 /// </summary>
 internal interface IExecutionHost
 {
-    /// <summary>
-    /// Cancelled when the host is stopping: start no new steps, let running activities finish and
-    /// be committed, then return. The instance continues on recovery.
-    /// </summary>
-    CancellationToken Drain { get; }
-
-    /// <summary>Completes when the host stops owning the instance.</summary>
-    Task? OwnershipLoss { get; }
-
-    /// <summary>Completes when the host observes a cancellation request for the instance.</summary>
-    Task<CancellationReason>? CancellationSignal { get; }
-
-    /// <summary>The highest inbox sequence the host has seen for the instance while the run owns it.</summary>
-    long ObservedInboxSequence { get; }
-
-    /// <summary>Completes when the host sees the instance's inbox sequence rise.</summary>
-    Task? InboxChanged { get; }
-
-    /// <summary>The cancellation request the host has observed, if any.</summary>
-    CancellationReason? ObservedCancellation { get; }
-
-    /// <summary>Throws <see cref="ExecutionOwnershipLostException"/> once ownership is lost.</summary>
-    void ThrowIfOwnershipLost();
-
     /// <summary>The execution epoch of this run's ownership; every commit carries it.</summary>
     long Epoch { get; }
 
@@ -45,9 +21,6 @@ internal interface IExecutionHost
 
     /// <summary>Sends one checkpoint commit. The same commit may be sent again after Retry or Unknown.</summary>
     Task<CheckpointReply> CommitAsync(CheckpointCommit commit);
-
-    /// <summary>A pending cancellation request learned from a commit reply.</summary>
-    void ObserveCancellation(CancellationReason reason);
 
     /// <summary>
     /// The definition an invocation step invokes. When <paramref name="starting"/>, it is checked to be active

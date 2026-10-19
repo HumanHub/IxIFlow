@@ -20,6 +20,7 @@ internal static class ExecutionCheckpointWriter
         bool preserveSavedWorkflowData = false, bool enforceLimit = true, bool clearsCrashCount = true,
         TimeSpan? parkFor = null, bool preserveContinuationState = false)
     {
+        checkpoint.Signals?.ThrowIfOwnershipLost();
         checkpoint.Trace.Configure(instance, checkpoint, host.Limits, null, scopes);
         var lastCommitted = SavedForm.Of(instance);
         checkpoint.CloseEndedRequests();
@@ -50,7 +51,6 @@ internal static class ExecutionCheckpointWriter
         // The commit carries the run's inbox decisions and the waits it opened, armed and closed (D-33).
         // It says how long, not until when: the store stamps deadlines and the runnable time (D-35).
         var (opened, armed, closed) = checkpoint.Inbox.WaitChanges(checkpoint);
-        var idle = instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
         // Children start, and are asked to cancel, in the commit that records the parent's waits for
         // them; a child's terminal commit tells its parent (D-17).
         var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,
@@ -65,6 +65,7 @@ internal static class ExecutionCheckpointWriter
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
         for (var attempt = 1; ; attempt++)
         {
+            checkpoint.Signals?.ThrowIfOwnershipLost();
             var reply = await host.CommitAsync(commit);
             switch (reply.Kind)
             {
@@ -75,21 +76,13 @@ internal static class ExecutionCheckpointWriter
                     Telemetry.CommitSize.Record(size, tags);
                     instance.Revision = reply.Revision;
                     instance.Saved(commit.StoredParts, reply.Revision);
-                    checkpoint.AcknowledgeTrace();
+                    checkpoint.Trace.Committed();
                     checkpoint.ChildStarts.Clear();
                     checkpoint.ChildCancellations.Clear();
                     checkpoint.Inbox.Acknowledged(checkpoint, reply.UnreadEvents);
                     EstimateDeadlines(checkpoint, opened, armed, now);
-                    // The host looks again when the store will next make the instance runnable; an idle
-                    // instance with arrivals it has not read is due now, and the store keeps it so.
-                    checkpoint.LocalWakeUtc =
-                        reply.UnreadEvents && instance.Status == WorkflowStatus.Suspended ? now
-                        : checkpoint.OperatorStop != null ? null
-                        : instance.Status == WorkflowStatus.Running ? now + parkFor ?? now
-                        : idle ? new[] { checkpoint.NextDeadlineLocal(), now + commit.WakeAfter }.Min()
-                        : null;
-                    if (reply.PendingCancellation != null)
-                        host.ObserveCancellation(reply.PendingCancellation);
+                    if (reply.PendingCancellation != null && checkpoint.Signals is { } signals)
+                        signals.Deliver(new Cancel(signals.RunId, CancelKind.Workflow, reply.PendingCancellation));
                     return reply.Parked;
                 // Only the owner settles its pending events, so a settled one means another owner ran.
                 case CheckpointReplyKind.Conflict or CheckpointReplyKind.EventsChanged:

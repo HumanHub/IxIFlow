@@ -1,12 +1,12 @@
-using System.Text.Json;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>
 /// Runs one instance from its checkpoint until it completes, fails, waits or loses ownership.
-/// Everything outside the instance (commits, cancellation requests, ownership and child
-/// workflows) goes through <see cref="IExecutionHost"/>.
+/// Control arrives through delivered messages; commits, inbox reads and child workflows
+/// are requested through <see cref="IExecutionHost"/>.
 /// </summary>
 internal sealed class WorkflowExecutor
 {
@@ -25,22 +25,64 @@ internal sealed class WorkflowExecutor
         _intake = new EventIntake(services, time);
     }
 
+    private readonly ConcurrentDictionary<Guid, ExecutionSignals> _runs = new();
+
+    public ExecutionSignals OpenRun()
+    {
+        var signals = new ExecutionSignals(Guid.NewGuid(), CloseRun);
+        _runs[signals.RunId] = signals;
+        return signals;
+    }
+
+    public void CloseRun(Guid runId) => _runs.TryRemove(runId, out _);
+    public void Deliver(Cancel message)
+    {
+        if (_runs.TryGetValue(message.RunId, out var signals)) signals.Deliver(message);
+    }
+    public void Deliver(Arrivals message)
+    {
+        if (_runs.TryGetValue(message.RunId, out var signals)) signals.Deliver(message);
+    }
+    public void Deliver(Recycle message)
+    {
+        if (_runs.TryGetValue(message.RunId, out var signals)) signals.Deliver(message);
+    }
+
+    public async Task<AssignmentOutcome> RunAsync(WorkflowDefinition definition, WorkflowInstance instance,
+        ExecutionCheckpoint checkpoint, object workflowData, IExecutionHost host, Guid runId)
+    {
+        var signals = _runs[runId];
+        checkpoint.Signals = signals;
+        try
+        {
+            return await RunCoreAsync(definition, instance, checkpoint, workflowData, host, signals);
+        }
+        catch (ExecutionOwnershipLostException)
+        {
+            return new(AssignmentOutcomeKind.OwnershipLost);
+        }
+        finally
+        {
+            CloseRun(runId);
+            checkpoint.Signals = null;
+        }
+    }
+
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
-    public async Task<WorkflowExecutionResult> RunAsync(
+    private async Task<AssignmentOutcome> RunCoreAsync(
         WorkflowDefinition definition,
         WorkflowInstance instance,
         ExecutionCheckpoint checkpoint,
         object workflowData,
         IExecutionHost host,
-        CancellationToken cancellationToken)
+        ExecutionSignals signals)
     {
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         if (checkpoint.StructureHash != scopes.StructureHash)
             return await StopForOperatorAsync(definition, instance, checkpoint, workflowData, host,
                 OperatorStopKind.Verification, scopes.Mismatch(definition, checkpoint.StructureHash));
         checkpoint.Trace.Configure(instance, checkpoint, host.Limits, _time, scopes);
-        checkpoint.ResultTrace ??= [];
         // Everything logged during the run carries its instance (G-03).
         using var logScope = _logger.BeginScope(LogScope.ForInstance(instance));
         // A span for the run pass, and the host's count of active runs (D-39).
@@ -62,45 +104,40 @@ internal sealed class WorkflowExecutor
         // A saved wait, a completed join or a branch stopped for resolution must be committed
         // before the run blocks or ends; the next commit of any kind covers it (A-04).
         var uncommitted = new UncommittedBoundary();
-        var cancellationWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var cancellationRegistration = cancellationToken.Register(
-            () => cancellationWake.TrySetResult());
-        var callerCancellation = cancellationToken.CanBeCanceled
-            ? cancellationWake.Task
-            : null;
-        var drainWake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var drainRegistration = host.Drain.Register(() => drainWake.TrySetResult());
-        var drainRequested = host.Drain.CanBeCanceled ? drainWake.Task : null;
+        long arrivalsSeen = 0;
         try
         {
             while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                host.ThrowIfOwnershipLost();
+                signals.ThrowIfStopped();
+                signals.ThrowIfOwnershipLost();
+                var messageWake = signals.Changed;
                 var progressed = false;
                 // The store says which deadlines are due when the run reads its inbox, and that read
                 // covers every event received before them, so events are taken before deadlines and one
                 // received in time beats its deadline (D-33, D-35). A cancellation request the run has
                 // not applied yet goes first: its unwind closes the waits, and the events are then
                 // refused as cancelled. The execution deadline ends the run before any event is taken.
-                if (host.ObservedInboxSequence > (checkpoint.Inbox.ReadThrough ?? long.MaxValue) ||
-                    _transitions.MayBeDue(checkpoint))
+                if (signals.InboxSequence > arrivalsSeen || _transitions.MayBeDue(checkpoint))
+                {
+                    arrivalsSeen = signals.InboxSequence;
                     checkpoint.Inbox.ExpectArrivals();
-                if (!CancellationPending(checkpoint, host))
+                }
+                if (!CancellationPending(checkpoint))
                     progressed |= await _intake.TakeAsync(scopes, checkpoint, host, instance);
                 // A request the host learned of while the run read its inbox also goes first.
-                if (!CancellationPending(checkpoint, host) &&
+                if (!CancellationPending(checkpoint) &&
                     _transitions.ProcessExecutionDeadline(instance, checkpoint))
                 {
                     progressed = true;
                     await _intake.TakeAsync(scopes, checkpoint, host, instance);
                 }
-                if (!CancellationPending(checkpoint, host))
+                if (!CancellationPending(checkpoint))
                     progressed |= _transitions.ProcessDueWaits(checkpoint, scopes);
                 if (progressed)
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
                 await ApplyCancellationRequestAsync(instance, checkpoint, checkpoint.RootData,
-                    scopes, host, host.ObservedCancellation);
+                    scopes, host, signals.Cancellation);
                 // A tree cancelled after the limit was hit never runs the step that hit it; it unwinds
                 // instead. A limit hit by cleanup code during cancellation still stops.
                 if (limitStop != null && checkpoint.CancellationRequested && !limitHitWhileCancelling)
@@ -142,16 +179,16 @@ internal sealed class WorkflowExecutor
                 // This lets a sibling start even when another activity is awaiting it.
                 while (true)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    host.ThrowIfOwnershipLost();
+                    signals.ThrowIfStopped();
+                    signals.ThrowIfOwnershipLost();
                     // A draining host starts no new steps (B-12), nor does a run stopping at a limit.
-                    if (_transitions.MayBeDue(checkpoint) || host.Drain.IsCancellationRequested ||
+                    if (_transitions.MayBeDue(checkpoint) || signals.Recycle ||
                         limitStop != null)
                         break;
                     await ApplyCancellationRequestAsync(instance, checkpoint, checkpoint.RootData,
-                        scopes, host, host.ObservedCancellation);
+                        scopes, host, signals.Cancellation);
                     if (!checkpoint.CancellationRequested &&
-                        host.CancellationSignal?.IsCompleted == true &&
+                        signals.Cancellation != null &&
                         checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                         break;
                     // A parallel ForEach starts its queued items as room frees, in a transition of its own.
@@ -251,7 +288,7 @@ internal sealed class WorkflowExecutor
                     }
                 }
 
-                if (!checkpoint.CancellationRequested && host.CancellationSignal?.IsCompleted == true &&
+                if (!checkpoint.CancellationRequested && signals.Cancellation != null &&
                     checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                     continue;
                 if (checkpoint.Continuations.Any(item =>
@@ -270,14 +307,14 @@ internal sealed class WorkflowExecutor
                     .Min(item => item.RetryAfterUtc) is { } retryTime
                     ? checkpoint.Clock.ToLocal(retryTime) : (DateTime?)null;
                 if (inFlight.Count == 0 &&
-                    (nextRetry == null || host.Drain.IsCancellationRequested || limitStop != null))
+                    (nextRetry == null || signals.Recycle || limitStop != null))
                 {
                     if (await ApplyCancellationRequestAsync(instance, checkpoint, checkpoint.RootData,
-                            scopes, host, host.ObservedCancellation))
+                            scopes, host, signals.Cancellation))
                         continue;
                     // Events that arrived since the last read are taken before the run goes idle.
                     if (checkpoint.Inbox.MayHaveUnread && limitStop == null &&
-                        !host.Drain.IsCancellationRequested && !CancellationPending(checkpoint, host))
+                        !signals.Recycle && !CancellationPending(checkpoint))
                         continue;
                     break;
                 }
@@ -302,7 +339,7 @@ internal sealed class WorkflowExecutor
                 {
                     if (await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData,
                             scopes, Now, parkFor: parkUntil - Now))
-                        return Parked(instance, checkpoint, checkpoint.RootData, parkUntil);
+                        return new(AssignmentOutcomeKind.Parked, $"The workflow instance waits for a retry at {parkUntil:O}; it continues then");
                     continue;
                 }
                 if (nextWake is { } retryAt)
@@ -314,36 +351,16 @@ internal sealed class WorkflowExecutor
                         ? TimeSpan.FromDays(1) : delay, _time, retryTimerCancellation.Token);
                     runningTasks.Add(retryTimer);
                 }
-                if (!checkpoint.CancellationRequested && callerCancellation != null)
-                    runningTasks.Add(callerCancellation);
-                // The drain wakes the run once; after that it waits for its activities.
-                if (drainRequested != null && !host.Drain.IsCancellationRequested)
-                    runningTasks.Add(drainRequested);
-                if (host.OwnershipLoss is { } ownershipLoss)
-                    runningTasks.Add(ownershipLoss);
-                if (host.CancellationSignal is { } cancellationSignal &&
-                    !checkpoint.CancellationRequested &&
-                    checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
-                    runningTasks.Add(cancellationSignal);
-                // An event that arrives while the run waits for an activity is taken at once (D-32).
-                var inboxChanged = !CancellationPending(checkpoint, host)
-                    ? host.InboxChanged : null;
-                if (inboxChanged != null)
-                {
-                    if (host.ObservedInboxSequence > (checkpoint.Inbox.ReadThrough ?? long.MaxValue))
-                        continue;
-                    runningTasks.Add(inboxChanged);
-                }
+                runningTasks.Add(messageWake);
                 if (uncommitted.IsPending(instance))
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
                 var finished = await Task.WhenAny(runningTasks);
                 if (finished != retryTimer)
                     retryTimerCancellation.Cancel();
-                cancellationToken.ThrowIfCancellationRequested();
-                if (finished == retryTimer || finished == callerCancellation ||
-                    finished == host.CancellationSignal || finished == drainRequested || finished == inboxChanged)
+                signals.ThrowIfStopped();
+                if (finished == retryTimer || finished == messageWake)
                     continue;
-                host.ThrowIfOwnershipLost();
+                signals.ThrowIfOwnershipLost();
                 var completedActivity = inFlight.Values.First(item => item.Task == finished);
                 try
                 {
@@ -360,7 +377,7 @@ internal sealed class WorkflowExecutor
                 await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
+            signals.ThrowIfStopped();
             if (checkpoint.UnhandledError != null && checkpoint.Waits.Count == 0 && checkpoint.Joins.Count == 0)
                 throw checkpoint.RuntimeUnhandledError
                       ?? (checkpoint.UnhandledError.IsRestorable
@@ -372,21 +389,14 @@ internal sealed class WorkflowExecutor
 
             // A drained run stops before the instance is idle, with branches still to advance or items still
             // to admit; it keeps its status and continues on recovery from what was committed.
-            if (host.Drain.IsCancellationRequested &&
+            if (signals.Recycle &&
                 (checkpoint.Continuations.Any(item => item.Status == ContinuationStatus.Active) ||
                  ForEachTransitions.MayAdmit(scopes, checkpoint)))
             {
                 if (uncommitted.IsPending(instance))
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
-                return new WorkflowExecutionResult
-                {
-                    InstanceId = instance.InstanceId,
-                    Status = WorkflowExecutionStatus.Running,
-                    WorkflowData = checkpoint.RootData,
-                    TraceEntries = checkpoint.TakeTraceResult(),
-                    ErrorMessage = "The host stopped before the instance became idle; it continues when recovered",
-                    ExecutionTime = Now - instance.StartedAt!.Value
-                };
+                return new(AssignmentOutcomeKind.Drained,
+                    "The host stopped before the instance became idle; it continues when recovered");
             }
 
             if (checkpoint.CancellationRequested &&
@@ -419,40 +429,24 @@ internal sealed class WorkflowExecutor
 
             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
 
-            return new WorkflowExecutionResult
+            return new(AssignmentOutcomeKind.Idle, instance.Status switch
             {
-                InstanceId = instance.InstanceId,
-                Status = instance.Status switch
-                {
-                    WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
-                    WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
-                    WorkflowStatus.TimedOut => WorkflowExecutionStatus.TimedOut,
-                    WorkflowStatus.NeedsResolution => WorkflowExecutionStatus.NeedsResolution,
-                    _ => WorkflowExecutionStatus.Suspended
-                },
-                WorkflowData = checkpoint.RootData,
-                TraceEntries = checkpoint.TakeTraceResult(),
-                ErrorMessage = instance.Status switch
-                {
-                    WorkflowStatus.NeedsResolution => checkpoint.Continuations
-                        .First(item => item.Status == ContinuationStatus.WaitingResolution)
-                        .PendingActivity?.ResolutionReason,
-                    WorkflowStatus.Suspended when checkpoint.Waits.Count == 1 =>
-                        $"Workflow suspended: {checkpoint.Waits[0].Key}",
-                    WorkflowStatus.Suspended =>
-                        $"Workflow suspended with {checkpoint.Waits.Count} active waits",
-                    _ => null
-                },
-                ExecutionTime = Now - instance.StartedAt!.Value
-            };
+                WorkflowStatus.NeedsResolution => checkpoint.Continuations
+                    .First(item => item.Status == ContinuationStatus.WaitingResolution)
+                    .PendingActivity?.ResolutionReason,
+                WorkflowStatus.Suspended when checkpoint.Waits.Count == 1 =>
+                    $"Workflow suspended: {checkpoint.Waits[0].Key}",
+                WorkflowStatus.Suspended => $"Workflow suspended with {checkpoint.Waits.Count} active waits",
+                _ => null
+            });
         }
         catch (ExecutionOwnershipLostException)
         {
             // The former owner cannot commit these activity outcomes.
             await AbandonInFlightAsync(inFlight);
-            return Busy(instance.InstanceId);
+            return new(AssignmentOutcomeKind.OwnershipLost);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (RunCancelledException)
         {
             foreach (var activity in inFlight.Values)
                 activity.Cancellation.Cancel();
@@ -471,7 +465,8 @@ internal sealed class WorkflowExecutor
                 foreach (var activity in inFlight.Values)
                     activity.Cancellation.Dispose();
             }
-            throw;
+            signals.ThrowIfOwnershipLost();
+            return new(AssignmentOutcomeKind.RunCancelled);
         }
         catch (CheckpointLimitExceededException limit)
         {
@@ -503,10 +498,9 @@ internal sealed class WorkflowExecutor
             if (WorkflowEngineException.IsEngineFailure(ex))
                 ((WorkflowEngineException)ex).At(instance.InstanceId);
 
-            var cancelled = ex is OperationCanceledException && cancellationToken.IsCancellationRequested;
-            if (!cancelled)
-                checkpoint.UnhandledError ??= SerializedException.From(ex);
-            instance.Status = cancelled ? WorkflowStatus.Cancelled : WorkflowStatus.Failed;
+            signals.ThrowIfOwnershipLost();
+            checkpoint.UnhandledError ??= SerializedException.From(ex);
+            instance.Status = WorkflowStatus.Failed;
             // A reply wait whose scope already ended, such as a saga abandoned in this pass, closed as cancelled.
             checkpoint.CloseEndedRequests();
             // A run that fails ends every branch.
@@ -517,7 +511,7 @@ internal sealed class WorkflowExecutor
             foreach (var continuation in checkpoint.Continuations.Where(item =>
                          item.Status != ContinuationStatus.Completed))
             {
-                checkpoint.Trace.DropFrames(continuation, 0, cancelled ? ItemEndCause.Cancelled : continuation.ItemUnwindCause ?? ItemEndCause.Failed);
+                checkpoint.Trace.DropFrames(continuation, 0, continuation.ItemUnwindCause ?? ItemEndCause.Failed);
                 continuation.Status = ContinuationStatus.Cancelled;
             }
             instance.LastError = ex.Message;
@@ -539,21 +533,13 @@ internal sealed class WorkflowExecutor
                 await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
                     preserveSavedWorkflowData: true, enforceLimit: false);
             }
-            return new WorkflowExecutionResult
-            {
-                InstanceId = instance.InstanceId,
-                Status = cancelled ? WorkflowExecutionStatus.Cancelled : WorkflowExecutionStatus.Faulted,
-                WorkflowData = checkpoint.RootData,
-                TraceEntries = checkpoint.TakeTraceResult(),
-                ErrorMessage = ex.Message,
-                ErrorType = SerializedException.CatchType(ex).FullName,
-                ErrorStackTrace = ex.StackTrace
-            };
+            return new(AssignmentOutcomeKind.Idle, ex.Message,
+                SerializedException.CatchType(ex).FullName, ex.StackTrace);
         }
     }
 
-    private static bool CancellationPending(ExecutionCheckpoint checkpoint, IExecutionHost host) =>
-        ContinuationTransitions.CancellationPending(checkpoint, host);
+    private static bool CancellationPending(ExecutionCheckpoint checkpoint) =>
+        ContinuationTransitions.CancellationPending(checkpoint);
 
     private async Task<bool> ApplyCancellationRequestAsync(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object workflowData, WorkflowScopeCatalog scopes,
@@ -701,14 +687,13 @@ internal sealed class WorkflowExecutor
 
     // A checkpoint over the limit, or one that fails verification, is never saved. The instance keeps its last
     // checkpoint and stops at NeedsResolution until an operator releases it, or cancels it (D-28, A-08).
-    private async Task<WorkflowExecutionResult> StopForOperatorAsync(WorkflowDefinition definition,
+    private async Task<AssignmentOutcome> StopForOperatorAsync(WorkflowDefinition definition,
         WorkflowInstance instance, ExecutionCheckpoint abandoned, object workflowData, IExecutionHost host, OperatorStopKind kind, string reason)
     {
         var checkpoint = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
         abandoned.Trace.DiscardPending();
         checkpoint.Trace = abandoned.Trace;
-        checkpoint.ResultTrace = abandoned.ResultTrace;
-        abandoned.ResultTrace = null;
+        checkpoint.Signals = abandoned.Signals;
         checkpoint.OperatorStop = new OperatorStopState
         {
             Kind = kind, Reason = reason, StoppedAtUtc = Now
@@ -721,26 +706,8 @@ internal sealed class WorkflowExecutor
         await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData,
             WorkflowDefinitionValidator.ForExecution(definition), Now, preserveSavedWorkflowData: true, enforceLimit: false,
             preserveContinuationState: true);
-        return new WorkflowExecutionResult
-        {
-            InstanceId = instance.InstanceId,
-            Status = WorkflowExecutionStatus.NeedsResolution,
-            WorkflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, workflowData.GetType()),
-            TraceEntries = checkpoint.TakeTraceResult(),
-            ErrorMessage = reason,
-            ExecutionTime = Now - instance.StartedAt!.Value
-        };
+        return new(AssignmentOutcomeKind.Idle, reason);
     }
-
-    private WorkflowExecutionResult Parked(WorkflowInstance instance, ExecutionCheckpoint checkpoint, object workflowData, DateTime until) => new()
-    {
-        InstanceId = instance.InstanceId,
-        Status = WorkflowExecutionStatus.Scheduled,
-        WorkflowData = workflowData,
-        TraceEntries = checkpoint.TakeTraceResult(),
-        ErrorMessage = $"The workflow instance waits for a retry at {until:O}; it continues then",
-        ExecutionTime = Now - instance.StartedAt!.Value
-    };
 
     private static WorkflowStep? NextStep(WorkflowScopeCatalog scopes, ContinuationState continuation) =>
         scopes.Steps(continuation.Stack[^1].ScopeId).ElementAtOrDefault(continuation.Stack[^1].NextStepIndex);
@@ -748,7 +715,7 @@ internal sealed class WorkflowExecutor
     // A step hit a limit after the running activities were committed: the current checkpoint is
     // consistent and within limits, so it is saved with the stop. If it no longer fits, the commit
     // throws and the byte limit's stop keeps the last checkpoint instead.
-    private async Task<WorkflowExecutionResult> StopForLimitAsync(WorkflowInstance instance,
+    private async Task<AssignmentOutcome> StopForLimitAsync(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object workflowData, IExecutionHost host, WorkflowScopeCatalog scopes,
         string reason)
     {
@@ -760,21 +727,6 @@ internal sealed class WorkflowExecutor
         instance.LastError = reason;
         instance.LastErrorStackTrace = null;
         await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
-        return new WorkflowExecutionResult
-        {
-            InstanceId = instance.InstanceId,
-            Status = WorkflowExecutionStatus.NeedsResolution,
-            WorkflowData = workflowData,
-            TraceEntries = checkpoint.TakeTraceResult(),
-            ErrorMessage = reason,
-            ExecutionTime = Now - instance.StartedAt!.Value
-        };
+        return new(AssignmentOutcomeKind.Idle, reason);
     }
-
-    public static WorkflowExecutionResult Busy(string instanceId) => new()
-    {
-        InstanceId = instanceId,
-        Status = WorkflowExecutionStatus.Running,
-        ErrorMessage = "The workflow instance is executing on another host"
-    };
 }

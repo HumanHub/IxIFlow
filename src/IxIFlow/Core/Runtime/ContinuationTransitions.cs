@@ -21,8 +21,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     /// A cancellation request the host observed and the run has not applied yet; while one is pending,
     /// the run applies it before it takes events or deadlines.
     /// </summary>
-    public static bool CancellationPending(ExecutionCheckpoint checkpoint, IExecutionHost host) =>
-        !checkpoint.CancellationRequested && host.ObservedCancellation != null &&
+    public static bool CancellationPending(ExecutionCheckpoint checkpoint) =>
+        !checkpoint.CancellationRequested && checkpoint.Signals?.Cancellation != null &&
         checkpoint.Continuations[0].Status != ContinuationStatus.Completed;
 
     // The store's time as the run last read its clock. A deadline the run sets is an estimate until it

@@ -8,8 +8,9 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     private readonly string _token;
     private readonly TimeProvider _time;
     private readonly CancellationTokenSource _stop = new();
-    private readonly TaskCompletionSource<Exception> _loss =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private Exception? _loss;
+    private long _expiresAtUtcTicks;
+    private readonly Action<Exception> _lost;
     private readonly TaskCompletionSource<CancellationReason> _cancellation =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _renewal;
@@ -17,47 +18,29 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
         string token, ExecutionLeaseGrant grant, DateTime requestedAtUtc, ExecutionLeaseSettings settings,
-        TimeProvider time, CancellationWatch watch)
+        TimeProvider time, CancellationWatch watch, Action<Exception> lost,
+        Action<CancellationReason> cancellation, Action<long> arrivals)
     {
+        _lost = lost;
+        _ = _cancellation.Task.ContinueWith(task =>
+        {
+            if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested)
+                cancellation(task.Result);
+        },
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         Epoch = grant.Epoch;
         CrashCount = grant.CrashCount;
         _repository = repository;
         _time = time;
         _instanceId = instanceId;
         _token = token;
+        _expiresAtUtcTicks = requestedAtUtc.Add(settings.Duration).Ticks;
         _renewal = RenewUntilStoppedAsync(settings, requestedAtUtc.Add(settings.Duration));
         _cancellationWatch = watch.Watch(instanceId, _cancellation,
-            Lose, settings.Duration, settings.RenewalInterval, ObserveInbox);
-    }
-
-    private readonly object _inboxLock = new();
-    private long _inboxSequence;
-    private TaskCompletionSource _inboxChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-    /// <summary>The highest inbox sequence the host's watch has seen for this instance.</summary>
-    public long InboxSequence
-    {
-        get { lock (_inboxLock) return _inboxSequence; }
-    }
-
-    /// <summary>Completes when the watch sees the inbox sequence rise; a new task follows each rise.</summary>
-    public Task InboxChanged
-    {
-        get { lock (_inboxLock) return _inboxChanged.Task; }
-    }
-
-    private void ObserveInbox(long sequence)
-    {
-        TaskCompletionSource? risen = null;
-        lock (_inboxLock)
-        {
-            if (sequence <= _inboxSequence)
-                return;
-            _inboxSequence = sequence;
-            risen = _inboxChanged;
-            _inboxChanged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        }
-        risen.TrySetResult();
+            Lose, settings.Duration, settings.RenewalInterval, sequence =>
+            {
+                if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested) arrivals(sequence);
+            });
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
@@ -68,19 +51,20 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     /// <summary>How many owners in a row lost the instance while it was running, before this one.</summary>
     public int CrashCount { get; }
 
-    public Task Loss => _loss.Task;
-
     // The lease is lost once; the host counts it (D-39).
     private void Lose(Exception error)
     {
-        if (_loss.TrySetResult(error))
+        if (Interlocked.CompareExchange(ref _loss, error, null) == null)
+        {
             Telemetry.LeasesLost.Add(1);
+            _lost(error);
+        }
     }
-    public Task<CancellationReason> Cancellation => _cancellation.Task;
 
     public static async Task<WorkflowExecutionLease?> TryAcquireAsync(
         IWorkflowStateRepository repository, WorkflowInstance instance,
-        ExecutionLeaseSettings settings, CancellationWatch watch, TimeProvider? time = null)
+        ExecutionLeaseSettings settings, CancellationWatch watch, Action<Exception> lost,
+        Action<CancellationReason> cancellation, Action<long> arrivals, TimeProvider? time = null)
     {
         if (settings.Duration <= TimeSpan.Zero || settings.RenewalInterval <= TimeSpan.Zero ||
             settings.RenewalInterval >= settings.Duration)
@@ -95,7 +79,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                 settings.Duration) is not { } grant)
             return null;
         return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, requestedAtUtc, settings,
-            time, watch);
+            time, watch, lost, cancellation, arrivals);
     }
 
     /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>
@@ -108,8 +92,10 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
     public void ThrowIfLost()
     {
-        if (_loss.Task.IsCompleted)
-            throw new ExecutionOwnershipLostException(_loss.Task.Result);
+        if (Now.Ticks >= Interlocked.Read(ref _expiresAtUtcTicks))
+            Lose(new TimeoutException($"Execution lease for workflow instance '{_instanceId}' expired"));
+        if (Volatile.Read(ref _loss) is { } error)
+            throw new ExecutionOwnershipLostException(error);
     }
 
     private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(5);
@@ -145,6 +131,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                         return;
                     }
                     expiresAtUtc = sentAtUtc.Add(settings.Duration);
+                    Interlocked.Exchange(ref _expiresAtUtcTicks, expiresAtUtc.Ticks);
                     delay = NextRenewal(settings, expiresAtUtc);
                 }
                 catch (TimeoutException)
