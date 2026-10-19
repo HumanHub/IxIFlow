@@ -190,15 +190,37 @@ public abstract partial class RelationalWorkflowStateRepository :
         string instanceId, IReadOnlyList<string> entries);
     internal static string StampStartPayload(string payload, DateTime now) => WorkflowDemands.StampStartPayload(payload, now);
 
-    private async Task InsertDemandsAsync(DbConnection connection, DbTransaction transaction, string payload)
+    // Called only by a creating transaction holding DemandSetsLockSql, also used by collection.
+    private async Task<DynamicParameters> InternDemandsAsync(DbConnection connection, DbTransaction transaction, string payload)
     {
         var instance = JsonSerializer.Deserialize<WorkflowInstance>(payload)!;
-        foreach (var demand in WorkflowDemands.Saved(instance))
-            await connection.ExecuteAsync(InsertDemandSql, WithTimes(new
-            {
-                instance.InstanceId, demand.Key, demand.Value, demand.Inherit
-            }, ("ExpiresAtUtc", demand.ExpiresAtUtc)), transaction);
+        var set = DemandSet.Create(WorkflowDemands.Saved(instance));
+        var identity = new { DemandSetId = set.Id };
+        if (await connection.ExecuteScalarAsync<string?>(FindDemandSetSql, identity, transaction) == null)
+        {
+            await connection.ExecuteAsync(InsertDemandSetSql, identity, transaction);
+            foreach (var demand in set.Rows)
+                await connection.ExecuteAsync(InsertDemandSql, WithTimes(new
+                {
+                    DemandSetId = set.Id, demand.Key, demand.Value, demand.Inherit
+                }, ("ExpiresAtUtc", demand.ExpiresAtUtc)), transaction);
+        }
+        return WithTimes(new { DemandSetId = set.Id, PinnedHost = set.Pin?.Value, PinInherit = set.Pin?.Inherit ?? false },
+            ("PinExpiresAtUtc", set.Pin?.ExpiresAtUtc));
     }
+
+    private async Task<WorkflowInstance> HydrateDemandsAsync(DbConnection connection, DbTransaction? transaction,
+        StoredRow row, WorkflowInstance instance)
+    {
+        var rows = await connection.QueryAsync<DemandRow>(ReadDemandSetSql, new { row.DemandSetId }, transaction);
+        var demands = rows.Select(ToDemand).ToList();
+        if (row.PinnedHost != null) demands.Add(new("host", row.PinnedHost,
+            row.PinExpiresAtUtc is { } expiry ? ReadTime(expiry) : null, row.PinInherit));
+        return DemandSet.Hydrate(instance, demands.OrderBy(d => d.Key, StringComparer.Ordinal));
+    }
+
+    private WorkflowDemand ToDemand(DemandRow row) => new(row.Key, row.Value,
+        row.ExpiresAtUtc is { } expiry ? ReadTime(expiry) : null, row.Inherit);
 
     private sealed class DemandRow
     {
@@ -213,16 +235,36 @@ public abstract partial class RelationalWorkflowStateRepository :
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var rows = await connection.QueryAsync<DemandRow>(ReadDemandsSql, new { InstanceId = instanceId });
-        return rows.Select(row => new WorkflowDemand(row.Key, row.Value,
-            row.ExpiresAtUtc is { } expiry ? ReadTime(expiry) : null, row.Inherit))
+        return rows.Select(ToDemand)
             .OrderBy(demand => demand.Key, StringComparer.Ordinal).ToArray();
     }
 
+    internal abstract string DemandSetsLockSql { get; }
+    internal abstract string FindDemandSetSql { get; }
+    internal abstract string InsertDemandSetSql { get; }
+    internal abstract string CollectDemandSetsSql { get; }
+    internal abstract string ReadDemandSetSql { get; }
     internal abstract string ReadDemandsSql { get; }
     internal abstract string InsertDemandSql { get; }
 
-    internal abstract Task InsertChildrenAsync(DbConnection connection, DbTransaction transaction,
-        string parentInstanceId, IReadOnlyList<ChildStart> children, DateTime now);
+    internal abstract string InsertChildSql { get; }
+
+    private async Task InsertChildrenAsync(DbConnection connection, DbTransaction transaction,
+        string parentInstanceId, IReadOnlyList<ChildStart> children, DateTime now)
+    {
+        foreach (var child in children)
+        {
+            var payload = StampStartPayload(child.Payload, now);
+            var values = WithTimes(new
+            {
+                child.Instance!.InstanceId, Incarnation = Guid.NewGuid(), child.Instance.WorkflowName,
+                Status = child.Instance.Status.ToString(), child.Instance.CorrelationId,
+                Payload = DemandSet.StripPayload(payload), ParentInstanceId = parentInstanceId
+            }, ("Now", now));
+            values.AddDynamicParams(await InternDemandsAsync(connection, transaction, payload));
+            await connection.ExecuteAsync(InsertChildSql, values, transaction);
+        }
+    }
 
     // Values keep the provider's wire type and precision, including SQL Server datetime2.
     internal DynamicParameters WithTimes(object values, params (string Name, DateTime? Value)[] times)
@@ -660,6 +702,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         var revision = checked(commit.ExpectedRevision + 1);
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (await BeginTransactionAsync(connection, Operation.Commit))!;
+        if (commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0)
+            await connection.ExecuteAsync(DemandSetsLockSql, transaction: transaction);
         WorkflowAdmissionRecord? admitted = null;
         if (admission != null)
         {
@@ -785,13 +829,15 @@ public abstract partial class RelationalWorkflowStateRepository :
             commit.Incarnation,
             Status = snapshot.Status.ToString(),
             commit.InboxReadThrough,
-            StateJson = current == null ? StampStartPayload(commit.Payload, now) : commit.Payload,
+            StateJson = DemandSet.StripPayload(current == null ? StampStartPayload(commit.Payload, now) : commit.Payload),
             Revision = revision,
             commit.ExpectedRevision,
             commit.CommitId,
             PayloadHash = commit.ContentHash,
             snapshot.AcknowledgesCancellation
         }, ("RunnableAtUtc", runnableAt));
+        if (current == null)
+            values.AddDynamicParams(await InternDemandsAsync(connection, transaction, StampStartPayload(commit.Payload, now)));
         // A missing row is inserted, so a commit racing to create the same instance violates its key and
         // is retried, rather than overwriting it.
         await connection.ExecuteAsync(current == null
@@ -799,8 +845,6 @@ public abstract partial class RelationalWorkflowStateRepository :
             : RequiredSql(Statement.UpdateCommit), values, transaction);
         if (admission == null)
             await connection.ExecuteAsync(StampHostSql, new { commit.InstanceId }, transaction);
-        if (current == null)
-            await InsertDemandsAsync(connection, transaction, StampStartPayload(commit.Payload, now));
         await ApplyPartsAsync(connection, transaction, commit);
         await RecordCompletionAsync(connection, transaction, WorkflowStoreRules.IsTerminal(snapshot.Status) ? commit.ReadTrunk() : null, revision, now);
         if (commit.TraceEntries.Count > 0)
@@ -827,8 +871,6 @@ public abstract partial class RelationalWorkflowStateRepository :
                 ? commit.ChildStarts.OrderBy(child => child.Instance!.InstanceId, StringComparer.Ordinal).ToArray()
                 : commit.ChildStarts.ToArray();
             await InsertChildrenAsync(connection, transaction, commit.InstanceId, children, now);
-            foreach (var child in children)
-                await InsertDemandsAsync(connection, transaction, StampStartPayload(child.Payload, now));
             madeRunnable.AddRange(children.Select(child => child.Instance!.InstanceId));
         }
         // Each event this commit appends to its own inbox takes the next sequence.
@@ -921,7 +963,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         "deadline_utc AS DeadlineUtc, opened_sequence AS OpenedSequence, opened_at_utc AS OpenedAtUtc, " +
         "close_reason AS CloseReason, closed_at_utc AS ClosedAtUtc, default_payload_json AS DefaultPayloadJson";
     internal const string RowColumns =
-        "instance_id AS InstanceId, state_json AS StateJson, runnable_at_utc AS RunnableAtUtc, revision AS Revision, last_host_id AS LastHostId";
+        "instance_id AS InstanceId, state_json AS StateJson, runnable_at_utc AS RunnableAtUtc, revision AS Revision, last_host_id AS LastHostId, demand_set_id AS DemandSetId, pinned_host AS PinnedHost, pin_expires_at_utc AS PinExpiresAtUtc, pin_inherit AS PinInherit";
 
     internal const string StampedRowColumns = RowColumns + ", incarnation AS Incarnation";
 
@@ -951,7 +993,8 @@ public abstract partial class RelationalWorkflowStateRepository :
             if (row == null)
                 return null;
             if (!ReadsUseStamps || stamp != null && row.Same(stamp))
-                return wholly ? row.Read(parts, NormalizeRunnableTime) : row.Summarize(parts.SingleOrDefault()?.Json, NormalizeRunnableTime);
+                return await HydrateDemandsAsync(connection, transaction, row,
+                    wholly ? row.Read(parts, NormalizeRunnableTime) : row.Summarize(parts.SingleOrDefault()?.Json, NormalizeRunnableTime));
             if (attempt == MaxReadAttempts)
                 throw new InvalidOperationException($"Workflow instance '{instanceId}' changed in each of {MaxReadAttempts} reads");
             await Task.Delay(Random.Shared.Next(1, 5 * attempt));
@@ -975,7 +1018,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             }
             foreach (var row in batch)
                 if (!ReadsUseStamps || stamps!.TryGetValue(row.InstanceId, out var stamp) && row.Same(stamp))
-                    instances.Add(row.Read(parts[row.InstanceId], NormalizeRunnableTime));
+                    instances.Add(await HydrateDemandsAsync(connection, transaction, row, row.Read(parts[row.InstanceId], NormalizeRunnableTime)));
                 else if (await ReadAtOneRevisionAsync(connection, transaction, row.InstanceId, true, filter, filterValues) is { } moved)
                     instances.Add(moved);
         }
@@ -1183,6 +1226,10 @@ public abstract partial class RelationalWorkflowStateRepository :
         public long Revision { get; set; }
         public Guid Incarnation { get; set; }
         public Guid? LastHostId { get; set; }
+        public string DemandSetId { get; set; } = "";
+        public string? PinnedHost { get; set; }
+        public DateTime? PinExpiresAtUtc { get; set; }
+        public bool PinInherit { get; set; }
 
         public bool Same(StoredStamp stamp) => stamp.Revision == Revision && stamp.Incarnation == Incarnation;
 

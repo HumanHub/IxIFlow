@@ -29,26 +29,52 @@ public sealed partial class SqlWorkflowStateRepository
                 OR DATALENGTH(capability.capability_value) <> DATALENGTH(demand.DemandValue))))
         """;
 
+    private const string PinMatches = """
+        (instance.PinnedHost IS NULL OR instance.PinExpiresAtUtc <= @Now
+            OR (instance.PinnedHost = @CapabilityHost AND DATALENGTH(instance.PinnedHost) = DATALENGTH(@CapabilityHost)))
+        """;
+
     internal override string RunnableSql => $"""
         {CapabilitySnapshotSql}
-        -- This statement boundary prevents a correlated anti-join from rescanning
-        -- the snapshot for every instance. Duplicated blocked IDs are harmless.
-        SELECT demand.InstanceId INTO #ClaimBlocked
-        FROM dbo.IxIFlowWorkflowDemands AS demand
-        LEFT HASH JOIN #ClaimCapabilities AS capability ON {CapabilityKeyJoin}
-        WHERE {UnmetDemand}
+        -- Only distinct sets and their rows participate in capability matching.
+        SELECT sets.DemandSetId INTO #ClaimMatched
+        FROM dbo.IxIFlowDemandSets AS sets
+        WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDemandSetRows AS demand
+            LEFT JOIN #ClaimCapabilities AS capability ON {CapabilityKeyJoin}
+            WHERE demand.DemandSetId = sets.DemandSetId AND {UnmetDemand})
         OPTION (RECOMPILE);
+        CREATE UNIQUE CLUSTERED INDEX IX_ClaimMatched ON #ClaimMatched (DemandSetId);
 
-        SELECT TOP (@Limit) instance.InstanceId AS InstanceId, instance.RunnableAtUtc AS RunnableAtUtc
-        FROM dbo.IxIFlowWorkflowInstances AS instance
-        WHERE instance.RunnableAtUtc <= @Now
-          AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowLeases AS lease
-              WHERE lease.InstanceId = instance.InstanceId AND lease.ExpiresAtUtc > @Now)
-          AND NOT EXISTS (SELECT 1 FROM #ClaimBlocked AS blocked WHERE blocked.InstanceId = instance.InstanceId)
-        ORDER BY CASE WHEN instance.LastHostId = @HostId THEN 0 ELSE 1 END,
-            instance.RunnableAtUtc, instance.InstanceId
-        OPTION (HASH JOIN, RECOMPILE);
-        DROP TABLE #ClaimBlocked;
+        -- A per-set ordered limit bounds the final merge. FORCESEEK prevents a
+        -- demand-mismatching population from becoming an instance-table scan.
+        WITH candidates AS (
+            SELECT own.*, 0 AS Affinity FROM #ClaimMatched AS matched
+            CROSS APPLY (
+                SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
+                FROM dbo.IxIFlowWorkflowInstances AS instance WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetAffinity))
+                WHERE instance.DemandSetId = matched.DemandSetId AND instance.LastHostId = @HostId
+                  AND instance.RunnableAtUtc <= @Now AND {PinMatches}
+                  AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowLeases AS lease
+                      WHERE lease.InstanceId = instance.InstanceId AND lease.ExpiresAtUtc > @Now)
+                ORDER BY instance.RunnableAtUtc, instance.InstanceId) AS own
+            UNION ALL
+            SELECT other.*, 1 AS Affinity FROM #ClaimMatched AS matched
+            CROSS APPLY (
+                SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
+                FROM dbo.IxIFlowWorkflowInstances AS instance WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
+                WHERE instance.DemandSetId = matched.DemandSetId
+                  AND (instance.LastHostId IS NULL OR instance.LastHostId <> @HostId)
+                  AND instance.RunnableAtUtc <= @Now AND {PinMatches}
+                  AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowLeases AS lease
+                      WHERE lease.InstanceId = instance.InstanceId AND lease.ExpiresAtUtc > @Now)
+                ORDER BY instance.RunnableAtUtc, instance.InstanceId) AS other)
+        -- Under read committed, affinity can move between the two seeks.
+        -- Deduplicate the bounded merge before applying the global limit.
+        SELECT TOP (@Limit) InstanceId, MIN(RunnableAtUtc) AS RunnableAtUtc FROM candidates
+        GROUP BY InstanceId
+        ORDER BY MIN(Affinity), MIN(RunnableAtUtc), InstanceId
+        OPTION (LOOP JOIN, RECOMPILE);
+        DROP TABLE #ClaimMatched;
         DROP TABLE #ClaimCapabilities;
         """;
 
@@ -60,9 +86,10 @@ public sealed partial class SqlWorkflowStateRepository
                   AND instance.Status NOT IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
                   AND (instance.RunnableAtUtc <= @Now OR (@Operator = 1
                       AND (instance.Status = 'NeedsResolution' OR JSON_QUERY(instance.StateJson, '$.ExecutionStateJson.OperatorStop') IS NOT NULL)))
-                  AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowDemands AS demand
+                  AND {PinMatches}
+                  AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDemandSetRows AS demand
                       LEFT JOIN #ClaimCapabilities AS capability ON {CapabilityKeyJoin}
-                      WHERE demand.InstanceId = instance.InstanceId AND {UnmetDemand})) THEN 1 ELSE 0 END;
+                      WHERE demand.DemandSetId = instance.DemandSetId AND {UnmetDemand})) THEN 1 ELSE 0 END;
         DROP TABLE #ClaimCapabilities;
         """;
 
@@ -83,7 +110,7 @@ public sealed partial class SqlWorkflowStateRepository
         table.Columns.Add("capability_value", typeof(string));
         table.Columns.Add("capability_key_bytes", typeof(int));
         foreach (var capability in query.Capabilities) table.Rows.Add(capability.Key, capability.Value, capability.Key.Length * 2);
-        var parameters = WithTimes(new { query.HostId, Limit = limit }, ("Now", now));
+        var parameters = WithTimes(new { query.HostId, Limit = limit, CapabilityHost = query.Capabilities.GetValueOrDefault("host") }, ("Now", now));
         parameters.Add("Capabilities", table.AsTableValuedParameter("dbo.IxIFlowClaimCapabilities"));
         return parameters;
     }

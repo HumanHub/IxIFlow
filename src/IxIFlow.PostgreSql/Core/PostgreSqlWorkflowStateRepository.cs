@@ -247,29 +247,11 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         }, transaction);
     }
 
-    internal override async Task InsertChildrenAsync(DbConnection connection, DbTransaction transaction,
-        string parentInstanceId, IReadOnlyList<ChildStart> children, DateTime now)
-    {
-        await connection.ExecuteAsync("""
-                INSERT INTO ixiflow_workflow_instances
-                    (instance_id, incarnation, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
-                     parent_instance_id)
-                SELECT child.instance_id, child.incarnation, child.workflow_name, child.status, child.correlation_id, @Now,
-                    child.state_json, 1, @ParentInstanceId
-                FROM unnest(@Ids::text[], @Incarnations::uuid[], @Names::text[], @Statuses::text[], @CorrelationIds::text[],
-                    @Payloads::text[]) AS child (instance_id, incarnation, workflow_name, status, correlation_id, state_json)
-                """, new
-        {
-            Now = Timestamp(now),
-            ParentInstanceId = parentInstanceId,
-            Ids = children.Select(child => child.Instance!.InstanceId).ToArray(),
-            Incarnations = children.Select(_ => Guid.NewGuid()).ToArray(),
-            Names = children.Select(child => child.Instance!.WorkflowName).ToArray(),
-            Statuses = children.Select(child => child.Instance!.Status.ToString()).ToArray(),
-            CorrelationIds = children.Select(child => child.Instance!.CorrelationId).ToArray(),
-            Payloads = children.Select(child => StampStartPayload(child.Payload, now)).ToArray()
-        }, transaction);
-    }
+    internal override string InsertChildSql => """
+        INSERT INTO ixiflow_workflow_instances (instance_id, incarnation, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision, parent_instance_id, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit)
+        VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @Now, @Payload, 1,
+            @ParentInstanceId, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit)
+        """;
 
     internal override string ReadInstanceSql(string filter, bool wholly) => $"""
                 SELECT {StampedRowColumns} FROM ixiflow_workflow_instances
@@ -566,8 +548,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
-              VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
+                  (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit)
+              VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
@@ -610,7 +592,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             DELETE FROM ixiflow_workflow_leases WHERE instance_id = @InstanceId
             """,
         Statement.DeleteRows => """
-                DELETE FROM ixiflow_workflow_demands WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_outbox_deliveries WHERE event_id IN (SELECT e.event_id FROM ixiflow_outbox_events e WHERE e.instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=e.event_id AND pending.status=0));
                 DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
@@ -658,6 +639,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         return;
     }
     // Identifiers compare as the engine compares them, ordinally.
+    await connection.ExecuteAsync(DemandsSchema, transaction: transaction);
     await connection.ExecuteAsync("""
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id varchar(100) COLLATE "C" NOT NULL PRIMARY KEY,
@@ -666,6 +648,10 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             correlation_id varchar(100) COLLATE "C" NULL,
             runnable_at_utc timestamptz NULL,
             last_host_id uuid NULL,
+            demand_set_id varchar(64) COLLATE "C" NOT NULL REFERENCES ixiflow_demand_sets (demand_set_id),
+            pinned_host text COLLATE "C" NULL,
+            pin_expires_at_utc timestamptz NULL,
+            pin_inherit boolean NOT NULL DEFAULT false,
             ended_at_utc timestamptz NULL,
             state_json text NOT NULL,
             cancellation_json text NULL,
@@ -688,6 +674,11 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             ON ixiflow_workflow_instances (runnable_at_utc, instance_id) INCLUDE (last_host_id) WHERE runnable_at_utc IS NOT NULL;
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_affinity
             ON ixiflow_workflow_instances (last_host_id, runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
+        CREATE INDEX ix_ixiflow_instances_demand_set ON ixiflow_workflow_instances (demand_set_id);
+        CREATE INDEX ix_ixiflow_instances_set_runnable
+            ON ixiflow_workflow_instances (demand_set_id, runnable_at_utc, instance_id) INCLUDE (last_host_id, pinned_host, pin_expires_at_utc) WHERE runnable_at_utc IS NOT NULL;
+        CREATE INDEX ix_ixiflow_instances_set_affinity
+            ON ixiflow_workflow_instances (demand_set_id, last_host_id, runnable_at_utc, instance_id) INCLUDE (pinned_host, pin_expires_at_utc) WHERE runnable_at_utc IS NOT NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_events (
             instance_id varchar(100) COLLATE "C" NOT NULL,
             event_id varchar(100) COLLATE "C" NOT NULL,
@@ -759,7 +750,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
-    await connection.ExecuteAsync(DemandsSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }
