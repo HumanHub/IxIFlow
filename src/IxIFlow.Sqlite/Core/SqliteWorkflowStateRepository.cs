@@ -574,7 +574,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key IN @Keys
                 """,
-        _ => AdmissionSql(statement)
+        _ => RegistrySql(statement) ?? AdmissionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -692,6 +692,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
+    await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 

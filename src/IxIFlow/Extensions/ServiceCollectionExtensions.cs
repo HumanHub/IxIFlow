@@ -24,7 +24,7 @@ public static class ServiceCollectionExtensions
     public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services)
     {
         // Core workflow services
-        services.TryAddSingleton(HostSettings.Default);
+        services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
         services.TryAddSingleton(RetentionSettings.Default);
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
@@ -38,6 +38,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
         services.AddScoped<WorkflowHost.InstanceOperations>();
         services.TryAddSingleton(new OutboxSettings());
+        // Registers before recovery starts; stops after the host has drained its work.
+        services.AddHostedService<WorkflowHeartbeatService>();
         // Stops after the workflow host, so its final commits can be delivered during drain.
         services.AddHostedService<WorkflowOutboxService>();
         services.AddHostedService<WorkflowRecoveryService>();
@@ -89,6 +91,11 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The park threshold cannot be negative");
         if (options.PollInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(configure), "The poll interval must be positive");
+        MemberRegistry.ValidateInterval(options.HeartbeatInterval);
+        var capabilities = MemberRegistry.SnapshotCapabilities(options.Capabilities);
+        if (capabilities.Keys.Any(WorkflowHeartbeatService.IsAutomaticCapability))
+            throw new ArgumentException("Configured capabilities cannot replace os, arch, runtime, host or workflow:* capabilities",
+                nameof(options.Capabilities));
         services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits
         {
             MaxCheckpointBytes = options.MaxCheckpointBytes,
@@ -108,8 +115,10 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The drain timeout cannot be negative");
         if (string.IsNullOrWhiteSpace(options.HostName))
             throw new ArgumentOutOfRangeException(nameof(configure), "The host name cannot be empty");
-        services.Replace(ServiceDescriptor.Singleton(
-            new HostSettings(options.Slots, options.DrainTimeout, options.PollInterval, options.HostName)));
+        var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
+        services.Replace(ServiceDescriptor.Singleton<HostSettings>(_ =>
+            new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
+            { HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities }));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
 
@@ -323,6 +332,12 @@ public class IxIFlowOptions
     /// as work left by another host. Its own timers fire without waiting for the poll.
     /// </summary>
     public TimeSpan PollInterval { get; set; } = HostSettings.DefaultPollInterval;
+
+    /// <summary>Time between store registry heartbeats. Defaults to five seconds; at most twenty minutes.</summary>
+    public TimeSpan HeartbeatInterval { get; set; } = MemberRegistry.DefaultHeartbeatInterval;
+
+    /// <summary>User capability keys and values, published alongside automatic host and workflow capabilities.</summary>
+    public Dictionary<string, string> Capabilities { get; set; } = new(StringComparer.Ordinal);
 
     /// <summary>
     /// How many instances this host runs at once. A run holds its slot until the instance is idle,

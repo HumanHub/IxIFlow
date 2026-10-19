@@ -145,6 +145,22 @@ public static class WorkflowStoreRules
 /// </summary>
 public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore
 {
+    /// <summary>Registers a member and its capabilities atomically, stamping start and heartbeat with store time.</summary>
+    Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default);
+
+    /// <summary>Renews and replaces the capability snapshot. False means the member must register again.</summary>
+    Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Removes the member and all its capabilities. Repeated removal is harmless.</summary>
+    Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns snapshots younger than three heartbeat intervals by store time. Registry operations
+    /// also prune members silent for over an hour, together with their capabilities.
+    /// </summary>
+    Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Runs one bounded retention pass, giving up never-attempted deliveries whose event age reaches
     /// the store's retry horizon. Remaining pending deliveries and unfinished children keep their instance.
@@ -919,6 +935,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 /// </summary>
 public interface IWorkflowVersionRegistry
 {
+    /// <summary>A snapshot of all registered definitions the host can load.</summary>
+    Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync();
+
     /// <summary>
     ///     Register a workflow version
     /// </summary>
@@ -943,6 +962,9 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
     private readonly ConcurrentDictionary<string, WorkflowDefinition> _workflows = new();
 
     public WorkflowVersionRegistry() { }
+
+    public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
+        Task.FromResult<IReadOnlyList<WorkflowDefinition>>(_workflows.Values.ToArray());
 
     public WorkflowVersionRegistry(IEnumerable<WorkflowDefinition> definitions)
     {

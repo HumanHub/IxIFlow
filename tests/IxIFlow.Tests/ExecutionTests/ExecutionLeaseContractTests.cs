@@ -1295,6 +1295,16 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     private sealed class PausedReadRepository(InMemoryWorkflowStateRepository inner) : IWorkflowStateRepository
     {
+        public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
+            inner.RegisterMemberAsync(member, cancellationToken);
+        public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
+            CancellationToken cancellationToken = default) =>
+            inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
+        public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
+            inner.UnregisterMemberAsync(memberId, cancellationToken);
+        public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
+            inner.GetLiveMembersAsync(cancellationToken);
+
         public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
             CancellationToken cancellationToken = default) =>
             inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
