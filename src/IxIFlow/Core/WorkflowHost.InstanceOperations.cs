@@ -49,7 +49,7 @@ public sealed partial class WorkflowHost
                 ? (await _store.GetPendingEventsAsync(instanceId, 0, 1)).StoreTimeUtc
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The store did not return its clock")
                 : DateTime.MinValue;
-            return DemandMatching.Meets(demands, query.Capabilities, now);
+            return DemandMatching.Meets(demands, query, now);
         }
 
         private static WorkflowExecutionResult Scheduled(string instanceId) => new()

@@ -72,12 +72,40 @@ public sealed class ClaimFilteringTests
             Assert.DoesNotContain(await store.GetRunnableInstancesAsync(wrongValue), row => row.InstanceId == required.InstanceId);
             Assert.Null(await store.TryAcquireExecutionLeaseAsync(required.InstanceId, "wrong", TimeSpan.FromMinutes(1), missing));
             Assert.Null(await store.TryAcquireExecutionLeaseAsync(required.InstanceId, "value", TimeSpan.FromMinutes(1), wrongValue));
+            var folded = new ClaimQuery(first.HostId, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                { ["GPU"] = "cuda", ["region"] = "eu" });
+            Assert.DoesNotContain(await store.GetRunnableInstancesAsync(folded), row => row.InstanceId == required.InstanceId);
+            Assert.Null(await store.TryAcquireExecutionLeaseAsync(required.InstanceId, "folded", TimeSpan.FromMinutes(1), folded));
+            var largeCapabilities = first.Capabilities.ToDictionary(item => item.Key, item => item.Value);
+            for (var index = 0; index < 512; index++) largeCapabilities.Add("extra-" + index, "value");
+            var large = new ClaimQuery(first.HostId, largeCapabilities);
+            Assert.Equal((await store.GetRunnableInstancesAsync(first)).Select(row => row.InstanceId),
+                (await store.GetRunnableInstancesAsync(large)).Select(row => row.InstanceId));
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(required.InstanceId, "large", TimeSpan.FromMinutes(1), large));
+            await store.ReleaseExecutionLeaseAsync(required.InstanceId, "large");
+            var empty = new ClaimQuery(first.HostId, new Dictionary<string, string>());
+            Assert.DoesNotContain(await store.GetRunnableInstancesAsync(empty), row => row.InstanceId == required.InstanceId);
+            Assert.Null(await store.TryAcquireExecutionLeaseAsync(required.InstanceId, "empty", TimeSpan.FromMinutes(1), empty));
+
+            // Limiting due rows before demand evaluation would hide this later match.
+            for (var index = 0; index < 33; index++) await Seed([new("unavailable")], first);
+            var later = await Seed([new("later", ""), new("key-only"),
+                new("expired", "different", DateTime.UtcNow.AddHours(-1))], first);
+            var laterHost = Host(first.HostId, ("later", ""), ("key-only", ""));
+            var laterScan = await store.GetRunnableInstancesAsync(new ClaimQuery(first.HostId, laterHost.Capabilities, 1));
+            Assert.Equal(later.InstanceId, Assert.Single(laterScan).InstanceId);
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(later.InstanceId, "later", TimeSpan.FromMinutes(1), laterHost));
+            await store.ReleaseExecutionLeaseAsync(later.InstanceId, "later");
             var spacedKey = await Seed([new("gpu ")], first);
             var spacedValue = await Seed([new("gpu", "cuda ")], first);
             Assert.DoesNotContain(await store.GetRunnableInstancesAsync(first), row =>
                 row.InstanceId == spacedKey.InstanceId || row.InstanceId == spacedValue.InstanceId);
             Assert.Null(await store.TryAcquireExecutionLeaseAsync(spacedKey.InstanceId, "spaced-key", TimeSpan.FromMinutes(1), first));
             Assert.Null(await store.TryAcquireExecutionLeaseAsync(spacedValue.InstanceId, "spaced-value", TimeSpan.FromMinutes(1), first));
+            var matchingSpace = Host(first.HostId, ("gpu", "cuda "));
+            Assert.Contains(await store.GetRunnableInstancesAsync(matchingSpace), row => row.InstanceId == spacedValue.InstanceId);
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(spacedValue.InstanceId, "matching-space", TimeSpan.FromMinutes(1), matchingSpace));
+            await store.ReleaseExecutionLeaseAsync(spacedValue.InstanceId, "matching-space");
             var twoKeys = Host(Guid.NewGuid(), ("gpu", "cuda"), ("gpu ", "cuda"));
             Assert.Contains(await store.GetRunnableInstancesAsync(twoKeys), row => row.InstanceId == spacedKey.InstanceId);
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(spacedKey.InstanceId, "two-keys", TimeSpan.FromMinutes(1), twoKeys));

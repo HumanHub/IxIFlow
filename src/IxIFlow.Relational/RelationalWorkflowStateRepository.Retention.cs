@@ -109,6 +109,12 @@ public abstract partial class RelationalWorkflowStateRepository
             await using var expiry = (await BeginTransactionAsync(connection, Operation.Purge))!;
             await ExecuteOptionalAsync(connection, expiry, Statement.RetentionLock,
                 cancellationToken: cancellationToken);
+            // Creators hold this lifecycle lock shared; collection holds it exclusively.
+            // No creator can observe a set and then lose it before inserting its reference.
+            await connection.ExecuteAsync(new CommandDefinition(CollectDemandSetsLockSql, transaction: expiry,
+                cancellationToken: cancellationToken));
+            await connection.ExecuteAsync(new CommandDefinition(CollectDemandSetsSql, new { Limit = batchSize }, expiry,
+                cancellationToken: cancellationToken));
             var expiryNow = await OutboxNowAsync(connection, expiry);
             var expired = await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.ExpireTombstones),
                 WithTimes(new { Limit = batchSize }, ("Now", expiryNow)), expiry,

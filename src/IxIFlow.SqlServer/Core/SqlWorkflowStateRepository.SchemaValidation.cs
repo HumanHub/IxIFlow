@@ -12,7 +12,7 @@ public sealed partial class SqlWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
-                SELECT [InstanceId], [WorkflowName], [Status], [CorrelationId], [RunnableAtUtc], [LastHostId], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
+                SELECT [InstanceId], [WorkflowName], [Status], [CorrelationId], [RunnableAtUtc], [LastHostId], [DemandSetId], [PinnedHost], [PinExpiresAtUtc], [PinInherit], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
                 SELECT [InstanceId], [EventId], [Sequence], [EventType], [EventKey], [TargetWaitId], [Subject], [PayloadJson], [PayloadHash], [ReceivedAtUtc], [Outcome], [WaitId], [Rejection], [SettledAtUtc] FROM dbo.IxIFlowWorkflowEvents WHERE 1=0;
                 SELECT [InstanceId], [PartKey], [Json] FROM dbo.IxIFlowWorkflowParts WHERE 1=0;
                 SELECT [InstanceId], [Sequence], [EntryJson] FROM dbo.IxIFlowWorkflowTraces WHERE 1=0;
@@ -27,7 +27,8 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT [Incarnation], [InstanceId], [Sender], [Trigger], [OwnerKind], [Owner], [Tenant] FROM dbo.IxIFlowWorkflowOwnership WHERE 1=0;
                 SELECT [DeliveryIdentity], [PayloadHash], [Sequence], [Rejection], [ExpiresAtUtc] FROM dbo.IxIFlowWebhookDeliveries WHERE 1=0;
                 SELECT member_id, kind, name, endpoint, slots, engine_version, heartbeat_interval_ticks, started_at_utc, heartbeat_at_utc FROM dbo.ixiflow_hosts WHERE 1=0;
-                SELECT InstanceId, DemandKey, DemandValue, ExpiresAtUtc, Inherit FROM dbo.IxIFlowWorkflowDemands WHERE 1=0;
+                SELECT DemandSetId FROM dbo.IxIFlowDemandSets WHERE 1=0;
+                SELECT DemandSetId, DemandKey, DemandValue, ExpiresAtUtc, Inherit, DemandKeyBytes FROM dbo.IxIFlowDemandSetRows WHERE 1=0;
                 SELECT member_id, capability_key, capability_value FROM dbo.ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();

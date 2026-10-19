@@ -5,7 +5,7 @@ namespace IxIFlow.Relational;
 
 public abstract partial class RelationalWorkflowStateRepository
 {
-    internal abstract string RunnableSql(bool affinity);
+    internal abstract string RunnableSql { get; }
     internal abstract string ClaimEligibilitySql { get; }
     internal abstract string SetLeaseHostSql { get; }
     internal abstract string StampHostSql { get; }
