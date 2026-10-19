@@ -47,6 +47,200 @@ public sealed class DemandSetTests
         await Contract(new PostgreSqlWorkflowStateRepository(cs), connection);
     }
 
+    [SqlServerFact]
+    [Trait("Category", "SqlIntegration")]
+    public async Task SqlServerConcurrentCreation()
+    {
+        var cs = SqlTestDatabase<DemandSetTests>.ConnectionString;
+        await using var holder = new SqlConnection(cs);
+        await using var observer = new SqlConnection(cs);
+        await ConcurrentCreationContract(new SqlWorkflowStateRepository(cs), holder, observer);
+    }
+
+    [PostgreSqlFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task PostgreSqlConcurrentCreation()
+    {
+        var cs = PostgreSqlTestDatabase<DemandSetTests>.ConnectionString;
+        await using var holder = new NpgsqlConnection(cs);
+        await using var observer = new NpgsqlConnection(cs);
+        await ConcurrentCreationContract(new PostgreSqlWorkflowStateRepository(cs), holder, observer);
+    }
+
+    private static async Task ConcurrentCreationContract(IWorkflowStateRepository store, DbConnection holder, DbConnection observer)
+    {
+        await store.GetWorkflowDemandsAsync("schema");
+        await holder.OpenAsync();
+        await observer.OpenAsync();
+        var server = holder is SqlConnection;
+        var instances = server ? "dbo.IxIFlowWorkflowInstances" : "ixiflow_workflow_instances";
+        var sets = server ? "dbo.IxIFlowDemandSets" : "ixiflow_demand_sets";
+        var rows = server ? "dbo.IxIFlowDemandSetRows" : "ixiflow_demand_set_rows";
+        var setColumn = server ? "DemandSetId" : "demand_set_id";
+        var instanceColumn = server ? "InstanceId" : "instance_id";
+        var session = await holder.ExecuteScalarAsync<int>(server ? "SELECT @@SPID" : "SELECT pg_backend_pid()");
+        var query = new ClaimQuery(Guid.NewGuid(), new Dictionary<string, string>());
+        async Task<CheckpointCommit> NewCommit(WorkflowInstance instance)
+        {
+            var owner = Assert.IsType<ExecutionLeaseGrant>(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId,
+                "seed", TimeSpan.FromMinutes(1), query));
+            return CheckpointCommit.Create(instance, owner.Epoch, 0, parks: true, wakeAfter: TimeSpan.Zero);
+        }
+        Task Purge() => store.PurgeAsync(TimeSpan.FromDays(1), TimeSpan.FromDays(1), 1000);
+
+        foreach (var sameSet in new[] { false, true })
+        foreach (var kind in new[] { "root", "child", "ingress" })
+        {
+            var suffix = Guid.NewGuid().ToString("N");
+            WorkflowDemand[] demands = [new("new-" + suffix, "value"), new("other-" + suffix, Inherit: true)];
+            var first = Instance(demands);
+            var second = Instance(sameSet ? demands.Reverse().ToArray() : [new("different-" + suffix, "value")]);
+            // Separate instance-key ranges isolate demand-set concurrency from SQL Server's
+            // existing absent-instance range locks. Both demand sets themselves are brand new.
+            first.InstanceId = "a-" + suffix;
+            second.InstanceId = "z-" + suffix;
+            var separator = Instance();
+            separator.InstanceId = "m-" + suffix;
+            var parent = Instance();
+            parent.InstanceId = "p-" + suffix;
+            var ids = new[] { first.InstanceId, second.InstanceId, parent.InstanceId, separator.InstanceId };
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(await NewCommit(separator))).Status);
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(await NewCommit(parent))).Status);
+            var firstCommit = await NewCommit(first);
+            CheckpointCommit secondCommit;
+            if (kind == "child")
+            {
+                second.ParentInstanceId = parent.InstanceId;
+                second.ParentWaitId = "child";
+                var saved = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
+                var owner = (await store.TryAcquireExecutionLeaseAsync(parent.InstanceId, "parent", TimeSpan.FromMinutes(1), query))!;
+                secondCommit = CheckpointCommit.Create(saved, owner.Epoch, saved.Revision,
+                    childStarts: [new(second.InstanceId, JsonSerializer.Serialize(second), "child")],
+                    openedWaits: [new("child", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
+                    parks: true, wakeAfter: TimeSpan.Zero);
+            }
+            else secondCommit = kind == "ingress" ? CheckpointCommit.CreateAdmission(second) : await NewCommit(second);
+            var firstSet = DemandSet.Create(demands).Id;
+            var secondSet = DemandSet.Create(WorkflowDemands.Saved(second)).Id;
+            Assert.Equal(0, await observer.ExecuteScalarAsync<int>($"SELECT count(*) FROM {sets} WHERE {setColumn} IN @Ids",
+                new { Ids = new[] { firstSet, secondSet } }));
+
+            // Pause the actual first creation after its header, rows and instance were inserted,
+            // while its transaction (including the production lifecycle lock) remains open.
+            var trigger = "pause_" + suffix;
+            var gate = Random.Shared.Next(1, int.MaxValue);
+            var resource = "demand-test-" + suffix;
+            var createTrigger = server ? $"""
+                CREATE TRIGGER dbo.{trigger} ON dbo.IxIFlowWorkflowInstances AFTER INSERT AS
+                BEGIN
+                    SET NOCOUNT ON;
+                    IF EXISTS (SELECT 1 FROM inserted WHERE InstanceId = '{first.InstanceId}')
+                    BEGIN
+                        DECLARE @r INT;
+                        EXEC @r = sys.sp_getapplock @Resource=N'{resource}', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=20000;
+                        IF @r < 0 THROW 51000, 'Creation barrier timed out', 1;
+                    END;
+                END;
+                """ : $"""
+                CREATE FUNCTION {trigger}() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF NEW.instance_id = '{first.InstanceId}' THEN
+                        PERFORM pg_advisory_xact_lock(7843921, {gate});
+                    END IF;
+                    RETURN NEW;
+                END; $$;
+                CREATE TRIGGER {trigger} AFTER INSERT ON ixiflow_workflow_instances
+                    FOR EACH ROW EXECUTE FUNCTION {trigger}();
+                """;
+            await holder.ExecuteAsync(createTrigger);
+            await using var held = await holder.BeginTransactionAsync();
+            Task<WorkflowCommitResult>? creatingFirst = null, creatingSecond = null;
+            try
+            {
+                await holder.ExecuteAsync(server ? $"""
+                    DECLARE @r INT;
+                    EXEC @r = sys.sp_getapplock @Resource=N'{resource}', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=10000;
+                    IF @r < 0 THROW 51000, 'Cannot hold creation barrier', 1;
+                    """ : $"SELECT pg_advisory_xact_lock(7843921, {gate});", transaction: held);
+                creatingFirst = store.CommitWorkflowInstanceAsync(firstCommit);
+                var creatorSession = await WaitForBlockedSession(observer, session);
+                Assert.False(creatingFirst.IsCompleted);
+                creatingSecond = kind == "ingress"
+                    ? store.AdmitWorkflowInstanceAsync(secondCommit, new("sender", "trigger", second.InstanceId, new string('A', 64), "owner"))
+                    : store.CommitWorkflowInstanceAsync(secondCommit);
+                if (sameSet)
+                {
+                    await WaitForBlockedSession(observer, creatorSession);
+                    Assert.False(creatingSecond.IsCompleted);
+                }
+                else
+                {
+                    Assert.Equal(WorkflowCommitStatus.Applied, (await creatingSecond.WaitAsync(TimeSpan.FromSeconds(10))).Status);
+                    Assert.False(creatingFirst.IsCompleted);
+                }
+            }
+            finally
+            {
+                await held.RollbackAsync();
+                try
+                {
+                    foreach (var creating in new[] { creatingFirst, creatingSecond })
+                        if (creating != null) Assert.Equal(WorkflowCommitStatus.Applied, (await creating.WaitAsync(TimeSpan.FromSeconds(30))).Status);
+                    foreach (var (instance, set) in new[] { (first, firstSet), (second, secondSet) })
+                    {
+                        Assert.Equal(set, await observer.QuerySingleAsync<string>($"SELECT {setColumn} FROM {instances} WHERE {instanceColumn} = @Id",
+                            new { Id = instance.InstanceId }));
+                        Assert.Equal(1, await observer.ExecuteScalarAsync<int>($"SELECT count(*) FROM {sets} WHERE {setColumn} = @Id", new { Id = set }));
+                        var expected = WorkflowDemands.Saved(instance).OrderBy(d => d.Key, StringComparer.Ordinal).ToArray();
+                        Assert.Equal(expected.Length, await observer.ExecuteScalarAsync<int>($"SELECT count(*) FROM {rows} WHERE {setColumn} = @Id", new { Id = set }));
+                        Assert.Equal(expected, await store.GetWorkflowDemandsAsync(instance.InstanceId));
+                    }
+                    await Purge();
+                    Assert.Equal(demands.OrderBy(d => d.Key, StringComparer.Ordinal), await store.GetWorkflowDemandsAsync(first.InstanceId));
+                }
+                finally
+                {
+                    await holder.ExecuteAsync(server ? $"DROP TRIGGER dbo.{trigger}"
+                        : $"DROP TRIGGER {trigger} ON ixiflow_workflow_instances; DROP FUNCTION {trigger}()");
+                    foreach (var id in ids) await store.DeleteWorkflowInstanceAsync(id);
+                    await Purge();
+                }
+            }
+        }
+
+        // The opposite lifecycle direction to the exclusive-collector race in Contract:
+        // a shared creation lock must hold collection until the transaction ends.
+        await using var creation = await holder.BeginTransactionAsync();
+        var creationLock = (string)store.GetType().GetProperty("CreateDemandSetsLockSql",
+            BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
+        await holder.ExecuteAsync(creationLock, transaction: creation);
+        var collecting = Purge();
+        try
+        {
+            await WaitForBlockedSession(observer, session);
+            Assert.False(collecting.IsCompleted);
+        }
+        finally { await creation.RollbackAsync(); }
+        await collecting.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    private static async Task<int> WaitForBlockedSession(DbConnection observer, int session)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var sql = observer is SqlConnection ? """
+            SELECT TOP (1) session_id FROM sys.dm_exec_requests WHERE blocking_session_id = @Session
+            """ : """
+            SELECT pid FROM pg_stat_activity WHERE @Session = ANY(pg_blocking_pids(pid)) LIMIT 1
+            """;
+        while (true)
+        {
+            var blocked = await observer.ExecuteScalarAsync<int>(new CommandDefinition(sql, new { Session = session },
+                cancellationToken: timeout.Token));
+            if (blocked != 0) return blocked;
+            await Task.Delay(10, timeout.Token);
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -210,7 +404,7 @@ public sealed class DemandSetTests
                     ? await connection.BeginTransactionAsync() : null;
                 if (held != null)
                 {
-                    var lockSql = (string)store.GetType().GetProperty("DemandSetsLockSql",
+                    var lockSql = (string)store.GetType().GetProperty("CollectDemandSetsLockSql",
                         BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
                     await connection!.ExecuteAsync(lockSql, transaction: held);
                 }
