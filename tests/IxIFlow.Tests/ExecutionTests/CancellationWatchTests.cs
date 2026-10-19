@@ -154,6 +154,46 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
 
     [Fact]
     [Trait("Spec", "B-10")]
+    [Trait("Category", "SqliteIntegration")]
+    public async Task SqliteBatchReadReportsTheInstancesItCouldRead()
+    {
+        var connectionString = SqliteTestDatabase<CancellationWatchTests>.ConnectionString;
+        await using var store = new SqliteWorkflowStateRepository(connectionString);
+        var readable = Guid.NewGuid().ToString("N");
+        var broken = Guid.NewGuid().ToString("N");
+        try
+        {
+            foreach (var id in new[] { readable, broken })
+            {
+                await store.SeedAsync(new WorkflowInstance
+                {
+                    InstanceId = id, Status = WorkflowStatus.Running,
+                    ExecutionStateJson = StoreTestSupport.CheckpointJson
+                });
+                Assert.True(await store.RequestCancellationAsync(id, new CancellationReason { ReasonCode = id }));
+            }
+            await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(connectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE ixiflow_workflow_instances SET cancellation_json = 'invalid' WHERE instance_id = @Id";
+                command.Parameters.AddWithValue("@Id", broken);
+                Assert.Equal(1, await command.ExecuteNonQueryAsync());
+            }
+            var requests = await store.GetCancellationRequestsAsync([readable, broken, "quiet", readable]);
+            Assert.Equal(readable, Assert.Single(requests).Value.ReasonCode);
+            await Assert.ThrowsAsync<AggregateException>(() => store.GetCancellationRequestsAsync([broken, broken]));
+            Assert.Empty(await store.GetCancellationRequestsAsync([]));
+        }
+        finally
+        {
+            await store.DeleteWorkflowInstanceAsync(readable);
+            await store.DeleteWorkflowInstanceAsync(broken);
+        }
+    }
+
+    [Fact]
+    [Trait("Spec", "B-10")]
     public Task MemoryStoreReportsAPendingRequestWithACommit() =>
         VerifyCommitReportsPendingCancellation(new InMemoryWorkflowStateRepository());
 

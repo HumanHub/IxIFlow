@@ -60,7 +60,7 @@ public sealed class RetentionHostTests
         var time = new FakeTimeProvider();
         var store = new ObservedStore(time);
         foreach (var id in new[] { "first", "second" })
-            await store.SeedAsync(new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = id, WorkflowName = "HostRetention", Status = WorkflowStatus.Completed });
+            await CompleteAsync(store, time, id);
         using var service = new WorkflowRetentionService(store,
             new RetentionSettings(TimeSpan.FromDays(1), TimeSpan.FromDays(7), TimeSpan.FromHours(1), 1),
             time, NullLogger<WorkflowRetentionService>.Instance);
@@ -111,8 +111,7 @@ public sealed class RetentionHostTests
     {
         var time = new FakeTimeProvider();
         var store = new FaultInjectingRepository(time);
-        await store.SeedAsync(new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "decorated", WorkflowName = "Retention", Status = WorkflowStatus.Completed });
+        await CompleteAsync(store, time, "decorated");
         time.Advance(TimeSpan.FromDays(31));
         Assert.Equal(1, (await store.PurgeAsync(TimeSpan.FromDays(30), TimeSpan.FromDays(7), 1)).InstancesRemoved);
         var tombstone = (await store.GetTombstoneAsync("decorated"))!;
@@ -153,8 +152,7 @@ public sealed class RetentionHostTests
             new OutboxSettings(retryHorizon: TimeSpan.FromDays(60)));
         var publisher = Guid.NewGuid().ToString("N");
         await store.RegisterPublisherAsync(publisher, [OutboxEvent.WorkflowCompleted]);
-        await store.SeedAsync(new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "blocked", WorkflowName = "Retention", Status = WorkflowStatus.Completed });
+        await CompleteAsync(store, time, "blocked");
         time.Advance(TimeSpan.FromDays(31));
         long measured = 0;
         using var listener = new MeterListener();
@@ -181,6 +179,21 @@ public sealed class RetentionHostTests
         Assert.True(await store.SettleDeliveryAsync(delivery.Event.Id, publisher, "owner", OutboxPublishResult.Delivered()));
         Assert.Equal(1, (await service.PurgeOnceAsync(default)).InstancesRemoved);
         Assert.Single(logger.Warnings);
+    }
+
+    private static async Task CompleteAsync(IWorkflowStateRepository store, TimeProvider time, string id)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(time);
+        services.AddSingleton(store);
+        services.AddIxIFlow();
+        await using var provider = services.BuildServiceProvider();
+        var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(
+            Workflow.Create<RetentionStoreContract.ResultData>("HostRetention")
+                .Step<RetentionStoreContract.Noop>().Build(), new RetentionStoreContract.ResultData(),
+            new WorkflowOptions { InstanceId = id });
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
     }
 
     private sealed class RetentionLogger : ILogger<WorkflowRetentionService>

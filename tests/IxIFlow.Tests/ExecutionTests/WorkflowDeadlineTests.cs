@@ -223,7 +223,7 @@ public sealed class WorkflowDeadlineTests
             Status = WorkflowStatus.NeedsResolution,
             RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1)
         };
-        await repository.SeedAsync(instance);
+        await repository.SeedAsync(instance, TimeSpan.Zero);
 
         Assert.Contains(await repository.GetRunnableInstancesAsync(100),
             candidate => candidate.InstanceId == instance.InstanceId);

@@ -324,12 +324,14 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var inner = new InMemoryWorkflowStateRepository();
         var instanceId = Guid.NewGuid().ToString("N");
-        await inner.SeedAsync(new WorkflowInstance
-        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
-            InstanceId = instanceId,
-            WorkflowName = "CompletionRace",
-            Status = WorkflowStatus.Running
-        });
+        using (var setup = CreateHost(inner, new WorkflowVersionRegistry(), new ActivityProbe()))
+        {
+            var started = await setup.GetRequiredService<IWorkflowClient>().RunAsync(
+                Workflow.Create<LeaseData>("CompletionRace").Step<NoopActivity>()
+                    .Suspend<LeaseEvent>("completion").Build(), new LeaseData(),
+                new WorkflowOptions { InstanceId = instanceId });
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        }
         var repository = new PausedReadRepository(inner)
         {
             PauseFirstRead = false,
@@ -478,7 +480,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             Assert.NotNull(epoch);
             var active = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(active, epoch.Epoch, 0,
+                (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(active, epoch.Epoch, active.Revision,
                     Guid.NewGuid().ToString("N")))).Status);
             Assert.True(await repository.RequestCancellationAsync(instanceId,
                 new CancellationReason { ReasonCode = "operator" }));

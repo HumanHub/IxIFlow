@@ -635,6 +635,7 @@ public sealed class ActivityRecoveryTests
         var committed = await repository.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
+        await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
 
         var recovered = await engine.RecoverAsync(started.InstanceId);
 

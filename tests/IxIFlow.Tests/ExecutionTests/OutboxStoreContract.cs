@@ -278,13 +278,20 @@ internal static class OutboxStoreContract
     internal static async Task PendingDeliveriesSurviveDeletionAndRecreation(IWorkflowStateRepository repository,
         IWorkflowOutbox store, Func<string, Task> expireTombstone)
     {
-        var original = await CompleteAsync(repository);
+        var original = new WorkflowInstance
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"),
+            WorkflowName = "Outbox", Status = WorkflowStatus.Completed
+        };
+        var grant = await StoreTestSupport.LeaseAsync(repository, original.InstanceId);
+        Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
+            CheckpointCommit.Create(original, grant.Epoch, 0))).Status);
         await repository.DeleteWorkflowInstanceAsync(original.InstanceId);
         var replacement = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = original.InstanceId,
             WorkflowName = "Replacement", Status = WorkflowStatus.Completed };
         Assert.NotNull(await repository.GetTombstoneAsync(original.InstanceId));
         Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(async () =>
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(repository, replacement.InstanceId)).Epoch, 0)))).Kind);
+            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(replacement, grant.Epoch, 0)))).Kind);
         await expireTombstone(original.InstanceId);
         Assert.Null(await repository.GetTombstoneAsync(original.InstanceId));
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
