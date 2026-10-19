@@ -7,6 +7,78 @@ public sealed partial class WorkflowHost
 {
     internal sealed partial class InstanceOperations
     {
+        private async Task<WorkflowDefinition> DebugDefinitionAsync(string instanceId, CancellationToken cancellationToken)
+        {
+            var inspection = await InspectAsync(instanceId, cancellationToken)
+                ?? throw new InvalidOperationException("Instance is unavailable");
+            return await registry.GetWorkflowDefinitionAsync(inspection.Summary.WorkflowName, inspection.Summary.WorkflowVersion)
+                ?? throw new InvalidOperationException("Definition is unavailable");
+        }
+
+        public async Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken)
+        {
+            var definition = await DebugDefinitionAsync(instanceId, cancellationToken);
+            var instance = await _store.GetWorkflowInstanceAsync(instanceId) ?? throw new InvalidOperationException("Instance is unavailable");
+            return InspectionPrivacy.Clean(definition.StepTable.ToArray(), WaitIds(instance,
+                ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance))));
+        }
+
+        public async Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken)
+        {
+            var table = await GetStepTableAsync(instanceId, cancellationToken);
+            var paths = table.Select(e => e.SourceLocation is { } source && source.LastIndexOf(':') is var colon && colon > 0
+                ? source[..colon] : null);
+            if (!paths.Contains(path, StringComparer.Ordinal)) throw new ArgumentException("Unknown source");
+            string? content;
+            if (File.Exists(path))
+            {
+                if (new FileInfo(path).Length > 1024 * 1024) throw new InvalidOperationException("Source exceeds the inspection limit");
+                content = await File.ReadAllTextAsync(path, cancellationToken);
+            }
+            else
+            {
+                var definition = await DebugDefinitionAsync(instanceId, cancellationToken);
+                content = services.GetService(typeof(IWorkflowDebugSourceProvider)) is IWorkflowDebugSourceProvider sources
+                    ? await sources.ReadAsync(definition.Name, definition.Version, path, cancellationToken) : null;
+            }
+            if (content == null) return null;
+            if (System.Text.Encoding.UTF8.GetByteCount(content) > 1024 * 1024) throw new InvalidOperationException("Source exceeds the inspection limit");
+            var instance = await _store.GetWorkflowInstanceAsync(instanceId) ?? throw new InvalidOperationException("Instance is unavailable");
+            return InspectionPrivacy.Clean(new[] { content }, WaitIds(instance,
+                ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance))))[0];
+        }
+
+        public async Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries, CancellationToken cancellationToken)
+        {
+            if (maxEntries is < 1 or > 100000) throw new ArgumentOutOfRangeException(nameof(maxEntries));
+            var definition = await DebugDefinitionAsync(instanceId, cancellationToken);
+            var entries = new List<StoredTraceEntry>();
+            while (entries.Count < maxEntries)
+            {
+                var page = await GetTracePageAsync(instanceId, entries.LastOrDefault()?.Sequence ?? 0,
+                    Math.Min(1000, maxEntries - entries.Count), cancellationToken);
+                if (page.Count == 0) break;
+                entries.AddRange(page);
+            }
+            if (entries.Count == maxEntries && (await GetTracePageAsync(instanceId, entries[^1].Sequence, 1, cancellationToken)).Count != 0)
+                throw new InvalidOperationException("Replay history exceeds the requested limit");
+            var replay = TraceReplay.Load(definition, entries);
+            var inspection = await InspectAsync(instanceId, cancellationToken);
+            if (inspection != null && entries.LastOrDefault()?.CommitEndSequence == entries.LastOrDefault()?.Sequence &&
+                entries.LastOrDefault()?.Revision == inspection.Revision)
+                replay.AttachCheckpoint(inspection);
+            return replay;
+        }
+
+        public async Task<(WorkflowDefinition, object)> PrepareDebugLaunchAsync(string workflow, int version, JsonElement input)
+        {
+            if (!(hostSettings ?? HostSettings.Default).Debugging) throw new InvalidOperationException("Debugging is disabled");
+            var definition = await registry.GetWorkflowDefinitionAsync(workflow, version)
+                ?? throw new InvalidOperationException("Definition is unavailable");
+            var data = input.Deserialize(definition.WorkflowDataType!) ?? throw new ArgumentException("Input is required");
+            return (definition, data);
+        }
+
         public async Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);

@@ -9,5 +9,6 @@
   <ItemGroup>
     <ProjectReference Include="../IxIFlow/IxIFlow.csproj" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+    <PackageReference Include="Microsoft.VisualStudio.Shared.VSCodeDebugProtocol" Version="18.0.10427.1" />
   </ItemGroup>
 </Project>

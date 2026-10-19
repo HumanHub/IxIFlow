@@ -57,6 +57,16 @@ public interface IWorkflowDebugStore
 /// <summary>Authorized in-process debugger operations. The application authorizes the actor.</summary>
 public interface IWorkflowOperations
 {
+    /// <summary>Subscribes to local committed changes. Remote owners require bounded polling until coordinator notices are available.</summary>
+    IDisposable WatchChanges(string instanceId, Action changed);
+    Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken = default);
+    /// <summary>Loads bounded, detached replay through the same privacy projection as inspection.</summary>
+    Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries = 10000, CancellationToken cancellationToken = default);
+    /// <summary>Reads only a source named by the instance's published step table; null when unavailable locally.</summary>
+    Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken = default);
+    /// <summary>Starts a registered definition with an optional hold saved before any workflow code runs.</summary>
+    Task<string> LaunchAsync(string instanceId, string workflow, int version, JsonElement input, bool stopOnEntry,
+        string actor, CancellationToken cancellationToken = default);
     /// <summary>Reads a projection of the saved checkpoint, never the checkpoint itself.</summary>
     Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default);
     /// <summary>Reads at most 1000 entries strictly after the given sequence. Sequence orders both clocks.</summary>
@@ -66,6 +76,8 @@ public interface IWorkflowOperations
     Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
     /// <summary>Continues a pause under a fresh lease on this host.</summary>
     Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
+    /// <summary>Accepts a durable continue and schedules it on the host, without waiting for workflow activities to finish.</summary>
+    Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
     /// <summary>Freezes this instance's timers using the store clock.</summary>
     Task<WorkflowExecutionResult> FreezeTimersAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
     /// <summary>Shifts open deadlines once and clears the timer freeze.</summary>
@@ -81,6 +93,12 @@ public interface IWorkflowOperations
         string actor, CancellationToken cancellationToken = default);
     /// <summary>Reads the latest requested set with committed hit counts.</summary>
     Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string instanceId, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Application access to source files in a published workflow bundle, when build paths are absent locally.</summary>
+public interface IWorkflowDebugSourceProvider
+{
+    Task<string?> ReadAsync(string workflow, int version, string sourcePath, CancellationToken cancellationToken = default);
 }
 
 /// <summary>Shared command rules used under each store's instance lock.</summary>
