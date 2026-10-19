@@ -490,7 +490,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         // A first commit must exclude another insertion of this ID. Read the clock in the next
         // statement, after any lock wait, so the captured commit time cannot predate the lock (D-35).
         Statement.CommitState => """
-            SELECT Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence
+            SELECT Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence, RunnableAtUtc
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
             WHERE InstanceId = @InstanceId;
             SELECT SYSUTCDATETIME();
