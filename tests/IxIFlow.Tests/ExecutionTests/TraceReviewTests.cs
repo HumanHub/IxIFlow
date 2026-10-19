@@ -256,10 +256,12 @@ public sealed class TraceReviewTests
             new Data(), new WorkflowOptions(), CancellationToken.None);
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         // Inspect the receipt where this internal ownership assertion moved; do not expose production APIs for it.
-        var receipts = Assert.IsAssignableFrom<System.Collections.IDictionary>(typeof(WorkflowHost.InstanceOperations)
-            .GetField("_receipts", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+        var assignments = Assert.IsAssignableFrom<System.Collections.IDictionary>(typeof(WorkflowHost.InstanceOperations)
+            .GetField("_assignments", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
             .GetValue(host));
-        var receipt = Assert.Single(receipts.Values.Cast<object>());
+        IEnumerable<object> Receipts() => assignments.Values.Cast<object>().Select(run => run.GetType()
+            .GetField("Receipt", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(run)!);
+        var receipt = Assert.Single(Receipts());
         var acknowledged = Assert.IsType<List<ExecutionTraceEntry>>(receipt.GetType().GetField("Trace")!.GetValue(receipt));
         var acknowledgedFirst = acknowledged[0];
         gate.Release.TrySetResult();
@@ -269,7 +271,7 @@ public sealed class TraceReviewTests
         Assert.Equal(acknowledged, result.TraceEntries);
         Assert.All(acknowledged.Zip(result.TraceEntries), pair => Assert.Same(pair.First, pair.Second));
         Assert.DoesNotContain(result.TraceEntries, entry => entry.EntryType == discarded.EntryType);
-        Assert.Empty(receipts);
+        Assert.Empty(Receipts());
     }
 
     [Fact]
