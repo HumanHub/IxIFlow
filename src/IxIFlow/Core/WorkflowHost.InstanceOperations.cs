@@ -860,13 +860,10 @@ public sealed partial class WorkflowHost
                     // for the poll (D-17).
                     foreach (var runnable in result.MadeRunnable)
                         _control.Runnable(runnable.InstanceId);
-                    if (result.Status == WorkflowCommitStatus.Applied)
-                    {
-                        _notifications?.Publish(result.Notice);
-                        if (result.Notice?.Idle == true) _control.Changed(commit.InstanceId);
-                        foreach (var notice in result.MadeRunnable)
-                            _notifications?.Publish(notice);
-                    }
+                    _notifications?.Publish(result.Notice);
+                    if (result.Notice?.Idle == true) _control.Changed(commit.InstanceId);
+                    foreach (var notice in result.MadeRunnable)
+                        _notifications?.Publish(notice);
                     return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision,
                         PendingCancellation: result.PendingCancellation, Parked: result.Parked,
                         UnreadEvents: result.UnreadEvents);

@@ -353,14 +353,14 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             DemandSet.StripPayload(JsonSerializer.Serialize(instance)))!.ExecutionStateJson;
     }
 
-    private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] ContentHash, long Revision)> _commits = new();
+    private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] ContentHash, long Revision, RunnableNotice? Notice, IReadOnlyList<RunnableNotice> MadeRunnable)> _commits = new();
     private long _executionEpoch;
     // A lease record keeps the instance's crash count until deletion. Epochs come from the store-wide
     // counter and survive lease-row deletion. A released lease expires at DateTime.MinValue.
     private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch, int CrashCount, Guid HostId)> _leases =
         new();
     private readonly Dictionary<string, CancellationReason> _cancellations = new();
-    private readonly Dictionary<(string InstanceId, string EventId), (StoredWorkflowEvent Event, byte[] Hash)> _events = new();
+    private readonly Dictionary<(string InstanceId, string EventId), (StoredWorkflowEvent Event, byte[] Hash, RunnableNotice? Notice)> _events = new();
     private readonly Dictionary<string, long> _inboxSequence = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _inboxReadThrough = new(StringComparer.Ordinal);
     // Each instance's stored parts by key, beside its trunk in _instances, at its revision (A-08).
@@ -550,7 +550,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 admission.ValidateCommit(commit);
                 var identity = (admission.Sender, admission.Trigger, admission.Key);
                 if (_admissions.TryGetValue(identity, out var winner) && winner.ExpiresAtUtc > Now)
-                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 0) { Admission = winner });
+                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 0)
+                        { Admission = winner, Notice = winner.Notice });
                 if (_instances.ContainsKey(commit.InstanceId) ||
                     _leases.TryGetValue(commit.InstanceId, out var owner) && owner.ExpiresAtUtc > Now)
                     return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 0));
@@ -571,7 +572,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
                 // The same commit gets the same answer, including arrivals it has not read.
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
-                    PendingCancellation(commit.InstanceId), commit.Parks && !owns, Unread(commit)));
+                    PendingCancellation(commit.InstanceId), commit.Parks && !owns, Unread(commit), receipt.MadeRunnable)
+                    { Notice = receipt.Notice });
             }
 
             // Receipts are deleted with the instance, so any replay above belongs to its current creation.
@@ -623,7 +625,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 _events[(commit.InstanceId, settlement.EventId)] = (settled.Event with
                 {
                     Outcome = settlement.Outcome, WaitId = settlement.WaitId, Rejection = settlement.Rejection
-                }, settled.Hash);
+                }, settled.Hash, settled.Notice);
             }
             if (commit.InboxReadThrough is { } read)
                 _inboxReadThrough[commit.InstanceId] = read;
@@ -657,7 +659,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 foreach (var open in _events.Where(item => item.Key.InstanceId == commit.InstanceId &&
                                                            item.Value.Event.Outcome == EventOutcome.Pending)
                              .Select(item => item.Key).ToArray())
-                    _events[open] = (_events[open].Event with { Outcome = EventOutcome.Closed }, _events[open].Hash);
+                    _events[open] = (_events[open].Event with { Outcome = EventOutcome.Closed }, _events[open].Hash, _events[open].Notice);
                 var reason = WorkflowStoreRules.FinalWaitCloseReason(snapshot.Status);
                 foreach (var open in OpenWaits(commit.InstanceId).Select(wait => wait.WaitId).ToArray())
                     CloseWait(commit.InstanceId, open, reason, now);
@@ -677,7 +679,6 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             StripDemands(snapshot);
             _instances[commit.InstanceId] = snapshot;
             RecordCompletion(snapshot, now);
-            _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (commit.TraceEntries.Count > 0)
             {
                 if (!_traces.TryGetValue(commit.InstanceId, out var trace))
@@ -720,17 +721,20 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             if (commit.ParentNotice is { } notice &&
                 Append(ToEvent(notice), now) is { Status: EventAppendStatus.Stored, Notice.Claimable: true })
                 madeRunnable.Add(notice.ParentInstanceId);
+            var changed = Notice(commit.InstanceId, now);
+            var ownNotice = changed is { Claimable: true } or { Idle: true } ? changed : null;
             if (admitted != null)
             {
+                admitted = admitted with { Notice = ownNotice };
                 _admissions[(admission!.Sender, admission.Trigger, admission.Key)] = admitted;
                 _ownership[commit.InstanceId] = (commit.Incarnation, new(commit.InstanceId, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, commit.Incarnation, admission.OwnerKind));
             }
             var notices = madeRunnable.Distinct(StringComparer.Ordinal).Select(id => Notice(id, now)!)
                 .Where(notice => notice.Claimable).ToArray();
-            var changed = Notice(commit.InstanceId, now);
+            _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision, ownNotice, notices));
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
                 PendingCancellation(commit.InstanceId), parked, unread, notices)
-                { Admission = admitted, Notice = changed is { Claimable: true } or { Idle: true } ? changed : null });
+                { Admission = admitted, Notice = ownNotice });
         }
     }
 
@@ -753,7 +757,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             var hash = workflowEvent.ContentHash();
             if (workflowEvent.DeliveryIdentity is { } identity && _webhookDeliveries.TryGetValue(identity, out var saved) && saved.Expires > now)
                 return Task.FromResult(saved.Hash.SequenceEqual(hash)
-                    ? saved.Receipt with { Status = EventAppendStatus.Duplicate, MadeRunnable = false, Notice = null }
+                    ? saved.Receipt with { Status = EventAppendStatus.Duplicate, MadeRunnable = false }
                     : new EventAppendResult(EventAppendStatus.Conflict));
             var receipt = Append(workflowEvent, now);
             if (workflowEvent.DeliveryIdentity is { } key && receipt.Status is EventAppendStatus.Stored or EventAppendStatus.Duplicate or EventAppendStatus.Rejected)
@@ -769,7 +773,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         // A known event ID answers the same way whatever happened to the instance since.
         if (_events.TryGetValue((workflowEvent.InstanceId, workflowEvent.EventId), out var existing))
             return existing.Hash.SequenceEqual(hash)
-                ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Event.Sequence)
+                ? new EventAppendResult(EventAppendStatus.Duplicate, existing.Event.Sequence) { Notice = existing.Notice }
                 : new EventAppendResult(EventAppendStatus.Conflict);
         if (!_instances.TryGetValue(workflowEvent.InstanceId, out var instance))
             return new EventAppendResult(ActiveTombstone(workflowEvent.InstanceId, now) != null
@@ -792,22 +796,23 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, 0, now) with
             {
                 Outcome = EventOutcome.Rejected, Rejection = rejection
-            }, hash);
+            }, hash, null);
             TraceRefusal(instance, workflowEvent, rejection.Value, now);
             return new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection);
         }
         var wasClaimable = Notice(workflowEvent.InstanceId, now)?.Claimable == true;
         var sequence = _inboxSequence.GetValueOrDefault(workflowEvent.InstanceId) + 1;
         _inboxSequence[workflowEvent.InstanceId] = sequence;
-        _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, sequence, now), hash);
         // Resolution can hold one branch while another consumes this event. The host still refuses an operator stop.
         var madeRunnable = (instance.Status is WorkflowStatus.Running or WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) &&
             (!ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) || ExecutionCheckpoint.StopOf(instance) == null);
         if (madeRunnable)
             instance.RunnableAtUtc = now;
         var notice = madeRunnable && !wasClaimable ? Notice(workflowEvent.InstanceId, now) : null;
+        notice = notice?.Claimable == true ? notice : null;
+        _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, sequence, now), hash, notice);
         return new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable)
-            { Notice = notice?.Claimable == true ? notice : null };
+            { Notice = notice };
     }
 
     // Caller holds _claimLock. A refusal's single entry is atomic with its inbox receipt (G-01).

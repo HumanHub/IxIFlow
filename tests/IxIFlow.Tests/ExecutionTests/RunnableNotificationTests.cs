@@ -88,8 +88,10 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
             Check(applied.Notice, due.InstanceId);
             var replay = await store.CommitWorkflowInstanceAsync(commit);
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, replay.Status);
-            Assert.Null(replay.Notice);
-            Assert.Empty(replay.MadeRunnable);
+            Assert.Equal(applied.Notice, replay.Notice);
+            Assert.Equal(applied.MadeRunnable, replay.MadeRunnable);
+            await Claim(due.InstanceId, "next-owner");
+            Assert.Equal(applied.Notice, (await store.CommitWorkflowInstanceAsync(commit)).Notice);
 
             var parked = New();
             owner = await Claim(parked.InstanceId, "parked");
@@ -103,9 +105,31 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
             var appended = await store.AppendEventAsync(arrival);
             Assert.True(appended.Claimable);
             Check(appended.Notice, idle.InstanceId);
-            Assert.Null((await store.AppendEventAsync(arrival)).Notice);
+            Assert.Equal(appended.Notice, (await store.AppendEventAsync(arrival)).Notice);
             Assert.Null((await store.AppendEventAsync(arrival with { EventId = "another" })).Notice);
             Assert.Null((await store.AppendEventAsync(arrival with { EventId = "refused", Key = "missing" })).Notice);
+            await Claim(idle.InstanceId, "event-owner");
+            Assert.Equal(appended.Notice, (await store.AppendEventAsync(arrival)).Notice);
+
+            var delivered = await Idle();
+            var delivery = new WorkflowEvent(delivered.InstanceId, "delivery", typeof(Approval).AssemblyQualifiedName!, "{}",
+                Key: "approval", DeliveryIdentity: Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"));
+            var accepted = await store.AppendEventAsync(delivery);
+            Check(accepted.Notice, delivered.InstanceId);
+            await store.DeleteWorkflowInstanceAsync(delivered.InstanceId);
+            Assert.Equal(accepted.Notice, (await store.AppendEventAsync(delivery)).Notice);
+
+            var admitted = New();
+            var admission = new WorkflowAdmission("sender", "trigger", Guid.NewGuid().ToString("N"), new string('A', 64), "owner");
+            var admissionCommit = CheckpointCommit.CreateAdmission(admitted);
+            var admissionReceipt = await store.AdmitWorkflowInstanceAsync(admissionCommit, admission);
+            Assert.NotNull(admissionReceipt.Notice);
+            Assert.Equal(admitted.InstanceId, admissionReceipt.Notice.InstanceId);
+            Assert.True(admissionReceipt.Notice.Claimable);
+            await store.DeleteWorkflowInstanceAsync(admitted.InstanceId);
+            Assert.Equal(admissionReceipt.Notice, (await store.AdmitWorkflowInstanceAsync(admissionCommit, admission)).Notice);
+            Assert.Equal(admissionReceipt.Notice,
+                (await store.GetWorkflowAdmissionAsync(admission.Sender, admission.Trigger, admission.Key))!.Notice);
 
             var cancelled = await Idle();
             var reason = new CancellationReason { ReasonCode = "stop" };
@@ -143,9 +167,10 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
             child.ParentWaitId = wait;
             owner = await Claim(parent.InstanceId, "parent");
             parent.Status = WorkflowStatus.Suspended;
-            var started = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, owner.Epoch, 0,
+            var startCommit = CheckpointCommit.Create(parent, owner.Epoch, 0,
                 openedWaits: [new OpenedWait(wait, WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
-                childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), wait)]));
+                childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), wait)]);
+            var started = await store.CommitWorkflowInstanceAsync(startCommit);
             var childNotice = Assert.Single(started.MadeRunnable);
             Assert.Equal(child.InstanceId, childNotice.InstanceId);
             Assert.Equal(set.Id, childNotice.DemandSetId);
@@ -155,10 +180,16 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
             child = (await store.GetWorkflowInstanceAsync(child.InstanceId))!;
             owner = await Claim(child.InstanceId, "child");
             child.Status = WorkflowStatus.Completed;
-            var completed = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(child, owner.Epoch, child.Revision,
+            var completionCommit = CheckpointCommit.Create(child, owner.Epoch, child.Revision,
                 parentNotice: new ParentNotice(parent.InstanceId, wait, "completed-" + child.InstanceId,
-                    "IxIFlow.ChildCompleted", "{\"Status\":\"Completed\"}")));
+                    "IxIFlow.ChildCompleted", "{\"Status\":\"Completed\"}"));
+            var completed = await store.CommitWorkflowInstanceAsync(completionCommit);
             Check(Assert.Single(completed.MadeRunnable), parent.InstanceId);
+            Assert.Equal(completed with { Status = WorkflowCommitStatus.AlreadyApplied },
+                await store.CommitWorkflowInstanceAsync(completionCommit));
+            await store.DeleteWorkflowInstanceAsync(child.InstanceId);
+            Assert.Equal(started with { Status = WorkflowCommitStatus.AlreadyApplied },
+                await store.CommitWorkflowInstanceAsync(startCommit));
         }
         finally
         {
@@ -228,7 +259,7 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
     }
 
     [Fact]
-    public async Task AppendAndCancellationNotifyOnlyTheirNewCommittedChanges()
+    public async Task AppendReplaysNotifyAndCancellationNotifiesItsNewCommittedChange()
     {
         var store = new InMemoryWorkflowStateRepository();
         var recorder = new Recorder();
@@ -249,11 +280,49 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
         await operations.DeliverAsync(eventInstance.InstanceId, "approval", new Approval(), "first");
         Assert.Equal(eventInstance.InstanceId, (await recorder.Next.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5))).InstanceId);
         await operations.DeliverAsync(eventInstance.InstanceId, "approval", new Approval(), "first");
+        Assert.Equal(eventInstance.InstanceId, (await recorder.Next.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5))).InstanceId);
         await operations.DeliverAsync(eventInstance.InstanceId, "missing", new Approval(), "refused");
         var cancelled = await Idle();
         await operations.RequestCancellationAsync(cancelled.InstanceId, new CancellationReason { ReasonCode = "stop" }, CancellationToken.None);
         Assert.Equal(cancelled.InstanceId, (await recorder.Next.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5))).InstanceId);
         await operations.RequestCancellationAsync(cancelled.InstanceId, new CancellationReason { ReasonCode = "stop" }, CancellationToken.None);
+        Assert.Equal(3, recorder.Notices.Count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ALostCommitAcknowledgementPublishesTheReplayedNotice(bool terminal)
+    {
+        var store = new LostCommitReply();
+        var recorder = new Recorder();
+        await using var services = Services(store, recorder);
+        using var scope = services.CreateScope();
+        var definition = terminal ? Workflow.Create<Data>("ReplayTerminal").Step<Noop>().Build() : Definition();
+        var result = await scope.ServiceProvider.GetRequiredService<WorkflowHost.InstanceOperations>()
+            .StartAsync(definition, new Data(), new WorkflowOptions(), CancellationToken.None);
+        Assert.Equal(terminal ? WorkflowExecutionStatus.Success : WorkflowExecutionStatus.Scheduled, result.Status);
+        Assert.NotNull(store.Replay);
+        Assert.Equal(WorkflowCommitStatus.AlreadyApplied, store.Replay.Status);
+        Assert.Equal(store.Applied!.Notice, store.Replay.Notice);
+        Assert.Equal(store.Applied.Notice,
+            await recorder.Next.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Single(recorder.Notices);
+    }
+
+    [Fact]
+    public async Task AdmissionLookupReplaysPublishTheOriginalNotice()
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        var recorder = new Recorder();
+        await using var services = Services(store, recorder);
+        var ingress = services.GetRequiredService<IWorkflowIngressClient>();
+        var admission = new WorkflowAdmission("sender", "trigger", "key", new string('A', 64), "owner");
+        var first = await ingress.AdmitAsync(Definition(), new Data(), admission);
+        Assert.Equal(first.Notice, await recorder.Next.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        await store.DeleteWorkflowInstanceAsync(first.InstanceId);
+        Assert.Equal(first, await ingress.AdmitAsync(Definition(), new Data(), admission));
+        Assert.Equal(first.Notice, await recorder.Next.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Equal(2, recorder.Notices.Count);
     }
 
@@ -408,6 +477,23 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
             Entered.TrySetResult();
             await Proceed.Task;
             return Refuse ? new(WorkflowCommitStatus.Conflict, 0) : await base.CommitWorkflowInstanceAsync(commit);
+        }
+    }
+
+    private sealed class LostCommitReply : FaultInjectingRepository
+    {
+        public WorkflowCommitResult? Applied;
+        public WorkflowCommitResult? Replay;
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        {
+            var result = await base.CommitWorkflowInstanceAsync(commit);
+            if (result.Status == WorkflowCommitStatus.AlreadyApplied) Replay = result;
+            if (result.Notice != null && Applied == null)
+            {
+                Applied = result;
+                throw new IOException("Commit acknowledgement lost");
+            }
+            return result;
         }
     }
 

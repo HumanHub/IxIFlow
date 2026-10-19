@@ -498,9 +498,18 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             SELECT clock_timestamp();
             """,
         Statement.Receipt => """
-            SELECT expected_revision AS ExpectedRevision, revision AS Revision, payload_hash AS PayloadHash
+            SELECT expected_revision AS ExpectedRevision, revision AS Revision, payload_hash AS PayloadHash,
+                notice_json AS NoticeJson, made_runnable_json AS MadeRunnableJson
             FROM ixiflow_workflow_commits
             WHERE instance_id = @InstanceId AND commit_id = @CommitId
+            """,
+        Statement.UpdateReceiptNotices => """
+            UPDATE ixiflow_workflow_commits SET notice_json = @NoticeJson, made_runnable_json = @MadeRunnableJson
+            WHERE instance_id = @InstanceId AND commit_id = @CommitId
+            """,
+        Statement.UpdateEventNotice => """
+            UPDATE ixiflow_workflow_events SET notice_json = @NoticeJson
+            WHERE instance_id = @InstanceId AND event_id = @EventId
             """,
         Statement.Lease => """
             SELECT epoch AS Epoch, crash_count AS CrashCount, expires_at_utc > @Now AS IsActive
@@ -512,7 +521,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 SELECT instance_id FROM ixiflow_workflow_instances WHERE instance_id = ANY(@Ids) LIMIT 1
                 """,
         Statement.EventHash => """
-            SELECT sequence AS Sequence, payload_hash AS PayloadHash FROM ixiflow_workflow_events
+            SELECT sequence AS Sequence, payload_hash AS PayloadHash, notice_json AS NoticeJson FROM ixiflow_workflow_events
             WHERE instance_id = @InstanceId AND event_id = @EventId
             """,
         Statement.CandidateWait => $"""
@@ -730,6 +739,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             wait_id varchar(100) COLLATE "C" NULL,
             rejection smallint NULL,
             settled_at_utc timestamptz NULL,
+            notice_json TEXT NULL,
             PRIMARY KEY (instance_id, event_id)
         );
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_events_pending
@@ -768,6 +778,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             expected_revision bigint NOT NULL,
             revision bigint NOT NULL,
             payload_hash bytea NOT NULL,
+            notice_json TEXT NULL,
+            made_runnable_json TEXT NULL,
             PRIMARY KEY (instance_id, commit_id)
         );
         CREATE SEQUENCE ixiflow_execution_epoch AS bigint START WITH 1 INCREMENT BY 1 NO CYCLE;

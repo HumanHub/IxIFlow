@@ -13,6 +13,7 @@ public sealed partial class SqlWorkflowStateRepository
             [WorkflowName] NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [WorkflowVersion] INT NOT NULL,
             [ExpiresAtUtc] DATETIME2 NOT NULL,
+            [NoticeJson] NVARCHAR(MAX) NULL,
             PRIMARY KEY ([Sender], [Trigger], [Key])
         );
         CREATE INDEX IX_IxIFlowAdmissions_Expiry ON dbo.IxIFlowWorkflowAdmissions ([ExpiresAtUtc]);
@@ -31,6 +32,7 @@ public sealed partial class SqlWorkflowStateRepository
             PayloadHash varbinary(32) NOT NULL,
             Sequence BIGINT NOT NULL,
             Rejection SMALLINT NULL,
+            NoticeJson NVARCHAR(MAX) NULL,
             ExpiresAtUtc DATETIME2 NOT NULL
         );
         CREATE INDEX IX_IxIFlowWebhookDeliveries_Expiry ON dbo.IxIFlowWebhookDeliveries (ExpiresAtUtc);
@@ -40,13 +42,13 @@ public sealed partial class SqlWorkflowStateRepository
     {
         Statement.AdmissionLock => "DECLARE @r INT; EXEC @r=sys.sp_getapplock @Resource=@Identity, @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=30000; IF @r<0 THROW 51000, 'Could not lock workflow admission', 1;",
         Statement.AdmissionRead => """
-            SELECT [Incarnation] AS [Incarnation], [Sender] AS [Sender], [Trigger] AS [Trigger], [Key] AS [Key], [Fingerprint] AS [Fingerprint], [InstanceId] AS [InstanceId], [WorkflowName] AS [WorkflowName], [WorkflowVersion] AS [WorkflowVersion], [ExpiresAtUtc] AS [ExpiresAtUtc] FROM dbo.IxIFlowWorkflowAdmissions WHERE [Sender]=@Sender AND [Trigger]=@Trigger AND [Key]=@Key AND [ExpiresAtUtc]>@Now
+            SELECT [Incarnation] AS [Incarnation], [Sender] AS [Sender], [Trigger] AS [Trigger], [Key] AS [Key], [Fingerprint] AS [Fingerprint], [InstanceId] AS [InstanceId], [WorkflowName] AS [WorkflowName], [WorkflowVersion] AS [WorkflowVersion], [ExpiresAtUtc] AS [ExpiresAtUtc], [NoticeJson] FROM dbo.IxIFlowWorkflowAdmissions WHERE [Sender]=@Sender AND [Trigger]=@Trigger AND [Key]=@Key AND [ExpiresAtUtc]>@Now
             """,
         Statement.AdmissionDelete => """
             DELETE FROM dbo.IxIFlowWorkflowAdmissions WHERE [Sender]=@Sender AND [Trigger]=@Trigger AND [Key]=@Key
             """,
         Statement.AdmissionInsert => """
-            INSERT INTO dbo.IxIFlowWorkflowAdmissions ([Incarnation], [Sender], [Trigger], [Key], [Fingerprint], [InstanceId], [WorkflowName], [WorkflowVersion], [ExpiresAtUtc]) VALUES (@Incarnation, @Sender, @Trigger, @Key, @Fingerprint, @InstanceId, @WorkflowName, @WorkflowVersion, @ExpiresAtUtc)
+            INSERT INTO dbo.IxIFlowWorkflowAdmissions ([Incarnation], [Sender], [Trigger], [Key], [Fingerprint], [InstanceId], [WorkflowName], [WorkflowVersion], [ExpiresAtUtc], [NoticeJson]) VALUES (@Incarnation, @Sender, @Trigger, @Key, @Fingerprint, @InstanceId, @WorkflowName, @WorkflowVersion, @ExpiresAtUtc, @NoticeJson)
             """,
         Statement.OwnershipDelete => """
             DELETE FROM dbo.IxIFlowWorkflowOwnership WHERE [InstanceId]=@InstanceId
@@ -64,13 +66,13 @@ public sealed partial class SqlWorkflowStateRepository
             DELETE FROM dbo.IxIFlowWorkflowOwnership WHERE [InstanceId] IN (SELECT TOP (@Limit) o.[InstanceId] FROM dbo.IxIFlowWorkflowOwnership o WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances i WHERE i.InstanceId=o.[InstanceId] AND i.Incarnation=o.[Incarnation]) AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowTombstones t WHERE t.InstanceId=o.[InstanceId] AND t.ExpiresAtUtc>@Now))
             """,
         Statement.WebhookDeliveryRead => """
-            SELECT PayloadHash AS PayloadHash, Sequence AS [Sequence], Rejection AS Rejection FROM dbo.IxIFlowWebhookDeliveries WHERE DeliveryIdentity=@DeliveryIdentity AND ExpiresAtUtc>@Now
+            SELECT PayloadHash AS PayloadHash, Sequence AS [Sequence], Rejection AS Rejection, NoticeJson FROM dbo.IxIFlowWebhookDeliveries WHERE DeliveryIdentity=@DeliveryIdentity AND ExpiresAtUtc>@Now
             """,
         Statement.WebhookDeliveryDelete => """
             DELETE FROM dbo.IxIFlowWebhookDeliveries WHERE DeliveryIdentity=@DeliveryIdentity
             """,
         Statement.WebhookDeliveryInsert => """
-            INSERT INTO dbo.IxIFlowWebhookDeliveries (DeliveryIdentity, PayloadHash, Sequence, Rejection, ExpiresAtUtc) VALUES (@DeliveryIdentity, @PayloadHash, @Sequence, @Rejection, @Expires)
+            INSERT INTO dbo.IxIFlowWebhookDeliveries (DeliveryIdentity, PayloadHash, Sequence, Rejection, ExpiresAtUtc, NoticeJson) VALUES (@DeliveryIdentity, @PayloadHash, @Sequence, @Rejection, @Expires, @NoticeJson)
             """,
         Statement.WebhookDeliveryExpire => """
             DELETE TOP (@Limit) FROM dbo.IxIFlowWebhookDeliveries WHERE ExpiresAtUtc<=@Now

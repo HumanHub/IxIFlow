@@ -486,8 +486,16 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             SELECT SYSUTCDATETIME();
             """,
         Statement.Receipt => """
-            SELECT ExpectedRevision, Revision, PayloadHash FROM dbo.IxIFlowWorkflowCommits
+            SELECT ExpectedRevision, Revision, PayloadHash, NoticeJson, MadeRunnableJson FROM dbo.IxIFlowWorkflowCommits
             WHERE InstanceId = @InstanceId AND CommitId = @CommitId
+            """,
+        Statement.UpdateReceiptNotices => """
+            UPDATE dbo.IxIFlowWorkflowCommits SET NoticeJson = @NoticeJson, MadeRunnableJson = @MadeRunnableJson
+            WHERE InstanceId = @InstanceId AND CommitId = @CommitId
+            """,
+        Statement.UpdateEventNotice => """
+            UPDATE dbo.IxIFlowWorkflowEvents SET NoticeJson = @NoticeJson
+            WHERE InstanceId = @InstanceId AND EventId = @EventId
             """,
         Statement.Lease => """
             SELECT Epoch, CrashCount,
@@ -499,7 +507,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 SELECT TOP (1) InstanceId FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId IN @Ids
                 """,
         Statement.EventHash => """
-            SELECT Sequence, PayloadHash FROM dbo.IxIFlowWorkflowEvents
+            SELECT Sequence, PayloadHash, NoticeJson FROM dbo.IxIFlowWorkflowEvents
             WHERE InstanceId = @InstanceId AND EventId = @EventId
             """,
         Statement.CandidateWait => $"""
@@ -737,6 +745,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 WaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
                 Rejection TINYINT NULL,
                 SettledAtUtc DATETIME2 NULL,
+                NoticeJson NVARCHAR(MAX) NULL,
                 CONSTRAINT PK_IxIFlowWorkflowEvents PRIMARY KEY (InstanceId, EventId)
             );
             EXEC(N'CREATE INDEX IX_IxIFlowWorkflowEvents_Pending
@@ -782,6 +791,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 ExpectedRevision BIGINT NOT NULL,
                 Revision BIGINT NOT NULL,
                 PayloadHash BINARY(32) NOT NULL,
+                NoticeJson NVARCHAR(MAX) NULL,
+                MadeRunnableJson NVARCHAR(MAX) NULL,
                 CONSTRAINT PK_IxIFlowWorkflowCommits PRIMARY KEY (InstanceId, CommitId)
             );
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowLeases', N'U') IS NULL
