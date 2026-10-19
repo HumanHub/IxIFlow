@@ -18,7 +18,9 @@ using Npgsql;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "registration")]
-[Trait("Spec", "D-49")]
+[Trait("Spec", "F-10")]
+[Trait("Spec", "F-11")]
+[Trait("Spec", "F-15")]
 public sealed class CatalogArtifactContractTests
 {
     public enum Scenario { States, Drafts, Conflicts, Callers, UnfinishedParents, RecursiveParent, Starts, DeprecatedChild, RetiredRecovery, Startup, ConcurrentChild, ConcurrentRoot, Artifacts }
