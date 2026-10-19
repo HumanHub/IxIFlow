@@ -306,7 +306,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
                 WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
                 WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
                 WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
-                WorkflowStatus.Terminated => WorkflowExecutionStatus.Failed,
+                WorkflowStatus.Terminated => WorkflowExecutionStatus.Terminated,
                 WorkflowStatus.TimedOut => WorkflowExecutionStatus.TimedOut,
                 _ => throw new ArgumentOutOfRangeException(nameof(status))
             }, result.Status);
