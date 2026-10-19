@@ -8,7 +8,7 @@ namespace IxIFlow.Relational;
 
 /// <summary>Runs the relational store protocol. Providers supply SQL and database behavior.</summary>
 public abstract partial class RelationalWorkflowStateRepository :
-    IWorkflowStateRepository, IWorkflowDebugStore
+    IWorkflowStateRepository
 {
     // Only first-party friend assemblies can construct or derive from this protocol.
     internal RelationalWorkflowStateRepository(OutboxSettings? outboxSettings = null, PayloadStoreSettings? payloadSettings = null)
@@ -39,7 +39,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         RetentionLock, RetentionCandidates, RetentionBlockedPublishers, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
-        Cancellation, Cancellations, Runnable, Running, ClaimLease, RenewLease, ReleaseLease,
+        Cancellation, Runnable, Running, ClaimLease, RenewLease, ReleaseLease,
         LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
@@ -275,58 +275,6 @@ public abstract partial class RelationalWorkflowStateRepository :
             var json = await connection.QuerySingleOrDefaultAsync<string>(RequiredSql(Statement.Cancellation), new { InstanceId = instanceId });
             return json == null ? null : JsonSerializer.Deserialize<CancellationReason>(json);
         });
-    }
-
-    public async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds)
-    {
-        ArgumentNullException.ThrowIfNull(instanceIds);
-        var requests = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
-        if (instanceIds.Count == 0)
-            return requests;
-        DbConnection connection;
-        try
-        {
-            await EnsureSchemaAsync();
-            connection = await OpenConnectionAsync(ownership: true);
-        }
-        catch (Exception error)
-        {
-            throw new AggregateException("No cancellation request could be read", error);
-        }
-        await using var ownedConnection = connection;
-        var ids = instanceIds.Distinct(StringComparer.Ordinal).ToArray();
-        var failures = new List<Exception>();
-        var failedReads = 0;
-        foreach (var batch in ids.Chunk(OwnershipReadBatchSize))
-        {
-            IEnumerable<(string InstanceId, string CancellationJson)> rows;
-            try
-            {
-                rows = await connection.QueryAsync<(string InstanceId, string CancellationJson)>(
-                    RequiredSql(Statement.Cancellations), new { InstanceIds = batch });
-            }
-            catch (Exception error)
-            {
-                failures.Add(error);
-                failedReads += batch.Length;
-                continue;
-            }
-            foreach (var row in rows)
-                try
-                {
-                    if (JsonSerializer.Deserialize<CancellationReason>(row.CancellationJson) is { } reason)
-                        requests[row.InstanceId] = reason;
-                }
-                catch (Exception error)
-                {
-                    failures.Add(error);
-                    failedReads++;
-                }
-        }
-        if (failedReads == ids.Length)
-            throw new AggregateException("No cancellation request could be read", failures);
-        return requests;
     }
 
     public async Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit)

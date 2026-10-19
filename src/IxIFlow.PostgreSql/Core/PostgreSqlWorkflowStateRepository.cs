@@ -422,10 +422,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             SELECT cancellation_json FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             """,
-        Statement.Cancellations => """
-            SELECT instance_id, cancellation_json FROM ixiflow_workflow_instances
-            WHERE instance_id = ANY(@InstanceIds) AND cancellation_json IS NOT NULL
-            """,
         Statement.Runnable => """
             WITH store AS (SELECT clock_timestamp() AS now)
             SELECT instance.instance_id AS InstanceId, instance.runnable_at_utc AS RunnableAtUtc

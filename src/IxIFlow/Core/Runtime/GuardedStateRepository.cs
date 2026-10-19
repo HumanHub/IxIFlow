@@ -5,7 +5,7 @@ namespace IxIFlow.Core.Runtime;
 /// <see cref="WorkflowErrorKind.Infrastructure"/> engine failure, so it interrupts the
 /// instance instead of being handled as a workflow failure.
 /// </summary>
-internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkflowDebugStore
+internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
     public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
         Guard(() => _store.RegisterMemberAsync(member, cancellationToken), "Registering store member");
@@ -32,13 +32,12 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
     public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
         Guard(() => _store.GetPublisherAsync(publisherName), "Accessing workflow outbox");
 
-    internal bool SupportsDebugging => _store is IWorkflowDebugStore;
     public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> ids) =>
-        Guard(() => ((IWorkflowDebugStore)_store).GetControlRequestsAsync(ids), "Reading execution controls");
+        Guard(() => _store.GetControlRequestsAsync(ids), "Reading execution controls");
     public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
-        Guard(() => ((IWorkflowDebugStore)_store).RequestDebugCommandAsync(instanceId, command), "Requesting debug command");
+        Guard(() => _store.RequestDebugCommandAsync(instanceId, command), "Requesting debug command");
     public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> ids) =>
-        Guard(() => ((IWorkflowDebugStore)_store).GetDebugStatesAsync(ids), "Reading debug commands");
+        Guard(() => _store.GetDebugStatesAsync(ids), "Reading debug commands");
     private readonly IWorkflowStateRepository _store;
 
     private GuardedStateRepository(IWorkflowStateRepository store) => _store = store;
@@ -61,11 +60,6 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository, IWorkfl
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         Guard(() => _store.GetCancellationRequestAsync(instanceId),
             $"Reading the cancellation request of workflow instance '{instanceId}'");
-
-    public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds) =>
-        Guard(() => _store.GetCancellationRequestsAsync(instanceIds),
-            $"Reading the cancellation requests of {instanceIds.Count} workflow instances");
 
     public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
         Guard(() => _store.GetRunnableInstancesAsync(limit), "Listing runnable workflow instances");

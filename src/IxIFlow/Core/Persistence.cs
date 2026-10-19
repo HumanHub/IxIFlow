@@ -143,7 +143,7 @@ public static class WorkflowStoreRules
 /// Stores workflow instances. First commits carry a fresh incarnation; child starts allocate
 /// one in the store on insertion. Every instance read round-trips it separately from serialized state.
 /// </summary>
-public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore
+public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore, IWorkflowDebugStore
 {
     /// <summary>Registers a member and its capabilities atomically, stamping start and heartbeat with store time.</summary>
     Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default);
@@ -180,13 +180,6 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWo
 
     /// <summary>Reads a durable cancellation request for an instance.</summary>
     Task<CancellationReason?> GetCancellationRequestAsync(string instanceId);
-
-    /// <summary>
-    /// Reads cancellation requests for the distinct instances. Instances without a request are omitted.
-    /// Successful reads survive failures of other reads; if every read fails, throws AggregateException.
-    /// </summary>
-    Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds);
 
     /// <summary>
     /// Lists up to <paramref name="limit"/> instances a host may claim now: their runnable time has
@@ -275,7 +268,7 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWo
 /// <summary>
 ///     In-memory implementation of workflow state repository
 /// </summary>
-public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository, IWorkflowDebugStore
+public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 {
     private readonly TimeProvider _time;
     private readonly TimeSpan _retryHorizon;
@@ -351,29 +344,6 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository,
                 ? JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))
                 : null);
         }
-    }
-
-    public async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds)
-    {
-        ArgumentNullException.ThrowIfNull(instanceIds);
-        var requests = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
-        var failures = new List<Exception>();
-        foreach (var instanceId in instanceIds.Distinct(StringComparer.Ordinal))
-        {
-            try
-            {
-                if (await GetCancellationRequestAsync(instanceId) is { } reason)
-                    requests[instanceId] = reason;
-            }
-            catch (Exception error)
-            {
-                failures.Add(error);
-            }
-        }
-        if (instanceIds.Count > 0 && failures.Count == instanceIds.Distinct(StringComparer.Ordinal).Count())
-            throw new AggregateException("No cancellation request could be read", failures);
-        return requests;
     }
 
     public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit)

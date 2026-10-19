@@ -27,7 +27,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     private Task? _loop;
     // A read past its deadline keeps running in the store; the next pass waits for it again instead
     // of queuing another call behind it.
-    private (Task<(IReadOnlyDictionary<string, CancellationReason> Cancellations, IReadOnlyDictionary<string, WorkflowDebugState> Debug)> Task, string[] InstanceIds, DateTime SentAtUtc)?
+    private (Task<WorkflowControlRequests> Task, string[] InstanceIds, DateTime SentAtUtc)?
         _read;
 
     public CancellationWatch(IWorkflowStateRepository store, TimeProvider? time = null,
@@ -116,19 +116,9 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         }
     }
 
-    private async Task<(IReadOnlyDictionary<string, CancellationReason>, IReadOnlyDictionary<string, WorkflowDebugState>)> ReadControlsAsync(string[] ids)
-    {
-        if (_store is GuardedStateRepository { SupportsDebugging: true } capable)
-        {
-            var controls = await capable.GetControlRequestsAsync(ids);
-            return (controls.Cancellations, controls.DebugStates);
-        }
-        return (await _store.GetCancellationRequestsAsync(ids), new Dictionary<string, WorkflowDebugState>());
-    }
-
     private async Task ReadAsync(string[] watchedIds)
     {
-        _read ??= (TrackRead(ReadControlsAsync(watchedIds),
+        _read ??= (TrackRead(_store.GetControlRequestsAsync(watchedIds),
             $"cancellation requests for {string.Join(", ", watchedIds)}"), watchedIds, Now);
         var (read, instanceIds, readAt) = _read.Value;
         IReadOnlyDictionary<string, CancellationReason> requests;

@@ -21,6 +21,10 @@ public sealed record DebugCheckpoint(long PauseGeneration = 0, long AppliedOrder
 /// <summary>Command storage, serialized with instance commits, event appends and deletion.</summary>
 public interface IWorkflowDebugStore
 {
+    /// <summary>
+    /// Reads controls for distinct instances, omitting absent requests. Successful reads survive
+    /// failures of other reads; if every read fails, throws AggregateException.
+    /// </summary>
     Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds);
     Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command);
     Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds);

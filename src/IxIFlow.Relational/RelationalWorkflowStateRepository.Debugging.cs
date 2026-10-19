@@ -58,22 +58,56 @@ public abstract partial class RelationalWorkflowStateRepository
         var states = new Dictionary<string, WorkflowDebugState>(StringComparer.Ordinal);
         var cancellations = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
         if (instanceIds.Count == 0) return new(cancellations, states);
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync(ownership: true);
-        var filter = PayloadSqlDialect == PayloadDialect.PostgreSql ? "= ANY(@Ids)" : "IN @Ids";
-        foreach (var batch in instanceIds.Distinct(StringComparer.Ordinal).Chunk(OwnershipReadBatchSize))
+        DbConnection connection;
+        try
         {
-            using var rows = await connection.QueryMultipleAsync($"SELECT {DebugColumn("InstanceId")} AS InstanceId, {DebugColumn("StateJson")} AS StateJson, {DebugColumn("CancellationJson")} AS CancellationJson FROM {DebugInstanceTable} WHERE {DebugColumn("InstanceId")} {filter}; SELECT {DebugColumn("InstanceId")} AS InstanceId, {DebugColumn("CommandJson")} AS CommandJson FROM {DebugTable} WHERE {DebugColumn("InstanceId")} {filter} ORDER BY {DebugColumn("CommandOrder")}", new { Ids = batch });
-            var instances = (await rows.ReadAsync<(string InstanceId, string StateJson, string? CancellationJson)>()).ToArray();
-            var commands = (await rows.ReadAsync<(string InstanceId, string CommandJson)>()).ToLookup(r => r.InstanceId, r => JsonSerializer.Deserialize<DebugCommand>(r.CommandJson)!);
+            await EnsureSchemaAsync();
+            connection = await OpenConnectionAsync(ownership: true);
+        }
+        catch (Exception error)
+        {
+            throw new AggregateException("No execution controls could be read", error);
+        }
+        await using var ownedConnection = connection;
+        var ids = instanceIds.Distinct(StringComparer.Ordinal).ToArray();
+        var failures = new List<Exception>();
+        var failedReads = 0;
+        var filter = PayloadSqlDialect == PayloadDialect.PostgreSql ? "= ANY(@Ids)" : "IN @Ids";
+        foreach (var batch in ids.Chunk(OwnershipReadBatchSize))
+        {
+            (string InstanceId, string StateJson, string? CancellationJson)[] instances;
+            ILookup<string, string> commands;
+            try
+            {
+                using var rows = await connection.QueryMultipleAsync($"SELECT {DebugColumn("InstanceId")} AS InstanceId, {DebugColumn("StateJson")} AS StateJson, {DebugColumn("CancellationJson")} AS CancellationJson FROM {DebugInstanceTable} WHERE {DebugColumn("InstanceId")} {filter}; SELECT {DebugColumn("InstanceId")} AS InstanceId, {DebugColumn("CommandJson")} AS CommandJson FROM {DebugTable} WHERE {DebugColumn("InstanceId")} {filter} ORDER BY {DebugColumn("CommandOrder")}", new { Ids = batch });
+                instances = (await rows.ReadAsync<(string InstanceId, string StateJson, string? CancellationJson)>()).ToArray();
+                commands = (await rows.ReadAsync<(string InstanceId, string CommandJson)>()).ToLookup(r => r.InstanceId, r => r.CommandJson);
+            }
+            catch (Exception error)
+            {
+                failures.Add(error);
+                failedReads += batch.Length;
+                continue;
+            }
             foreach (var row in instances)
             {
-                var instance = JsonSerializer.Deserialize<WorkflowInstance>(row.StateJson)!;
-                if (row.CancellationJson is { } reason) cancellations[row.InstanceId] = JsonSerializer.Deserialize<CancellationReason>(reason)!;
-                var items = commands[row.InstanceId].ToArray();
-                states[row.InstanceId] = new(WorkflowDebugRules.Version(items), WorkflowDebugRules.Checkpoint(instance).PauseGeneration, items);
+                try
+                {
+                    var instance = JsonSerializer.Deserialize<WorkflowInstance>(row.StateJson)!;
+                    var cancellation = row.CancellationJson is { } reason ? JsonSerializer.Deserialize<CancellationReason>(reason) : null;
+                    var items = commands[row.InstanceId].Select(json => JsonSerializer.Deserialize<DebugCommand>(json)!).ToArray();
+                    states[row.InstanceId] = new(WorkflowDebugRules.Version(items), WorkflowDebugRules.Checkpoint(instance).PauseGeneration, items);
+                    if (cancellation != null) cancellations[row.InstanceId] = cancellation;
+                }
+                catch (Exception error)
+                {
+                    failures.Add(error);
+                    failedReads++;
+                }
             }
         }
+        if (failedReads == ids.Length)
+            throw new AggregateException("No execution controls could be read", failures);
         return new(cancellations, states);
     }
 

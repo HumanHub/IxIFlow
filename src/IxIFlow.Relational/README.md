@@ -53,7 +53,7 @@ Optional fixed statements are LockIdentity, AdvanceInbox (when InsertEvent advan
 | PendingEvents | Events, then page waits (WaitId, OpenedSequence, DeadlineUtc). |
 | Event, CandidateWait, Wait, OpenWaits | EventColumns or WaitColumns projection. |
 | EventHash, TakenChild, EarliestDeadline | Sequence/PayloadHash; existing child ID or null; earliest open deadline or null. |
-| Runnable, Cancellation, Cancellations, InboxSequences, Trace | InstanceId/RunnableAtUtc; cancellation JSON; InstanceId/cancellation JSON; InstanceId/InboxSequence; Sequence/EntryJson. |
+| Runnable, Cancellation, InboxSequences, Trace | InstanceId/RunnableAtUtc; cancellation JSON; InstanceId/InboxSequence; Sequence/EntryJson. |
 | DeleteState | State JSON or no row. |
 
 Writes that return rows (ClaimLease) may use a multi-statement batch ending in SELECT where RETURNING/OUTPUT is unavailable. ByName, ByStatus, ByCorrelation and ByParent use @Value.
