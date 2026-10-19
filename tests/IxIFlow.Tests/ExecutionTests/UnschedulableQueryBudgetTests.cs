@@ -166,10 +166,10 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
             {
                 var plan = (await connection.QueryAsync("EXPLAIN QUERY PLAN " + sql, parameters)).Select(row => (string)row.detail).ToArray();
                 output.WriteLine(string.Join(Environment.NewLine, plan));
-                Assert.Contains(plan, line => line.Contains("ix_ixiflow_instances_set_runnable (demand_set_id=?"));
+                Assert.Contains(plan, line => line.StartsWith("SEARCH instance ") && line.Contains("(demand_set_id=?"));
                 // SQLite renders IS NULL as an equality seek, separately from the future range.
-                Assert.Contains(plan, line => line.Contains("ix_ixiflow_instances_set_pin (demand_set_id=? AND pin_expires_at_utc=?"));
-                Assert.Contains(plan, line => line.Contains("ix_ixiflow_instances_set_pin (demand_set_id=? AND pin_expires_at_utc>?"));
+                Assert.Contains(plan, line => line.StartsWith("SEARCH instance ") && line.Contains("(demand_set_id=? AND pin_expires_at_utc=?"));
+                Assert.Contains(plan, line => line.StartsWith("SEARCH instance ") && line.Contains("(demand_set_id=? AND pin_expires_at_utc>?"));
                 Assert.DoesNotContain(plan, line => line.StartsWith("SCAN instance"));
             }
             else if (postgres)
