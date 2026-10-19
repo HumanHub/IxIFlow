@@ -137,7 +137,7 @@ public sealed class OptionalSetupTests
     {
         var builder = new WorkflowBuilder<ChildData>("SetupChild", 1);
         new ChildWorkflow().Build(builder);
-        return services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(builder.Build());
+        return services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(builder.Build());
     }
 
     public sealed class SetupProbe

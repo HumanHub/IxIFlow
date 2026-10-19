@@ -15,7 +15,7 @@ public sealed class SequentialRequestRecoveryScenarios
     {
         await using var profile = await StoreProfiles.CreateAsync(StoreProfiles.LocalSqlite);
         var time = new FakeTimeProvider();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var probe = new Probe();
         var definition = Workflow.Create<Data>("ReopenedRequest")
             .Request<Send>("answer")
@@ -54,7 +54,7 @@ public sealed class SequentialRequestRecoveryScenarios
             .WorkflowDataJson).RootElement.GetProperty("Value").GetInt32());
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository store, IWorkflowVersionRegistry registry, Probe probe, TimeProvider time)
+    private static ServiceProvider Services(IWorkflowStateRepository store, IWorkflowCatalog registry, Probe probe, TimeProvider time)
     {
         var services = new ServiceCollection();
         services.AddLogging();

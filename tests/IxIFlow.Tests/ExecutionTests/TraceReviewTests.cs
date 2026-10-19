@@ -217,7 +217,7 @@ public sealed class TraceReviewTests
             id = (await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data())).InstanceId;
         using var recovered = Services(time, options =>
             { options.MaxTraceEntriesPerInstance = keepBudget ? 2 : null; options.MaxTraceEntriesPerCommit = commitLimit; }, store);
-        await recovered.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await recovered.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var client = recovered.GetRequiredService<IWorkflowClient>();
         Assert.Equal(WorkflowExecutionStatus.Success, (await client.ResumeAsync(id, "go", new Go())).Status);
         var trace = await client.GetTraceAsync(id);
@@ -250,7 +250,7 @@ public sealed class TraceReviewTests
             .AddIxIFlow().Services.BuildServiceProvider();
         await using var watch = new CancellationWatch(store, time);
         var host = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
-            store, services.GetRequiredService<IWorkflowVersionRegistry>(), new InProcessInstanceGate(),
+            store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
             timeProvider: time, watch: watch);
         var running = host.StartAsync(Workflow.Create<Data>("ReceiptTrace").Step<HeldTrace>().Build(),
             new Data(), new WorkflowOptions(), CancellationToken.None);

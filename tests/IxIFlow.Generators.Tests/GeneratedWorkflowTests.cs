@@ -109,7 +109,7 @@ public sealed class GeneratedWorkflowTests
         FlowData data, bool resume = false)
     {
         await using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Workflow_child.Build());
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Workflow_child.Build());
         var client = services.GetRequiredService<IWorkflowClient>();
         var result = await client.RunAsync(definition, data);
         if (resume)

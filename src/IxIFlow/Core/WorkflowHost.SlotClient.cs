@@ -22,13 +22,14 @@ public sealed partial class WorkflowHost
             WorkflowDefinition definition,
             TWorkflowData workflowData,
             WorkflowOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            bool versionOmitted = false)
             where TWorkflowData : class
         {
             ArgumentNullException.ThrowIfNull(definition);
             ArgumentNullException.ThrowIfNull(workflowData);
             return _runner.StartAsync(definition, workflowData, options ?? new WorkflowOptions(),
-                cancellationToken);
+                cancellationToken, versionOmitted);
         }
 
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(

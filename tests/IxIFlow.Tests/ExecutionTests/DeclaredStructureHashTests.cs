@@ -1,12 +1,14 @@
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using IxIFlow.Builders.Interfaces;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.DependencyInjection;
@@ -149,7 +151,7 @@ public sealed class DeclaredStructureHashTests
     [Fact]
     public async Task RegistrationUsesIdentityAndStructureAndKeepsTheFirstMetadata()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var first = Waiting();
         first.Description = "Original description";
         var reworded = Waiting();
@@ -179,7 +181,7 @@ public sealed class DeclaredStructureHashTests
         services.AddIxIFlow();
         services.RegisterWorkflow<TypedChild>();
         using var provider = services.BuildServiceProvider();
-        var registered = provider.GetRequiredService<IWorkflowVersionRegistry>();
+        var registered = provider.GetRequiredService<IWorkflowCatalog>();
         var client = provider.GetRequiredService<IWorkflowClient>();
         Assert.Equal(WorkflowExecutionStatus.Success,
             (await client.RunToEndAsync(parent, new StructureHashData())).Status);
@@ -196,9 +198,9 @@ public sealed class DeclaredStructureHashTests
         Assert.Contains("v4", wrongVersion.Message);
 
         var replacement = Workflow.Create<StructureHashData>("Pinned child", 3).Step<StructureHashMultiply>().Step<StructureHashMultiply>().Build();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await registry.RegisterWorkflowAsync(replacement);
-        services.AddSingleton<IWorkflowVersionRegistry>(registry);
+        services.AddSingleton<IWorkflowCatalog>(registry);
         using var mismatchedProvider = services.BuildServiceProvider();
         var mismatch = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
             mismatchedProvider.GetRequiredService<IWorkflowClient>().RunAsync(Parent(), new StructureHashData()));
@@ -211,7 +213,7 @@ public sealed class DeclaredStructureHashTests
     [Fact]
     public async Task RegistrationRemembersTheHashBeforeTheDefinitionWasMutated()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var definition = Waiting();
         var savedHash = Hash(definition);
         await registry.RegisterWorkflowAsync(definition);
@@ -250,11 +252,23 @@ public sealed class DeclaredStructureHashTests
             id = started.InstanceId;
         }
         using var second = Services(store);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(changed);
+        var catalog = second.GetRequiredService<IWorkflowCatalog>();
+        var registration = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(changed));
+        Assert.Equal(WorkflowErrorKind.InvalidRequest, registration.Kind);
+        AssertMismatch(registration.Message, original, changed);
+        await catalog.RegisterWorkflowAsync(original);
+
+        // Registration is immutable; exercise the execution safety net with a mismatched saved hash.
+        var instance = (await store.GetWorkflowInstanceAsync(id))!;
+        var checkpoint = JsonNode.Parse(instance.ExecutionStateJson)!;
+        checkpoint["StructureHash"] = Hash(changed);
+        instance.ExecutionStateJson = checkpoint.ToJsonString();
+        await store.SeedAsync(instance);
+        var checkpointJson = (await store.GetWorkflowInstanceAsync(id))!.ExecutionStateJson;
         var client = second.GetRequiredService<IWorkflowClient>();
         if (operation == "start")
         {
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(changed,
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(original,
                 new StructureHashData(), new WorkflowOptions { InstanceId = id }));
             AssertMismatch(error.Message, original, changed);
         }
@@ -273,7 +287,8 @@ public sealed class DeclaredStructureHashTests
             AssertMismatch(result.ErrorMessage!, original, changed);
         }
         var saved = (await store.GetWorkflowInstanceAsync(id))!;
-        Assert.Equal(Hash(original), ExecutionCheckpoint.ReadTrunk(saved.ExecutionStateJson).StructureHash);
+        Assert.Equal(Hash(changed), ExecutionCheckpoint.ReadTrunk(saved.ExecutionStateJson).StructureHash);
+        Assert.Equal(checkpointJson, saved.ExecutionStateJson);
         Assert.Equal(WorkflowStatus.Suspended, saved.Status);
     }
 

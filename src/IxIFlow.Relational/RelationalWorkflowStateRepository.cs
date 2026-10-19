@@ -23,7 +23,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>The connection, transaction and admission policy for a store operation.</summary>
     internal enum Operation
     {
-        Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge, Registry,
+        Schema, Catalog, Artifact, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge, Registry,
         CancellationRequest, CancellationRead, LeaseClaim, LeaseRenew, LeaseRelease,
         Append, InboxPage, Commit, Delete
     }
@@ -31,6 +31,8 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>SQL steps in the shared protocol. Optional steps return null.</summary>
     internal enum Statement
     {
+        CatalogLock, CatalogSharedLock, CatalogVersions, CatalogNamedVersions, CatalogVersion, CatalogUnfinishedCallers, CatalogVersionInsert, CatalogVersionState,
+        CatalogDefinition, CatalogDefinitionInsert, CatalogDefinitionUpdate, ArtifactPut, ArtifactRead, ArtifactExists, ArtifactDelete, ArtifactDeleteOld, ArtifactCandidates,
         WebhookDeliveryRead, WebhookDeliveryDelete, WebhookDeliveryInsert, WebhookDeliveryExpire,
         AdmissionLock, AdmissionRead, AdmissionDelete, AdmissionInsert, OwnershipRead, OwnershipInsert, OwnershipDelete, AdmissionExpire, OwnershipExpire,
         RegistryLock, RegisterMember, MemberHeartbeat, UnregisterMember, PruneMembers,
@@ -609,6 +611,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         var revision = checked(commit.ExpectedRevision + 1);
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (await BeginTransactionAsync(connection, Operation.Commit))!;
+        if (commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0)
+            await ExecuteOptionalAsync(connection, transaction, Statement.CatalogSharedLock, null);
         WorkflowAdmissionRecord? admitted = null;
         if (admission != null)
         {
@@ -698,6 +702,8 @@ public abstract partial class RelationalWorkflowStateRepository :
                 RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
         // A child's ID is new; a commit that names an existing instance changes nothing.
+        await CheckCatalogStartsAsync(connection, transaction, commit, current == null);
+
         if (commit.ChildStarts.Count > 0 && await connection.ExecuteScalarAsync<string?>(RequiredSql(Statement.TakenChild), new { Ids = commit.ChildStarts.Select(child => child.ChildInstanceId).ToArray() }, transaction)
             is { } taken)
             throw new InvalidOperationException(
@@ -736,6 +742,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             snapshot.InstanceId,
             snapshot.WorkflowName,
+            snapshot.WorkflowVersion,
             snapshot.CorrelationId,
             snapshot.ParentInstanceId,
             commit.Incarnation,

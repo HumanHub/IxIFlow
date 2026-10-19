@@ -44,7 +44,7 @@ public sealed class AddressedWaitTests
     {
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             ApprovalWorkflow("ChildApproval", null));
         // The child's own wait is listed; its parent's wait for the child is never listed (D-17).
         await engine.RunAsync(Workflow.Create<LoopData>("ParentOfChildApproval")

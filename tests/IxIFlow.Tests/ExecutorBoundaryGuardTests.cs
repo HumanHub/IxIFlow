@@ -24,7 +24,7 @@ public sealed class ExecutorBoundaryGuardTests
     [
         typeof(IWorkflowStateRepository), typeof(IWorkflowOutbox), typeof(GuardedStateRepository),
         typeof(WorkflowExecutionLease), typeof(InProcessInstanceGate), typeof(IWorkflowClient),
-        typeof(IWorkflowVersionRegistry), typeof(WorkflowHost.InstanceOperations), typeof(WorkflowHost.SlotClient),
+        typeof(IWorkflowCatalog), typeof(WorkflowHost.InstanceOperations), typeof(WorkflowHost.SlotClient),
         typeof(WorkflowHost), typeof(HostedWorkflowClient)
     ];
 
@@ -48,7 +48,7 @@ public sealed class ExecutorBoundaryGuardTests
 
         Assert.Contains(typeof(IWorkflowStateRepository), referenced);
         Assert.Contains(typeof(WorkflowExecutionLease), referenced);
-        Assert.Contains(typeof(IWorkflowVersionRegistry), referenced);
+        Assert.Contains(typeof(IWorkflowCatalog), referenced);
     }
 
     private static bool IsHostOnly(Type type) =>

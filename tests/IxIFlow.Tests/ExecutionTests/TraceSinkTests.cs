@@ -96,7 +96,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
                     new WorkflowOptions { InstanceId = instanceId, EnableTracing = false }));
         store.FailCommit = _ => false;
         using var second = Services(store);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Recoverable("UntracedRecovery"));
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Recoverable("UntracedRecovery"));
 
         var recovered = await second.GetRequiredService<IWorkflowClient>().RecoverAsync(instanceId);
 
@@ -112,7 +112,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
         var engine = services.GetRequiredService<IWorkflowClient>();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<TraceData>("UntracedChild").Step<Noop>().Build());
         var parent = Workflow.Create<TraceData>("UntracedParent")
             .Step<Noop>()
