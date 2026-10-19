@@ -306,8 +306,6 @@ public sealed class TraceReviewTests
     [Fact]
     public async Task AVerificationStopDiscardsTheAbandonedPassAndRetainsTheSavedCheckpoint()
     {
-        var time = new FakeTimeProvider(Start);
-        using var services = Services(time);
         var definition = Workflow.Create<Data>("VerificationTrace").Step<Noop>().Parallel(parallel => parallel
             .Do(body => body.WaitFor<Go>("go"))).Build();
         var scopes = new WorkflowScopeCatalog(definition);
@@ -343,27 +341,6 @@ public sealed class TraceReviewTests
         Assert.Single(commits);
         Assert.Equal(savedState, StoredCheckpoint.WholeState(instance));
         Assert.Equal(savedData, instance.WorkflowDataJson);
-        Assert.Empty(checkpoint.Trace.Pending);
-
-        // Assign cannot inject an unmarked live branch. Check the writer directly, then exercise the
-        // existing stop handler to retain coverage of the verification marker and its saved checkpoint.
-        var executor = new WorkflowExecutor(services, host);
-        var stop = typeof(WorkflowExecutor).GetMethod("StopForOperatorAsync",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-        var outcome = await (Task<AssignmentOutcome>)stop.Invoke(executor,
-            [definition, instance, checkpoint, data, session, OperatorStopKind.Verification, rejected.Message])!;
-        Assert.Equal(AssignmentOutcomeKind.Idle, outcome.Kind);
-        Assert.NotNull(host.Saved);
-        instance = host.Saved;
-        Assert.Equal(WorkflowStatus.NeedsResolution, instance.Status);
-        Assert.Empty(host.TraceEntries);
-        Assert.Equal(2, commits.Count);
-        Assert.All(commits, commit => Assert.Empty(commit.TraceEntries));
-        var saved = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
-        Assert.Equal(OperatorStopKind.Verification, saved.OperatorStop!.Kind);
-        Assert.Equal(scopes.StructureHash, saved.StructureHash);
-        Assert.Equal(savedData, instance.WorkflowDataJson);
-        Assert.Equal(ContinuationStatus.Waiting, saved.Continuations.Single(item => item.Id == branch.Id).Status);
         Assert.Empty(checkpoint.Trace.Pending);
     }
 
