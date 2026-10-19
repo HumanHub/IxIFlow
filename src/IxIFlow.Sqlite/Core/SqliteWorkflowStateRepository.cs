@@ -379,10 +379,6 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             SELECT cancellation_json FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             """,
-        Statement.Cancellations => """
-            SELECT instance_id, cancellation_json FROM ixiflow_workflow_instances
-            WHERE instance_id IN @InstanceIds AND cancellation_json IS NOT NULL
-            """,
         Statement.Runnable => """
             WITH store AS (SELECT @Now AS now)
             SELECT instance.instance_id AS InstanceId, instance.runnable_at_utc AS RunnableAtUtc

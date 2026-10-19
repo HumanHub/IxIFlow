@@ -2,12 +2,27 @@ namespace IxIFlow.Core;
 
 public partial class InMemoryWorkflowStateRepository
 {
-    public async Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds)
+    public virtual async Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds)
     {
-        var cancellations = GetCancellationRequestsAsync(instanceIds);
-        var debug = GetDebugStatesAsync(instanceIds);
-        await Task.WhenAll(cancellations, debug);
-        return new(await cancellations, await debug);
+        ArgumentNullException.ThrowIfNull(instanceIds);
+        var ids = instanceIds.Distinct(StringComparer.Ordinal).ToArray();
+        var cancellations = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
+        var failures = new List<Exception>();
+        foreach (var id in ids)
+        {
+            try
+            {
+                if (await GetCancellationRequestAsync(id) is { } reason)
+                    cancellations[id] = reason;
+            }
+            catch (Exception error)
+            {
+                failures.Add(error);
+            }
+        }
+        if (ids.Length > 0 && failures.Count == ids.Length)
+            throw new AggregateException("No cancellation request could be read", failures);
+        return new(cancellations, await GetDebugStatesAsync(ids));
     }
     private readonly Dictionary<string, List<DebugCommand>> _debugCommands = new(StringComparer.Ordinal);
     private IReadOnlyList<DebugCommand> CommandsOf(string id) => _debugCommands.TryGetValue(id, out var commands) ? commands : [];

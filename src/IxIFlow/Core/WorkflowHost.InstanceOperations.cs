@@ -127,14 +127,12 @@ public sealed partial class WorkflowHost
             cancellationToken.ThrowIfCancellationRequested();
             if (!(hostSettings ?? HostSettings.Default).Debugging)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Debugging is disabled on this host");
-            if (_store is not GuardedStateRepository { SupportsDebugging: true } debugStore)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The configured store does not support debug commands");
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow instance does not exist");
-            var state = (await debugStore.GetDebugStatesAsync([instanceId]))[instanceId];
+            var state = (await _store.GetDebugStatesAsync([instanceId]))[instanceId];
             var generation = state.PauseGeneration + (kind == DebugCommandKind.Continue && instance.Status != WorkflowStatus.Paused &&
                 state.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause) ? 1 : 0);
-            var requested = await debugStore.RequestDebugCommandAsync(instanceId,
+            var requested = await _store.RequestDebugCommandAsync(instanceId,
                 new(Guid.NewGuid().ToString("N"), kind, generation, actor));
             if (requested.Status is not (DebugCommandStatus.Accepted or DebugCommandStatus.AlreadyAccepted))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, $"Debug command refused: {requested.Status}");
@@ -148,7 +146,7 @@ public sealed partial class WorkflowHost
             if (current == null || current.Incarnation != instance.Incarnation || current.Revision != instance.Revision ||
                 current.Status != instance.Status) return current == null ? Busy(instanceId) : ExistingResult(current);
             var checkpoint = ExecutionCheckpoint.Read(current.ExecutionStateJson);
-            var latest = (await debugStore.GetDebugStatesAsync([instanceId]))[instanceId];
+            var latest = (await _store.GetDebugStatesAsync([instanceId]))[instanceId];
             var first = latest.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null);
             if (first?.Id != requested.Command!.Id || first.PauseGeneration != checkpoint.Debug.PauseGeneration ||
                 await _store.GetCancellationRequestAsync(instanceId) != null) return ExistingResult(current);
@@ -591,8 +589,7 @@ public sealed partial class WorkflowHost
             if (!release && !forEvent && instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
                 return ReadResult(instance);
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
-            var debugState = _store is GuardedStateRepository { SupportsDebugging: true } debugStore
-                ? (await debugStore.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId) : null;
+            var debugState = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);
             var pendingDebug = debugState?.Commands.Any(c => c.AcknowledgedRevision == null) == true;
             var pendingContinue = (hostSettings ?? HostSettings.Default).Debugging &&
                 debugState?.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Continue) == true;
@@ -757,8 +754,7 @@ public sealed partial class WorkflowHost
                 var assign = new Assign(signals.AssignmentId, assigned, instance.PartsAt(instance.Revision),
                     checkpoint.StructureHash, owner.Epoch, signals.InboxSequence, _limits, depth == 1, [], preparation)
                 {
-                    DebugState = _store is GuardedStateRepository { SupportsDebugging: true } debug
-                        ? (await debug.GetDebugStatesAsync([instance.InstanceId])).GetValueOrDefault(instance.InstanceId) : null,
+                    DebugState = (await _store.GetDebugStatesAsync([instance.InstanceId])).GetValueOrDefault(instance.InstanceId),
                     DebuggingEnabled = (hostSettings ?? HostSettings.Default).Debugging
                 };
                 var ready = await Executor.ExecuteAsync(assign, CancellationToken.None);

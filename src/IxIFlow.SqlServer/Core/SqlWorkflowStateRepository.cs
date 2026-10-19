@@ -420,10 +420,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             SELECT CancellationJson FROM dbo.IxIFlowWorkflowInstances
             WHERE InstanceId = @InstanceId
             """,
-        Statement.Cancellations => """
-                SELECT InstanceId, CancellationJson FROM dbo.IxIFlowWorkflowInstances
-                WHERE InstanceId IN @InstanceIds AND CancellationJson IS NOT NULL
-                """,
         Statement.Runnable => """
             SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
             FROM dbo.IxIFlowWorkflowInstances AS instance
