@@ -19,4 +19,16 @@ public static class DebuggingExamples
         await operations.ContinueAsync(instanceId, actor: "operator@example.com");
         // end-snippet: operate
     }
+    public static async Task BreakpointsAsync(IWorkflowOperations operations, string instanceId)
+    {
+        // snippet: breakpoints
+        var verified = await operations.SetBreakpointsAsync(instanceId,
+        [
+            new Breakpoint("charge", "charge-card"),
+            new Breakpoint("third-item", "root/2/foreach/0", HitCondition: "== 3"),
+            new Breakpoint("source", Source: new BreakpointSource("order.yaml", 20))
+        ], actor: "operator@example.com");
+        var current = await operations.GetBreakpointsAsync(instanceId);
+        // end-snippet: breakpoints
+    }
 }
