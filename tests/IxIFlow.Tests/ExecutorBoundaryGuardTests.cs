@@ -16,7 +16,8 @@ public sealed class ExecutorBoundaryGuardTests
     private static readonly Type[] Executor =
     [
         typeof(WorkflowExecutor), typeof(ActivityAttempts), typeof(ContinuationTransitions),
-        typeof(ExecutionCheckpointWriter), typeof(IExecutionHost)
+        typeof(ExecutionCheckpointWriter), typeof(IExecutionHost), typeof(ExecutionSession),
+        typeof(IWorkflowDefinitionSource), typeof(WorkflowInstances), typeof(EventIntake)
     ];
 
     private static readonly Type[] HostOnly =

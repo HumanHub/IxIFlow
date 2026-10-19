@@ -23,7 +23,7 @@ public sealed class HostMessageTests
         using var run = new Harness();
         var running = run.Start(Cancellable());
         await run.Probe.Started.Task.WaitAsync(Patience);
-        run.Executor.Deliver(new Cancel(run.Signals.RunId, CancelKind.Workflow,
+        run.Executor.Deliver(new Cancel(run.Signals.AssignmentId, CancelKind.Workflow,
             new CancellationReason { ReasonCode = "withdrawn" }));
         var outcome = await running.WaitAsync(Patience);
         Assert.Equal(AssignmentOutcomeKind.Idle, outcome.Kind);
@@ -38,7 +38,7 @@ public sealed class HostMessageTests
         using var run = new Harness();
         var running = run.Start(Cancellable());
         await run.Probe.Started.Task.WaitAsync(Patience);
-        run.Executor.Deliver(new Cancel(run.Signals.RunId, CancelKind.Run));
+        run.Executor.Deliver(new Cancel(run.Signals.AssignmentId, CancelKind.Run));
         Assert.Equal(AssignmentOutcomeKind.RunCancelled, (await running.WaitAsync(Patience)).Kind);
         Assert.All(run.Host.Commits, commit => Assert.Equal(WorkflowStatus.Running, commit.ReadTrunk().Status));
         Assert.Equal(0, run.Probe.Cleanups);
@@ -52,7 +52,7 @@ public sealed class HostMessageTests
         var running = run.Start(Cancellable());
         await run.Probe.Started.Task.WaitAsync(Patience);
         var before = run.Host.Commits.Count;
-        run.Executor.Deliver(new Cancel(run.Signals.RunId, CancelKind.Ownership));
+        run.Executor.Deliver(new Cancel(run.Signals.AssignmentId, CancelKind.Ownership));
         Assert.Equal(AssignmentOutcomeKind.OwnershipLost, (await running.WaitAsync(Patience)).Kind);
         Assert.Equal(before, run.Host.Commits.Count);
         Assert.Equal(0, run.Probe.Cleanups);
@@ -66,9 +66,9 @@ public sealed class HostMessageTests
         var running = run.Start(Cancellable());
         await run.Probe.Started.Task.WaitAsync(Patience);
         var before = run.Host.Commits.Count;
-        run.Executor.Deliver(new Cancel(run.Signals.RunId, CancelKind.Run));
+        run.Executor.Deliver(new Cancel(run.Signals.AssignmentId, CancelKind.Run));
         await run.Probe.Cancelled.Task.WaitAsync(Patience);
-        run.Executor.Deliver(new Cancel(run.Signals.RunId, CancelKind.Ownership));
+        run.Executor.Deliver(new Cancel(run.Signals.AssignmentId, CancelKind.Ownership));
         run.Probe.Release.TrySetResult();
         Assert.Equal(AssignmentOutcomeKind.OwnershipLost, (await running.WaitAsync(Patience)).Kind);
         Assert.Equal(before, run.Host.Commits.Count);
@@ -81,11 +81,11 @@ public sealed class HostMessageTests
         run.Probe.HoldCleanup = true;
         var running = run.Start(Cancellable());
         await run.Probe.Started.Task.WaitAsync(Patience);
-        run.Executor.Deliver(new Cancel(run.Signals.RunId, CancelKind.Workflow,
+        run.Executor.Deliver(new Cancel(run.Signals.AssignmentId, CancelKind.Workflow,
             new CancellationReason { ReasonCode = "withdrawn" }));
         await run.Probe.CleanupStarted.Task.WaitAsync(Patience);
         var before = run.Host.Commits.Count;
-        run.Executor.Deliver(new Cancel(run.Signals.RunId, CancelKind.Ownership));
+        run.Executor.Deliver(new Cancel(run.Signals.AssignmentId, CancelKind.Ownership));
         Assert.Equal(AssignmentOutcomeKind.OwnershipLost, (await running.WaitAsync(Patience)).Kind);
         Assert.Equal(before, run.Host.Commits.Count);
         Assert.DoesNotContain(run.Host.Commits, commit => commit.ReadTrunk().Status == WorkflowStatus.Cancelled);
@@ -99,7 +99,7 @@ public sealed class HostMessageTests
             .Step<Block>().Step<Cleanup>().Build());
         await run.Probe.Started.Task.WaitAsync(Patience);
         var before = run.Host.Commits.Count;
-        run.Executor.Deliver(new Recycle(run.Signals.RunId));
+        run.Executor.Deliver(new Recycle(run.Signals.AssignmentId));
         Assert.False(running.IsCompleted);
         run.Probe.Release.TrySetResult();
         Assert.Equal(AssignmentOutcomeKind.Drained, (await running.WaitAsync(Patience)).Kind);
@@ -117,7 +117,7 @@ public sealed class HostMessageTests
         run.Host.OnCommit = commit =>
         {
             if (commit.ReadTrunk().Status == WorkflowStatus.Completed)
-                run.Executor.Deliver(new Recycle(run.Signals.RunId));
+                run.Executor.Deliver(new Recycle(run.Signals.AssignmentId));
         };
         var outcome = await run.Start(Workflow.Create<Data>("RecycleCompleted").Step<Cleanup>().Build());
         Assert.Equal(AssignmentOutcomeKind.Idle, outcome.Kind);
@@ -133,10 +133,10 @@ public sealed class HostMessageTests
                 .Do(branch => branch.WaitFor<Event>("go"))).Build());
         await run.Probe.Started.Task.WaitAsync(Patience);
         run.Host.NextRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        run.Executor.Deliver(new Arrivals(run.Signals.RunId, 100));
+        run.Executor.Deliver(new Arrivals(run.Signals.AssignmentId, 100));
         await run.Host.NextRead.Task.WaitAsync(Patience);
-        run.Executor.Deliver(new Arrivals(run.Signals.RunId, 99));
-        run.Executor.Deliver(new Arrivals(run.Signals.RunId, 100));
+        run.Executor.Deliver(new Arrivals(run.Signals.AssignmentId, 99));
+        run.Executor.Deliver(new Arrivals(run.Signals.AssignmentId, 100));
         Assert.Equal(100, run.Signals.InboxSequence);
         run.Probe.Release.TrySetResult();
         Assert.Equal(AssignmentOutcomeKind.Idle, (await running.WaitAsync(Patience)).Kind);
@@ -149,10 +149,10 @@ public sealed class HostMessageTests
     public async Task MessagesForAnEndedRunCannotReachTheNextRunOnTheSameExecutor()
     {
         using var run = new Harness();
-        var oldId = run.Signals.RunId;
+        var oldId = run.Signals.AssignmentId;
         await run.Start(Workflow.Create<Data>("FirstRun").Step<Cleanup>().Build());
         run.Probe.Cleanups = 0;
-        run.Signals = run.Executor.OpenRun();
+        run.Signals = run.Executor.PrepareAssignment(Guid.NewGuid());
         var running = run.Start(Cancellable());
         await run.Probe.Started.Task.WaitAsync(Patience);
         foreach (var kind in Enum.GetValues<CancelKind>())
@@ -173,7 +173,7 @@ public sealed class HostMessageTests
     {
         using var run = new Harness();
         await Task.WhenAll(Enumerable.Range(1, 128).Select(sequence => Task.Run(() =>
-            run.Executor.Deliver(new Arrivals(run.Signals.RunId, sequence)))));
+            run.Executor.Deliver(new Arrivals(run.Signals.AssignmentId, sequence)))));
         Assert.Equal(128, run.Signals.InboxSequence);
     }
 
@@ -184,10 +184,10 @@ public sealed class HostMessageTests
         using var second = new Harness();
         using var late = new Harness();
         var control = new RunControl();
-        using var firstRegistration = control.Register(first.Signals.RunId, first.Executor.Deliver);
-        using var secondRegistration = control.Register(second.Signals.RunId, second.Executor.Deliver);
+        using var firstRegistration = control.Register(first.Signals.AssignmentId, first.Executor.Deliver);
+        using var secondRegistration = control.Register(second.Signals.AssignmentId, second.Executor.Deliver);
         control.Recycle();
-        using var lateRegistration = control.Register(late.Signals.RunId, late.Executor.Deliver);
+        using var lateRegistration = control.Register(late.Signals.AssignmentId, late.Executor.Deliver);
         Assert.True(first.Signals.Recycle);
         Assert.True(second.Signals.Recycle);
         Assert.True(late.Signals.Recycle);
@@ -259,22 +259,24 @@ public sealed class HostMessageTests
         public ExecutionSignals Signals { get; set; }
         public Probe Probe => _services.GetRequiredService<Probe>();
         public MessageHost Host { get; } = new();
-        public WorkflowInstance? Instance { get; private set; }
+        public WorkflowInstance? Instance => Host.Saved;
 
         public Harness()
         {
-            Executor = new(_services, _services.GetRequiredService<IActivityExecutor>(), TimeProvider.System);
-            Signals = Executor.OpenRun();
+            Executor = new(_services, Host);
+            Signals = Executor.PrepareAssignment(Guid.NewGuid());
         }
 
-        public Task<AssignmentOutcome> Start(WorkflowDefinition definition)
+        public async Task<AssignmentOutcome> Start(WorkflowDefinition definition)
         {
             var data = new Data();
-            var (instance, checkpoint, _) = WorkflowHost.InstanceOperations.NewInstance(definition, data,
+            var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition, data,
                 new WorkflowOptions(), DateTime.UtcNow);
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-            Instance = instance;
-            return Executor.RunAsync(definition, instance, checkpoint, data, Host, Signals.RunId);
+            await _services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            var ready = await Executor.ExecuteAsync(new(Signals.AssignmentId, instance, null,
+                checkpoint.StructureHash, 1, 0, ExecutionLimits.Default, false, []), CancellationToken.None);
+            return ready.Outcome;
         }
 
         public void Dispose() { Signals.Dispose(); _services.Dispose(); }
@@ -287,26 +289,22 @@ public sealed class HostMessageTests
         public Action<CheckpointCommit>? OnCommit { get; set; }
         public TaskCompletionSource? NextRead { get; set; }
         public int Reads;
-        public long Epoch => 1;
-        public ExecutionLimits Limits => ExecutionLimits.Default;
-        public bool CanPark => false;
-        public Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
+        public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
+            var commit = request.Commit;
             Saved = commit.ReadInstance(Saved);
             Commits.Enqueue(commit);
             OnCommit?.Invoke(commit);
-            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, commit.ExpectedRevision + 1));
+            return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Ack, commit.ExpectedRevision + 1));
         }
-        public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit)
+        public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request)
         {
             Interlocked.Increment(ref Reads);
             NextRead?.TrySetResult();
-            return Task.FromResult(new InboxPage([], afterSequence, new Dictionary<string, long>()));
+            return Task.FromResult(new ReadInboxReply(request.AssignmentId, new InboxPage([], request.AfterSequence, new Dictionary<string, long>())));
         }
-        public Task<StoredWait?> ReadWaitAsync(string waitId) => Task.FromResult<StoredWait?>(null);
-        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) => throw new NotSupportedException();
-        public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
-            string childInstanceId, string parentWaitId) => throw new NotSupportedException();
+        public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => Task.FromResult(new ReadWaitReply(request.AssignmentId));
+        public Task<StartChildReply> StartChildAsync(StartChild request) => throw new NotSupportedException();
     }
 
     private sealed class SchedulingStore(TimeProvider time) : FaultInjectingRepository(time)

@@ -1,4 +1,5 @@
 using IxIFlow.Tests.Infrastructure;
+using System.Text.Json;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
@@ -152,7 +153,7 @@ public sealed class DefinitionValidationTests
     }
 
     // Models a custom registry that returns definitions without invoking the engine validator.
-    private sealed class UncheckedRegistry(WorkflowDefinition definition) : IWorkflowVersionRegistry
+    private sealed class UncheckedRegistry(WorkflowDefinition definition) : IWorkflowVersionRegistry, IWorkflowDefinitionSource
     {
         public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
             Task.FromResult<IReadOnlyList<WorkflowDefinition>>([definition]);
@@ -176,11 +177,14 @@ public sealed class DefinitionValidationTests
         };
         var data = new RegistrationData();
         var checkpoint = new ExecutionCheckpoint { StructureHash = new WorkflowScopeCatalog(definition).StructureHash };
-        var executor = new WorkflowExecutor(provider, provider.GetRequiredService<IActivityExecutor>(), TimeProvider.System);
-
-        using var run = executor.OpenRun();
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => executor.RunAsync(definition,
-            new WorkflowInstance(), checkpoint, data, null!, run.RunId));
+        using var uncheckedProvider = new ServiceCollection().AddLogging().AddIxIFlow().Services
+            .AddSingleton<IWorkflowDefinitionSource>(new UncheckedRegistry(definition)).BuildServiceProvider();
+        var executor = new WorkflowExecutor(uncheckedProvider, null!);
+        var instance = new WorkflowInstance { WorkflowName = definition.Name, WorkflowVersion = definition.Version,
+            WorkflowDataType = typeof(RegistrationData).AssemblyQualifiedName!, WorkflowDataJson = JsonSerializer.Serialize(data),
+            ExecutionStateJson = JsonSerializer.Serialize(checkpoint) };
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => executor.ExecuteAsync(new(Guid.NewGuid(),
+            instance, null, checkpoint.StructureHash, 1, 0, ExecutionLimits.Default, false, []), CancellationToken.None));
 
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains("has not been validated", error.Message);
