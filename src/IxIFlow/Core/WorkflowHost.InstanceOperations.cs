@@ -13,7 +13,7 @@ public sealed partial class WorkflowHost
     /// commits checkpoints, and prepares the children a run starts. The <see cref="WorkflowExecutor"/>
     /// runs the instance between commits.
     /// </summary>
-    internal sealed class InstanceOperations(
+    internal sealed partial class InstanceOperations(
         IServiceProvider services,
         IActivityExecutor activityExecutor,
         IWorkflowStateRepository repository,
@@ -122,6 +122,8 @@ public sealed partial class WorkflowHost
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(invocationId);
             ArgumentNullException.ThrowIfNull(resolution);
+            if (await FinishTerminationAsync(instanceId))
+                return TerminatedResult(instanceId);
             using var lease = await gate.EnterAsync(instanceId, cancellationToken);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null)
@@ -563,6 +565,8 @@ public sealed partial class WorkflowHost
         private async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, bool release,
             CancellationToken cancellationToken, bool forEvent = false, string? actor = null)
         {
+            if (await FinishTerminationAsync(instanceId))
+                return TerminatedResult(instanceId);
             using var lease = await gate.EnterAsync(instanceId, cancellationToken);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null)
@@ -699,7 +703,7 @@ public sealed partial class WorkflowHost
             WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
             WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
             WorkflowStatus.TimedOut => WorkflowExecutionStatus.TimedOut,
-            WorkflowStatus.Terminated => WorkflowExecutionStatus.Failed,
+            WorkflowStatus.Terminated => WorkflowExecutionStatus.Terminated,
             _ => WorkflowExecutionStatus.Running
         };
 
@@ -728,6 +732,14 @@ public sealed partial class WorkflowHost
             {
                 var result = await _executor.RunAsync(definition, instance, checkpoint, workflowData,
                     new HostedRun(this, instance, owner, canPark: depth == 1), cancellationToken);
+                if (result.Status == WorkflowExecutionStatus.Running)
+                {
+                    // A fallback owner may already have acknowledged termination while this owner
+                    // abandoned a hung activity. Report that winning outcome instead of busy.
+                    var row = (await _store.QueryInstancesAsync(new InstanceQuery(InstanceId: instance.InstanceId, Limit: 1))).Items.SingleOrDefault();
+                    if (row is { Status: WorkflowStatus.Terminated } && row.Incarnation == instance.Incarnation)
+                        return TerminatedResult(instance.InstanceId);
+                }
                 // The host resumes what it saved with a runnable time, on time (C-12), and forgets
                 // what has finished.
                 if (checkpoint.LocalWakeUtc is { } due &&
@@ -737,6 +749,10 @@ public sealed partial class WorkflowHost
                 else if (WorkflowStoreRules.IsTerminal(instance.Status))
                     _control.Unschedule(instance.InstanceId);
                 return result;
+            }
+            catch (TerminationCommittedException)
+            {
+                return TerminatedResult(instance.InstanceId);
             }
             finally
             {
@@ -793,6 +809,11 @@ public sealed partial class WorkflowHost
                     return new CheckpointReply(CheckpointReplyKind.Acknowledged, result.Revision,
                         PendingCancellation: result.PendingCancellation, Parked: result.Parked,
                         UnreadEvents: result.UnreadEvents);
+                case WorkflowCommitStatus.TerminationRequested:
+                    if (await FinishTerminationAsync(instance.InstanceId, epoch))
+                        throw new TerminationCommittedException();
+                    return new CheckpointReply(CheckpointReplyKind.Conflict, result.Revision,
+                        new InvalidOperationException("Termination superseded this transition"));
                 case WorkflowCommitStatus.EventsChanged:
                     return new CheckpointReply(CheckpointReplyKind.EventsChanged, result.Revision,
                         new WorkflowEngineException(WorkflowErrorKind.InvalidState,

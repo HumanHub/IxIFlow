@@ -53,7 +53,7 @@ public sealed class FailureClassificationTests
             }
         Assert.Equal(WorkflowStatus.Suspended, (await repository.GetWorkflowInstanceAsync(parentId))!.Status);
         Assert.NotEqual(WorkflowStatus.Failed,
-            Assert.Single(await repository.GetWorkflowInstancesByNameAsync("ClassifiedTimedChild")).Status);
+            Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "ClassifiedTimedChild", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Status);
 
         // The host's own timers fired with the clock as well; scan until the parent has finished.
         repository.FailCommit = _ => false;

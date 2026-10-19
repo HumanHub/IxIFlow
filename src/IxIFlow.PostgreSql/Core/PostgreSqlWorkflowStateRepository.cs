@@ -252,18 +252,22 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, incarnation, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
+                    (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, runnable_at_utc, state_json, revision,
                      parent_instance_id)
-                SELECT child.instance_id, child.incarnation, child.workflow_name, child.status, child.correlation_id, @Now,
+                SELECT child.instance_id, child.incarnation, child.workflow_name, child.workflow_version, child.created_at_utc, child.stop_kind, child.stop_crash_count, child.status, child.correlation_id, @Now,
                     child.state_json, 1, @ParentInstanceId
                 FROM unnest(@Ids::text[], @Incarnations::uuid[], @Names::text[], @Statuses::text[], @CorrelationIds::text[],
-                    @Payloads::text[]) AS child (instance_id, incarnation, workflow_name, status, correlation_id, state_json)
+                    @Payloads::text[], @Versions::integer[], @Created::timestamptz[], @StopKinds::text[], @StopCrashCounts::integer[]) AS child (instance_id, incarnation, workflow_name, status, correlation_id, state_json, workflow_version, created_at_utc, stop_kind, stop_crash_count)
                 """, new
         {
             Now = Timestamp(now),
             ParentInstanceId = parentInstanceId,
             Ids = children.Select(child => child.Instance!.InstanceId).ToArray(),
             Incarnations = children.Select(_ => Guid.NewGuid()).ToArray(),
+            StopKinds = children.Select(child => child.Instance!.StopKind?.ToString()).ToArray(),
+            StopCrashCounts = children.Select(child => child.Instance!.StopCrashCount).ToArray(),
+            Versions = children.Select(child => child.Instance!.WorkflowVersion).ToArray(),
+            Created = children.Select(child => Timestamp(child.Instance!.CreatedAt)).ToArray(),
             Names = children.Select(child => child.Instance!.WorkflowName).ToArray(),
             Statuses = children.Select(child => child.Instance!.Status.ToString()).ToArray(),
             CorrelationIds = children.Select(child => child.Instance!.CorrelationId).ToArray(),
@@ -281,10 +285,12 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 WHERE instance_id = @InstanceId;
                 """;
 
-    internal override string QuerySql(string filter) => $"SELECT {StampedRowColumns} FROM ixiflow_workflow_instances WHERE {filter}";
 
     internal override string? Sql(Statement statement) => statement switch
     {
+        Statement.TerminationChildren => "SELECT instance_id FROM ixiflow_workflow_instances WHERE parent_instance_id=@InstanceId ORDER BY instance_id",
+        Statement.TerminationState => "SELECT incarnation AS Incarnation, status AS Status, cancellation_json AS CancellationJson FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE; SELECT clock_timestamp()",
+        Statement.TerminationRequest => "UPDATE ixiflow_workflow_instances SET cancellation_json=@ReasonJson, cancellation_acknowledged=false, runnable_at_utc=@Now WHERE instance_id=@InstanceId",
         Statement.OutboxClock => """
             SELECT clock_timestamp()
             """,
@@ -574,14 +580,15 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
-              VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
+                  (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
+              VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
-                  workflow_name = @WorkflowName, status = @Status,
+                  workflow_name = @WorkflowName, workflow_version = @WorkflowVersion, created_at_utc = @CreatedAtUtc,
+                  stop_kind = @StopKind, stop_crash_count = @StopCrashCount, status = @Status,
                   correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
                   runnable_at_utc = @RunnableAtUtc,
                   inbox_read_through = COALESCE(@InboxReadThrough, inbox_read_through),
@@ -604,13 +611,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                     crash_count = CASE WHEN @ClearsCrashCount THEN 0 ELSE crash_count END
                 WHERE instance_id = @InstanceId
                 """,
-        Statement.ReadParts => """
-            SELECT instance_id AS InstanceId, part_key AS PartKey, json AS Json FROM ixiflow_workflow_parts
-            WHERE instance_id = ANY(@Ids);
-            SELECT instance_id AS InstanceId, revision AS Revision, incarnation AS Incarnation
-            FROM ixiflow_workflow_instances
-            WHERE instance_id = ANY(@Ids);
-            """,
         Statement.DeleteState => """
             SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId
             """,
@@ -638,10 +638,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // commit, a claim and a delete must still not interleave. It is taken after the row lock of the instance's
         // parent, as a child's commit takes that one first, and before the instance's own row.
         Statement.LockIdentity => "SELECT pg_advisory_xact_lock(hashtextextended(@InstanceId, 0))",
-        Statement.ByName => "workflow_name = @Value",
-        Statement.ByStatus => "status = @Value",
-        Statement.ByCorrelation => "correlation_id = @Value",
-        Statement.ByParent => "parent_instance_id = @Value",
         Statement.DeleteAllParts => "DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId",
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key = ANY(@Keys)
@@ -669,6 +665,10 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id varchar(100) COLLATE "C" NOT NULL PRIMARY KEY,
             workflow_name varchar(200) COLLATE "C" NOT NULL,
+            workflow_version INTEGER NOT NULL,
+            created_at_utc timestamptz NOT NULL,
+            stop_kind varchar(50) NULL,
+            stop_crash_count INTEGER NULL,
             status varchar(50) COLLATE "C" NOT NULL,
             correlation_id varchar(100) COLLATE "C" NULL,
             runnable_at_utc timestamptz NULL,
@@ -682,14 +682,16 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             incarnation uuid NOT NULL DEFAULT gen_random_uuid(),
             parent_instance_id varchar(100) COLLATE "C" NULL
         );
-        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_status
-            ON ixiflow_workflow_instances (status);
-        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_workflow_name
-            ON ixiflow_workflow_instances (workflow_name);
-        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_correlation_id
-            ON ixiflow_workflow_instances (correlation_id);
-        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_parent
-            ON ixiflow_workflow_instances (parent_instance_id) WHERE parent_instance_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_creation ON ixiflow_workflow_instances (created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_status_creation ON ixiflow_workflow_instances (status, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_workflow_creation ON ixiflow_workflow_instances (workflow_name, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_workflow_status_creation ON ixiflow_workflow_instances (workflow_name, status, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_version_creation ON ixiflow_workflow_instances (workflow_version, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_workflow_version_creation ON ixiflow_workflow_instances (workflow_name, workflow_version, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_stop_creation ON ixiflow_workflow_instances (stop_kind, created_at_utc DESC, instance_id ASC) WHERE stop_kind IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_correlation_creation ON ixiflow_workflow_instances (correlation_id, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_parent_creation ON ixiflow_workflow_instances (parent_instance_id, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_ended_creation ON ixiflow_workflow_instances (ended_at_utc, created_at_utc DESC, instance_id ASC);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_runnable
             ON ixiflow_workflow_instances (runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_events (

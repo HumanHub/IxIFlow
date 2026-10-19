@@ -1662,20 +1662,17 @@ public class StructuredTryWaitTests
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
             _inner.GetWorkflowInstanceSummaryAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
-            _inner.GetChildInstancesAsync(parentInstanceId);
         public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
             IReadOnlyCollection<string> instanceIds) =>
             StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
 
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
-            _inner.GetWorkflowInstancesByNameAsync(workflowName);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
-            _inner.GetWorkflowInstancesByStatusAsync(status);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
-            _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
+            _inner.QueryInstancesAsync(query);
+
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason) =>
+            _inner.RequestTerminationAsync(instanceId, reason);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);

@@ -302,7 +302,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
 
         var requested = await secondHost.GetRequiredService<IWorkflowClient>()
             .CancelAsync(saved.InstanceId, new CancellationReason
@@ -665,7 +665,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
 
         try
         {
@@ -702,7 +702,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         try
         {
             // Three lease lengths: a lease that was not renewed would have expired.
@@ -760,8 +760,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var engine = host.GetRequiredService<IWorkflowClient>();
         var executing = engine.RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var instance = Assert.Single(await repository
-            .GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var instance = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         await engine.CancelAsync(instance.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
         await repository.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1416,8 +1415,6 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
             inner.GetWorkflowInstanceSummaryAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
-            inner.GetChildInstancesAsync(parentInstanceId);
         public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
             IReadOnlyCollection<string> instanceIds) =>
             StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
@@ -1466,12 +1463,11 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             return await inner.CommitWorkflowInstanceAsync(commit);
         }
 
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string name) =>
-            inner.GetWorkflowInstancesByNameAsync(name);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
-            inner.GetWorkflowInstancesByStatusAsync(status);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string id) =>
-            inner.GetWorkflowInstancesByCorrelationIdAsync(id);
+        public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
+            inner.QueryInstancesAsync(query);
+
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason) =>
+            inner.RequestTerminationAsync(instanceId, reason);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             inner.GetTraceAsync(instanceId, afterSequence, limit);
@@ -1692,7 +1688,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             .RunAsync(definition, new LeaseData(),
                 new WorkflowOptions { CorrelationId = correlationId });
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
+        var saved = Assert.Single(await Task.WhenAll((await firstRepository.QueryInstancesAsync(new InstanceQuery(CorrelationId: correlationId, Limit: int.MaxValue))).Items.Select(async row => (await firstRepository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         WorkflowExecutionResult attempted;
         try
         {
@@ -1789,7 +1785,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             .RunAsync(definition, new LeaseData(),
                 new WorkflowOptions { CorrelationId = correlationId });
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await firstRepository.GetWorkflowInstancesByCorrelationIdAsync(correlationId));
+        var saved = Assert.Single(await Task.WhenAll((await firstRepository.QueryInstancesAsync(new InstanceQuery(CorrelationId: correlationId, Limit: int.MaxValue))).Items.Select(async row => (await firstRepository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         try
         {
             await using (var connection = newConnection())

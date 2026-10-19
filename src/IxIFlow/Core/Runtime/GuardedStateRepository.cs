@@ -117,9 +117,6 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetTraceAsync(instanceId, afterSequence, limit),
             $"Reading the trace of workflow instance '{instanceId}'");
 
-    public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
-        Guard(() => _store.GetChildInstancesAsync(parentInstanceId),
-            $"Reading the children of workflow instance '{parentInstanceId}'");
 
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
         Guard(() => _store.GetWorkflowInstanceAsync(instanceId),
@@ -129,17 +126,13 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetWorkflowInstanceSummaryAsync(instanceId),
             $"Reading workflow instance '{instanceId}'");
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
-        Guard(() => _store.GetWorkflowInstancesByNameAsync(workflowName),
-            $"Listing instances of workflow '{workflowName}'");
+    public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
+        Guard(() => _store.QueryInstancesAsync(query), "Searching workflow instances");
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
-        Guard(() => _store.GetWorkflowInstancesByStatusAsync(status),
-            $"Listing {status} workflow instances");
+    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason) =>
+        Guard(() => _store.RequestTerminationAsync(instanceId, reason), "Requesting workflow termination");
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
-        Guard(() => _store.GetWorkflowInstancesByCorrelationIdAsync(correlationId),
-            $"Listing workflow instances correlated by '{correlationId}'");
+
 
     public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) =>
         Guard(() => _store.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention),

@@ -1079,7 +1079,7 @@ public class EngineContractRegressionTests
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => engine.RunAsync(parent, new RegressionData()));
         Assert.Contains("Workflow definition not found: MissingChild v1", error.Message);
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("MissingChildParent"));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "MissingChildParent", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.NotEqual(WorkflowStatus.Failed, saved.Status);
 
         await scope.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(

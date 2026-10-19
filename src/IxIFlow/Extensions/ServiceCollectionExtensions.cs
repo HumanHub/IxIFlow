@@ -32,6 +32,7 @@ public static class ServiceCollectionExtensions
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
+        services.AddSingleton<IWorkflowOperations, HostedWorkflowOperations>();
         services.AddSingleton<IWorkflowIngressClient, WorkflowIngressClient>();
         services.AddScoped<WorkflowHost.SlotClient>();
         services.AddScoped<RunControl>();

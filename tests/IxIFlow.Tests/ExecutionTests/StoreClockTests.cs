@@ -302,7 +302,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         // The child is started, but the parent's run holds the only slot, so the child has not run.
         WorkflowInstance? started = null;
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTime.UtcNow < deadline && (started = (await store.GetWorkflowInstancesByNameAsync("SlotlessChild"))
+        while (DateTime.UtcNow < deadline && (started = (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "SlotlessChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
                    .SingleOrDefault(item => item.ParentInstanceId == instanceId)) == null)
             await Task.Delay(20);
         await Task.Delay(300);
@@ -341,7 +341,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         // The child runs in the other slot, and its own deadline ends its wait.
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         WorkflowInstance? started = null;
-        while ((started = (await store.GetWorkflowInstancesByNameAsync("StoreClockChild"))
+        while ((started = (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "StoreClockChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
                    .SingleOrDefault(item => item.ParentInstanceId == instanceId)) == null)
         {
             Assert.True(DateTime.UtcNow < deadline, "The child was never started");
@@ -352,7 +352,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         WorkflowInstance? childInstance = null;
         while (DateTime.UtcNow < deadline &&
-               (childInstance = (await store.GetWorkflowInstancesByNameAsync("StoreClockChild"))
+               (childInstance = (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "StoreClockChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
                    .SingleOrDefault(item => item.ParentInstanceId == instanceId))?.Status != WorkflowStatus.Completed)
             await Task.Delay(20);
         Assert.Equal(WorkflowStatus.Completed, childInstance?.Status);
