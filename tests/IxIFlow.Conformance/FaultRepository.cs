@@ -18,6 +18,12 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
     public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
         inner.GetWorkflowDemandsAsync(instanceId);
 
+    public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default) =>
+        inner.GetUnschedulableAsync(limit, cursor, cancellationToken);
+    public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
+        inner.CanScheduleAsync(demands, cancellationToken);
+
     public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
         inner.GetLiveMembersAsync(cancellationToken);
 

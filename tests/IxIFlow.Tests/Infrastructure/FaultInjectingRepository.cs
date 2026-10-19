@@ -18,6 +18,12 @@ public class FaultInjectingRepository : IWorkflowStateRepository
     public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
         _inner.GetWorkflowDemandsAsync(instanceId);
 
+    public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default) =>
+        _inner.GetUnschedulableAsync(limit, cursor, cancellationToken);
+    public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
+        _inner.CanScheduleAsync(demands, cancellationToken);
+
     public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
         _inner.GetLiveMembersAsync(cancellationToken);
 
