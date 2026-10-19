@@ -41,17 +41,10 @@ public sealed partial class WorkflowHost
         {
             if (reference.Bytes > _limits.MaxPayloadBytes || reference.Bytes > int.MaxValue)
                 throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "MaxPayloadBytes exceeded");
-            await using var transfer = new ExecutionPayloadTransfer(PayloadStore, _limits);
-            var body = new byte[checked((int)reference.Bytes)];
-            var offset = 0;
-            do
-            {
-                var reply = await transfer.ReadAsync(new(Guid.Empty, "result", reference, offset));
-                if (reply.Refusal is { } kind) throw new WorkflowEngineException(kind, $"Payload {reference.Digest} is unavailable");
-                reply.Body!.CopyTo(body.AsSpan(offset));
-                offset += reply.Body.Length;
-            } while (offset < body.Length);
-            return body;
+            var transfer = new ExecutionPayloadTransfer(PayloadStore, _limits);
+            var reply = await transfer.ReadAsync(new(Guid.Empty, "result", reference));
+            if (reply.Refusal is { } kind) throw new WorkflowEngineException(kind, $"Payload {reference.Digest} is unavailable");
+            return reply.Body!;
         }
         private readonly RunControl _control = control ?? new RunControl();
         private readonly CancellationWatch _watch = watch ?? new CancellationWatch(repository, timeProvider);
@@ -1157,7 +1150,6 @@ public sealed partial class WorkflowHost
             public void Dispose()
             {
                 operations._assignments.TryRemove(identity, out _);
-                if (_payloadTransfer != null) _ = _payloadTransfer.DisposeAsync();
             }
 
             public bool IsActive(string instanceId)
@@ -1174,7 +1166,6 @@ public sealed partial class WorkflowHost
                     commit.Epoch != owner.Epoch || commit.Incarnation != instance.Incarnation)
                     return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Conflict,
                         Conflict: ConflictReason.NotAssigned));
-                if (request.UploadOnly) return UploadAsync(request);
                 lock (_queue.Sync)
                 {
                     var hash = Convert.ToHexString(commit.ContentHash);
@@ -1189,21 +1180,6 @@ public sealed partial class WorkflowHost
                     _queue.Tail = completion.Task;
                     _ = ApplyAsync(preceding, request, completion);
                     return completion.Task;
-                }
-            }
-
-            private async Task<CheckpointReply> UploadAsync(Checkpoint request)
-            {
-                if (request.Payload is null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Missing payload chunk");
-                try
-                {
-                    await PayloadTransfer.AcceptAsync(request.Payload);
-                    return new(identity, CheckpointReplyKind.UploadAccepted);
-                }
-                catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure)
-                {
-                    LastCommitError = error;
-                    return new(identity, CheckpointReplyKind.Unknown, Error: error.Message);
                 }
             }
 
@@ -1222,6 +1198,7 @@ public sealed partial class WorkflowHost
                     else
                     {
                         operations.CheckLimit(commit, _saved);
+                        if (request.Payloads is { Count: > 0 } payloads) await PayloadTransfer.AcceptAsync(payloads);
                         reply = await operations.CommitAsync(instance, commit, owner.Epoch, identity, _saved);
                         if (reply.Kind == CheckpointReplyKind.Ack && reply.Revision >= _saved.Revision)
                         {
@@ -1232,6 +1209,12 @@ public sealed partial class WorkflowHost
                     }
                     lock (_queue.Sync) _outstanding.Remove(commit.CommitId);
                     completion.TrySetResult(reply);
+                }
+                catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure)
+                {
+                    LastCommitError = error;
+                    lock (_queue.Sync) _outstanding.Remove(request.Commit.CommitId);
+                    completion.TrySetResult(new(identity, CheckpointReplyKind.Unknown, Error: error.Message));
                 }
                 catch (Exception error)
                 {

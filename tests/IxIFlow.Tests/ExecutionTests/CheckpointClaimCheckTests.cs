@@ -438,6 +438,29 @@ public sealed class CheckpointClaimCheckTests
     }
 
     [Fact]
+    public async Task WholeReadPinsUntilSnapshotAndSurvivesCollectionAfterReply()
+    {
+        var store = new InMemoryWorkflowStateRepository().PayloadStore;
+        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Large));
+        var reference = await store.PutAsync(body);
+        var probe = new ProbeStore(store)
+        {
+            BeforeGet = async r => Assert.Null(await store.TryCollectAsync(r, TimeSpan.Zero))
+        };
+        var assignmentId = Guid.NewGuid();
+        var reply = await new ExecutionPayloadTransfer(probe, ExecutionLimits.Default)
+            .ReadAsync(new(assignmentId, "snapshot", reference));
+        Assert.Equal(assignmentId, reply.AssignmentId);
+        Assert.Null(reply.Refusal);
+        var deletion = await store.TryCollectAsync(reference, TimeSpan.Zero);
+        Assert.NotNull(deletion);
+        Assert.True(await store.DeleteAsync(deletion));
+        Assert.Null(await store.GetAsync(reference));
+        Assert.Equal(body, reply.Body);
+        reference.Verify(reply.Body!);
+    }
+
+    [Fact]
     public async Task AggregateHydrationLimitAndPutLimitAreEnforced()
     {
         var store = new InMemoryWorkflowStateRepository(TimeProvider.System, payloadSettings: new(64)).PayloadStore;
@@ -481,10 +504,14 @@ public sealed class CheckpointClaimCheckTests
         public Dictionary<string, int> Puts { get; } = [];
         public PayloadReference? Broken { get; set; }
         public bool Corrupt { get; set; }
+        public Func<PayloadReference, Task>? BeforeGet { get; init; }
         public async ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> body, CancellationToken ct = default)
         { var r = await inner.PutAsync(body, ct); Puts[r.Digest] = Puts.GetValueOrDefault(r.Digest) + 1; return r; }
-        public async ValueTask<ReadOnlyMemory<byte>?> GetAsync(PayloadReference r, CancellationToken ct = default) =>
-            r == Broken ? Corrupt ? new byte[(int)r.Bytes] : null : await inner.GetAsync(r, ct);
+        public async ValueTask<ReadOnlyMemory<byte>?> GetAsync(PayloadReference r, CancellationToken ct = default)
+        {
+            if (BeforeGet != null) await BeforeGet(r);
+            return r == Broken ? Corrupt ? new byte[(int)r.Bytes] : null : await inner.GetAsync(r, ct);
+        }
         public ValueTask<PayloadReservation> ReserveAsync(PayloadReference r, TimeSpan lifetime, CancellationToken ct = default) => inner.ReserveAsync(r, lifetime, ct);
         public ValueTask<bool> PublishAsync(PayloadReservation r, ReadOnlyMemory<byte> body, IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken ct = default) => inner.PublishAsync(r, body, dependencies, ct);
         public ValueTask<PayloadDeletion?> TryCollectAsync(PayloadReference r, TimeSpan grace, CancellationToken ct = default) => inner.TryCollectAsync(r, grace, ct);

@@ -99,12 +99,10 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             cancellationToken.ThrowIfCancellationRequested();
             if (payloads.Pending.Any())
             {
-                await using var transfer = new ExecutionPayloadTransfer(payloadStore ?? (store as IPayloadStoreProvider)?.PayloadStore ??
+                var transfer = new ExecutionPayloadTransfer(payloadStore ?? (store as IPayloadStoreProvider)?.PayloadStore ??
                     throw new InvalidOperationException("No payload store configured"), limits);
-                foreach (var value in payloads.Pending)
-                    for (var offset = 0; offset < value.Encoded.Length; offset += PayloadChunk.MaxChunkBytes)
-                        await transfer.AcceptAsync(new(value.Identity, offset,
-                            value.Encoded.Slice(offset, Math.Min(PayloadChunk.MaxChunkBytes, value.Encoded.Length - offset)).ToArray(), value.Dependencies));
+                await transfer.AcceptAsync(payloads.Pending.Select(value =>
+                    new PayloadBody(value.Identity, value.Encoded.ToArray(), value.Dependencies)).ToArray());
             }
             // Stores classify retryable concurrency errors as Retry; arbitrary exceptions propagate.
             var result = await _admission.AdmitWorkflowInstanceAsync(commit, admission);

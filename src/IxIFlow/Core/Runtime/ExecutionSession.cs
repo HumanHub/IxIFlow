@@ -30,20 +30,9 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
 
     public async Task<CheckpointReply> CheckpointAsync(CheckpointCommit commit)
     {
-        foreach (var value in commit.PreservesPayloadPins ? [] : Payloads.Pending)
-        {
-            var body = value.Encoded;
-            for (var offset = 0; offset < body.Length; offset += PayloadChunk.MaxChunkBytes)
-            {
-                var chunk = new PayloadChunk(value.Identity, offset,
-                    body.Slice(offset, Math.Min(PayloadChunk.MaxChunkBytes, body.Length - offset)).ToArray(),
-                    value.Dependencies);
-                var uploaded = await host.CheckpointAsync(new(AssignmentId, commit, chunk, UploadOnly: true));
-                Check(uploaded.AssignmentId, uploaded.Conflict);
-                if (uploaded.Kind != CheckpointReplyKind.UploadAccepted) return uploaded;
-            }
-        }
-        var reply = await host.CheckpointAsync(new(AssignmentId, commit));
+        var payloads = (commit.PreservesPayloadPins ? [] : Payloads.Pending)
+            .Select(value => new PayloadBody(value.Identity, value.Encoded.ToArray(), value.Dependencies)).ToArray();
+        var reply = await host.CheckpointAsync(new(AssignmentId, commit, payloads));
         Check(reply.AssignmentId, reply.Conflict);
         if (reply.Kind == CheckpointReplyKind.Ack)
         {
@@ -117,21 +106,11 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
     {
         if (reference.Bytes > Limits.MaxPayloadBytes || reference.Bytes > int.MaxValue)
             throw new PayloadHydrationLimitException(Limits.MaxPayloadBytes);
-        var body = new byte[(int)reference.Bytes];
-        long offset = 0;
-        do
-        {
-            var reply = await host.ReadPayloadAsync(new(AssignmentId, InstanceId, reference, offset));
-            Check(reply.AssignmentId, reply.Conflict);
-            if (reply.Refusal is { } refusal)
-                throw new WorkflowEngineException(refusal, $"Payload {reference.Digest} could not be read");
-            if (reply.Body is not { } chunk || chunk.Length > PayloadChunk.MaxChunkBytes ||
-                chunk.Length > body.Length - offset || chunk.Length == 0 && offset < body.Length)
-                throw new InvalidDataException("Invalid payload chunk");
-            chunk.CopyTo(body.AsSpan((int)offset));
-            offset += chunk.Length;
-        } while (offset < body.Length);
-        return body;
+        var reply = await host.ReadPayloadAsync(new(AssignmentId, InstanceId, reference));
+        Check(reply.AssignmentId, reply.Conflict);
+        if (reply.Refusal is { } refusal)
+            throw new WorkflowEngineException(refusal, $"Payload {reference.Digest} could not be read");
+        return reply.Body ?? throw new InvalidDataException("Missing payload body");
     }
 
     public async Task<StartChildReply> StartChildAsync(string stepId, ChildStart start, string hash)
