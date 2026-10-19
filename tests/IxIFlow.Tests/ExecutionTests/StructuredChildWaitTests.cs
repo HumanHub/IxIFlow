@@ -1026,8 +1026,8 @@ public sealed class StructuredChildWaitTests
             .Invoke<ChildData>("AnyChild", 1, step => step.CancelWithParent(cancel))
             .Build();
 
-        Assert.NotEqual(new Core.Runtime.WorkflowScopeCatalog(Parent(true)).Fingerprint,
-            new Core.Runtime.WorkflowScopeCatalog(Parent(false)).Fingerprint);
+        Assert.NotEqual(new Core.Runtime.WorkflowScopeCatalog(Parent(true)).StructureHash,
+            new Core.Runtime.WorkflowScopeCatalog(Parent(false)).StructureHash);
     }
 
     // A child that waits for one approval and records it.

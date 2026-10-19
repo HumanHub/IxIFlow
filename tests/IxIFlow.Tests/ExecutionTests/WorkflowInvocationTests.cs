@@ -246,9 +246,9 @@ public class WorkflowInvocationTests
     }
 
     // Child workflow definition
+    [IxIFlow.Core.Workflow("ChildWorkflow", Version = 1)]
     public class ChildWorkflow : IWorkflow<ChildWorkflowData>
     {
-        public int Version { get; } = 1;
 
         public void Build(IWorkflowBuilder<ChildWorkflowData> builder)
         {
@@ -261,9 +261,9 @@ public class WorkflowInvocationTests
     }
 
     // Parent workflow definition
+    [IxIFlow.Core.Workflow("ParentWorkflow", Version = 1)]
     public class ParentWorkflow : IWorkflow<ParentWorkflowData>
     {
-        public int Version { get; } = 1;
 
         public void Build(IWorkflowBuilder<ParentWorkflowData> builder)
         {

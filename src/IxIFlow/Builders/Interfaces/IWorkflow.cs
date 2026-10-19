@@ -1,16 +1,11 @@
 namespace IxIFlow.Builders.Interfaces;
 
 /// <summary>
-/// Represents a workflow definition with versioning support
+/// Builds a workflow whose identity is declared by WorkflowAttribute on the class
 /// </summary>
 /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
 public interface IWorkflow<TWorkflowData>
 {
-    /// <summary>
-    /// Gets the version of this workflow definition
-    /// </summary>
-    int Version { get; }
-
     /// <summary>
     /// Builds the workflow definition using the provided builder
     /// </summary>

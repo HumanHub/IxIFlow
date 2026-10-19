@@ -107,7 +107,7 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
-    /// Invokes a workflow by its type
+    /// Invokes a registered workflow class using its declared WorkflowAttribute identity
     /// </summary>
     /// <typeparam name="TWorkflow">The workflow type to invoke</typeparam>
     /// <typeparam name="TInvokedData">The data type for the invoked workflow</typeparam>

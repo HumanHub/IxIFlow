@@ -64,9 +64,9 @@ public sealed class MappingAnalyzerTests
             public override int Amount { get; set; }
         }
 
-        public sealed class ChildFlow : IxIFlow.Builders.Interfaces.IWorkflow<ChildData>
+        [IxIFlow.Core.Workflow("ChildFlow", Version = 1)] public sealed class ChildFlow : IxIFlow.Builders.Interfaces.IWorkflow<ChildData>
         {
-            public int Version => 1;
+
 
             public void Build(IxIFlow.Builders.Interfaces.IWorkflowBuilder<ChildData> builder)
             {

@@ -467,7 +467,7 @@ public sealed class ParallelForEachTests
     }
 
     [Fact]
-    public void TheFingerprintTellsSequentialFromParallelAndTheCap()
+    public void TheStructureHashTellsSequentialFromParallelAndTheCap()
     {
         WorkflowDefinition Define(Action<Builders.Interfaces.IForEachSetup<Approvals>> setup) =>
             Workflow.Create<Approvals>("Modes")
@@ -475,12 +475,12 @@ public sealed class ParallelForEachTests
                 .ForEach(ctx => ctx.WorkflowData.Approvers, (body, _) => body.Step<Noop>(), setup)
                 .Build();
 
-        var fingerprints = new[]
+        var structureHashs = new[]
         {
             Define(_ => { }), Define(setup => setup.Parallel()), Define(setup => setup.Parallel(2))
-        }.Select(definition => new WorkflowScopeCatalog(definition).Fingerprint);
+        }.Select(definition => new WorkflowScopeCatalog(definition).StructureHash);
 
-        Assert.Equal(3, fingerprints.Distinct().Count());
+        Assert.Equal(3, structureHashs.Distinct().Count());
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository? store = null, Outbox? outbox = null)

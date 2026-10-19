@@ -604,9 +604,9 @@ public sealed class ParityChainUndo : IAsyncActivity
 
 public enum ParityMode { Ready, Other }
 
+[IxIFlow.Core.Workflow("ParityChildWorkflow", Version = 3)]
 public sealed class ParityChildWorkflow : IWorkflow<FlowData>
 {
-    public int Version => 3;
     public void Build(IWorkflowBuilder<FlowData> builder) => builder.Step<Multiply>(setup => setup
         .Input(a => a.Value).From(ctx => ctx.WorkflowData.Value)
         .Output(a => a.Result).To(ctx => ctx.WorkflowData.Result));

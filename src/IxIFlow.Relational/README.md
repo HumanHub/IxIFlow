@@ -4,7 +4,7 @@ Shared persistence implementation for the three first-party relational stores. T
 
 ## Shared protocol
 
-Persisted execution state must be a validated schema-3 checkpoint JSON object. Whole checkpoints are split into a trunk and state parts; full reads assemble them at one revision. Escaped strings, opaque state and excess JSON depth are rejected.
+Persisted execution state must be a validated schema-4 checkpoint JSON object. Whole checkpoints are split into a trunk and state parts; full reads assemble them at one revision. Escaped strings, opaque state and excess JSON depth are rejected.
 
 RelationalWorkflowStateRepository owns revision and receipt checks, ownership fencing, inbox arrivals and gone-child sequences, waits, child starts and cancellations, parent notices, parts, trace dispatch, runnable calculation, outbox claims, recovery scans, deletion and instance assembly.
 
@@ -76,3 +76,10 @@ The outbox has immutable event rows, publisher registrations with persisted endp
 Completion materialization takes the publisher lock shared; registration, unregistration and disabling take it exclusive. SQL Server uses a transaction application lock and PostgreSQL an advisory transaction lock. SQLite uses its already-held immediate writer transaction without a lock query. Registration starts with future events unless replayRetained is explicitly enabled; it never resets a delivery or re-enables a disabled publisher. Unregistration gives up pending deliveries and removes the subscription. Publishers absent from a particular host remain registered until explicitly unregistered.
 
 ClaimDeliveries takes delivery row locks, then the core samples OutboxClock and stamps the lease and the first-attempt time while incrementing attempts. DeliveryUpdate persists a row only under that transaction and lock. Renewal and settlement lock the delivery, read the store clock, and reject an expired or replaced token. A retry sends only a duration; the core stamps its next attempt from store time. Disabling is atomic with the fenced settlement and gives up all other pending deliveries for that publisher. Acknowledgments after disablement cannot revive a delivery.
+
+Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 4
+stores a compiler-free `StructureHash` and refuses incompatible definitions. Earlier saved instances
+are unreadable without migration; reset development state and restart hosts together. See the
+[identity and structure-hash contract](../../docs/fluent-api.md#identity-and-expressions).
+
+Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.

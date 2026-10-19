@@ -648,13 +648,6 @@ public class WorkflowStep
 
     internal Runtime.WorkflowStepDelegates Runtime { get; set; } = null!;
 
-    // Author-supplied behavior, kept separately from the runtime adapters built around it.
-    internal Delegate? ConditionBehavior { get; set; }
-    internal Delegate? ParallelCompletionBehavior { get; set; }
-    internal Delegate? RequestSubjectBehavior { get; set; }
-    internal Delegate? ForEachCompletionBehavior { get; set; }
-    internal Delegate? ForEachItemsBehavior { get; set; }
-    internal Delegate? ResultBehavior { get; set; }
     internal System.Linq.Expressions.LambdaExpression? OutcomeExpression { get; set; }
 
     /// <summary>
@@ -711,7 +704,7 @@ public class WorkflowStep
     /// </summary>
     public Func<object, bool>? CompiledCondition { get; set; }
 
-    /// <summary>For an expression-based condition, the expression it was compiled from; its shape and captures are fingerprinted.</summary>
+    /// <summary>For an expression-based condition, the expression it was compiled from; its shape and referenced members contribute to the structure hash.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public System.Linq.Expressions.LambdaExpression? ConditionExpression { get; set; }
 
@@ -844,7 +837,7 @@ public class WorkflowStep
     /// <summary>For a <c>ForEach</c> step, the member path its results are stored to, such as <c>WorkflowData.Results</c>.</summary>
     public string? ForEachIntoPath { get; set; }
 
-    /// <summary>For a <c>ForEach</c> step that stores results, its target expression; its shape and captures are fingerprinted.</summary>
+    /// <summary>For a <c>ForEach</c> step that stores results, its target expression; its shape and referenced members contribute to the structure hash.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public System.Linq.Expressions.LambdaExpression? ForEachIntoExpression { get; set; }
 
@@ -878,7 +871,7 @@ public class WorkflowStep
     /// </summary>
     public Type? ResumeEventType { get; set; }
 
-    /// <summary>A suggested event payload for discovery UIs only; excluded from the fingerprint.</summary>
+    /// <summary>A suggested event payload for discovery UIs only; excluded from the structure hash.</summary>
     public object? DefaultPayload { get; set; }
 
     /// <summary>For a request step, the name its <c>WaitFor</c> uses.</summary>
@@ -933,12 +926,6 @@ public class WorkflowStep
             OutputMappings = OutputMappings.Select(m => m.Clone()).ToList(),
             SourceLocation = SourceLocation,
             Runtime = Runtime,
-            ConditionBehavior = ConditionBehavior,
-            ParallelCompletionBehavior = ParallelCompletionBehavior,
-            RequestSubjectBehavior = RequestSubjectBehavior,
-            ForEachCompletionBehavior = ForEachCompletionBehavior,
-            ForEachItemsBehavior = ForEachItemsBehavior,
-            ResultBehavior = ResultBehavior,
             OutcomeExpression = OutcomeExpression,
             CompiledCondition = CompiledCondition,
             ConditionExpression = ConditionExpression,
@@ -1104,7 +1091,7 @@ public class PropertyMapping
     /// </summary>
     public string TargetProperty { get; set; } = string.Empty;
 
-    /// <summary>The source or destination expression the mapping was built from; its shape and captures are fingerprinted.</summary>
+    /// <summary>The source or destination expression the mapping was built from; its shape and referenced members contribute to the structure hash.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public System.Linq.Expressions.LambdaExpression? Expression { get; set; }
 
