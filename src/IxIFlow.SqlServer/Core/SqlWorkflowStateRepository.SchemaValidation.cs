@@ -13,7 +13,7 @@ public sealed partial class SqlWorkflowStateRepository
         {
             using var schema = await connection.QueryMultipleAsync("""
                 SELECT InstanceId, CommandId, CommandOrder, CommandJson FROM dbo.IxIFlowWorkflowDebugCommands WHERE 1=0;
-                SELECT Digest, Bytes, Generation, Body, StateJson, CreatedAtUtc FROM dbo.IxIFlowWorkflowPayloads WHERE 1=0;
+                SELECT Digest, Bytes, Body, MetadataJson FROM dbo.IxIFlowWorkflowPayloads WHERE 1=0;
                 SELECT Digest, OwnerKind, OwnerId FROM dbo.IxIFlowWorkflowPayloadRefs WHERE 1=0;
                 SELECT [InstanceId], [WorkflowName], [Status], [CorrelationId], [RunnableAtUtc], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
                 SELECT [InstanceId], [EventId], [Sequence], [EventType], [EventKey], [TargetWaitId], [Subject], [PayloadJson], [PayloadHash], [ReceivedAtUtc], [Outcome], [WaitId], [Rejection], [SettledAtUtc] FROM dbo.IxIFlowWorkflowEvents WHERE 1=0;

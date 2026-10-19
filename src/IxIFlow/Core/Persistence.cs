@@ -145,6 +145,8 @@ public static class WorkflowStoreRules
 /// </summary>
 public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore, IWorkflowDebugStore
 {
+    /// <summary>Bodies and pins stored transactionally with this repository's referencing rows.</summary>
+    IPayloadStore PayloadStore { get; }
     /// <summary>Registers a member and its capabilities atomically, stamping start and heartbeat with store time.</summary>
     Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default);
 
@@ -432,6 +434,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         {
             await PayloadStore.InTransactionAsync(async (pins, ct) =>
             {
+                foreach (var body in commit.PayloadBodies)
+                    await pins.PutAsync(body.Body, body.Dependencies, ct);
                 await pins.LockAsync(commit.PayloadOwner, commit.PayloadReferences, ct);
                 await pins.ReplaceAsync(commit.PayloadOwner, commit.PayloadReferences, ct);
                 ct.ThrowIfCancellationRequested();

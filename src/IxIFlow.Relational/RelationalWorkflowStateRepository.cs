@@ -562,9 +562,13 @@ public abstract partial class RelationalWorkflowStateRepository :
         var revision = checked(commit.ExpectedRevision + 1);
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (await BeginTransactionAsync(connection, Operation.Commit))!;
-        var payloadPins = Payloads.Enlist(transaction);
+        var payloadPins = PayloadStore.Enlist(transaction);
         if (!commit.PreservesPayloadPins)
-            await payloadPins.LockAsync(commit.PayloadOwner, commit.PayloadReferences);
+        {
+            await payloadPins.LockAsync(commit.PayloadOwner, commit.PayloadReferences
+                .Concat(commit.PayloadBodies.Select(body => body.Reference))
+                .Concat(commit.PayloadBodies.SelectMany(body => body.Dependencies)).Distinct().ToArray());
+        }
         WorkflowAdmissionRecord? admitted = null;
         if (admission != null)
         {
@@ -692,6 +696,8 @@ public abstract partial class RelationalWorkflowStateRepository :
             await CloseWaitsAsync(connection, transaction, commit.InstanceId, batch, now);
         if (!commit.PreservesPayloadPins)
         {
+            foreach (var body in commit.PayloadBodies)
+                await payloadPins.PutAsync(body.Body, body.Dependencies);
             await payloadPins.ReplaceAsync(commit.PayloadOwner, commit.PayloadReferences);
         }
         await ApplyPartsAsync(connection, transaction, commit);

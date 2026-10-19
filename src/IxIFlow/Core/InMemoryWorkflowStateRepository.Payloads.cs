@@ -4,11 +4,11 @@ using System.Collections.Concurrent;
 
 namespace IxIFlow.Core;
 
-public partial class InMemoryWorkflowStateRepository : IPayloadStoreProvider
+public partial class InMemoryWorkflowStateRepository
 {
     private IPayloadStore? _payloadStore;
     private PayloadStoreSettings _payloadSettings = new();
-    public IPayloadStore PayloadStore => LazyInitializer.EnsureInitialized(ref _payloadStore,
+    public virtual IPayloadStore PayloadStore => LazyInitializer.EnsureInitialized(ref _payloadStore,
         () => new MemoryPayloadStore(_time, _payloadSettings));
 
     private sealed class MemoryPayloadStore(TimeProvider time, PayloadStoreSettings settings) : CatalogPayloadStore(settings)
@@ -47,20 +47,22 @@ public partial class InMemoryWorkflowStateRepository : IPayloadStoreProvider
                             if (await Read(digest, token) is { } row) rows.Add(row);
                         return rows;
                     }
-                    string[] Digests(PayloadOwner? owner = null)
+                    string[] Digests(PayloadOwner owner)
                     {
-                        lock (_index) return _rows.Where(pair => owner == null || pair.Value.Owners.Contains(owner)).Select(pair => pair.Key)
-                            .Concat(staged.Where(pair => pair.Value != null && (owner == null || pair.Value.Owners.Contains(owner)))
+                        lock (_index) return _rows.Where(pair => pair.Value.Owners.Contains(owner)).Select(pair => pair.Key)
+                            .Concat(staged.Where(pair => pair.Value != null && (pair.Value.Owners.Contains(owner)))
                                 .Select(pair => pair.Key)).Distinct(StringComparer.Ordinal).ToArray();
                     }
                     catalog = new PayloadCatalog(Read,
                         (row, _) => { staged[row.Reference.Digest] = row; written.Add(row.Reference.Digest); return ValueTask.CompletedTask; },
-                        token => Rows(Digests(), token), () => time.GetUtcNow().UtcDateTime, Settings,
+                        (digest, _) => { staged[digest] = null; written.Add(digest); return ValueTask.CompletedTask; },
+                        () => time.GetUtcNow().UtcDateTime, Settings, null,
                         forOwner: (owner, token) => Rows(Digests(owner), token),
-                        discover: _ => { lock (_index) return ValueTask.FromResult<IReadOnlyList<PayloadRecord>>(_rows.Values.ToArray()); });
+                        readBody: null, discover: _ => { lock (_index) return ValueTask.FromResult<IReadOnlyList<PayloadRecord>>(_rows.Values.ToArray()); });
                     var result = await action(catalog, ct);
                     // Publication is the callback's final action. All pins remain locked until staged rows publish.
-                    lock (_index) foreach (var digest in written) _rows[digest] = staged[digest]!;
+                    lock (_index) foreach (var digest in written)
+                        if (staged[digest] is { } row) _rows[digest] = row; else _rows.Remove(digest);
                     return result;
                 }
                 catch (DigestBusyException busy) { blocked = busy.Gate; }
