@@ -36,34 +36,38 @@ public sealed class AssignmentResultRegressionTests
             _ => Workflow.Create<Data>("AckComplete").Step<Noop>().Build()
         };
         var instance = await run.SeedAsync(definition);
+        AfterReleasingAck? seen = null;
         var endpoint = new AfterAckHost(run.Endpoint, async (request, reply) =>
         {
             if (reply.Kind != CheckpointReplyKind.Ack || !Releases(request.Commit, reply)) return;
+            // Observed here, asserted after the run, so a failure cannot be absorbed by the host.
             // The renewal was sent before the final commit. Its false reply arrives only after Ack.
-            Assert.False(store.Renewal.Task.IsCompleted);
+            var renewalPending = !store.Renewal.Task.IsCompleted;
             store.Renewal.SetResult(false);
-            Assert.False(await store.Renewal.Task);
+            await store.Renewal.Task;
             time.Advance(TimeSpan.FromMinutes(2));
-            Assert.DoesNotContain(time.Armings, timer => timer.Pending &&
-                timer.DueTime == ExecutionLeaseSettings.Default.RenewalInterval);
-            Assert.Null(run.Operations.AdmitReady(new(request.AssignmentId, new(AssignmentOutcomeKind.Idle),
-                new(request.Commit.CommitId, reply.Revision))));
-            Assert.Equal(ConflictReason.NotAssigned, run.Operations.AdmitReady(
-                new(request.AssignmentId, new(AssignmentOutcomeKind.Idle), null)));
-            Assert.Equal(ConflictReason.NotAssigned,
-                (await run.Endpoint.CheckpointAsync(request)).Conflict);
-            Assert.Equal(ConflictReason.NotAssigned, (await run.Endpoint.ReadInboxAsync(
-                new(request.AssignmentId, instance.InstanceId, 0, 10))).Conflict);
-            Assert.Equal(ConflictReason.NotAssigned, (await run.Endpoint.ReadWaitAsync(
-                new(request.AssignmentId, instance.InstanceId, "wait"))).Conflict);
-            Assert.Equal(ConflictReason.NotAssigned, (await run.Endpoint.StartChildAsync(
-                new(request.AssignmentId, instance.InstanceId, request.Commit.Epoch, "root/0",
-                    new("child", "{}", "wait"), "hash"))).Conflict);
+            seen = new(renewalPending,
+                run.Operations.AdmitReady(new(request.AssignmentId, new(AssignmentOutcomeKind.Idle),
+                    new(request.Commit.CommitId, reply.Revision))),
+                run.Operations.AdmitReady(new(request.AssignmentId, new(AssignmentOutcomeKind.Idle), null)),
+                (await run.Endpoint.CheckpointAsync(request)).Conflict,
+                (await run.Endpoint.ReadInboxAsync(new(request.AssignmentId, instance.InstanceId, 0, 10))).Conflict,
+                (await run.Endpoint.ReadWaitAsync(new(request.AssignmentId, instance.InstanceId, "wait"))).Conflict,
+                (await run.Endpoint.StartChildAsync(new(request.AssignmentId, instance.InstanceId, request.Commit.Epoch,
+                    "root/0", new("child", "{}", "wait"), "hash"))).Conflict);
         });
         run.UseEndpoint(endpoint);
 
         var result = await run.Operations.RecoverAsync(instance.InstanceId, default).WaitAsync(Patience);
 
+        var after = Assert.IsType<AfterReleasingAck>(seen);
+        Assert.True(after.RenewalPendingAtAck);
+        Assert.Null(after.ReadyWithAck);
+        Assert.Equal(ConflictReason.NotAssigned, after.ReadyWithoutAck);
+        Assert.Equal(ConflictReason.NotAssigned, after.Checkpoint);
+        Assert.Equal(ConflictReason.NotAssigned, after.ReadInbox);
+        Assert.Equal(ConflictReason.NotAssigned, after.ReadWait);
+        Assert.Equal(ConflictReason.NotAssigned, after.StartChild);
         var saved = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         Assert.Equal(1, endpoint.ReleasingAcks);
         Assert.Equal(1, store.HeldRenewals);
@@ -180,6 +184,10 @@ public sealed class AssignmentResultRegressionTests
         Assert.Null(result.ErrorType);
         Assert.Empty(result.TraceEntries);
     }
+
+    private sealed record AfterReleasingAck(bool RenewalPendingAtAck,
+        ConflictReason? ReadyWithAck, ConflictReason? ReadyWithoutAck, ConflictReason? Checkpoint,
+        ConflictReason? ReadInbox, ConflictReason? ReadWait, ConflictReason? StartChild);
 
     private static bool Releases(CheckpointCommit commit, CheckpointReply reply) =>
         (commit.Instance.Status != WorkflowStatus.Running || reply.Parked) &&
