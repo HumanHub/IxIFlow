@@ -176,7 +176,11 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
         var options = new WorkflowSourceOptions { Namespace = generatedNamespace, RequireResolvedTypes = true };
         Copy(types.Names, options.Types);
         Copy(types.Members, options.Members);
-        Copy(types.Versions, options.ActivityVersions);
+        foreach (var line in types.Versions.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var entry = line.Split('\t');
+            options.Activities.Add(entry[0], new ActivityDocumentContract(entry[0], entry[1]));
+        }
         Copy(types.WorkflowDataTypes, options.WorkflowDataTypes);
         var documents = new Dictionary<Input, WorkflowDocument>();
         var classNames = new HashSet<string>(StringComparer.Ordinal);

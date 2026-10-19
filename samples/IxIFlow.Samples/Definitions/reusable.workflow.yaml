@@ -16,7 +16,6 @@ activities:
       to: { kind: path, path: workflow.Amount }
 steps:
   mark:
-    kind: sequence
     parameters:
       label: { type: string, required: true }
     steps:

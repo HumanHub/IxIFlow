@@ -699,6 +699,7 @@ public sealed class ActivityRecoveryTests
         });
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(store));
         services.AddSingleton(ledger);
+        services.RegisterWorkflow<WorkflowInvocationTests.ChildWorkflow>();
         services.AddTransient<RecoverableChargeActivity>();
         services.AddTransient<OrdinaryChargeActivity>();
         services.AddTransient<StepIndexActivity>();

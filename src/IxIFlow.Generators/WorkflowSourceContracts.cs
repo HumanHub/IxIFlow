@@ -5,8 +5,8 @@ namespace IxIFlow.Generators;
 internal sealed class WorkflowSourceContracts(WorkflowSourceOptions options) : IWorkflowValidationContext
 {
     public Task<ActivityDocumentContract?> FindActivityAsync(string key, CancellationToken token) =>
-        Task.FromResult(KnownType(key) ? new ActivityDocumentContract(key,
-            options.ActivityVersions.TryGetValue(key, out var version) ? version : "") : null);
+        Task.FromResult(KnownType(key) ? options.Activities.TryGetValue(key, out var activity)
+            ? activity : new ActivityDocumentContract(key, "") : null);
     public Task<bool> HasDataTypeAsync(string key, CancellationToken token) => Task.FromResult(KnownType(key));
     public Task<bool> HasEventAsync(string key, CancellationToken token) => Task.FromResult(KnownType(key));
     public Task<bool> HasWorkflowAsync(string name, int? version, CancellationToken token) =>

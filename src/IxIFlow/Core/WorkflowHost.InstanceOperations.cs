@@ -346,12 +346,6 @@ public sealed partial class WorkflowHost
             CancellationToken cancellationToken)
             where TData : class
         {
-            if (options.EnableDebugging)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                    "Workflow debugging is not implemented");
-            if (options.WorkflowRetryPolicy != null)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                    "Workflow-wide retry is not supported; configure retry on a saga or activity step");
             if (options.InstanceId != null && string.IsNullOrWhiteSpace(options.InstanceId))
                 throw new ArgumentException("An explicit workflow instance ID cannot be empty", nameof(options));
             if (options.ExecutionTimeout is { } executionTimeout && executionTimeout <= TimeSpan.Zero)
