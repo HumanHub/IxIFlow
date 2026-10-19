@@ -36,7 +36,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     public bool ProcessExecutionDeadline(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint)
     {
-        if (checkpoint.Debug.Stepping != null || !checkpoint.ExecutionTimerOpen || !checkpoint.Inbox.IsDue(checkpoint.ExecutionTimerId!))
+        if (checkpoint.Debug.Timers != null || checkpoint.Debug.Stepping != null || !checkpoint.ExecutionTimerOpen || !checkpoint.Inbox.IsDue(checkpoint.ExecutionTimerId!))
             return false;
         checkpoint.Inbox.Closed(checkpoint.ExecutionTimerId!, WaitCloseReason.TimedOut);
         checkpoint.TimedOut = true;
@@ -58,7 +58,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     /// </summary>
     public bool ProcessDueWaits(ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes)
     {
-        var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId == null &&
+        var due = checkpoint.Waits.Where(wait => checkpoint.Debug.Timers == null && wait.ChildWorkflowId == null &&
             SteppingPolicy.Allows(checkpoint, wait.ContinuationId) && checkpoint.Inbox.IsDue(wait.Id)).ToArray();
         foreach (var wait in due)
         {

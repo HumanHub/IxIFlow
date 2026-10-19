@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 namespace IxIFlow.Core;
 
-public enum DebugCommandKind { Pause, Continue, SetBreakpoints, Step, EditData }
+public enum DebugCommandKind { Pause, Continue, SetBreakpoints, Step, EditData, FreezeTimers, UnfreezeTimers }
 public enum DebugStepKind { Over, Into, Out, Run }
 
 /// <summary>A pick occurrence, including progress through repeated loop and item visits.</summary>
@@ -38,6 +38,8 @@ public sealed record DebugCheckpoint(long PauseGeneration = 0, long AppliedOrder
     public IReadOnlyList<BreakpointStop> SkipOnce { get; init; } = [];
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DebugStepping? Stepping { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TimerFreeze? Timers { get; init; }
 }
 
 /// <summary>Command storage, serialized with instance commits, event appends and deletion.</summary>
@@ -59,6 +61,10 @@ public interface IWorkflowOperations
     Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
     /// <summary>Continues a pause under a fresh lease on this host.</summary>
     Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
+    /// <summary>Freezes this instance's timers using the store clock.</summary>
+    Task<WorkflowExecutionResult> FreezeTimersAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
+    /// <summary>Shifts open deadlines once and clears the timer freeze.</summary>
+    Task<WorkflowExecutionResult> UnfreezeTimersAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
     /// <summary>Runs only the selected continuation and branches it creates, under a fresh lease.</summary>
     Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
         string actor, CancellationToken cancellationToken = default);
@@ -139,7 +145,7 @@ public static class WorkflowDebugRules
         var pendingPause = commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause);
         var generation = checkpoint.PauseGeneration + (request.Kind != DebugCommandKind.Pause &&
             instance.Status != WorkflowStatus.Paused && pendingPause ? 1 : 0);
-        if (request.Kind is DebugCommandKind.Continue or DebugCommandKind.Step && instance.Status != WorkflowStatus.Paused &&
+        if (request.Kind is DebugCommandKind.Continue or DebugCommandKind.Step or DebugCommandKind.FreezeTimers or DebugCommandKind.UnfreezeTimers && instance.Status != WorkflowStatus.Paused &&
             !pendingPause && checkpoint.Stop != null) generation++;
         if (request.PauseGeneration != generation) return new(DebugCommandStatus.StaleGeneration);
         if (request.Kind != DebugCommandKind.SetBreakpoints && commands.Any(c => c.AcknowledgedRevision == null &&
@@ -161,10 +167,13 @@ public static class WorkflowDebugRules
     {
         var before = previous == null ? new DebugCheckpoint() : Checkpoint(previous);
         var after = Checkpoint(next);
+        if ((before.Timers != null || after.Timers != null) &&
+            JsonSerializer.Serialize(before.Timers) != JsonSerializer.Serialize(after.Timers))
+            throw new InvalidOperationException("Timer freeze state belongs to the store");
         var applied = commands.Where(c => c.Order > before.AppliedOrder && c.Order <= after.AppliedOrder).ToArray();
         bool AlreadyPaused(DebugCommand command) => previous?.Status == WorkflowStatus.Paused && before.Stop != null &&
             command.Kind == DebugCommandKind.Pause && command.PauseGeneration == before.PauseGeneration - 1;
-        if (applied.Count(c => c.Kind != DebugCommandKind.SetBreakpoints && !AlreadyPaused(c)) > 1)
+        if (applied.Count(c => c.Kind is not (DebugCommandKind.SetBreakpoints or DebugCommandKind.FreezeTimers or DebugCommandKind.UnfreezeTimers) && !AlreadyPaused(c)) > 1)
             throw new InvalidOperationException("A pause and its continue require separate lease assignments");
         if (applied.Any(c => c.Kind is DebugCommandKind.Continue or DebugCommandKind.Step) && previous?.Status != WorkflowStatus.Paused)
             throw new InvalidOperationException("Continue requires a committed pause");
@@ -207,7 +216,7 @@ public static class WorkflowDebugRules
         if (after.AppliedOrder < before.AppliedOrder || after.PauseGeneration != generation ||
             after.AppliedOrder != (applied.LastOrDefault()?.Order ?? before.AppliedOrder))
             throw new InvalidOperationException("Commit does not apply a valid ordered debug command prefix");
-        if (applied.LastOrDefault(c => c.Kind != DebugCommandKind.SetBreakpoints) is { } last && !WorkflowStoreRules.IsTerminal(next.Status) &&
+        if (applied.LastOrDefault(c => c.Kind is not (DebugCommandKind.SetBreakpoints or DebugCommandKind.FreezeTimers or DebugCommandKind.UnfreezeTimers)) is { } last && !WorkflowStoreRules.IsTerminal(next.Status) &&
             (last.Kind is DebugCommandKind.Pause or DebugCommandKind.EditData) != (next.Status == WorkflowStatus.Paused))
             throw new InvalidOperationException("Debug command acknowledgement does not match committed status");
         return commands.Select(c => c.Order <= after.AppliedOrder && c.AcknowledgedRevision == null

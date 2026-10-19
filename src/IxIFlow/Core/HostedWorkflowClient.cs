@@ -258,6 +258,18 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
         return await RecoverAsync(instanceId, cancellationToken);
     }
 
+    public async Task<WorkflowExecutionResult> FreezeTimersAsync(string instanceId, string actor, CancellationToken cancellationToken = default)
+    {
+        await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.FreezeTimers, actor, cancellationToken));
+        return await RecoverAsync(instanceId, cancellationToken);
+    }
+
+    public async Task<WorkflowExecutionResult> UnfreezeTimersAsync(string instanceId, string actor, CancellationToken cancellationToken = default)
+    {
+        await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.UnfreezeTimers, actor, cancellationToken));
+        return await RecoverAsync(instanceId, cancellationToken);
+    }
+
     public async Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
         string actor, CancellationToken cancellationToken = default)
     {
