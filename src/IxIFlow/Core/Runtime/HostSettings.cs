@@ -4,6 +4,7 @@ namespace IxIFlow.Core.Runtime;
 internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan PollInterval, string Name)
 {
     public Guid Id { get; } = Guid.NewGuid();
+    public TimeSpan UnschedulableScanInterval { get; init; } = TimeSpan.FromSeconds(30);
     public TimeSpan HeartbeatInterval { get; init; } = MemberRegistry.DefaultHeartbeatInterval;
     public IReadOnlyDictionary<string, string> Capabilities { get; init; } =
         MemberRegistry.SnapshotCapabilities(new Dictionary<string, string>());

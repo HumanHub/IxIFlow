@@ -7,6 +7,11 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
+    public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => _store.GetUnschedulableAsync(limit, cursor, cancellationToken), "Reading unschedulable work");
+    public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
+        Guard(() => _store.CanScheduleAsync(demands, cancellationToken), "Checking live host eligibility");
     public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
         Guard(() => _store.RegisterMemberAsync(member, cancellationToken), "Registering store member");
     public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,

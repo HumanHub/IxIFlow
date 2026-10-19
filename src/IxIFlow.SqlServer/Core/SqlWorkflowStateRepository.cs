@@ -705,6 +705,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             ON dbo.IxIFlowWorkflowInstances (DemandSetId, RunnableAtUtc, InstanceId) INCLUDE (LastHostId, PinnedHost, PinExpiresAtUtc) WHERE RunnableAtUtc IS NOT NULL;
         CREATE INDEX IX_IxIFlowInstances_SetAffinity
             ON dbo.IxIFlowWorkflowInstances (DemandSetId, LastHostId, RunnableAtUtc, InstanceId) INCLUDE (PinnedHost, PinExpiresAtUtc) WHERE RunnableAtUtc IS NOT NULL;
+        CREATE INDEX IX_IxIFlowInstances_SetPin
+            ON dbo.IxIFlowWorkflowInstances (DemandSetId, PinExpiresAtUtc, RunnableAtUtc, InstanceId)
+            INCLUDE (PinnedHost) WHERE PinnedHost IS NOT NULL AND RunnableAtUtc IS NOT NULL;
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowEvents', N'U') IS NULL
         BEGIN
             CREATE TABLE dbo.IxIFlowWorkflowEvents (

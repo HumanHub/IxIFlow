@@ -71,6 +71,7 @@ public partial class InMemoryWorkflowStateRepository
                          .Select(set => set.Key).Order(StringComparer.Ordinal).Take(batchSize).ToArray())
             {
                 _demandSetMembers.Remove(setId);
+                _pinnedSetMembers.Remove(setId);
                 _demandSets.Remove(setId);
             }
             return Task.FromResult(new RetentionResult(candidates.Length, expired.Length) { SkippedUnattemptedByPublisher = blocked });

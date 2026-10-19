@@ -32,6 +32,7 @@ public static class ServiceCollectionExtensions
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
+        services.AddSingleton<IWorkflowOperations, WorkflowOperations>();
         services.AddSingleton<IWorkflowIngressClient, WorkflowIngressClient>();
         services.AddScoped<WorkflowHost.SlotClient>();
         services.AddScoped<RunControl>();
@@ -91,6 +92,8 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The park threshold cannot be negative");
         if (options.PollInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(configure), "The poll interval must be positive");
+        if (options.UnschedulableScanInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options.UnschedulableScanInterval));
         if (options.HostPinLifetime <= TimeSpan.Zero || options.HostPinLifetime > CheckpointCommit.MaxDuration)
             throw new ArgumentOutOfRangeException(nameof(options.HostPinLifetime));
         services.AddSingleton(new DemandSettings(options.HostPinLifetime));
@@ -121,7 +124,8 @@ public static class ServiceCollectionExtensions
         var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
         services.Replace(ServiceDescriptor.Singleton<HostSettings>(_ =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
-            { HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities }));
+            { HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities,
+                UnschedulableScanInterval = options.UnschedulableScanInterval }));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
 
@@ -344,6 +348,9 @@ public class IxIFlowOptions
     public TimeSpan PollInterval { get; set; } = HostSettings.DefaultPollInterval;
 
     /// <summary>Time between store registry heartbeats. Defaults to five seconds; at most twenty minutes.</summary>
+    /// <summary>Interval between bounded checks for work no live host can run; defaults to thirty seconds.</summary>
+    public TimeSpan UnschedulableScanInterval { get; set; } = TimeSpan.FromSeconds(30);
+
     public TimeSpan HeartbeatInterval { get; set; } = MemberRegistry.DefaultHeartbeatInterval;
 
     /// <summary>User capability keys and values, published alongside automatic host and workflow capabilities.</summary>

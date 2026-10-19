@@ -145,6 +145,13 @@ public static class WorkflowStoreRules
 /// </summary>
 public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore
 {
+    /// <summary>Due, unleased work no live host meets, ordered by runnable time and ordinal instance ID.</summary>
+    Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Whether one live host satisfies every unexpired demand, evaluated by store time.</summary>
+    Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default);
+
     /// <summary>The resolved placement rows saved in the instance's creating transaction.</summary>
     Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId);
 
@@ -303,6 +310,15 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly object _claimLock = new();
     private readonly Dictionary<string, WorkflowDemand[]> _demandSets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HashSet<string>> _demandSetMembers = new(StringComparer.Ordinal);
+    private sealed record PinMember(DateTime Expiry, string Id, bool UpperBound = false);
+    private static readonly IComparer<PinMember> PinOrder = Comparer<PinMember>.Create((a, b) =>
+    {
+        var time = a.Expiry.CompareTo(b.Expiry);
+        if (time != 0) return time;
+        if (a.UpperBound || b.UpperBound) return a.UpperBound.CompareTo(b.UpperBound);
+        return StringComparer.Ordinal.Compare(a.Id, b.Id);
+    });
+    private readonly Dictionary<string, Dictionary<string, SortedSet<PinMember>>> _pinnedSetMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string DemandSetId, WorkflowDemand? Pin)> _placement = new(StringComparer.Ordinal);
 
     private void SavePlacement(string instanceId, DemandSet set)
@@ -314,6 +330,14 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         }
         _placement.Add(instanceId, (set.Id, set.Pin));
         _demandSetMembers[set.Id].Add(instanceId);
+        if (set.Pin != null)
+        {
+            if (!_pinnedSetMembers.TryGetValue(set.Id, out var pins))
+                _pinnedSetMembers.Add(set.Id, pins = new(StringComparer.Ordinal));
+            if (!pins.TryGetValue(set.Pin.Value!, out var bucket))
+                pins.Add(set.Pin.Value!, bucket = new(PinOrder));
+            bucket.Add(new(set.Pin.ExpiresAtUtc ?? DateTime.MaxValue, instanceId));
+        }
     }
 
     private IEnumerable<WorkflowDemand> SavedDemands(string id)
@@ -968,7 +992,15 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
         _instances.TryRemove(instanceId, out _);
         if (_placement.Remove(instanceId, out var placement))
+        {
             _demandSetMembers[placement.DemandSetId].Remove(instanceId);
+            if (placement.Pin is { } pin && _pinnedSetMembers.TryGetValue(placement.DemandSetId, out var pins) &&
+                pins.TryGetValue(pin.Value!, out var bucket))
+            {
+                bucket.Remove(new(pin.ExpiresAtUtc ?? DateTime.MaxValue, instanceId));
+                if (bucket.Count == 0) pins.Remove(pin.Value!);
+            }
+        }
         _leases.Remove(instanceId);
         _endedAt.Remove(instanceId);
         _cancellations.Remove(instanceId);

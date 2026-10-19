@@ -104,19 +104,23 @@ public abstract partial class RelationalWorkflowStateRepository
 
     public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
         RegistryAsync<IReadOnlyList<StoreMember>>(async (connection, transaction, now) =>
-        {
-            var rows = await connection.QueryAsync<MemberRow>(new CommandDefinition(RequiredSql(Statement.Members),
-                transaction: transaction, cancellationToken: cancellationToken));
-            var capabilities = (await connection.QueryAsync<CapabilityRow>(new CommandDefinition(
-                RequiredSql(Statement.MemberCapabilities), transaction: transaction, cancellationToken: cancellationToken)))
-                .ToLookup(row => row.MemberId);
-            return rows.Select(row => new StoreMember(new MemberRegistration(row.MemberId,
-                    row.Kind == "host" ? MemberKind.Host : MemberKind.Coordinator, row.Name, row.Endpoint, row.Slots,
-                    row.EngineVersion, TimeSpan.FromTicks(row.HeartbeatIntervalTicks),
-                    MemberRegistry.SnapshotCapabilities(capabilities[row.MemberId].ToDictionary(c => c.Key, c => c.Value,
-                        StringComparer.Ordinal))), ReadTime(row.StartedAtUtc), ReadTime(row.HeartbeatAtUtc)))
-                .Where(member => MemberRegistry.IsLive(member, now)).OrderBy(member => member.Id).ToArray();
-        }, cancellationToken);
+            await ReadLiveMembersAsync(connection, transaction, now, cancellationToken), cancellationToken);
+
+    private async Task<IReadOnlyList<StoreMember>> ReadLiveMembersAsync(DbConnection connection,
+        DbTransaction? transaction, DateTime now, CancellationToken cancellationToken)
+    {
+        var rows = await connection.QueryAsync<MemberRow>(new CommandDefinition(RequiredSql(Statement.Members),
+            transaction: transaction, cancellationToken: cancellationToken));
+        var capabilities = (await connection.QueryAsync<CapabilityRow>(new CommandDefinition(
+            RequiredSql(Statement.MemberCapabilities), transaction: transaction, cancellationToken: cancellationToken)))
+            .ToLookup(row => row.MemberId);
+        return rows.Select(row => new StoreMember(new MemberRegistration(row.MemberId,
+                row.Kind == "host" ? MemberKind.Host : MemberKind.Coordinator, row.Name, row.Endpoint, row.Slots,
+                row.EngineVersion, TimeSpan.FromTicks(row.HeartbeatIntervalTicks),
+                MemberRegistry.SnapshotCapabilities(capabilities[row.MemberId].ToDictionary(c => c.Key, c => c.Value,
+                    StringComparer.Ordinal))), ReadTime(row.StartedAtUtc), ReadTime(row.HeartbeatAtUtc)))
+            .Where(member => MemberRegistry.IsLive(member, now)).OrderBy(member => member.Id).ToArray();
+    }
 
     private async Task ReplaceCapabilitiesAsync(DbConnection connection, DbTransaction? transaction, Guid memberId,
         IReadOnlyDictionary<string, string> capabilities, CancellationToken cancellationToken)

@@ -65,6 +65,22 @@ The host stops admitting new steps, lets running activities reach commits, and d
 
 Outbox workers stop claiming new deliveries and drain those already in flight. Interrupted deliveries can be claimed again after their lease expires.
 
+## Work waiting for a capable host
+
+An instance can be due with no active execution lease and still have no host able to run it. The store compares each saved demand set with persisted capabilities of live hosts. A host is live while its heartbeat is younger than three of its registered heartbeat intervals, measured by the store's clock. Every unexpired demand must match on the same host. A pin also requires that host's advertised identity; an expired pin stops restricting placement. Free slots do not affect this diagnostic: busy hosts still count as capable hosts.
+
+`WhenUnschedulable.Wait` is the default. `WorkflowOptions.WhenUnschedulable = WhenUnschedulable.Fail` refuses a new start when no live host meets the resolved demands. It uses the same store-time liveness and expiry rules. It is an admission-time observation; a host may leave after admission, and a waiting instance can become runnable when a capable host joins.
+
+Resolve `IWorkflowOperations` from DI and call `GetUnschedulableAsync(limit, cursor, cancellationToken)`. `IWorkflowClient` exposes the same read. Both return an `UnschedulablePage`: `Items`, `NextCursor`, and `StoreTimeUtc`. Each item includes `InstanceId`, `WorkflowName`, `WorkflowVersion`, `RunnableAtUtc`, and `UnmetDemands`. Page sizes are 1 through 1,000, defaulting to 100. Continue with `NextCursor` until it is null. Rows are ordered by runnable time, then ordinal instance ID. Each page is a fresh read: completion, leases, heartbeats and demand expiry can change membership between pages. Restart from a null cursor to refresh earlier rows.
+
+`UnmetDemands` lists active demands absent from every live host. If each demand is available somewhere but no host satisfies the combination, it lists the entire active combination. For example, a GPU host in the US and an EU host without a GPU leave a GPU-plus-EU instance waiting. With no live hosts an instance with an empty demand set can also appear, with an empty explanation list.
+
+Every instance requires `workflow:<name>@<version>` with its saved structure hash as the value. If a deployment advertises only a changed definition, the read names the old hash it cannot run. Restore a host with the compatible definition or investigate the saved instance before choosing an operator action.
+
+The recovery service checks every `UnschedulableScanInterval` (30 seconds by default). Startup checks are staggered. Only the host with the lowest live GUID reports a shared store's backlog. Each check reads at most ten pages of 100 items and carries its cursor into the next interval when necessary. A completed scan publishes the count and oldest runnable age grouped by workflow name and version. Long scans describe observations over multiple pages, rather than a transactionally frozen fleet snapshot. Warnings name each blocked instance and its unmet demands, at most once per instance per reporting host in five minutes. Leadership changes can produce another warning.
+
+These reads take no execution slot and expose no HTTP endpoint. Applications decide which callers can resolve and use the operator service.
+
 ## Planned hosting work
 
-There is no coordinator yet. Process slots and isolation, the executor message protocol and pipe transport, demands, placement and affinity, coordinator discovery and secured links remain planned for 1.0. The registry currently advertises capabilities; it does not filter workflow claims. See the [roadmap](roadmap.md).
+There is no coordinator yet. Demands, claim filtering, affinity and visibility of unschedulable work run in the stores and host recovery service. Process slots and isolation, the executor message protocol and pipe transport, coordinator discovery and secured links remain planned for 1.0. See the [roadmap](roadmap.md).
