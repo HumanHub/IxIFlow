@@ -55,7 +55,7 @@ public sealed class OperationalMetricsTests
         await using var watch = new CancellationWatch(store, time);
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(store,
             new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "LeaseMetric" },
-            new ExecutionLeaseSettings(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(10)), watch, time);
+            new ExecutionLeaseSettings(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(10)), watch, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), time);
         Assert.NotNull(owner);
         time.Advance(TimeSpan.FromSeconds(31));
         await owner.Loss.WaitAsync(TimeSpan.FromSeconds(5));

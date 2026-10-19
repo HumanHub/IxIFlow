@@ -192,7 +192,7 @@ public sealed class WorkflowRecoveryServiceTests
         await scanner.RecoverOnceAsync(CancellationToken.None);
         var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
-        Assert.Empty(await repository.GetRunnableInstancesAsync(100));
+        Assert.Empty(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)));
 
         await scanner.RecoverOnceAsync(CancellationToken.None);
 

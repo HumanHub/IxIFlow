@@ -64,7 +64,7 @@ public sealed class EventArrivalTests
             .Build(), new RaceData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, parent.Status);
         var childId = await repository.WaitingInstanceAsync("ChildWithApproval", "approval");
-        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, "other-host", TimeSpan.FromMinutes(1)));
+        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, "other-host", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
 
         // The event goes to the child (D-17); its owner has not decided it. The caller stores it, tries the
         // child, which another host owns, and reads the event back; from then on it can only wait.

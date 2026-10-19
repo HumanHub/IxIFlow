@@ -200,7 +200,7 @@ public sealed class WorkflowDeadlineTests
         Assert.Contains(services.GetServices<IHostedService>(),
             service => service is WorkflowRecoveryService);
         time.Advance(TimeSpan.FromMinutes(2));
-        Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+        Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
             instance => instance.InstanceId == instanceId);
         using var scanner = new WorkflowRecoveryService(
             services.GetRequiredService<IServiceScopeFactory>(), repository,
@@ -225,7 +225,7 @@ public sealed class WorkflowDeadlineTests
         };
         await repository.SeedAsync(instance, TimeSpan.Zero);
 
-        Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+        Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
             candidate => candidate.InstanceId == instance.InstanceId);
     }
 
@@ -502,10 +502,10 @@ public sealed class WorkflowDeadlineTests
             _inner.RequestCancellationAsync(instanceId, reason);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
-        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
-            _inner.GetRunnableInstancesAsync(limit);
-        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
+            _inner.GetRunnableInstancesAsync(query);
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
+            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
         public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>

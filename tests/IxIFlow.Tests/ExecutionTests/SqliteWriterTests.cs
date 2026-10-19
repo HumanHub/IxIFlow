@@ -67,7 +67,7 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
             "settle delivery" => () => store.SettleDeliveryAsync("event", "publisher", "owner", OutboxPublishResult.Delivered()),
             "renew delivery lease" => () => store.RenewDeliveryLeaseAsync("event", "publisher", "owner", TimeSpan.FromSeconds(10)),
             "cancel" => () => store.RequestCancellationAsync(instance.InstanceId, new CancellationReason { ReasonCode = "stop" }),
-            "claim lease" => () => store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromSeconds(10)),
+            "claim lease" => () => store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())),
             "renew lease" => () => store.RenewExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromSeconds(10)),
             "release lease" => () => store.ReleaseExecutionLeaseAsync(instance.InstanceId, "owner"),
             "append" => () => store.AppendEventAsync(new WorkflowEvent(instance.InstanceId, "event", "test", "{}", "test")),

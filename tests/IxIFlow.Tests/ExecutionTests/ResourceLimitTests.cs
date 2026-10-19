@@ -294,7 +294,7 @@ public sealed class ResourceLimitTests
         var settings = new ExecutionLeaseSettings(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(1));
         var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Hanging" };
         await using var lease = (await WorkflowExecutionLease.TryAcquireAsync(store, instance, settings,
-            new CancellationWatch(store, time), time))!;
+            new CancellationWatch(store, time), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), time))!;
         store.Hang = true;
 
         var started = time.GetUtcNow();
@@ -464,7 +464,7 @@ public sealed class ResourceLimitTests
             await hog.OpenAsync();
             await Assert.ThrowsAnyAsync<Exception>(() => store.GetWorkflowInstanceAsync(instanceId));
 
-            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience));
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             Assert.True(await store.RenewExecutionLeaseAsync(instanceId, "owner", Patience));
             Assert.Empty(await store.GetCancellationRequestsAsync([instanceId]));
             Assert.True(await store.RequestCancellationAsync(instanceId,

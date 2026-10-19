@@ -267,7 +267,7 @@ public sealed class WorkflowDemandTests
         var (instance, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(Definition("eu"), new Data(),
             new() { InstanceId = id, RequiredHostId = Guid.NewGuid() }, DateTime.UtcNow.AddYears(20));
         ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), scopes, DateTime.UtcNow);
-        var lease = (await store.TryAcquireExecutionLeaseAsync(id, "owner", TimeSpan.FromMinutes(1)))!;
+        var lease = (await store.TryAcquireExecutionLeaseAsync(id, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         var childId = Guid.NewGuid().ToString("N");
         var wait = Guid.NewGuid().ToString("N");
         var (child, _, _) = WorkflowHost.InstanceOperations.NewInstance(
@@ -299,7 +299,7 @@ public sealed class WorkflowDemandTests
         // A taken child refuses an entire new parent creation, including its demand rows.
         var (loser, _, _) = WorkflowHost.InstanceOperations.NewInstance(Definition("us"), new Data(), new(), DateTime.UtcNow);
         child.ParentInstanceId = loser.InstanceId;
-        var loserOwner = (await store.TryAcquireExecutionLeaseAsync(loser.InstanceId, "loser", TimeSpan.FromMinutes(1)))!;
+        var loserOwner = (await store.TryAcquireExecutionLeaseAsync(loser.InstanceId, "loser", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         await Assert.ThrowsAnyAsync<Exception>(() => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(loser,
             loserOwner.Epoch, 0, childStarts: [new(childId, JsonSerializer.Serialize(child), wait)], openedWaits: waits)));
         Assert.Null(await store.GetWorkflowInstanceAsync(loser.InstanceId));
@@ -347,7 +347,7 @@ public sealed class WorkflowDemandTests
             var (instance, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(
                 Workflow.Create<Data>("Rollback").Demand("refuse").Step<Noop>().Build(), new Data(), new(), DateTime.UtcNow);
             ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), scopes, DateTime.UtcNow);
-            var owner = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1)))!;
+            var owner = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             await Assert.ThrowsAnyAsync<Exception>(() => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, owner.Epoch, 0)));
             Assert.Null(await store.GetWorkflowInstanceAsync(instance.InstanceId));
             Assert.Empty(await store.GetWorkflowDemandsAsync(instance.InstanceId));

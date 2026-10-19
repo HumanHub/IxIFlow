@@ -74,7 +74,7 @@ public sealed class LeaseIncarnationContractTests
                     : saved.CopyForResume();
                 Assert.Equal(0, caller.Revision);
                 var savedIncarnation = caller.Incarnation;
-                var epoch = (await store.TryAcquireExecutionLeaseAsync(id, "owner", duration))!.Epoch;
+                var epoch = (await store.TryAcquireExecutionLeaseAsync(id, "owner", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!.Epoch;
                 var first = CheckpointCommit.Create(caller, epoch, 0);
                 Assert.NotEqual(savedIncarnation, first.Incarnation);
                 Assert.Null(await store.GetWorkflowInstanceAsync(id));
@@ -109,7 +109,7 @@ public sealed class LeaseIncarnationContractTests
                 await store.DeleteWorkflowInstanceAsync(id, tombstones);
                 await advance(id, tombstones + TimeSpan.FromDays(1));
                 var replacement = NewInstance(id);
-                var grant = (await store.TryAcquireExecutionLeaseAsync(id, "replacement", duration))!;
+                var grant = (await store.TryAcquireExecutionLeaseAsync(id, "replacement", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
                 Assert.True(grant.Epoch > oldEpoch);
                 var replacementFirst = CheckpointCommit.Create(replacement, grant.Epoch, 0);
                 await Apply(store, replacementFirst);
@@ -207,10 +207,10 @@ public sealed class LeaseIncarnationContractTests
             original = (await store.GetWorkflowInstanceAsync(id))!;
             var originalIncarnation = original.Incarnation;
             Assert.NotEqual(Guid.Empty, originalIncarnation);
-            var oldFirst = (await store.TryAcquireExecutionLeaseAsync(id, "old-first", duration))!;
+            var oldFirst = (await store.TryAcquireExecutionLeaseAsync(id, "old-first", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(oldFirst.Epoch > 0);
             await advance(id, TimeSpan.FromMinutes(2));
-            var oldGrant = (await store.TryAcquireExecutionLeaseAsync(id, "old-owner", duration))!;
+            var oldGrant = (await store.TryAcquireExecutionLeaseAsync(id, "old-owner", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(oldGrant.Epoch > oldFirst.Epoch);
             Assert.Equal(1, oldGrant.CrashCount);
 
@@ -234,7 +234,7 @@ public sealed class LeaseIncarnationContractTests
             await AssertLeaseRows(open, id, 0);
             var tombstone = await store.GetTombstoneAsync(id);
             Assert.NotNull(tombstone);
-            Assert.Null(await store.TryAcquireExecutionLeaseAsync(id, "tombstoned", duration));
+            Assert.Null(await store.TryAcquireExecutionLeaseAsync(id, "tombstoned", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             await store.DeleteWorkflowInstanceAsync(id, tombstones);
             Assert.Equal(tombstone, await store.GetTombstoneAsync(id));
             await AssertLeaseRows(open, id, 0);
@@ -260,11 +260,11 @@ public sealed class LeaseIncarnationContractTests
             Assert.Equal(replacement.Incarnation,
                 Assert.Single(await store.GetWorkflowInstancesByNameAsync(replacement.WorkflowName)).Incarnation);
 
-            var first = (await store.TryAcquireExecutionLeaseAsync(id, "new-first", duration))!;
+            var first = (await store.TryAcquireExecutionLeaseAsync(id, "new-first", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(first.Epoch > oldGrant.Epoch);
             Assert.Equal(0, first.CrashCount);
             Assert.True(await store.ReleaseExecutionLeaseAsync(id, "new-first"));
-            var current = (await store.TryAcquireExecutionLeaseAsync(id, "new-owner", duration))!;
+            var current = (await store.TryAcquireExecutionLeaseAsync(id, "new-owner", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(current.Epoch > first.Epoch);
             Assert.Equal(0, current.CrashCount);
             await VerifyStaleEffects(store, original, replacement, oldGrant.Epoch, duration);
@@ -351,7 +351,7 @@ public sealed class LeaseIncarnationContractTests
             try
             {
                 var instance = NewInstance(id);
-                var grant = (await store.TryAcquireExecutionLeaseAsync(id, "owner", duration))!;
+                var grant = (await store.TryAcquireExecutionLeaseAsync(id, "owner", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
                 if (kind == "completed")
                     instance.Status = WorkflowStatus.Completed;
                 var commit = CheckpointCommit.Create(instance, grant.Epoch, 0,
@@ -397,14 +397,14 @@ public sealed class LeaseIncarnationContractTests
     {
         try
         {
-            var orphan = (await store.TryAcquireExecutionLeaseAsync(id, "orphan", duration))!;
+            var orphan = (await store.TryAcquireExecutionLeaseAsync(id, "orphan", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(orphan.Epoch > 0);
             await store.DeleteWorkflowInstanceAsync(id);
             await AssertLeaseRows(open, id, 0);
             Assert.Null(await store.GetTombstoneAsync(id));
             Assert.False(await store.RenewExecutionLeaseAsync(id, "orphan", duration));
             Assert.False(await store.ReleaseExecutionLeaseAsync(id, "orphan"));
-            var grant = (await store.TryAcquireExecutionLeaseAsync(id, "after-delete", duration))!;
+            var grant = (await store.TryAcquireExecutionLeaseAsync(id, "after-delete", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(grant.Epoch > orphan.Epoch);
             Assert.Equal(0, grant.CrashCount);
         }

@@ -380,7 +380,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(start)).Status);
         Assert.True((await store.GetWaitAsync(parent.InstanceId, "child-wait"))!.IsOpen);
         Assert.Equal("""{"Value":42}""", Assert.Single((await store.GetPendingEventsAsync(parent.InstanceId, 0, 100)).Events).PayloadJson);
-        Assert.Contains(parent.InstanceId, (await store.GetRunnableInstancesAsync(100)).Select(i => i.InstanceId));
+        Assert.Contains(parent.InstanceId, (await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100))).Select(i => i.InstanceId));
     }
 
     private async Task BoundedAndCancelled()
@@ -528,7 +528,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
     {
         var instance = Instance(WorkflowStatus.Running);
         await Commit(instance);
-        var previous = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "previous", TimeSpan.FromMinutes(1)))!;
+        var previous = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "previous", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         instance.Status = WorkflowStatus.Completed;
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, previous.Epoch, instance.Revision))).Status);
@@ -538,7 +538,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         await Purge();
         var replacement = InstanceWithId(instance.InstanceId);
         await Commit(replacement);
-        var current = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "current", TimeSpan.FromMinutes(1)))!;
+        var current = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "current", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         Assert.True(current.Epoch > previous.Epoch);
         Assert.NotEqual(instance.Incarnation, replacement.Incarnation);
         Assert.False(await store.ReleaseExecutionLeaseAsync(instance.InstanceId, "previous"));

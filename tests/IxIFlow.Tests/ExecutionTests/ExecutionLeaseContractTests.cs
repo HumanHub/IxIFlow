@@ -476,7 +476,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 Status = WorkflowStatus.Running
             });
             var epoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, owner,
-                TimeSpan.FromSeconds(10));
+                TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.NotNull(epoch);
             var active = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal(WorkflowCommitStatus.Applied,
@@ -1029,9 +1029,9 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         try
         {
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromSeconds(5)));
+                TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
-                TimeSpan.FromSeconds(5)));
+                TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         }
         finally
         {
@@ -1045,10 +1045,10 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         try
         {
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromMilliseconds(100)));
+                TimeSpan.FromMilliseconds(100), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             await PassAsync(time, TimeSpan.FromMilliseconds(300));
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
-                TimeSpan.FromSeconds(5)));
+                TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             Assert.False(await repository.RenewExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromSeconds(5)));
         }
@@ -1066,11 +1066,11 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease));
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             await PassAsync(time, renewAfter);
             Assert.True(await repository.RenewExecutionLeaseAsync(instanceId, "first", lease));
             await PassAsync(time, checkAfter);
-            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", lease));
+            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         }
         finally
         {
@@ -1085,7 +1085,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var instanceId = Guid.NewGuid().ToString("N");
         try
         {
-            var firstEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease);
+            var firstEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.NotNull(firstEpoch);
             var oldOwner = new WorkflowInstance
             { ExecutionStateJson = StoreTestSupport.CheckpointJson,
@@ -1099,7 +1099,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             Assert.Equal(WorkflowCommitStatus.Applied, initial.Status);
             await PassAsync(time, takeoverAfter);
             var secondEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
-                TimeSpan.FromSeconds(5));
+                TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.NotNull(secondEpoch);
             oldOwner.WorkflowDataJson = "\"stale\"";
             var stale = await repository.CommitWorkflowInstanceAsync(
@@ -1125,13 +1125,13 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         try
         {
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromSeconds(5)));
+                TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             Assert.False(await repository.ReleaseExecutionLeaseAsync(instanceId, "second"));
             Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
-                TimeSpan.FromSeconds(5)));
+                TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             Assert.True(await repository.ReleaseExecutionLeaseAsync(instanceId, "first"));
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
-                TimeSpan.FromSeconds(5)));
+                TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         }
         finally
         {
@@ -1147,7 +1147,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         {
             // Long enough for the first commit on a cold store connection; the takeover waits it out.
             var formerEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromSeconds(1));
+                TimeSpan.FromSeconds(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.NotNull(formerEpoch);
             var formerOwner = new WorkflowInstance
             { ExecutionStateJson = StoreTestSupport.CheckpointJson,
@@ -1160,7 +1160,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(start)).Status);
             await PassAsync(time, TimeSpan.FromMilliseconds(1_200));
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
-                TimeSpan.FromSeconds(5)));
+                TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
 
             Assert.Equal(WorkflowCommitStatus.StaleEpoch,
                 (await repository.CommitWorkflowInstanceAsync(start)).Status);
@@ -1208,24 +1208,24 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 WorkflowName = "RecoveryQuery",
                 Status = WorkflowStatus.Running
             });
-            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+            Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 instance => instance.InstanceId == instanceId);
             // Long enough for the next query on a slow store; the expiry is then polled for, and must come within
             // the lease's length, with three seconds more for a slow store.
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2) + TimeSpan.FromSeconds(3);
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "worker",
-                TimeSpan.FromSeconds(2)));
-            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
+                TimeSpan.FromSeconds(2), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 instance => instance.InstanceId == instanceId);
             if (time != null)
             {
                 // On a fake clock the lease has expired once the clock has moved its length.
                 time.Advance(TimeSpan.FromSeconds(2));
-                Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+                Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                     instance => instance.InstanceId == instanceId);
                 return;
             }
-            while (!(await repository.GetRunnableInstancesAsync(100)).Any(
+            while (!(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100))).Any(
                        instance => instance.InstanceId == instanceId))
             {
                 Assert.True(DateTime.UtcNow < deadline, "The expired lease was not found on time");
@@ -1408,8 +1408,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             }
             return reason;
         }
-        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
-            inner.GetRunnableInstancesAsync(limit);
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
+            inner.GetRunnableInstancesAsync(query);
         private int _reads;
         public bool FailRelease { get; set; }
         public TaskCompletionSource ReadCompleted { get; } =
@@ -1436,8 +1436,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             return snapshot;
         }
 
-        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration) =>
-            inner.TryAcquireExecutionLeaseAsync(id, token, duration);
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
+            inner.TryAcquireExecutionLeaseAsync(id, token, duration, query, kind);
         public Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
         {
             if (Interlocked.Exchange(ref LoseNextRenewal, 0) > 0)
@@ -1500,7 +1500,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             {
                 await start.Task;
                 return await repository.TryAcquireExecutionLeaseAsync(instanceId,
-                    $"host-{index}", TimeSpan.FromSeconds(10));
+                    $"host-{index}", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             }).ToArray();
             start.SetResult();
 
@@ -1757,7 +1757,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             await scanner.RecoverOnceAsync(CancellationToken.None);
             var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
             Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
-            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
+            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 item => item.InstanceId == started.InstanceId);
         }
         finally

@@ -17,17 +17,17 @@ internal static class StateRepositoryContract
                 RunnableAtUtc = DateTime.UtcNow.AddMinutes(1)
             };
             await repository.SeedAsync(instance, TimeSpan.FromMinutes(1));
-            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
+            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 candidate => candidate.InstanceId == instanceId);
 
             instance.RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1);
             await repository.SeedAsync(instance, TimeSpan.Zero);
-            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+            Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 candidate => candidate.InstanceId == instanceId);
 
             instance.Status = WorkflowStatus.NeedsResolution;
             await repository.SeedAsync(instance, TimeSpan.Zero);
-            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+            Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 candidate => candidate.InstanceId == instanceId);
         }
         finally

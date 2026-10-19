@@ -207,7 +207,7 @@ public sealed class IncomingWebhookScenarios
         var winner = Assert.Single(results, r => r.Status == WorkflowCommitStatus.Applied).Admission!;
         Assert.All(results, result => Assert.Equal(winner, result.Admission));
         Assert.NotNull(await second.GetWorkflowInstanceAsync(winner.InstanceId));
-        Assert.Single(await first.GetRunnableInstancesAsync(100));
+        Assert.Single(await first.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)));
         Assert.Null(await first.GetWorkflowInstanceAsync(winner.InstanceId == left.InstanceId ? right.InstanceId : left.InstanceId));
     }
 
