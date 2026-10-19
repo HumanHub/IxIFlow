@@ -24,7 +24,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     internal enum Operation
     {
         Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge, Registry,
-        CancellationRequest, CancellationRead, LeaseClaim, LeaseRenew, LeaseRelease,
+        CancellationRequest, CancellationRead, Termination, LeaseClaim, LeaseRenew, LeaseRelease,
         Append, InboxPage, Commit, Delete
     }
 
@@ -164,7 +164,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>Applies admission around the whole operation; SQLite instead serializes writes.</summary>
     internal virtual async Task<T> ExecuteOperationAsync<T>(Operation operation, Func<Task<T>> call)
     {
-        if (_admissions == null || operation is not (Operation.LeaseClaim or Operation.CancellationRequest or Operation.CancellationRead))
+        if (_admissions == null || operation is not (Operation.LeaseClaim or Operation.CancellationRequest or Operation.CancellationRead or Operation.Termination))
             return await call();
         await _admissions.WaitAsync();
         try

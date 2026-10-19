@@ -98,7 +98,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     private static DateTimeOffset? Timestamp(DateTime? value) => value is { } time ? Timestamp(time) : null;
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
         operation is Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
-            or Operation.CancellationRequest or Operation.LeaseRelease
+            or Operation.CancellationRequest or Operation.LeaseRelease or Operation.Termination
             ? await connection.BeginTransactionAsync() : null;
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
