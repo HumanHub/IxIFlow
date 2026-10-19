@@ -32,7 +32,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     internal enum Statement
     {
         CatalogLock, CatalogSharedLock, CatalogVersions, CatalogNamedVersions, CatalogVersion, CatalogUnfinishedCallers, CatalogVersionInsert, CatalogVersionState,
-        CatalogDefinition, CatalogDefinitionInsert, CatalogDefinitionUpdate, ArtifactPut, ArtifactRead, ArtifactExists, ArtifactDelete, ArtifactDeleteOld, ArtifactCandidates,
+        CatalogDefinition, CatalogDefinitionInsert, CatalogDefinitionUpdate, CatalogDefinitionDelete, ArtifactPut, ArtifactRead, ArtifactExists, ArtifactDelete, ArtifactDeleteOld, ArtifactCandidates,
         WebhookDeliveryRead, WebhookDeliveryDelete, WebhookDeliveryInsert, WebhookDeliveryExpire,
         AdmissionLock, AdmissionRead, AdmissionDelete, AdmissionInsert, OwnershipRead, OwnershipInsert, OwnershipDelete, AdmissionExpire, OwnershipExpire,
         RegistryLock, RegisterMember, MemberHeartbeat, UnregisterMember, PruneMembers,

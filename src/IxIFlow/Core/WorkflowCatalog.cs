@@ -11,10 +11,18 @@ public sealed record WorkflowVersionReference(string Name, int Version);
 public sealed record WorkflowVersion(string Name, int Version, string StructureHash,
     WorkflowVersionState State = WorkflowVersionState.Published, ArtifactDigest? ArtifactDigest = null,
     IReadOnlyList<WorkflowVersionReference>? Dependencies = null,
-    IReadOnlyList<ArtifactDigest>? ArtifactReferences = null);
+    IReadOnlyList<ArtifactDigest>? ArtifactReferences = null,
+    long? PublishedDraftRevision = null, string? ManifestJson = null);
 
 /// <summary>Editable source, independently revisioned from immutable workflow versions.</summary>
-public sealed record WorkflowDraft(string Name, int Version, string Kind, string Source, long Revision = 0);
+public sealed record WorkflowDraft(string Name, int Version, string Kind, string Source, long Revision = 0)
+{
+    public WorkflowDraftId Id => new(Name, Version, Revision);
+    public WorkflowVersionState State => WorkflowVersionState.Draft;
+}
+
+/// <summary>Identifies the exact source revision being published, including on retries after deletion.</summary>
+public sealed record WorkflowDraftId(string Name, int Version, long Revision);
 
 /// <summary>Durable catalog operations, shared with the instance commit protocol.</summary>
 public interface IWorkflowCatalogStore
@@ -25,6 +33,8 @@ public interface IWorkflowCatalogStore
     Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version);
     Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null);
     Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null);
+    /// <summary>Publishes a version atomically against the draft's revision and deletes the draft.</summary>
+    Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null);
     /// <summary>Collects old artifacts while catalog references cannot change. No instance names an artifact yet.</summary>
     Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default);
@@ -110,6 +120,8 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
         _store.SaveDefinitionAsync(definition, expectedRevision);
     public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
         _store.RegisterWorkflowVersionAsync(version, artifacts ?? _artifacts);
+    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) =>
+        _store.PublishDefinitionAsync(draftId, version, artifacts ?? _artifacts);
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _store.GetWorkflowVersionAsync(name, version);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _store.GetWorkflowVersionsAsync(name);
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
@@ -121,6 +133,23 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
 /// <summary>Rules used under each store's catalog/start lock.</summary>
 internal static class WorkflowCatalogRules
 {
+    public static void CheckPublication(WorkflowDraftId id, WorkflowVersion version, WorkflowDraft? draft, WorkflowVersion? existing)
+    {
+        Validate(version);
+        if (id.Revision < 1 || version.Name != id.Name || version.Version != id.Version ||
+            version.PublishedDraftRevision != id.Revision || version.State != WorkflowVersionState.Published ||
+            version.ArtifactDigest == null || string.IsNullOrWhiteSpace(version.ManifestJson))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Invalid draft publication metadata");
+        if (existing != null && existing.PublishedDraftRevision == id.Revision)
+        {
+            // A revision is the idempotency key: another publisher may have won using
+            // a different compiler/reference snapshot. Return its immutable receipt.
+            return;
+        }
+        if (draft?.Revision != id.Revision || existing != null)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed or was already published");
+    }
+
     public static void ValidateName(string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -164,7 +193,8 @@ internal static class WorkflowCatalogRules
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 $"Workflow {loaded.Name} v{loaded.Version} is already registered with structure hash " +
                 $"'{existing.StructureHash}'; loaded structure hash '{loaded.StructureHash}' differs");
-        if (existing.ArtifactDigest != loaded.ArtifactDigest ||
+        if (existing.ArtifactDigest != loaded.ArtifactDigest || existing.PublishedDraftRevision != loaded.PublishedDraftRevision ||
+            existing.ManifestJson != loaded.ManifestJson ||
             !(existing.Dependencies ?? []).SequenceEqual(loaded.Dependencies ?? []) ||
             !(existing.ArtifactReferences ?? []).SequenceEqual(loaded.ArtifactReferences ?? []))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version metadata is immutable");

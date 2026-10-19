@@ -25,6 +25,8 @@ public partial class InMemoryWorkflowStateRepository
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         lock (_claimLock)
         {
+            if (_versions.ContainsKey((definition.Name, definition.Version)))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A published version cannot be edited");
             var revision = _definitions.GetValueOrDefault((definition.Name, definition.Version))?.Revision ?? 0;
             if (revision != expectedRevision)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed");
@@ -32,6 +34,34 @@ public partial class InMemoryWorkflowStateRepository
             _definitions[(saved.Name, saved.Version)] = saved;
             return Task.FromResult(saved);
         }
+    }
+
+    public async Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null)
+    {
+        await _catalogLock.WaitAsync();
+        try
+        {
+            lock (_claimLock)
+            {
+                var key = (draftId.Name, draftId.Version);
+                var existing = _versions.GetValueOrDefault(key);
+                WorkflowCatalogRules.CheckPublication(draftId, version, _definitions.GetValueOrDefault(key), existing);
+                if (existing != null) return CopyVersion(existing);
+            }
+            await WorkflowCatalogRules.CheckArtifactsAsync(version, artifacts ?? this);
+            lock (_claimLock)
+            {
+                var key = (draftId.Name, draftId.Version);
+                // Draft edits use the instance monitor rather than the catalog gate.
+                WorkflowCatalogRules.CheckPublication(draftId, version, _definitions.GetValueOrDefault(key), null);
+                foreach (var dependency in version.Dependencies ?? [])
+                    WorkflowCatalogRules.CheckStartable(_versions.GetValueOrDefault((dependency.Name, dependency.Version)), dependency.Name, dependency.Version);
+                _versions.Add(key, CopyVersion(version));
+                _definitions.Remove(key);
+                return CopyVersion(version);
+            }
+        }
+        finally { _catalogLock.Release(); }
     }
 
     public async Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)

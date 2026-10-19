@@ -73,6 +73,9 @@ public sealed partial class SqlWorkflowStateRepository
         Statement.CatalogDefinitionUpdate => """
             UPDATE dbo.IxIFlowDefinitions SET Kind=@Kind, Source=@Source, Revision=@Revision WHERE Name=@Name AND Version=@Version AND Revision=@ExpectedRevision
             """,
+        Statement.CatalogDefinitionDelete => """
+            DELETE FROM dbo.IxIFlowDefinitions WHERE Name=@Name AND Version=@Version AND Revision=@Revision
+            """,
         Statement.ArtifactPut => """
             MERGE dbo.IxIFlowArtifacts WITH (HOLDLOCK) AS target
             USING (SELECT @Digest AS Digest) AS source ON target.Digest=source.Digest

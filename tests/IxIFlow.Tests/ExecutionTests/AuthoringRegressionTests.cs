@@ -354,7 +354,7 @@ public sealed class AuthoringRegressionTests
         };
         var options = YamlTestContracts.Create(("data", typeof(ItemData)), ("mapping", typeof(YamlMappingActivity)));
         options.Activities["mapping"] = new("mapping", "1.0");
-        var error = await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => YamlTestCompilation.BuildAsync(document, options));
+        var error = await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, options));
         Assert.Contains("requires version '1.0'", error.Message);
     }
 
