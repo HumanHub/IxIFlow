@@ -154,8 +154,13 @@ public sealed class DefinitionValidationTests
     // Models a custom registry that returns definitions without invoking the engine validator.
     private sealed class UncheckedRegistry(WorkflowDefinition definition) : IWorkflowVersionRegistry
     {
+        public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
+            Task.FromResult<IReadOnlyList<WorkflowDefinition>>([definition]);
         public Task RegisterWorkflowAsync(WorkflowDefinition value) => Task.CompletedTask;
         public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version) => Task.FromResult<WorkflowDefinition?>(definition);
+        // Computed without validation, as the rest of this registry is.
+        public Task<string?> GetWorkflowStructureHashAsync(string name, int version) =>
+            Task.FromResult<string?>(new WorkflowScopeCatalog(definition).StructureHash);
         public Task DeactivateWorkflowVersionAsync(string name, int version) => throw new NotSupportedException();
     }
 

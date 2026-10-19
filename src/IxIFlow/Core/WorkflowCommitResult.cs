@@ -41,6 +41,9 @@ public sealed record WorkflowCommitResult(
     bool UnreadEvents = false,
     IReadOnlyList<string>? MadeRunnable = null)
 {
+    /// <summary>The winning admission, also returned to a losing duplicate for fingerprint comparison.</summary>
+    public WorkflowAdmissionRecord? Admission { get; init; }
+
     /// <summary>
     /// Other instances the commit made runnable: the children it started, and a parent whose inbox took
     /// the child's completion. A host may run them at once; the poll finds them otherwise.
@@ -50,11 +53,11 @@ public sealed record WorkflowCommitResult(
     /// <summary>Receipts are equal when every field is, the instances made runnable compared in order.</summary>
     public bool Equals(WorkflowCommitResult? other) =>
         other is not null && Status == other.Status && Revision == other.Revision &&
-        Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
+        Equals(Admission, other.Admission) && Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
         UnreadEvents == other.UnreadEvents && MadeRunnable.SequenceEqual(other.MadeRunnable, StringComparer.Ordinal);
 
     public override int GetHashCode() =>
-        HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count);
+        HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission);
 }
 
 /// <summary>
@@ -241,10 +244,23 @@ public sealed class CheckpointCommit
         IReadOnlyList<ArmedWait>? armedWaits = null, TimeSpan? wakeAfter = null, bool stopped = false,
         IReadOnlyList<ChildStart>? childStarts = null, IReadOnlyList<ChildCancellation>? childCancellations = null,
         ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null)
+        => CreateCore(instance, epoch, expectedRevision, commitId, clearsCrashCount, parks, settlements, inboxReadThrough,
+            openedWaits, closedWaits, armedWaits, wakeAfter, stopped, childStarts, childCancellations, parentNotice, traceEntries);
+
+    /// <summary>A first checkpoint for atomic admission. No execution owner exists until a host claims it.</summary>
+    public static CheckpointCommit CreateAdmission(WorkflowInstance instance) => CreateCore(instance, 0, 0, admission: true);
+
+    private static CheckpointCommit CreateCore(WorkflowInstance instance, long epoch, long expectedRevision,
+        string? commitId = null, bool clearsCrashCount = true, bool parks = false,
+        IReadOnlyList<EventSettlement>? settlements = null, long? inboxReadThrough = null,
+        IReadOnlyList<OpenedWait>? openedWaits = null, IReadOnlyList<ClosedWait>? closedWaits = null,
+        IReadOnlyList<ArmedWait>? armedWaits = null, TimeSpan? wakeAfter = null, bool stopped = false,
+        IReadOnlyList<ChildStart>? childStarts = null, IReadOnlyList<ChildCancellation>? childCancellations = null,
+        ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null, bool admission = false)
     {
         ArgumentNullException.ThrowIfNull(instance);
         ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(epoch);
+        if (!admission) ArgumentOutOfRangeException.ThrowIfNegativeOrZero(epoch);
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         commitId ??= Guid.NewGuid().ToString("N");
         ArgumentException.ThrowIfNullOrWhiteSpace(commitId);

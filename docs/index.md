@@ -19,6 +19,7 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Sagas](sagas.md) | Compensation, saved faults and retry scopes |
 | [Hosting](coordinator-and-hosts.md) | The core host, slots, store selection, recovery and shutdown |
 | [Stores](stores.md) | Memory, SQLite, SQL Server and PostgreSQL |
+| [Incoming webhooks](incoming-webhooks.md) | Authorized triggers, atomic idempotency, CloudEvents and public status |
 | [Outbox and publishers](outbox-and-publishers.md) | Completion delivery, custom publishers, outgoing webhooks and templates |
 | [Retention and tombstones](retention-and-tombstones.md) | Retained results, cleanup and removed instance IDs |
 | [Tracing and observability](observability.md) | Committed history, snapshots, OpenTelemetry and logging |

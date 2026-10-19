@@ -7,7 +7,7 @@ This roadmap matches the [README status section](../README.md#status-and-roadmap
 
 ## Available foundations
 
-The in-process host, client, slots, checkpointed runner, fenced leases, inbox, reply tokens, independent children, parallel isolation/joins, ForEach, sagas, resource stops and recovery are implemented. Memory, SQLite, SQL Server and PostgreSQL stores are available.
+The in-process host, client, slots, checkpointed runner, fenced leases, inbox, reply tokens, independent children, parallel isolation/joins, ForEach, sagas, resource stops and recovery are implemented. Memory, SQLite, SQL Server and PostgreSQL stores are available. Hosts register with store-clock heartbeats and publish automatic and configured capabilities.
 
 YAML covers every fluent construct with strict reading and a packaged schema. Activity direction markers, .NET metadata, mapping validation and analyzers are available. Declared workflow names and versions, compiler-free structure hashes and generated/fluent parity tests exist; these are not yet immutable published artifact identities.
 
@@ -18,7 +18,7 @@ Completion outbox publishers and outgoing signed webhooks are implemented, as ar
 | Area | Planned work |
 | --- | --- |
 | Execution and process isolation | Public executor message contract, process slots and entry point, pipe transport, process liveness/resource accounting and fenced process crash reports; commit resend backoff and host message size/metadata validation |
-| Coordinator and placement | Cross-host scheduling through stateless coordinators; capabilities and demands; matching and affinity; visible unschedulable work; discovery/registry, multiple-coordinator and loss handling, secured links; batched host lease renewal and process-slot accounting |
+| Coordinator and placement | Cross-host scheduling through stateless coordinators; demands; matching and affinity; visible unschedulable work; coordinator discovery, multiple-coordinator and loss handling, secured links; batched host lease renewal and process-slot accounting |
 | Incoming events and children | Incoming webhook/HTTP trigger package and conformance; child placement demands |
 | Workflow publishing/versioning | Immutable bundles, artifact storage/verification, dependency resolution/pinning, version-isolated assemblies, host bundle fetching, bundle digests and compatibility/migration policy; draft/publish and lifecycle APIs |
 | Catalog and authoring services | Broader catalog API, code-defined workflows in the catalog, published code activities, inline workflow calls, explicit workflow input/output contracts, YAML-defined code activities and local registration beyond installed-assembly metadata |

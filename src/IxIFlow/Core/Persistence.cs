@@ -143,8 +143,24 @@ public static class WorkflowStoreRules
 /// Stores workflow instances. First commits carry a fresh incarnation; child starts allocate
 /// one in the store on insertion. Every instance read round-trips it separately from serialized state.
 /// </summary>
-public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox
+public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore
 {
+    /// <summary>Registers a member and its capabilities atomically, stamping start and heartbeat with store time.</summary>
+    Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default);
+
+    /// <summary>Renews and replaces the capability snapshot. False means the member must register again.</summary>
+    Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Removes the member and all its capabilities. Repeated removal is harmless.</summary>
+    Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns snapshots younger than three heartbeat intervals by store time. Registry operations
+    /// also prune members silent for over an hour, together with their capabilities.
+    /// </summary>
+    Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Runs one bounded retention pass, giving up never-attempted deliveries whose event age reaches
     /// the store's retry horizon. Remaining pending deliveries and unfinished children keep their instance.
@@ -429,14 +445,32 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
+        return Commit(commit, null);
+    }
+
+    private Task<WorkflowCommitResult> Commit(CheckpointCommit commit, WorkflowAdmission? admission)
+    {
         ArgumentNullException.ThrowIfNull(commit);
         var snapshot = commit.ReadTrunk();
         lock (_claimLock)
         {
+            WorkflowAdmissionRecord? admitted = null;
+            if (admission != null)
+            {
+                admission.ValidateCommit(commit);
+                var identity = (admission.Sender, admission.Trigger, admission.Key);
+                if (_admissions.TryGetValue(identity, out var winner) && winner.ExpiresAtUtc > Now)
+                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 0) { Admission = winner });
+                if (_instances.ContainsKey(commit.InstanceId) ||
+                    _leases.TryGetValue(commit.InstanceId, out var owner) && owner.ExpiresAtUtc > Now)
+                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 0));
+                admitted = new(admission.Sender, admission.Trigger, admission.Key, admission.Fingerprint,
+                    commit.InstanceId, snapshot.WorkflowName, snapshot.WorkflowVersion, Now + admission.KeyRetention, commit.Incarnation);
+            }
             RefuseRemoved(commit.InstanceId, Now);
             var key = (commit.InstanceId, commit.CommitId);
             var revision = _instances.TryGetValue(commit.InstanceId, out var stored) ? stored.Revision : 0;
-            var owns = OwnsInstance(commit);
+            var owns = admission != null || OwnsInstance(commit);
             if (_commits.TryGetValue(key, out var receipt))
             {
                 if (receipt.ExpectedRevision != commit.ExpectedRevision ||
@@ -577,8 +611,13 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             if (commit.ParentNotice is { } notice &&
                 Append(ToEvent(notice), now) is { Status: EventAppendStatus.Stored, MadeRunnable: true })
                 madeRunnable.Add(notice.ParentInstanceId);
+            if (admitted != null)
+            {
+                _admissions[(admission!.Sender, admission.Trigger, admission.Key)] = admitted;
+                _ownership[commit.InstanceId] = (commit.Incarnation, new(commit.InstanceId, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, commit.Incarnation, admission.OwnerKind));
+            }
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
-                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable));
+                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable) { Admission = admitted });
         }
     }
 
@@ -596,7 +635,18 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         ArgumentNullException.ThrowIfNull(workflowEvent);
         workflowEvent.Validate();
         lock (_claimLock)
-            return Task.FromResult(Append(workflowEvent, Now));
+        {
+            var now = Now;
+            var hash = workflowEvent.ContentHash();
+            if (workflowEvent.DeliveryIdentity is { } identity && _webhookDeliveries.TryGetValue(identity, out var saved) && saved.Expires > now)
+                return Task.FromResult(saved.Hash.SequenceEqual(hash)
+                    ? saved.Receipt with { Status = EventAppendStatus.Duplicate, MadeRunnable = false }
+                    : new EventAppendResult(EventAppendStatus.Conflict));
+            var receipt = Append(workflowEvent, now);
+            if (workflowEvent.DeliveryIdentity is { } key && receipt.Status is EventAppendStatus.Stored or EventAppendStatus.Duplicate or EventAppendStatus.Rejected)
+                _webhookDeliveries[key] = (hash, receipt, now + (workflowEvent.DeliveryRetention ?? TimeSpan.FromHours(24)));
+            return Task.FromResult(receipt);
+        }
     }
 
     // Caller holds _claimLock.
@@ -885,6 +935,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 /// </summary>
 public interface IWorkflowVersionRegistry
 {
+    /// <summary>A snapshot of all registered definitions the host can load.</summary>
+    Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync();
+
     /// <summary>
     ///     Register a workflow version
     /// </summary>
@@ -896,29 +949,29 @@ public interface IWorkflowVersionRegistry
     Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
 
     /// <summary>
+    ///     The structure hash recorded when the version was registered, or null if it is not registered.
+    ///     Typed child resolution compares a DI-built definition against it.
+    /// </summary>
+    Task<string?> GetWorkflowStructureHashAsync(string name, int version);
+
+    /// <summary>
     ///     Deactivate a workflow version
     /// </summary>
     Task DeactivateWorkflowVersionAsync(string name, int version);
 }
 
 /// <summary>
-/// Exposes the structure hash recorded when a workflow was registered. Typed child resolution
-/// requires this contract so it can verify a DI-built definition against the published structure.
-/// </summary>
-public interface IWorkflowStructureRegistry : IWorkflowVersionRegistry
-{
-    Task<string?> GetWorkflowStructureHashAsync(string name, int version);
-}
-
-/// <summary>
 ///     Concrete implementation of workflow version registry
 /// </summary>
-public class WorkflowVersionRegistry : IWorkflowStructureRegistry
+public class WorkflowVersionRegistry : IWorkflowVersionRegistry
 {
     private sealed record Registration(WorkflowDefinition Definition, string StructureHash);
     private readonly ConcurrentDictionary<(string Name, int Version), Registration> _workflows = new();
 
     public WorkflowVersionRegistry() { }
+
+    public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
+        Task.FromResult<IReadOnlyList<WorkflowDefinition>>(_workflows.Values.Select(registration => registration.Definition).ToArray());
 
     public WorkflowVersionRegistry(IEnumerable<WorkflowDefinition> definitions)
     {
