@@ -23,7 +23,7 @@ public sealed class DebugPauseScenarios
             id = (await client.RunAsync(definition, new Data())).InstanceId;
             Assert.Equal(WorkflowExecutionStatus.Paused,
                 (await first.GetRequiredService<IWorkflowOperations>().PauseAsync(id, "first operator")).Status);
-            var commands = (IWorkflowDebugStore)first.GetRequiredService<IWorkflowStateRepository>();
+            var commands = first.GetRequiredService<IWorkflowStateRepository>();
             Assert.Equal(DebugCommandStatus.StaleGeneration,
                 (await commands.RequestDebugCommandAsync(id, new("stale", DebugCommandKind.Continue, 0, "stale actor"))).Status);
             var row = await first.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(id);
@@ -44,7 +44,7 @@ public sealed class DebugPauseScenarios
         Assert.Equal(WorkflowExecutionStatus.Success, continued.Status);
         var repository = second.GetRequiredService<IWorkflowStateRepository>();
         Assert.Equal(EventOutcome.Consumed, (await repository.GetEventAsync(id, "held-event"))!.Outcome);
-        var debug = ((IWorkflowDebugStore)repository);
+        var debug = repository;
         Assert.All((await debug.GetDebugStatesAsync([id]))[id].Commands, command => Assert.NotNull(command.AcknowledgedRevision));
         var trace = await repository.GetTraceAsync(id);
         Assert.Equal("second operator", Assert.IsType<DebugCommandTrace>(trace.Single(e => e.Entry.EntryType == TraceEntryType.Continued).Entry.Payload).Actor);

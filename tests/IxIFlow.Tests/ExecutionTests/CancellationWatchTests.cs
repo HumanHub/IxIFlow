@@ -146,10 +146,10 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
             Failing = { "broken" }
         };
 
-        var requests = await store.GetCancellationRequestsAsync(["a", "broken", "quiet"]);
+        var requests = (await store.GetControlRequestsAsync(["a", "broken", "quiet"])).Cancellations;
 
         Assert.Equal("a", Assert.Single(requests).Value.ReasonCode);
-        await Assert.ThrowsAsync<AggregateException>(() => store.GetCancellationRequestsAsync(["broken"]));
+        await Assert.ThrowsAsync<AggregateException>(() => store.GetControlRequestsAsync(["broken"]));
     }
 
     [Fact]
@@ -180,10 +180,10 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
                 command.Parameters.AddWithValue("@Id", broken);
                 Assert.Equal(1, await command.ExecuteNonQueryAsync());
             }
-            var requests = await store.GetCancellationRequestsAsync([readable, broken, "quiet", readable]);
+            var requests = (await store.GetControlRequestsAsync([readable, broken, "quiet", readable])).Cancellations;
             Assert.Equal(readable, Assert.Single(requests).Value.ReasonCode);
-            await Assert.ThrowsAsync<AggregateException>(() => store.GetCancellationRequestsAsync([broken, broken]));
-            Assert.Empty(await store.GetCancellationRequestsAsync([]));
+            await Assert.ThrowsAsync<AggregateException>(() => store.GetControlRequestsAsync([broken, broken]));
+            Assert.Empty((await store.GetControlRequestsAsync([])).Cancellations);
         }
         finally
         {
@@ -300,19 +300,19 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
             }
         }
 
-        public override Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        public override Task<WorkflowControlRequests> GetControlRequestsAsync(
             IReadOnlyCollection<string> instanceIds)
         {
             LastBatch = instanceIds.ToArray();
             Interlocked.Increment(ref _reads);
             if (Hang)
-                return new TaskCompletionSource<IReadOnlyDictionary<string, CancellationReason>>().Task;
+                return new TaskCompletionSource<WorkflowControlRequests>().Task;
             if (Fail)
-                return Task.FromException<IReadOnlyDictionary<string, CancellationReason>>(
+                return Task.FromException<WorkflowControlRequests>(
                     new IOException("Cancellation requests are unavailable"));
-            return Task.FromResult<IReadOnlyDictionary<string, CancellationReason>>(Requests
+            return Task.FromResult(new WorkflowControlRequests(Requests
                 .Where(request => instanceIds.Contains(request.Key))
-                .ToDictionary(request => request.Key, request => request.Value));
+                .ToDictionary(request => request.Key, request => request.Value), new Dictionary<string, WorkflowDebugState>()));
         }
     }
 
@@ -428,19 +428,19 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
     private sealed class PausedWatchStore(bool readArrivals) : FaultInjectingRepository, IWorkflowInbox
     {
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource<IReadOnlyDictionary<string, CancellationReason>> _cancellations =
+        private readonly TaskCompletionSource<WorkflowControlRequests> _controls =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource<IReadOnlyDictionary<string, long>> _arrivals =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public override Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        public override Task<WorkflowControlRequests> GetControlRequestsAsync(
             IReadOnlyCollection<string> instanceIds)
         {
             if (readArrivals)
-                return Task.FromResult<IReadOnlyDictionary<string, CancellationReason>>(
-                    new Dictionary<string, CancellationReason>());
+                return Task.FromResult(new WorkflowControlRequests(
+                    new Dictionary<string, CancellationReason>(), new Dictionary<string, WorkflowDebugState>()));
             Started.TrySetResult();
-            return _cancellations.Task;
+            return _controls.Task;
         }
 
         Task<IReadOnlyDictionary<string, long>> IWorkflowInbox.GetInboxSequencesAsync(
@@ -452,7 +452,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
 
         public void Release()
         {
-            _cancellations.TrySetResult(new Dictionary<string, CancellationReason>());
+            _controls.TrySetResult(new(new Dictionary<string, CancellationReason>(), new Dictionary<string, WorkflowDebugState>()));
             _arrivals.TrySetResult(new Dictionary<string, long>());
         }
     }

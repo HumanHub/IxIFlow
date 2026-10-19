@@ -83,8 +83,12 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.RequestCancellationAsync(instanceId, reason);
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         inner.GetCancellationRequestAsync(instanceId);
-    public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds) => inner.GetCancellationRequestsAsync(instanceIds);
+    public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
+        inner.GetControlRequestsAsync(instanceIds);
+    public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+        inner.RequestDebugCommandAsync(instanceId, command);
+    public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+        inner.GetDebugStatesAsync(instanceIds);
     public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
         inner.GetRunnableInstancesAsync(limit);
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,

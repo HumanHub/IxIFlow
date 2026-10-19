@@ -468,11 +468,11 @@ public sealed class ResourceLimitTests
 
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience));
             Assert.True(await store.RenewExecutionLeaseAsync(instanceId, "owner", Patience));
-            Assert.Empty(await store.GetCancellationRequestsAsync([instanceId]));
+            Assert.Empty((await store.GetControlRequestsAsync([instanceId])).Cancellations);
             Assert.True(await store.RequestCancellationAsync(instanceId,
                 new CancellationReason { ReasonCode = "operator" }));
             Assert.Equal("operator", (await store.GetCancellationRequestAsync(instanceId))?.ReasonCode);
-            Assert.Single(await store.GetCancellationRequestsAsync([instanceId]));
+            Assert.Single((await store.GetControlRequestsAsync([instanceId])).Cancellations);
             Assert.True(await store.ReleaseExecutionLeaseAsync(instanceId, "owner"));
         }
         await store.DeleteWorkflowInstanceAsync(instanceId);

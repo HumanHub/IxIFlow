@@ -400,7 +400,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
             Assert.True(await repository.RequestCancellationAsync(ids[0], new CancellationReason { ReasonCode = "a" }));
             Assert.True(await repository.RequestCancellationAsync(ids[2], new CancellationReason { ReasonCode = "c" }));
 
-            var requests = await repository.GetCancellationRequestsAsync([.. ids, "missing-instance"]);
+            var requests = (await repository.GetControlRequestsAsync([.. ids, "missing-instance"])).Cancellations;
 
             Assert.Equal(2, requests.Count);
             Assert.Equal("a", requests[ids[0]].ReasonCode);
@@ -656,7 +656,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         public int BatchCancellationReads => Volatile.Read(ref _batchReads);
         public int LargestBatch => Volatile.Read(ref _largestBatch);
 
-        public override Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        public override Task<WorkflowControlRequests> GetControlRequestsAsync(
             IReadOnlyCollection<string> instanceIds)
         {
             Interlocked.Increment(ref _batchReads);
@@ -665,7 +665,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
                    Interlocked.CompareExchange(ref _largestBatch, instanceIds.Count, seen) != seen)
             {
             }
-            return base.GetCancellationRequestsAsync(instanceIds);
+            return base.GetControlRequestsAsync(instanceIds);
         }
     }
 
