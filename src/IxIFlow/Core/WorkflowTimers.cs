@@ -114,9 +114,9 @@ internal static class WorkflowTimerRules
     private static IEnumerable<(string? Part, JsonNode Node)> RetryNodes(string trunk, IReadOnlyDictionary<string, StoredJson> parts)
     {
         var state = JsonNode.Parse(trunk)!;
-        foreach (var node in state["Continuations"]?.AsArray() ?? [])
+        foreach (var node in (state["Continuations"]?.AsArray() ?? []).Concat(state["PayloadRetries"]?.AsArray() ?? []))
             if (node != null) yield return (null, node);
-        foreach (var (key, json) in parts.Where(p => p.Key.StartsWith("c/", StringComparison.Ordinal)))
+        foreach (var (key, json) in parts.Where(p => p.Key.StartsWith("c/", StringComparison.Ordinal) && p.Value.IsInline))
             yield return (key, JsonNode.Parse(json.InlineText)!["Continuation"]!);
     }
 
@@ -124,11 +124,11 @@ internal static class WorkflowTimerRules
         IReadOnlyDictionary<string, DateTime> deadlines)
     {
         var state = JsonNode.Parse(instance.ExecutionStateJson)!;
-        foreach (var node in state["Continuations"]?.AsArray() ?? [])
+        foreach (var node in (state["Continuations"]?.AsArray() ?? []).Concat(state["PayloadRetries"]?.AsArray() ?? []))
             if (node != null && deadlines.TryGetValue(node["Id"]!.GetValue<string>(), out var deadline))
                 node["RetryAfterUtc"] = deadline;
         instance.ExecutionStateJson = state.ToJsonString();
-        foreach (var key in parts.Keys.Where(k => k.StartsWith("c/", StringComparison.Ordinal)).ToArray())
+        foreach (var key in parts.Keys.Where(k => k.StartsWith("c/", StringComparison.Ordinal) && parts[k].IsInline).ToArray())
         {
             var part = JsonNode.Parse(parts[key].InlineText)!;
             var node = part["Continuation"]!;

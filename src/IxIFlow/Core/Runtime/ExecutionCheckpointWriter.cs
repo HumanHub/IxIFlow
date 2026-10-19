@@ -29,7 +29,7 @@ internal static class ExecutionCheckpointWriter
         try
         {
             stored = Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData,
-                host.Limits.VerifyCheckpointParts, preserveContinuationState);
+                host.Limits.VerifyCheckpointParts, preserveContinuationState, host.Payloads);
         }
         catch (CheckpointVerificationException)
         {
@@ -61,6 +61,8 @@ internal static class ExecutionCheckpointWriter
         // The commit carries the run's inbox decisions and the waits it opened, armed and closed (D-33).
         // It says how long, not until when: the store stamps deadlines and the runnable time (D-35).
         var (opened, armed, closed) = checkpoint.Inbox.WaitChanges(checkpoint);
+        opened = opened.Select(wait => wait with { DefaultPayloadJson = wait.DefaultPayloadJson is { } value ? host.Payloads.Store(value) : null }).ToArray();
+        armed = armed.Select(wait => wait with { DefaultPayloadJson = wait.DefaultPayloadJson is { } value ? host.Payloads.Store(value) : null }).ToArray();
         // Children start, and are asked to cancel, in the commit that records the parent's waits for
         // them; a child's terminal commit tells its parent (D-17).
         var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,
@@ -150,7 +152,7 @@ internal static class ExecutionCheckpointWriter
     /// </summary>
     public static StoredCheckpoint Prepare(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
         object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false,
-        bool verify = false, bool preserveContinuationState = false)
+        bool verify = false, bool preserveContinuationState = false, CheckpointPayloads? payloads = null)
     {
         try
         {
@@ -160,18 +162,24 @@ internal static class ExecutionCheckpointWriter
             checkpoint.RecordBranchChanges();
             // Recording changes the persisted trace-budget counters; do it before splitting the checkpoint.
             checkpoint.Trace.CapturePositions(now);
-            var dataJson = preserveSavedWorkflowData
+            var reuseData = instance.SavedParts != null && (!checkpoint.RootDataChanged ||
+                workflowData != null && checkpoint.RootDataUnchanged?.Invoke(workflowData) == true);
+            var dataJson = preserveSavedWorkflowData || reuseData
                 ? instance.WorkflowDataJson
                 : StoredJson.Inline(BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData))));
             var stored = StoredCheckpoint.Split(checkpoint, dataJson, instance.PartsAt(instance.Revision),
                 checkpoint.TakeMarks(),
-                verify);
-            instance.WorkflowDataJson = dataJson;
+                verify, payloads);
+            instance.WorkflowDataJson = stored.Parts[CheckpointParts.DataKey];
+            checkpoint.RootDataChanged = false;
+            if (!preserveSavedWorkflowData && workflowData != null && !reuseData)
+                checkpoint.RootDataUnchanged = BranchData.Observe(workflowData);
             instance.ExecutionStateJson = stored.Trunk;
             instance.Stored = stored;
             return stored;
         }
-        catch (Exception ex) when (ex is not CheckpointVerificationException)
+        catch (Exception ex) when (ex is not CheckpointVerificationException and not ResourceLimitExceededException &&
+                                   ex is not WorkflowEngineException { Kind: WorkflowErrorKind.ResourceExhausted })
         {
             throw new CheckpointDataException(ex);
         }

@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace IxIFlow.Core;
 
-// Shared state machine, independent of the physical catalog. All calls run under a serializable transaction.
+// Shared state machine, independent of the physical catalog. Each digest is fenced for its transaction.
 // Rows are never removed: Deleted rows retain the generation fence after body deletion.
 internal sealed class PayloadRecord
 {
@@ -15,6 +15,7 @@ internal sealed class PayloadRecord
     public DateTime TouchedAtUtc { get; set; }
     public List<PayloadReference> Dependencies { get; set; } = [];
     [JsonIgnore] public byte[]? Body { get; set; }
+    [JsonIgnore] public bool BodyChanged { get; set; }
     [JsonIgnore] public HashSet<PayloadOwner> Owners { get; set; } = [];
 }
 
@@ -22,7 +23,10 @@ internal sealed class PayloadCatalog(
     Func<string, CancellationToken, ValueTask<PayloadRecord?>> read,
     Func<PayloadRecord, CancellationToken, ValueTask> write,
     Func<CancellationToken, ValueTask<IReadOnlyList<PayloadRecord>>> all,
-    Func<DateTime> now, PayloadStoreSettings settings, DbTransaction? transaction = null) : IPayloadTransaction
+    Func<DateTime> now, PayloadStoreSettings settings, DbTransaction? transaction = null,
+    Func<PayloadOwner, CancellationToken, ValueTask<IReadOnlyList<PayloadRecord>>>? forOwner = null,
+    Func<PayloadRecord, CancellationToken, ValueTask<byte[]?>>? readBody = null,
+    Func<CancellationToken, ValueTask<IReadOnlyList<PayloadRecord>>>? discover = null) : IPayloadTransaction
 {
     public DbTransaction? DatabaseTransaction => transaction;
     private bool _active = true;
@@ -44,6 +48,7 @@ internal sealed class PayloadCatalog(
         row.Generation = checked(row.Generation + 1);
         row.State = "Uploading";
         row.Body = null;
+        row.BodyChanged = true;
         row.Token = Guid.NewGuid().ToString("N");
         row.ExpiresAtUtc = time + lifetime;
         row.TouchedAtUtc = time;
@@ -63,7 +68,14 @@ internal sealed class PayloadCatalog(
         if (row is null || row.Generation != reservation.Generation || reservation.ExpiresAtUtc <= time) return false;
         if (row.State == "Available" && reservation.Token == "")
         {
-            row.Reference.Verify(row.Body ?? throw new InvalidDataException("Available body missing"));
+            try { row.Reference.Verify(await Body(row, ct) ?? throw new InvalidDataException("Available body missing")); }
+            catch (InvalidDataException)
+            {
+                // Re-publication of verified original bytes repairs a damaged table/memory body without
+                // changing its identity, generation, dependencies or owners. No external upload is started.
+                row.Body = body.ToArray();
+                row.BodyChanged = true;
+            }
             if (dependencies is not null)
             {
                 var proposed = await Closure(dependencies, row.Reference, ct);
@@ -87,6 +99,7 @@ internal sealed class PayloadCatalog(
             await write(child, ct);
         }
         row.Body = body.ToArray();
+        row.BodyChanged = true;
         row.State = "Available";
         row.Token = null;
         row.TouchedAtUtc = time;
@@ -132,8 +145,44 @@ internal sealed class PayloadCatalog(
     {
         Check(ct);
         if (owner.Kind.StartsWith('$')) throw new ArgumentException("Reserved payload owner kind", nameof(owner));
-        foreach (var row in await all(ct))
+        foreach (var row in await Owned(owner, ct))
             if (row.Owners.Remove(owner)) await write(row, ct);
+    }
+
+    public async ValueTask ReplaceAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default)
+    {
+        Check(ct);
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner.Kind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner.Id);
+        if (owner.Kind.Length > 64 || owner.Id.Length > 256) throw new ArgumentOutOfRangeException(nameof(owner));
+        if (owner.Kind.StartsWith('$')) throw new ArgumentException("Reserved payload owner kind", nameof(owner));
+        var wanted = new Dictionary<string, PayloadRecord>(StringComparer.Ordinal);
+        foreach (var reference in references)
+        {
+            var row = await Available(reference, ct);
+            wanted[row.Reference.Digest] = row;
+            foreach (var dependency in row.Dependencies)
+                wanted[dependency.Digest] = await Available(dependency, ct);
+        }
+        foreach (var row in await Owned(owner, ct))
+            if (!wanted.ContainsKey(row.Reference.Digest) && row.Owners.Remove(owner)) await write(row, ct);
+        foreach (var row in wanted.Values)
+            if (row.Owners.Add(owner)) await write(row, ct);
+    }
+
+    private ValueTask<IReadOnlyList<PayloadRecord>> Owned(PayloadOwner owner, CancellationToken ct) =>
+        forOwner is null ? all(ct) : forOwner(owner, ct);
+
+    public async ValueTask LockAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default)
+    {
+        Check(ct);
+        var owned = await Owned(owner, ct);
+        foreach (var reference in references.Concat(owned.Select(r => r.Reference)).Distinct().OrderBy(r => r.Digest, StringComparer.Ordinal))
+        {
+            var row = await read(reference.Digest, ct);
+            if (row != null)
+                foreach (var dependency in row.Dependencies) await read(dependency.Digest, ct);
+        }
     }
 
     internal async ValueTask<ReadOnlyMemory<byte>?> Get(PayloadReference reference, CancellationToken ct)
@@ -141,11 +190,14 @@ internal sealed class PayloadCatalog(
         Check(ct);
         var row = await read(reference.Digest, ct);
         if (row is not { State: "Available" }) return null;
-        if (row.Body is null) throw new InvalidDataException("Available payload has no body");
-        reference.Verify(row.Body);
-        row.Reference.Verify(row.Body);
-        return row.Body.ToArray();
+        var body = await Body(row, ct) ?? throw new InvalidDataException("Available payload has no body");
+        reference.Verify(body);
+        row.Reference.Verify(body);
+        return body.ToArray();
     }
+
+    private ValueTask<byte[]?> Body(PayloadRecord row, CancellationToken ct) =>
+        readBody is null || row.BodyChanged ? ValueTask.FromResult(row.Body) : readBody(row, ct);
 
     internal async ValueTask<PayloadDeletion?> Collect(PayloadReference reference, TimeSpan grace, CancellationToken ct)
     {
@@ -174,7 +226,7 @@ internal sealed class PayloadCatalog(
         if (grace < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(grace));
         var time = now();
         // Relational All obtains the transaction lock and samples store time before the predicate runs.
-        var rows = await all(ct);
+        var rows = await (discover ?? all)(ct);
         time = now();
         return rows.Where(row => row.State != "Deleted" && row.Owners.Count == 0 &&
                 (row.State != "Uploading" || row.ExpiresAtUtc <= time) && row.TouchedAtUtc + grace <= time)
@@ -189,6 +241,7 @@ internal sealed class PayloadCatalog(
             row.State != "Deleting" || row.Owners.Count != 0) return false;
         row.Body = null;
         row.State = "Deleted";
+        row.BodyChanged = true;
         row.Dependencies = [];
         await write(row, ct);
         return true;

@@ -103,6 +103,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         var aboutIt = typed.Where(wait => wait.Subject == null ||
                                           string.Equals(wait.Subject, stored.Subject, StringComparison.Ordinal))
             .ToList();
+        foreach (var wait in aboutIt)
+            await host.PrepareReadAsync(checkpoint, checkpoint.ContinuationById(wait.ContinuationId)!, scopes, restoreInputs: false);
         var matching = aboutIt.Where(wait => Accepts(scopes, checkpoint, wait, payload)).ToList();
         if (matching.Count == 1)
         {
@@ -153,7 +155,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             return WorkflowValueBinding.Matches(scopes.Step(wait.StepId), payload, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
         }
-        catch (Exception error) when (error is not OutOfMemoryException)
+        catch (Exception error) when (error is not OutOfMemoryException &&
+                                      error is not WorkflowEngineException { Kind: WorkflowErrorKind.PayloadUnavailable })
         {
             return false;
         }

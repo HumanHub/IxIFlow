@@ -546,7 +546,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             return await ExecuteOperationAsync(Operation.Commit, () => CommitAsync(commit));
         }
-        catch (Exception error) when (IsRetryableCommit(error))
+        catch (Exception error) when (IsRetryableCommit(error) || error is PayloadLockUnavailableException)
         {
             await using var connection = await OpenConnectionAsync();
             return new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0,
@@ -562,6 +562,9 @@ public abstract partial class RelationalWorkflowStateRepository :
         var revision = checked(commit.ExpectedRevision + 1);
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (await BeginTransactionAsync(connection, Operation.Commit))!;
+        var payloadPins = Payloads.Enlist(transaction);
+        if (!commit.PreservesPayloadPins)
+            await payloadPins.LockAsync(commit.PayloadOwner, commit.PayloadReferences);
         WorkflowAdmissionRecord? admitted = null;
         if (admission != null)
         {
@@ -626,7 +629,7 @@ public abstract partial class RelationalWorkflowStateRepository :
                 !receipt.PayloadHash.SequenceEqual(commit.ContentHash))
                 throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
             var replayInstance = current?.StateJson == null ? null : JsonSerializer.Deserialize<WorkflowInstance>(current.StateJson);
-            var replayTimers = replayInstance != null && (WorkflowTimerRules.Frozen(replayInstance) ||
+            var replayTimers = !commit.PreservesPayloadPins && replayInstance != null && (WorkflowTimerRules.Frozen(replayInstance) ||
                 WorkflowTimerRules.Frozen(commit.ReadTrunk()) || (await ReadDebugCommandsAsync(connection, transaction, commit.InstanceId))
                     .Any(c => c.AcknowledgedRevision == receipt.Revision && c.Kind is DebugCommandKind.FreezeTimers or DebugCommandKind.UnfreezeTimers))
                 ? await ReadTimersAsync(connection, transaction, replayInstance) : null;
@@ -687,10 +690,14 @@ public abstract partial class RelationalWorkflowStateRepository :
             await ArmWaitsAsync(connection, transaction, commit.InstanceId, batch, now);
         foreach (var batch in commit.ClosedWaits.Chunk(StatementBatchSize))
             await CloseWaitsAsync(connection, transaction, commit.InstanceId, batch, now);
+        if (!commit.PreservesPayloadPins)
+        {
+            await payloadPins.ReplaceAsync(commit.PayloadOwner, commit.PayloadReferences);
+        }
         await ApplyPartsAsync(connection, transaction, commit);
         var traces = commit.TraceEntries.ToList();
         TimerCommitResult? timers = null;
-        if (WorkflowTimerRules.Changes(previousDebugInstance, timerInstance, debugCommands))
+        if (!commit.PreservesPayloadPins && WorkflowTimerRules.Changes(previousDebugInstance, timerInstance, debugCommands))
             timers = await ApplyTimersAsync(connection, transaction, previousDebugInstance, timerInstance, debugCommands, now, traces);
         // An idle instance is next due at the earliest deadline of its open waits (D-31, D-35).
         var runnableNow = debugWake || (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
@@ -1044,7 +1051,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
         public StoredWait Read(Func<DateTime, DateTime> readTime) => new(InstanceId, WaitId, (WaitKind)Kind, WaitKey, EventType,
             DeadlineUtc is { } deadline ? readTime(deadline) : null, OpenedSequence, readTime(OpenedAtUtc),
-            (WaitCloseReason?)CloseReason, ClosedAtUtc is { } closed ? readTime(closed) : null, DefaultPayloadJson is null ? null : StoredJson.Inline(DefaultPayloadJson));
+            (WaitCloseReason?)CloseReason, ClosedAtUtc is { } closed ? readTime(closed) : null, DefaultPayloadJson is null ? null : JsonSerializer.Deserialize<StoredJson>(DefaultPayloadJson)!);
     }
 
     private sealed class RunnableRow
@@ -1109,9 +1116,9 @@ public abstract partial class RelationalWorkflowStateRepository :
         public bool Same(StoredStamp stamp) => stamp.Revision == Revision && stamp.Incarnation == Incarnation;
 
         public WorkflowInstance Read(IEnumerable<StoredPart> parts, bool normalize) => Runnable(CheckpointParts.Assemble(StateJson,
-            parts.Select(part => new CheckpointPart(part.PartKey, StoredJson.Inline(part.Json))), Revision), normalize);
+            parts.Select(part => new CheckpointPart(part.PartKey, JsonSerializer.Deserialize<StoredJson>(part.Json)!)), Revision), normalize);
 
-        public WorkflowInstance Summarize(string? data, bool normalize) => Runnable(CheckpointParts.Summarize(StateJson, data is null ? null : StoredJson.Inline(data), Revision), normalize);
+        public WorkflowInstance Summarize(string? data, bool normalize) => Runnable(CheckpointParts.Summarize(StateJson, data is null ? null : JsonSerializer.Deserialize<StoredJson>(data)!, Revision), normalize);
 
         private WorkflowInstance Runnable(WorkflowInstance instance, bool normalize)
         {

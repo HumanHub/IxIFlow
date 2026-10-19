@@ -18,5 +18,6 @@ public sealed partial class SqlWorkflowStateRepository : IPayloadStoreProvider
             PRIMARY KEY (Digest, OwnerKind, OwnerId),
             FOREIGN KEY (Digest) REFERENCES dbo.IxIFlowWorkflowPayloads(Digest)
         );
+        CREATE INDEX IX_IxIFlowPayloadRefs_Owner ON dbo.IxIFlowWorkflowPayloadRefs(OwnerKind, OwnerId, Digest);
         """;
 }

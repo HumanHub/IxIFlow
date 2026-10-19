@@ -27,7 +27,7 @@ public sealed record PayloadDeletion(PayloadReference Reference, long Generation
 /// A lost acknowledgement never releases committed pins. Readers hold their own pins through hydration.
 /// External providers must use the state-store catalog and generation-specific objects; collection discovers
 /// expired reservations from that catalog, without listing the external store. A grace period is only a policy,
-/// never the synchronization mechanism. This step supplies the protocol; workflow writes remain inline.
+/// never the synchronization mechanism. Checkpoint writes acquire their own owner pins transactionally.
 /// External providers retain a ledger of EVERY reserved generation, including retired generations: a delayed
 /// upload can finish after its reservation expired and after an earlier delete succeeded. That generation must
 /// remain discoverable for another fenced delete. Never overwrite its sole catalog entry with a replacement
@@ -59,16 +59,21 @@ public interface IPayloadStore
 public interface IPayloadTransaction
 {
     DbTransaction? DatabaseTransaction { get; }
+    /// <summary>Acquires checkpoint payload locks before instance locks, without changing pins.</summary>
+    ValueTask LockAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default);
     ValueTask PinAsync(PayloadOwner owner, PayloadReference reference, CancellationToken ct = default);
+    /// <summary>Replaces only this owner's pins, writing the differences and including dependency closures.</summary>
+    ValueTask ReplaceAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default);
     ValueTask ReleaseAsync(PayloadOwner owner, CancellationToken ct = default);
 }
 
 public sealed class PayloadStoreSettings
 {
+    public const long DefaultPayloadThresholdBytes = 256L * 1024;
     public const long DefaultMaxPayloadBytes = 64L * 1024 * 1024;
     public long MaxPayloadBytes { get; }
     public long PayloadThresholdBytes { get; }
-    public PayloadStoreSettings(long maxPayloadBytes = DefaultMaxPayloadBytes, long payloadThresholdBytes = 0)
+    public PayloadStoreSettings(long maxPayloadBytes = DefaultMaxPayloadBytes, long payloadThresholdBytes = DefaultPayloadThresholdBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPayloadBytes);
         ArgumentOutOfRangeException.ThrowIfNegative(payloadThresholdBytes);
@@ -77,7 +82,7 @@ public sealed class PayloadStoreSettings
     }
     public void ValidateLength(long length)
     {
-        if (length > MaxPayloadBytes) throw new ArgumentOutOfRangeException(nameof(length), "MaxPayloadBytes exceeded");
+        if (length > MaxPayloadBytes) throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "MaxPayloadBytes exceeded");
     }
 }
 

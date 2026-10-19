@@ -23,6 +23,8 @@ public class WorkflowExecutionResult
     
     public string? ErrorMessage { get; set; }
     public string? ErrorType { get; set; }
+    /// <summary>The engine failure that holds an operator stop, when applicable.</summary>
+    public WorkflowErrorKind? ErrorKind { get; set; }
     public string? ErrorStackTrace { get; set; }
     public TimeSpan ExecutionTime { get; set; }
     public List<ExecutionTraceEntry> TraceEntries { get; set; } = new();
