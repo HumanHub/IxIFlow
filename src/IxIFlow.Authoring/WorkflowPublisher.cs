@@ -21,7 +21,7 @@ public sealed record WorkflowPublishResult(WorkflowVersion? Version, IReadOnlyLi
 }
 
 /// <summary>Publishes import-free drafts using the runtime shared set and already-loaded application assemblies.</summary>
-public sealed class WorkflowPublisher(IWorkflowPublicationStore catalog, IArtifactStore artifacts, WorkflowPublisherOptions? options = null)
+public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactStore artifacts, WorkflowPublisherOptions? options = null)
 {
     private readonly WorkflowPublisherOptions _options = options ?? new();
     private const string Path = "workflow.yaml";
