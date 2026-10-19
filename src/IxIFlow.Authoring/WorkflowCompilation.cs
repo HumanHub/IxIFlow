@@ -8,6 +8,7 @@ using IxIFlow.Dsl.Documents;
 using IxIFlow.Generators;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Emit;
 
 namespace IxIFlow.Authoring;
@@ -45,26 +46,86 @@ public static class WorkflowCompilation
                 pending.Enqueue(Assembly.Load(reference));
         }
         var references = NormalizeReferences(paths);
-        if (options != null)
-        {
-            var assemblies = ReferenceAssemblies(references);
-            foreach (var name in options.Types.Values.Concat(options.WorkflowDataTypes.Values)
-                         .Concat(options.Workflows.Values.Select(item => item.DataType)).Distinct(StringComparer.Ordinal))
-            {
-                var clrName = name.Replace("global::", "", StringComparison.Ordinal);
-                if (!assemblies.Any(assembly => WorkflowPublisher.FindType(assembly, clrName) != null))
-                    throw new InvalidOperationException($"Configured type '{name}' is outside the host reference profile (trusted-platform assemblies and entry assembly closure)");
-            }
-        }
+        if (options != null && ConfiguredTypeNames(options).Any())
+            ValidateConfiguredTypes(options, new ReferenceSet(references));
         return references;
     }
 
-    internal static IAssemblySymbol[] ReferenceAssemblies(IEnumerable<string> paths)
+    internal static ReferenceSet CreateReferences(WorkflowSourceOptions options)
     {
-        var compilation = CSharpCompilation.Create("WorkflowReferences",
-            references: paths.Select(path => MetadataReference.CreateFromFile(path)));
-        return compilation.References.Select(reference => compilation.GetAssemblyOrModuleSymbol(reference))
-            .OfType<IAssemblySymbol>().ToArray();
+        var references = new ReferenceSet(ReferencePaths());
+        ValidateConfiguredTypes(options, references);
+        return references;
+    }
+
+    private static IEnumerable<string> ConfiguredTypeNames(WorkflowSourceOptions options) =>
+        options.Types.Values.Concat(options.WorkflowDataTypes.Values)
+            .Concat(options.Workflows.Values.Select(item => item.DataType)).Distinct(StringComparer.Ordinal);
+
+    private static void ValidateConfiguredTypes(WorkflowSourceOptions options, ReferenceSet references)
+    {
+        foreach (var configured in ConfiguredTypeNames(options))
+        {
+            var type = SyntaxFactory.ParseTypeName(configured);
+            // A qualified name is one component, not a type for each namespace segment.
+            // Descending also visits generic arguments and array/nullable/tuple element types.
+            foreach (var name in type.DescendantNodesAndSelf().OfType<NameSyntax>()
+                         .Where(name => name.Parent is not (QualifiedNameSyntax or AliasQualifiedNameSyntax)))
+            {
+                // These contextual keywords parse as identifiers but need no named type lookup.
+                if (name is IdentifierNameSyntax identifier && identifier.Identifier.Text is "dynamic" or "nint" or "nuint") continue;
+                var candidates = MetadataNames(name, options.Namespace).ToArray();
+                if (!references.Assemblies.Any(assembly => candidates.Any(candidate => WorkflowPublisher.FindType(assembly, candidate) != null)))
+                    throw new InvalidOperationException($"Configured type '{configured}' has component '{name}' outside the host reference profile (trusted-platform assemblies and entry assembly closure)");
+            }
+        }
+    }
+
+    private static string MetadataName(NameSyntax name) => name switch
+    {
+        IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+        GenericNameSyntax generic => generic.Identifier.ValueText + "`" + generic.Arity,
+        QualifiedNameSyntax qualified => MetadataName(qualified.Left) + "." + MetadataName(qualified.Right),
+        AliasQualifiedNameSyntax alias => MetadataName(alias.Name),
+        _ => throw new InvalidOperationException($"Unsupported C# name '{name}'")
+    };
+
+    private static IEnumerable<string> MetadataNames(NameSyntax name, string generatedNamespace)
+    {
+        var metadataName = MetadataName(name);
+        yield return metadataName;
+        var first = name;
+        while (first is QualifiedNameSyntax qualified) first = qualified.Left;
+        if (first is AliasQualifiedNameSyntax { Alias.Identifier.ValueText: "global" }) yield break;
+
+        // Unqualified names also see the generated namespace and the translator's usings.
+        for (var scope = generatedNamespace; scope.Length > 0;)
+        {
+            yield return scope + "." + metadataName;
+            var dot = scope.LastIndexOf('.');
+            scope = dot < 0 ? "" : scope[..dot];
+        }
+        foreach (var scope in WorkflowSourceTranslator.ImportedNamespaces)
+            yield return scope + "." + metadataName;
+    }
+
+    // Owned by one publish; the same metadata objects feed validation, resolution and compilation.
+    internal sealed class ReferenceSet(string[] paths)
+    {
+        public string[] Paths { get; } = paths;
+        public PortableExecutableReference[] Metadata { get; } = paths.Select(path => MetadataReference.CreateFromFile(path)).ToArray();
+        private IAssemblySymbol[]? _assemblies;
+
+        public IAssemblySymbol[] Assemblies
+        {
+            get
+            {
+                if (_assemblies != null) return _assemblies;
+                var compilation = CSharpCompilation.Create("WorkflowReferences", references: Metadata);
+                return _assemblies = compilation.References.Select(reference => compilation.GetAssemblyOrModuleSymbol(reference))
+                    .OfType<IAssemblySymbol>().ToArray();
+            }
+        }
     }
 
     internal static string[] NormalizeReferences(IEnumerable<string> paths) => paths
@@ -82,12 +143,16 @@ public static class WorkflowCompilation
         }).Order(StringComparer.Ordinal).ToArray();
 
     public static WorkflowCompilationResult Compile(string source, IReadOnlyList<string>? references = null,
-        string sourcePath = "workflow.yaml", CancellationToken cancellationToken = default)
+        string sourcePath = "workflow.yaml", CancellationToken cancellationToken = default) =>
+        Compile(source, new ReferenceSet(NormalizeReferences(references ?? ReferencePaths())), sourcePath, cancellationToken);
+
+    internal static WorkflowCompilationResult Compile(string source, ReferenceSet references,
+        string sourcePath, CancellationToken cancellationToken)
     {
         var tree = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.CSharp14),
             "workflow.g.cs", Encoding.UTF8, cancellationToken);
         var compilation = CSharpCompilation.Create("Workflow_" + ArtifactDigest.Of(Encoding.UTF8.GetBytes(source)).Value[7..],
-            [tree], NormalizeReferences(references ?? ReferencePaths()).Select(path => MetadataReference.CreateFromFile(path)),
+            [tree], references.Metadata,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: OptimizationLevel.Release,
                 deterministic: true, nullableContextOptions: NullableContextOptions.Enable));
         using var assembly = new MemoryStream();

@@ -61,7 +61,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 location = document.Imports.Location;
                 return Failure("PUB003", "Imports are not supported by this publisher yet");
             }
-            var references = WorkflowCompilation.ReferencePaths(_options.SourceOptions);
+            var references = WorkflowCompilation.CreateReferences(_options.SourceOptions);
             var sourceOptions = ResolveTypes(document, _options.SourceOptions, references);
             var validation = await new WorkflowDocumentValidator().ValidateAsync(document, new WorkflowSourceContracts(sourceOptions), cancellationToken);
             diagnostics.AddRange(validation.Diagnostics.Select(item =>
@@ -92,7 +92,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             var manifest = new WorkflowBundleManifest(1, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
                 tested.CombinerSignature, WorkflowCompilation.Settings,
-                references.Select(AssemblyName.GetAssemblyName).ToDictionary(name => name.FullName!, name => name.Version!.ToString(), StringComparer.Ordinal),
+                references.Paths.Select(AssemblyName.GetAssemblyName).ToDictionary(name => name.FullName!, name => name.Version!.ToString(), StringComparer.Ordinal),
                 new Dictionary<string, ArtifactDigest>());
             var archive = WorkflowBundleArchive.Create(manifest, new Dictionary<string, byte[]>
             {
@@ -126,7 +126,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         { return Failure("PUB007", error.Message); }
     }
 
-    private static WorkflowSourceOptions ResolveTypes(WorkflowDocument document, WorkflowSourceOptions configured, IReadOnlyList<string> references)
+    private static WorkflowSourceOptions ResolveTypes(WorkflowDocument document, WorkflowSourceOptions configured, WorkflowCompilation.ReferenceSet references)
     {
         var result = new WorkflowSourceOptions { RequireResolvedTypes = true, Namespace = configured.Namespace, ClassName = configured.ClassName };
         foreach (var pair in configured.Types) result.Types.Add(pair);
@@ -135,13 +135,11 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         foreach (var pair in configured.Workflows) result.Workflows.Add(pair);
         foreach (var pair in configured.WorkflowDataTypes) result.WorkflowDataTypes.Add(pair);
         foreach (var pair in configured.WorkflowIdentities) result.WorkflowIdentities.Add(pair);
-        IAssemblySymbol[]? assemblies = null;
         foreach (var key in WorkflowSourceTranslator.TypeNames(document).Distinct())
         {
             if (result.Types.ContainsKey(key)) continue;
             var name = key.Replace("global::", "", StringComparison.Ordinal);
-            assemblies ??= WorkflowCompilation.ReferenceAssemblies(references);
-            var matches = assemblies.Select(assembly => FindType(assembly, name)).OfType<INamedTypeSymbol>()
+            var matches = references.Assemblies.Select(assembly => FindType(assembly, name)).OfType<INamedTypeSymbol>()
                 .Distinct<INamedTypeSymbol>(SymbolEqualityComparer.Default).ToArray();
             if (matches.Length == 1)
             {
