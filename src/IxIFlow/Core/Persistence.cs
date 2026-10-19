@@ -1086,11 +1086,6 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
                 CreatedAt = definition.CreatedAt,
                 CreatedBy = definition.CreatedBy,
                 Tags = definition.Tags,
-                EstimatedStepCount = definition.EstimatedStepCount,
-                SupportsSuspension = definition.SupportsSuspension,
-                UsesSagaPattern = definition.UsesSagaPattern,
-                SupportsParallelExecution = definition.SupportsParallelExecution,
-                WorkflowFactory = definition.WorkflowFactory,
                 Steps = definition.Steps,
                 Metadata = new Dictionary<string, object>(definition.Metadata)
                 {
