@@ -29,13 +29,21 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 ORDER BY instance.runnable_at_utc, instance.instance_id COLLATE "C" LIMIT @Limit) AS candidate
             WHERE sets.failed UNION ALL SELECT candidate.* FROM sets CROSS JOIN LATERAL (
                 SELECT instance.instance_id, instance.runnable_at_utc FROM (
-                    -- Each arm implies its own partial index predicate. In particular, the null
-                    -- arm must not cost a nullable expiry range against the whole schedulable set.
+                    -- Pins without an expiry: every filter is applied here, in the order of
+                    -- ix_ixiflow_instances_set_pin_no_expiry, with the page limit. The ordered limit
+                    -- makes that index the cheap path whatever the planner estimates for the
+                    -- correlated pin and expiry columns, and the seek stops after a page.
                     (SELECT instance.instance_id, instance.runnable_at_utc, instance.pinned_host
                     FROM ixiflow_workflow_instances AS instance
                     WHERE instance.demand_set_id = sets.id AND instance.pin_expires_at_utc IS NULL
                       AND instance.pinned_host IS NOT NULL AND instance.runnable_at_utc IS NOT NULL
-                    ORDER BY instance.runnable_at_utc, instance.instance_id COLLATE "C" OFFSET 0)
+                      AND instance.runnable_at_utc <= @Now
+                      AND (CAST(@AfterTime AS timestamptz) IS NULL OR instance.runnable_at_utc > CAST(@AfterTime AS timestamptz) OR
+                          (instance.runnable_at_utc = CAST(@AfterTime AS timestamptz) AND instance.instance_id > CAST(@AfterId AS text) COLLATE "C"))
+                      AND COALESCE((SELECT lease.expires_at_utc <= @Now FROM ixiflow_workflow_leases AS lease
+                          WHERE lease.instance_id = instance.instance_id), true)
+                      AND NOT EXISTS (SELECT 1 FROM pins WHERE pins.id = sets.id AND pins.value = instance.pinned_host)
+                    ORDER BY instance.runnable_at_utc, instance.instance_id COLLATE "C" LIMIT @Limit)
                     UNION ALL
                     (SELECT instance.instance_id, instance.runnable_at_utc, instance.pinned_host
                     FROM ixiflow_workflow_instances AS instance
