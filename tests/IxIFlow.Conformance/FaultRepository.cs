@@ -12,24 +12,26 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.GetDefinitionAsync(name, version);
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
         inner.SaveDefinitionAsync(definition, expectedRevision);
-    public Task RegisterWorkflowVersionAsync(WorkflowVersion version) =>
-        inner.RegisterWorkflowVersionAsync(version);
+    public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
+        inner.RegisterWorkflowVersionAsync(version, artifacts);
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
         inner.GetWorkflowVersionAsync(name, version);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
         inner.GetWorkflowVersionsAsync(name);
-    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>
-        inner.SetWorkflowVersionStateAsync(name, version, state);
+    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
+        inner.SetWorkflowVersionStateAsync(name, version, state, artifacts);
     public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version) =>
         inner.PublishDefinitionAsync(draftId, version);
     public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
-        inner.PurgeArtifactsAsync(ReferenceEquals(artifacts, this) ? inner : artifacts, retention, batchSize, cancellationToken);
+        inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
     public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
         inner.PutAsync(kind, content, cancellationToken);
     public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
         inner.OpenAsync(digest, cancellationToken);
     public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
         inner.ExistsAsync(digest, cancellationToken);
+    public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+        inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
     public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
         inner.DeleteAsync(digest, cancellationToken);
 

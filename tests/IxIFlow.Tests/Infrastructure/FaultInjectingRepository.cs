@@ -12,24 +12,26 @@ public class FaultInjectingRepository : IWorkflowStateRepository
         _inner.GetDefinitionAsync(name, version);
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
         _inner.SaveDefinitionAsync(definition, expectedRevision);
-    public Task RegisterWorkflowVersionAsync(WorkflowVersion version) =>
-        _inner.RegisterWorkflowVersionAsync(version);
+    public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
+        _inner.RegisterWorkflowVersionAsync(version, artifacts);
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
         _inner.GetWorkflowVersionAsync(name, version);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
         _inner.GetWorkflowVersionsAsync(name);
-    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>
-        _inner.SetWorkflowVersionStateAsync(name, version, state);
+    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
+        _inner.SetWorkflowVersionStateAsync(name, version, state, artifacts);
     public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version) =>
         _inner.PublishDefinitionAsync(draftId, version);
     public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
-        _inner.PurgeArtifactsAsync(ReferenceEquals(artifacts, this) ? _inner : artifacts, retention, batchSize, cancellationToken);
+        _inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
     public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
         _inner.PutAsync(kind, content, cancellationToken);
     public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
         _inner.OpenAsync(digest, cancellationToken);
     public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
         _inner.ExistsAsync(digest, cancellationToken);
+    public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+        _inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
     public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
         _inner.DeleteAsync(digest, cancellationToken);
 
@@ -69,7 +71,7 @@ public class FaultInjectingRepository : IWorkflowStateRepository
     public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
         _inner.GetOpenWaitsAsync(query);
 
-    private readonly InMemoryWorkflowStateRepository _inner;
+    private readonly IWorkflowStateRepository _inner;
 
     public FaultInjectingRepository() : this(TimeProvider.System)
     {
@@ -77,6 +79,7 @@ public class FaultInjectingRepository : IWorkflowStateRepository
 
     /// <summary>A store whose clock is <paramref name="time"/>, as a test that drives the engine's clock needs.</summary>
     public FaultInjectingRepository(TimeProvider time) => _inner = new InMemoryWorkflowStateRepository(time);
+    public FaultInjectingRepository(IWorkflowStateRepository inner) => _inner = inner;
     private int _failedReads;
     private int _failedCommits;
 
