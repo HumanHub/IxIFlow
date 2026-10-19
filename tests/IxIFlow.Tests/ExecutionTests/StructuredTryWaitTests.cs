@@ -141,7 +141,7 @@ public class StructuredTryWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(CatchWaitWorkflow());
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
@@ -472,7 +472,7 @@ public class StructuredTryWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(definition);
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "cleanup", new Approval());
@@ -952,7 +952,7 @@ public class StructuredTryWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(CustomErrorWorkflow());
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
@@ -1020,7 +1020,7 @@ public class StructuredTryWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(definition);
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
@@ -1082,7 +1082,7 @@ public class StructuredTryWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(MarkedObjectWorkflow());
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
@@ -1132,7 +1132,7 @@ public class StructuredTryWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(definition);
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
@@ -1519,7 +1519,7 @@ public class StructuredTryWaitTests
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(definition);
         var result = await secondProvider.GetRequiredService<IWorkflowClient>()
             .RecoverAsync(instanceId);
@@ -1587,6 +1587,31 @@ public class StructuredTryWaitTests
 
     public sealed class BoundedCheckpointStore : IWorkflowStateRepository
     {
+        public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
+            _inner.GetDefinitionAsync(name, version);
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
+            _inner.SaveDefinitionAsync(definition, expectedRevision);
+        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
+            _inner.RegisterWorkflowVersionAsync(version, artifacts);
+        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
+            _inner.GetWorkflowVersionAsync(name, version);
+        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
+            _inner.GetWorkflowVersionsAsync(name);
+        public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
+            _inner.SetWorkflowVersionStateAsync(name, version, state, artifacts);
+        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+            _inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
+        public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
+            _inner.PutAsync(kind, content, cancellationToken);
+        public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            _inner.OpenAsync(digest, cancellationToken);
+        public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            _inner.ExistsAsync(digest, cancellationToken);
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+            _inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
+        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            _inner.DeleteAsync(digest, cancellationToken);
+
         public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
             _inner.RegisterMemberAsync(member, cancellationToken);
         public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,

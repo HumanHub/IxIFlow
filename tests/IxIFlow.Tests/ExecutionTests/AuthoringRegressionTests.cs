@@ -59,12 +59,12 @@ public sealed class AuthoringRegressionTests
     [Fact]
     public async Task DiRegisteredChildMustMatchTheRegistryStructureHash()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await registry.RegisterWorkflowAsync(Workflow.Create<RegistrationData>("Customer approval", 3)
             .Step<RegistrationActivity>().Build());
         var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         services.RegisterWorkflow<NamedWorkflow>();
-        services.AddSingleton<IWorkflowVersionRegistry>(registry);
+        services.AddSingleton<IWorkflowCatalog>(registry);
         using var provider = services.BuildServiceProvider();
         var parent = Workflow.Create<ParentData>("Mismatch parent").Step<RegistrationActivity>()
             .Invoke<NamedWorkflow, RegistrationData>().Build();

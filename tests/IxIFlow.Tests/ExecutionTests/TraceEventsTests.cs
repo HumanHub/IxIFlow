@@ -302,7 +302,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         var store = new InMemoryWorkflowStateRepository(time);
         using var services = Services(store, time);
         var client = services.GetRequiredService<IWorkflowClient>();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<Data>("TraceChild").Step<Noop>().WaitFor<Go>("go").Build());
         var definition = Workflow.Create<Data>("TraceParent").Step<Noop>()
             .Invoke<Data>("TraceChild", 1, step => step.CancelWithParent(cancelWithParent)).Build();

@@ -109,14 +109,14 @@ public sealed class RunReceiptLifecycleTests
             _services = services.BuildServiceProvider();
             _watch = new(Store, _time);
             Operations = new(_services, _services.GetRequiredService<IActivityExecutor>(), Store,
-                _services.GetRequiredService<IWorkflowVersionRegistry>(), new InProcessInstanceGate(),
+                _services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
                 timeProvider: _time, watch: _watch, control: Control,
                 hostSettings: HostSettings.Default with { MaxCrashes = 1 });
         }
 
         public async Task<WorkflowInstance> SeedCrashedInstanceAsync()
         {
-            await _services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Definition);
+            await _services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Definition);
             var (instance, checkpoint, _) = WorkflowInstances.NewInstance(Definition,
                 new Data { Value = "old incarnation" }, new(), _time.GetUtcNow().UtcDateTime);
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);

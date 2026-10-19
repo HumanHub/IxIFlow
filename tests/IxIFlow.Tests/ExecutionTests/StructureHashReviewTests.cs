@@ -173,14 +173,14 @@ public sealed class StructureHashReviewTests
     {
         var collection = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         collection.RegisterWorkflow<ReviewChild>();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var published = Workflow.Create<StructureHashData>("Review child")
             .Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => 1)).Build();
         await registry.RegisterWorkflowAsync(published);
         var registeredHash = Hash(published);
         // Rebuilding a catalog from this object would now compare the wrong registration contract.
         published.Steps.Clear();
-        collection.AddSingleton<IWorkflowVersionRegistry>(registry);
+        collection.AddSingleton<IWorkflowCatalog>(registry);
         using var services = collection.BuildServiceProvider();
         var parent = Workflow.Create<StructureHashData>("Parent").Step<StructureHashMultiply>()
             .Invoke<ReviewChild, StructureHashData>().Build();

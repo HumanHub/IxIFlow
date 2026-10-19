@@ -8,6 +8,31 @@ namespace IxIFlow.Tests.Conformance;
 /// </summary>
 internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflowStateRepository
 {
+    public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
+        inner.GetDefinitionAsync(name, version);
+    public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
+        inner.SaveDefinitionAsync(definition, expectedRevision);
+    public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
+        inner.RegisterWorkflowVersionAsync(version, artifacts);
+    public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
+        inner.GetWorkflowVersionAsync(name, version);
+    public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
+        inner.GetWorkflowVersionsAsync(name);
+    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
+        inner.SetWorkflowVersionStateAsync(name, version, state, artifacts);
+    public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+        inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
+    public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
+        inner.PutAsync(kind, content, cancellationToken);
+    public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+        inner.OpenAsync(digest, cancellationToken);
+    public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+        inner.ExistsAsync(digest, cancellationToken);
+    public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+        inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
+    public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+        inner.DeleteAsync(digest, cancellationToken);
+
     public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
         inner.RegisterMemberAsync(member, cancellationToken);
     public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,

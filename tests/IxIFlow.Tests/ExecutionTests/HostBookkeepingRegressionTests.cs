@@ -206,14 +206,14 @@ public sealed class HostBookkeepingRegressionTests
             control.OnUnscheduled(scheduler.Unschedule);
             _watch = new CancellationWatch(Store, Time);
             Operations = new(Services, Services.GetRequiredService<IActivityExecutor>(), Store,
-                Services.GetRequiredService<IWorkflowVersionRegistry>(), new InProcessInstanceGate(),
+                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
                 timeProvider: Time, watch: _watch, control: control,
                 limits: new ExecutionLimits { MaxTraceEntriesPerInstance = 0 });
         }
 
         public async Task<WorkflowInstance> SeedAsync(WorkflowDefinition definition)
         {
-            await Services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            await Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition,
                 new Data { Value = "assigned" }, new(), Time.GetUtcNow().UtcDateTime);
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);

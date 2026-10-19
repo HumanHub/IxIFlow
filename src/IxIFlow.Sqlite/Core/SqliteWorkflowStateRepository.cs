@@ -227,14 +227,15 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, incarnation, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
+                    (instance_id, incarnation, workflow_name, workflow_version, status, correlation_id, runnable_at_utc, state_json, revision,
                      parent_instance_id)
-                VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @Now, @Payload, 1, @ParentInstanceId)
+                VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @Status, @CorrelationId, @Now, @Payload, 1, @ParentInstanceId)
                 """, children.Select(child => new
         {
             child.Instance!.InstanceId,
             Incarnation = Guid.NewGuid(),
             child.Instance!.WorkflowName,
+            child.Instance!.WorkflowVersion,
             Status = child.Instance!.Status.ToString(),
             child.Instance!.CorrelationId,
             child.Payload,
@@ -510,14 +511,14 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
-              VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
+                  (instance_id, incarnation, workflow_name, workflow_version, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
+              VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
-                  workflow_name = @WorkflowName, status = @Status,
+                  workflow_name = @WorkflowName, workflow_version = @WorkflowVersion, status = @Status,
                   correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
                   runnable_at_utc = @RunnableAtUtc,
                   inbox_read_through = COALESCE(@InboxReadThrough, inbox_read_through),
@@ -574,7 +575,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key IN @Keys
                 """,
-        _ => RegistrySql(statement) ?? AdmissionSql(statement)
+        _ => CatalogSql(statement) ?? RegistrySql(statement) ?? AdmissionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -597,6 +598,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             instance_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
             incarnation TEXT NOT NULL,
             workflow_name TEXT COLLATE BINARY NOT NULL,
+            workflow_version integer NOT NULL,
             status TEXT COLLATE BINARY NOT NULL,
             correlation_id TEXT COLLATE BINARY NULL,
             runnable_at_utc TEXT NULL,
@@ -613,6 +615,9 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             ON ixiflow_workflow_instances (status);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_workflow_name
             ON ixiflow_workflow_instances (workflow_name);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_unfinished_workflow
+            ON ixiflow_workflow_instances (workflow_name, workflow_version)
+            WHERE status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut');
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_correlation_id
             ON ixiflow_workflow_instances (correlation_id);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_parent
@@ -693,6 +698,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(CatalogSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 

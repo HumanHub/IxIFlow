@@ -32,7 +32,7 @@ public sealed class DefinitionValidationTests
         };
         Assert.NotEmpty(new WorkflowScopeCatalog(definition).StructureHash);
         using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
-        var registry = provider.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = provider.GetRequiredService<IWorkflowCatalog>();
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
         {
             switch (entry)
@@ -82,7 +82,7 @@ public sealed class DefinitionValidationTests
             WorkflowDefinitionValidator.Validate(definition);
             _ = new WorkflowScopeCatalog(definition).StructureHash.Length;
             Assert.Same(scopes, WorkflowDefinitionValidator.ForExecution(definition));
-            new WorkflowVersionRegistry([definition]);
+            new WorkflowCatalog([definition]);
         });
         Assert.Equal(count, visits.Visits);
     }
@@ -105,7 +105,7 @@ public sealed class DefinitionValidationTests
                 .Invoke<RegistrationData>(definition.Name, definition.Version).Build();
         var registry = new UncheckedRegistry(definition, parent);
         using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services
-            .AddSingleton<IWorkflowVersionRegistry>(registry).BuildServiceProvider();
+            .AddSingleton<IWorkflowCatalog>(registry).BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
         Assert.NotEmpty(new WorkflowScopeCatalog(definition).StructureHash);
 
@@ -173,8 +173,25 @@ public sealed class DefinitionValidationTests
     }
 
     // Models a custom registry that returns definitions without invoking the engine validator.
-    private sealed class UncheckedRegistry(params WorkflowDefinition[] definitions) : IWorkflowVersionRegistry, IWorkflowDefinitionSource
+    private sealed class UncheckedRegistry(params WorkflowDefinition[] definitions) : IWorkflowCatalog
     {
+        private readonly WorkflowCatalog _catalog = UncheckedCatalog(definitions);
+        private static WorkflowCatalog UncheckedCatalog(WorkflowDefinition[] definitions)
+        {
+            var store = new InMemoryWorkflowStateRepository();
+            foreach (var definition in definitions)
+                store.RegisterWorkflowVersionAsync(new(definition.Name, definition.Version,
+                    new WorkflowScopeCatalog(definition).StructureHash)).GetAwaiter().GetResult();
+            return new WorkflowCatalog(store);
+        }
+        public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _catalog.GetDefinitionAsync(name, version);
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) => _catalog.SaveDefinitionAsync(definition, expectedRevision);
+        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) => _catalog.RegisterWorkflowVersionAsync(version, artifacts);
+        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _catalog.GetWorkflowVersionAsync(name, version);
+        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _catalog.GetWorkflowVersionsAsync(name);
+        public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) => _catalog.SetWorkflowVersionStateAsync(name, version, state, artifacts);
+        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _catalog.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
+        public Task<WorkflowVersion?> GetLatestWorkflowVersionAsync(string name) => _catalog.GetLatestWorkflowVersionAsync(name);
         public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
             Task.FromResult<IReadOnlyList<WorkflowDefinition>>(definitions);
         public Task RegisterWorkflowAsync(WorkflowDefinition value) => Task.CompletedTask;
@@ -184,7 +201,7 @@ public sealed class DefinitionValidationTests
         public async Task<string?> GetWorkflowStructureHashAsync(string name, int version) =>
             await GetWorkflowDefinitionAsync(name, version) is { } definition
                 ? new WorkflowScopeCatalog(definition).StructureHash : null;
-        public Task DeactivateWorkflowVersionAsync(string name, int version) => throw new NotSupportedException();
+        public Task RetireWorkflowVersionAsync(string name, int version) => throw new NotSupportedException();
     }
 
     [Fact]

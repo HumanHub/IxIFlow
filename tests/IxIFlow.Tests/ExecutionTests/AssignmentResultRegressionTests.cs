@@ -220,7 +220,7 @@ public sealed class AssignmentResultRegressionTests
             Control.OnUnscheduled(host.Unschedule);
             _watch = new CancellationWatch(store, time);
             Operations = new(Services, Services.GetRequiredService<IActivityExecutor>(), store,
-                Services.GetRequiredService<IWorkflowVersionRegistry>(), new InProcessInstanceGate(),
+                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
                 timeProvider: time, limits: limits, control: Control, watch: _watch);
         }
 
@@ -230,7 +230,7 @@ public sealed class AssignmentResultRegressionTests
 
         public async Task<WorkflowInstance> SeedAsync(WorkflowDefinition definition, bool stopped = false)
         {
-            await Services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            await Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition,
                 new Data { Value = "assigned", Padding = stopped ? new string('x', 5_000) : "" }, new(),
                 _time.GetUtcNow().UtcDateTime);

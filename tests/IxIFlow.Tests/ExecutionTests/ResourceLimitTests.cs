@@ -50,7 +50,7 @@ public sealed class ResourceLimitTests
         }
 
         using var raised = Services(store, options => options.MaxActiveBranches = 3);
-        await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await raised.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var released = await Client(raised).ReleaseAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, released.Status);
@@ -89,7 +89,7 @@ public sealed class ResourceLimitTests
         }
 
         using var raised = Services(store, options => options.MaxActiveBranches = 4);
-        await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await raised.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         Probe(raised).Gate.SetResult();
         var released = await Client(raised).ReleaseAsync(instanceId);
 
@@ -170,13 +170,13 @@ public sealed class ResourceLimitTests
         // beside the waiting sibling.
         using (var lowered = Services(store, options => options.MaxActiveBranches = 1))
         {
-            await lowered.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            await lowered.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             var stopped = await Client(lowered).ResumeAsync(instanceId, "item", new Signal());
             Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stopped.Status);
         }
 
         using var raised = Services(store, options => options.MaxActiveBranches = 10);
-        await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await raised.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         Assert.Equal(WorkflowExecutionStatus.Suspended, (await Client(raised).ReleaseAsync(instanceId)).Status);
         Assert.Equal(WorkflowExecutionStatus.Suspended,
             (await Client(raised).ResumeAsync(instanceId, "item", new Signal())).Status);
@@ -206,7 +206,7 @@ public sealed class ResourceLimitTests
 
         // The first item's completion decides the join, so it starts no other item and needs no room.
         using var lowered = Services(store, options => options.MaxActiveBranches = 1);
-        await lowered.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await lowered.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         Assert.Equal(WorkflowExecutionStatus.Suspended,
             (await Client(lowered).ResumeAsync(instanceId, "item", new Signal())).Status);
         var finished = await Client(lowered).ResumeAsync(instanceId, "sibling", new Signal());

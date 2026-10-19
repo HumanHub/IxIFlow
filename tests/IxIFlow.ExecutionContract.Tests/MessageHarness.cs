@@ -13,7 +13,7 @@ internal sealed class MessageHarness : IDisposable
 {
     internal static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
     private readonly ServiceProvider _services;
-    private readonly WorkflowVersionRegistry _definitions = new();
+    private readonly WorkflowCatalog _definitions = new();
     public HostEnd Host { get; } = new();
     public ActivityProbe Probe { get; } = new();
     public WorkflowExecutor Executor { get; }

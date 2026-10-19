@@ -18,7 +18,7 @@ public sealed partial class WorkflowHost
         IServiceProvider services,
         IActivityExecutor activityExecutor,
         IWorkflowStateRepository repository,
-        IWorkflowVersionRegistry registry,
+        IWorkflowCatalog registry,
         InProcessInstanceGate gate,
         ExecutionLeaseSettings? leaseSettings = null,
         TimeProvider? timeProvider = null,
@@ -345,7 +345,8 @@ public sealed partial class WorkflowHost
             WorkflowDefinition definition,
             TData workflowData,
             WorkflowOptions options,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool versionOmitted = false)
             where TData : class
         {
             if (options.InstanceId != null && string.IsNullOrWhiteSpace(options.InstanceId))
@@ -364,7 +365,7 @@ public sealed partial class WorkflowHost
                 // never count as crashes of an instance another host lost (B-08).
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } started)
-                    return ExistingStart(started, definition, scopes);
+                    return await ExistingStartAsync(started, definition, scopes, versionOmitted);
                 using var signals = Executor.PrepareAssignment(Guid.NewGuid());
                 using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
                 await using var owner = await AcquireAsync(instance, signals)
@@ -378,14 +379,11 @@ public sealed partial class WorkflowHost
                 // Another start may have saved the instance since the first read.
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } existing)
-                    return ExistingStart(existing, definition, scopes);
-                var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
-                if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true &&
-                    isActive is false)
-                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                        $"Workflow {definition.Name} v{definition.Version} is deactivated");
+                    return await ExistingStartAsync(existing, definition, scopes, versionOmitted);
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
                 await registry.RegisterWorkflowAsync(definition);
+                WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(definition.Name, definition.Version),
+                    definition.Name, definition.Version);
                 await PersistAsync(instance, checkpoint, workflowData, scopes, assignment);
                 // The start is durable from here; a caller waiting only for acceptance continues.
                 _control.Accept(instance.InstanceId);
@@ -617,16 +615,24 @@ public sealed partial class WorkflowHost
         private static WorkflowExecutionResult ReadResult(WorkflowInstance instance) =>
             ExecutionCheckpoint.StopOf(instance) is { } stop ? Stopped(instance, stop) : ExistingResult(instance);
 
-        private static WorkflowExecutionResult ExistingStart(WorkflowInstance existing, WorkflowDefinition definition,
-            WorkflowScopeCatalog scopes)
+        private async Task<WorkflowExecutionResult> ExistingStartAsync(WorkflowInstance existing, WorkflowDefinition definition,
+            WorkflowScopeCatalog scopes, bool versionOmitted)
         {
             var checkpoint = ExecutionCheckpoint.ReadTrunk(existing.ExecutionStateJson);
-            if (existing.WorkflowName != definition.Name || existing.WorkflowVersion != definition.Version)
+            if (existing.WorkflowName != definition.Name || (!versionOmitted && existing.WorkflowVersion != definition.Version))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"Workflow instance '{existing.InstanceId}' belongs to a different definition");
+            if (versionOmitted && existing.WorkflowVersion != definition.Version)
+            {
+                definition = await registry.GetWorkflowDefinitionAsync(existing.WorkflowName, existing.WorkflowVersion)
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                        $"Workflow definition not found: {existing.WorkflowName} v{existing.WorkflowVersion}");
+                scopes = WorkflowDefinitionValidator.ForExecution(definition);
+            }
             if (checkpoint.StructureHash != scopes.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     scopes.Mismatch(definition, checkpoint.StructureHash));
+            _control.Accept(existing.InstanceId);
             // A stopped instance is answered without reading its data, which may be what stopped it.
             return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : ExistingResult(existing);
         }
@@ -912,9 +918,16 @@ public sealed partial class WorkflowHost
             if (definition == null)
                 return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
                     Message: $"Workflow definition not found: {child.WorkflowName} v{child.WorkflowVersion}");
-            if (definition.Metadata.TryGetValue("IsActive", out var active) && active is false)
-                return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
-                    Message: $"Workflow {definition.Name} v{definition.Version} is deactivated");
+            try
+            {
+                // A child start is refused like a client start when its version is a draft or retired.
+                WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(child.WorkflowName, child.WorkflowVersion),
+                    child.WorkflowName, child.WorkflowVersion);
+            }
+            catch (WorkflowEngineException error)
+            {
+                return new(request.AssignmentId, Refusal: error.Kind, Message: error.Message);
+            }
             if (definition.Name != child.WorkflowName || definition.Version != child.WorkflowVersion)
                 return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
                     Message: "The child definition has a different declared identity");
