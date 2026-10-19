@@ -52,7 +52,7 @@ public sealed class TryBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Finally(
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
-        configure(new WorkflowBuilder<TWorkflowData, TPreviousStepData>(tryStep.FinallySteps));
+        configure(new WorkflowBuilder<TWorkflowData, TPreviousStepData>(tryStep.FinallySteps, string.Empty));
         return new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, name, workflowVersion);
     }
 }
@@ -104,7 +104,7 @@ public sealed class CatchBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Finally(
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
-        configure(new WorkflowBuilder<TWorkflowData, TPreviousStepData>(tryStep.FinallySteps));
+        configure(new WorkflowBuilder<TWorkflowData, TPreviousStepData>(tryStep.FinallySteps, string.Empty));
         // This builder already continues the same steps, name and version.
         return this;
     }
@@ -127,7 +127,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> Saga(
         Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
-        var result = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).Saga(configure);
+        var result = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).Saga(configure);
         CaptureFaults(steps[^1]);
         return result;
     }
@@ -174,7 +174,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
         where TEvent : class
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps)
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
             .WaitFor(key, matches, configure);
         CaptureFaults(steps[^1]);
         return new CatchWorkflowBuilder<TWorkflowData, TFault, TEvent>(steps, exceptionType);
@@ -200,7 +200,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
         where TEvent : class
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps)
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
             .Suspend(reason, matches, configure);
         CaptureFaults(steps[^1]);
         return new CatchWorkflowBuilder<TWorkflowData, TFault, TEvent>(steps, exceptionType);
@@ -209,7 +209,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Parallel(
         Action<IParallelBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).Parallel(configure);
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).Parallel(configure);
         CaptureFaults(steps[^1]);
         return this;
     }
@@ -219,7 +219,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         where TWorkflow : IWorkflow<TInvokedData>
         where TInvokedData : class
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps)
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
             .Invoke<TWorkflow, TInvokedData>(configure);
         CaptureFaults(steps[^1]);
         return new CatchWorkflowBuilder<TWorkflowData, TFault, TInvokedData>(steps, exceptionType);
@@ -230,7 +230,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TInvokedData : class
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps)
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
             .Invoke(workflowName, version, configure);
         CaptureFaults(steps[^1]);
         return new CatchWorkflowBuilder<TWorkflowData, TFault, TInvokedData>(steps, exceptionType);
@@ -239,7 +239,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Sequence(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).Sequence(configure);
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).Sequence(configure);
         CaptureFaults(steps[^1]);
         return this;
     }
@@ -249,7 +249,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> then,
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>>? @else = null)
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).If(condition, then, @else);
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).If(condition, then, @else);
         CaptureFaults(steps[^1]);
         return this;
     }
@@ -270,7 +270,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition)
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).DoWhile(configure, condition);
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).DoWhile(configure, condition);
         CaptureFaults(steps[^1]);
         return this;
     }
@@ -291,7 +291,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).WhileDo(condition, configure);
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).WhileDo(condition, configure);
         CaptureFaults(steps[^1]);
         return this;
     }
@@ -314,7 +314,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
         Action<IForEachSetup<TWorkflowData>>? setup = null)
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).ForEach(items, body, setup);
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).ForEach(items, body, setup);
         CaptureFaults(steps[^1]);
         return this;
     }
@@ -322,7 +322,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
     public ITryBuilder<TWorkflowData, TPreviousStepData> Try(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
-        var result = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).Try(configure);
+        var result = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).Try(configure);
         CaptureFaults(steps[^1]);
         return result;
     }

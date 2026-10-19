@@ -9,7 +9,7 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Concrete implementation of workflow builder for root-level workflow construction
 /// </summary>
-public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workflowVersion = 1)
+public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVersion = 1)
     : IWorkflowBuilder<TWorkflowData>
     where TWorkflowData : class
 {
@@ -111,7 +111,6 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
         var step = _steps[^1];
         step.RequestName = name;
         step.ReplyType = replyType;
-        step.RequestSubjectBehavior = subject;
         if (subject != null)
             step.RequestSubject = context => subject((WorkflowContext<TWorkflowData>)context);
         return next;
@@ -124,7 +123,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName = "", int workfl
 /// </summary>
 public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     List<WorkflowStep> steps,
-    string name = "",
+    string name,
     int workflowVersion = 1)
     : IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     where TWorkflowData : class
@@ -214,7 +213,6 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         var step = _steps[^1];
         step.RequestName = requestName;
         step.ReplyType = replyType;
-        step.RequestSubjectBehavior = subject;
         if (subject != null)
             step.RequestSubject = context => subject((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
         return next;
@@ -227,6 +225,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
         where TWorkflow : IWorkflow<TInvokedData> where TInvokedData : class
     {
+        var identity = WorkflowAttribute.For(typeof(TWorkflow));
         var step = new WorkflowStep
         {
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(Core.Runtime.ChildWorkflowBinding.Resolve<TWorkflow, TInvokedData>),
@@ -234,6 +233,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             Name = typeof(TWorkflow).Name,
             StepType = WorkflowStepType.WorkflowInvocation,
             WorkflowType = typeof(TWorkflow),
+            WorkflowName = identity.Name,
+            WorkflowVersion = identity.Version,
             InvokedDataType = typeof(TInvokedData),
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
@@ -335,13 +336,13 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         };
 
         // Configure then branch
-        var thenBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(conditionalStep.ThenSteps);
+        var thenBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(conditionalStep.ThenSteps, string.Empty);
         then(thenBuilder);
 
         // Configure else branch if provided
         if (@else != null)
         {
-            var elseBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(conditionalStep.ElseSteps);
+            var elseBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(conditionalStep.ElseSteps, string.Empty);
             @else(elseBuilder);
         }
 
@@ -527,7 +528,6 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             };
             
             suspendStep.CompiledCondition = conditionWrapper;
-            suspendStep.ConditionBehavior = resumeCondition;
         }
 
         // Configure the suspend step if a setup action is provided
@@ -573,7 +573,6 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             Name = "DoWhile",
             StepType = WorkflowStepType.Loop,
             LoopType = LoopType.DoWhile,
-            ConditionBehavior = condition,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             CompiledCondition = conditionWrapper,
@@ -621,7 +620,6 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             Name = "WhileDo",
             StepType = WorkflowStepType.Loop,
             LoopType = LoopType.WhileDo,
-            ConditionBehavior = condition,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             CompiledCondition = conditionWrapper,
@@ -678,7 +676,6 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             StepType = WorkflowStepType.ForEach,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
-            ForEachItemsBehavior = items,
             ForEachItems = context => items((WorkflowContext<TWorkflowData, TPreviousStepData>)context),
             Order = _steps.Count
         };
@@ -705,7 +702,6 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             ResultType = typeof(TResult),
-            ResultBehavior = value,
             ResultSelector = context => value((WorkflowContext<TWorkflowData, TPreviousStepData>)context),
             Order = _steps.Count
         });

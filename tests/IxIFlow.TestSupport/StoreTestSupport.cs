@@ -11,7 +11,7 @@ public static class StoreTestSupport
 {
     public static string CheckpointJson { get; } = JsonSerializer.Serialize(new ExecutionCheckpoint
     {
-        DefinitionFingerprint = "store-contract",
+        StructureHash = "store-contract",
         Continuations = [new ContinuationState { Id = "root", Stack = [new ScopePosition { ScopeId = "root" }] }]
     });
 

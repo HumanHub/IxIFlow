@@ -15,7 +15,7 @@ This repository is being built toward 1.0. Features described below are implemen
 - Saved activity attempts with invocation and attempt IDs, retry history, errors and notes. Recovery contracts and operator resolution handle uncertain external outcomes.
 - Revision-checked checkpoints, fenced execution leases, resource limits and crash quarantine. External effects still need application idempotency or recovery contracts.
 - An injected workflow clock, expression purity validation, compile-time contract and purity analyzers, stable step IDs and source locations.
-- YAML source generation for every fluent construct, with local references, defaults, expression assets, strict reading and fingerprint/result equivalence tests.
+- YAML source generation for every fluent construct, with local references, defaults, expression assets, strict reading and structure-hash/result equivalence tests.
 - In-memory, SQLite, SQL Server and PostgreSQL stores; DI, a generic host, recovery scanning and graceful drain.
 - Durable completion outbox, per-publisher delivery and outgoing signed webhooks; retained terminal results, bounded cleanup and tombstones.
 - Committed trace history outside checkpoints, snapshots, structured logging scopes, and an `ActivitySource` and `Meter` both named `IxIFlow` for OpenTelemetry integration.
@@ -140,7 +140,7 @@ Choose one store through the builder returned by `AddIxIFlow()`. All provider ex
 
 Before 1.0, any store schema change requires a fresh database. Schema creation supplies whole tables and their indexes; it does not upgrade existing tables or repair their missing indexes. Recreate databases from an earlier schema build. SQL Server IDs use `Latin1_General_100_BIN2` to preserve case distinctions; see [stores](docs/stores.md) for the affected columns.
 
-Definition and version registries are currently in memory. Every host that may resume an instance must load the matching definitions and activity code. Runtime fingerprints verify definition compatibility, resolving IL member tokens rather than relying on token numbers; they are not yet the planned published artifact identity.
+Definition and version registries are currently in memory. Every host that may resume an instance must load the matching definitions and activity code. Workflow identity is the declared `(name, version)`; names are required. A compiler-free `StructureHash` checks checkpoint compatibility and refuses changed structure at registration, start, resume, recovery and child resolution. It includes ordered steps, types, waits, joins, combiners, loops, handlers, children and expression shapes; it ignores delegate bodies, captured values and presentation metadata. Change the version when changing behavior. See [identity and expressions](docs/fluent-api.md#identity-and-expressions). Checkpoint schema 4 is a one-time break: older saved instances are refused without migration; reset development state and restart hosts together.
 
 All four stores implement inbox, trace, outbox and retention semantics; memory records last only for the process lifetime. See [stores](docs/stores.md) for deployment details.
 
@@ -193,7 +193,7 @@ The following work is planned for 1.0 and is **not yet available**, or has an im
 | Execution and isolation | Public executor message contract; local-first process slots, pipe transport, process liveness and resource limits, fenced process crash reports; commit resend backoff and host validation of message size/metadata |
 | Coordinator and placement | Cross-host scheduling through stateless coordinators, host capabilities and workflow demands, matching and affinity, visible unschedulable work, registry/discovery, multiple coordinators, loss handling and secured links; batched host lease renewal and process-slot activity accounting |
 | Events and integrations | Incoming webhook/HTTP trigger package and conformance; child placement demands. Durable inboxes, reply tokens, child instances, suggested wait payloads, retained results, public outbox publishers and outgoing signed webhooks are implemented |
-| Publishing and versioning | Immutable workflow bundles, artifact storage and verification, dependency resolution and pinning, isolated assemblies per version, host bundle fetching, declared canonical artifact fingerprints and compatibility/migration policy; draft/publish and version lifecycle APIs |
+| Publishing and versioning | Immutable workflow bundles, artifact storage and verification, dependency resolution and pinning, isolated assemblies per version, host bundle fetching, bundle digests and compatibility/migration policy; draft/publish and version lifecycle APIs |
 | Authoring and catalog | Broader catalog API, code-defined workflows in the catalog, published code activities, inline calls, explicit workflow input/output contracts, YAML code activities and planned local registration support beyond the current installed-assembly registry; Native AOT publish/run validation. Full YAML construct coverage is implemented |
 | Editor support | The JSON Schema for workflow YAML ships in the package. A visual editor and debugger integration remain planned |
 | Debugger and audit | Breakpoints, all-stop pause, stepping including loops, audited data edits, paused timer behavior, Debug Adapter Protocol and replay. Separate committed transition/event/operator traces, snapshots, scoped logs and OpenTelemetry already work; transitions that never commit do not enter saved history |
@@ -207,3 +207,5 @@ After 1.0: broker publisher/consumer samples for RabbitMQ or Azure Service Bus, 
 Start with [getting started](docs/getting-started.md) or [samples and their feature map](samples/README.md). The [docs index](docs/index.md) links every guide, including the [fluent API](docs/fluent-api.md), [YAML](docs/yaml-authoring.md), [execution model](docs/execution-model.md), [activity SDK](docs/activity-sdk.md), [hosting](docs/coordinator-and-hosts.md), [publishers](docs/outbox-and-publishers.md) and [roadmap](docs/roadmap.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and the [MIT license](LICENSE).
+
+Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.

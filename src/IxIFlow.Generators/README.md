@@ -146,8 +146,8 @@ Document validation checks the selector, alias, body, result target and parallel
 Explicit IDs are preserved; omitted IDs use structural paths. Reused templates prefix their
 IDs with the reference ID. Fluent definitions reject duplicate IDs at build time.
 `WithId(id, sourcePath, sourceLine)` records identity and diagnostics, with caller file and line
-defaults for fluent authors. Use `Named(name)` to change a step's name explicitly; names affect
-the fingerprint, while IDs and locations do not.
+defaults for fluent authors. Use `Named(name)` to change a step's name explicitly; step names, IDs and locations do not affect
+the structure hash.
 
 Compiler and analyzer diagnostics map to verbatim YAML paths with `#line`; quotes and newlines
 in a source path are rejected. `#line default` closes the mapping after the last step.
@@ -155,8 +155,8 @@ ForEach result contracts are checked after setup, so their errors name the loop.
 Build rules attach their offending step, and `WorkflowDefinitionValidator.Apply` decorates
 the error once, including request, saga, ForEach, parallel and catalog errors. Rule results are
 cached per definition instance by `Apply`, including the runtime-delegate requirement. Catalog
-construction only computes scopes and fingerprints, so hand-built, non-executable definitions
-can be fingerprinted without validation. Public validation, registration and starts prepare the
+construction only computes scopes and structure hashes, so hand-built, non-executable definitions
+can have their structure hashed without validation. Public validation, registration and starts prepare the
 execution catalog once; dispatch, child resolution and recovery require the cached `Apply`
 result and never run build rules as a fallback. Activity checkpoint-property reflection is
 cached per type.
@@ -165,21 +165,34 @@ Generic builder methods capture activity dispatch, child resolution and context 
 Mappings retain their own typed factories, and catch builders capture typed default fault contexts
 for nested steps, including mappings added after a build. Registration performs validation,
 without a reflection binding pass. Clones retain their delegates. Compensation saved-value type
-errors retain their `InvalidState` message. DI child definitions must match the registry fingerprint.
+errors retain their `InvalidState` message. DI child definitions must match the registry structure hash.
 
 Generated selectors use the `itemsExpression`, `valueExpression` and `completeWhenExpression`
 named arguments on `ForEach`, `Result` and `WaitConditionally` to retain expression trees.
 Fluent authors can use the same overloads for equivalence. Positional callbacks keep the existing
-delegate overloads, including statement bodies. Item captures use positional handles in fingerprints.
-Equivalence tests compare structure, persisted fingerprints and results for all supported node kinds,
-references, defaults and assets. A baseline fluent workflow pins the existing fingerprint.
+delegate overloads, including statement bodies. Item captures use positional handles in structure hashes.
+Equivalence tests compare structure, persisted structure hashes and results for all supported node kinds,
+references, defaults and assets. Compiler tests compare Debug and Release and two language versions.
 
-Fingerprints sign the author-supplied delegates and expression trees. Runtime/context factories,
-compiled expression adapters and the adapters for conditions, request subjects, joins and ForEach
-selectors are excluded. Into contributes its expression and Combine its property/combiner type.
-Runtime fingerprints describe the current definition. Declared artifact fingerprints and a
-compatibility/migration policy are planned; do not infer compatibility with older builds.
+Identity is the declared `(name, version)`, with a required workflow name. The parsed document
+model lowers to the same executable structure as fluent C#, then the shared structure hasher
+records ordered steps, types, waits, joins and combiners, loops, handlers and children with versions.
+Expression nodes and referenced members contribute, without parameter names, compiler-generated
+receivers or captured values. Delegate bodies and helper implementations are excluded. Into
+contributes its expression and Combine its property/combiner type, including combiners on data types.
+Whitespace, comments, key order, descriptions, display names, tags and step names do not contribute.
+Registration retains the first metadata when an equivalent definition is registered again.
+A structure mismatch refuses registration and saved-instance execution, naming identity and both hashes.
+Bump the version for behavior changes. Checkpoint schema 4 refuses earlier saved instances without
+migration; reset development state and coordinate host restarts.
 
 Publishing orchestration, dependency resolution, package pinning, inline `use`, code activities,
-bundles and artifact storage remain planned. Declared canonical fingerprints and
-Native AOT validation remain planned too.
+bundles and artifact storage remain planned. Bundle digests and Native AOT validation remain planned too.
+
+Typed child references use `workflowType`; the generator reads the class's
+`[Workflow("Name", Version = n)]` attribute. No adjacent `workflow: { name, version }`
+is needed. The fluent counterpart is `Invoke<TWorkflow,TData>(configure)`. Register
+with `services.RegisterWorkflow<TWorkflow>()`; identity is read from the type without
+constructing the class. A missing attribute or invalid identity is refused. The
+parent's hash includes the child's declared name and version. Named child references
+continue to require their explicit `(name, version)`.

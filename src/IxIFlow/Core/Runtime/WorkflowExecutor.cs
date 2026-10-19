@@ -70,9 +70,9 @@ internal sealed class WorkflowExecutor
         var drainRequested = host.Drain.CanBeCanceled ? drainWake.Task : null;
         try
         {
-            if (checkpoint.DefinitionFingerprint != scopes.Fingerprint)
+            if (checkpoint.StructureHash != scopes.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    "The registered workflow definition differs from the saved version");
+                    scopes.Mismatch(definition, checkpoint.StructureHash));
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();

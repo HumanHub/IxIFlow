@@ -52,7 +52,6 @@ internal sealed class ForEachSetup<TWorkflowData>(WorkflowStep step) : IForEachS
         SetJoin(ParallelJoinMode.WaitConditionally);
         step.ForEachConditionResultType = typeof(TResult);
         step.ResultType ??= typeof(TResult);
-        step.ForEachCompletionBehavior = completeWhen;
         step.ForEachCompletionCondition = (data, results) => completeWhen((TWorkflowData)data,
             results.Select(result => new ItemResult<TResult>(result.Index, ItemStatus.Completed,
                 result.Value is TResult typed ? typed : default)).ToList());

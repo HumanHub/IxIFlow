@@ -102,7 +102,7 @@ public sealed class SagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>(
         Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
         where TEvent : class
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps).WaitFor(key, matches, configure);
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).WaitFor(key, matches, configure);
         steps[^1].Runtime = steps[^1].Runtime.ForFault<TFault>();
         return new SagaErrorBuilder<TWorkflowData, TFault, TEvent>(steps, sagaSteps, errorHandlers);
     }
