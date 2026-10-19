@@ -15,16 +15,13 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         pins AS MATERIALIZED (SELECT sets.id, pin.value COLLATE "C" AS value FROM sets
             CROSS JOIN LATERAL jsonb_array_elements_text(sets.pins) AS pin(value)),
         candidates AS (SELECT candidate.* FROM sets CROSS JOIN LATERAL (
-                SELECT instance.instance_id, instance.runnable_at_utc FROM (
-                    SELECT instance.instance_id, instance.runnable_at_utc FROM ixiflow_workflow_instances AS instance
-                    WHERE instance.demand_set_id = sets.id AND instance.runnable_at_utc IS NOT NULL
-                      AND instance.runnable_at_utc <= @Now
-                      AND (CAST(@AfterTime AS timestamptz) IS NULL OR instance.runnable_at_utc > CAST(@AfterTime AS timestamptz) OR
-                          (instance.runnable_at_utc = CAST(@AfterTime AS timestamptz) AND instance.instance_id > CAST(@AfterId AS text) COLLATE "C"))
-                    -- Plan the complete set range before the lease filter and its LIMIT row goal.
-                    -- Otherwise average set cardinality can favor walking the global runnable index.
-                    ORDER BY instance.runnable_at_utc, instance.instance_id COLLATE "C" OFFSET 0) AS instance
-                WHERE sets.failed AND COALESCE((SELECT lease.expires_at_utc <= @Now FROM ixiflow_workflow_leases AS lease
+                -- All eligibility filters precede the per-set ordered limit. Global
+                -- runnable/affinity indexes are absent, so neither can bypass the set seek.
+                SELECT instance.instance_id, instance.runnable_at_utc FROM ixiflow_workflow_instances AS instance
+                WHERE sets.failed AND instance.demand_set_id = sets.id AND instance.runnable_at_utc <= @Now
+                  AND (CAST(@AfterTime AS timestamptz) IS NULL OR instance.runnable_at_utc > CAST(@AfterTime AS timestamptz) OR
+                      (instance.runnable_at_utc = CAST(@AfterTime AS timestamptz) AND instance.instance_id > CAST(@AfterId AS text) COLLATE "C"))
+                  AND COALESCE((SELECT lease.expires_at_utc <= @Now FROM ixiflow_workflow_leases AS lease
                       WHERE lease.instance_id = instance.instance_id), true)
                 ORDER BY instance.runnable_at_utc, instance.instance_id COLLATE "C" LIMIT @Limit) AS candidate
             WHERE sets.failed UNION ALL SELECT candidate.* FROM sets CROSS JOIN LATERAL (
