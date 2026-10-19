@@ -13,6 +13,7 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "tracing")]
 public sealed class RedactionTests : IClassFixture<SqliteTestDatabase<RedactionTests>>
 {
     private const string Secret = "classified-value-7b590dc3";
