@@ -38,6 +38,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
         services.AddScoped<WorkflowHost.InstanceOperations>();
         services.TryAddSingleton(new OutboxSettings());
+        services.TryAddSingleton(new PayloadStoreSettings());
+        services.TryAddSingleton<IPayloadStore>(provider =>
+            (provider.GetRequiredService<IWorkflowStateRepository>() as IPayloadStoreProvider)?.PayloadStore
+            ?? throw new InvalidOperationException("The state store must provide payloads or configure UsePayloadStore"));
         // Registers before recovery starts; stops after the host has drained its work.
         services.AddHostedService<WorkflowHeartbeatService>();
         // Stops after the workflow host, so its final commits can be delivered during drain.
@@ -72,6 +76,7 @@ public static class ServiceCollectionExtensions
 
         // Add core services
         services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton(new PayloadStoreSettings(options.MaxPayloadBytes, options.PayloadThresholdBytes)));
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
         if (!Enum.IsDefined(options.TraceDetail))
@@ -243,6 +248,12 @@ internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinitio
 /// </summary>
 public class IxIFlowOptions
 {
+    /// <summary>UTF-8 claim-check threshold. Zero disables it; default zero in step 1.</summary>
+    public long PayloadThresholdBytes { get; set; } = 0;
+
+    /// <summary>Maximum bytes in one put, default 64 MiB.</summary>
+    public long MaxPayloadBytes { get; set; } = PayloadStoreSettings.DefaultMaxPayloadBytes;
+
     /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
     public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;
 

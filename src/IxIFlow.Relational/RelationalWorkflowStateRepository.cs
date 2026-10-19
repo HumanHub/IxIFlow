@@ -11,8 +11,9 @@ public abstract partial class RelationalWorkflowStateRepository :
     IWorkflowStateRepository
 {
     // Only first-party friend assemblies can construct or derive from this protocol.
-    internal RelationalWorkflowStateRepository(OutboxSettings? outboxSettings = null)
+    internal RelationalWorkflowStateRepository(OutboxSettings? outboxSettings = null, PayloadStoreSettings? payloadSettings = null)
     {
+        _payloadSettings = payloadSettings ?? new();
         var options = outboxSettings ?? new OutboxSettings();
         options.Validate();
         _retryHorizon = options.RetryHorizon;
@@ -1055,7 +1056,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         public string? Subject { get; set; }
 
         public StoredWorkflowEvent Read(Func<DateTime, DateTime> readTime) => new(InstanceId, EventId, Sequence, EventType, EventKey,
-            TargetWaitId, PayloadJson, readTime(ReceivedAtUtc), (EventOutcome)Outcome, WaitId,
+            TargetWaitId, StoredJson.Inline(PayloadJson), readTime(ReceivedAtUtc), (EventOutcome)Outcome, WaitId,
             (EventRejection?)Rejection, Subject);
     }
 
@@ -1075,7 +1076,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
         public StoredWait Read(Func<DateTime, DateTime> readTime) => new(InstanceId, WaitId, (WaitKind)Kind, WaitKey, EventType,
             DeadlineUtc is { } deadline ? readTime(deadline) : null, OpenedSequence, readTime(OpenedAtUtc),
-            (WaitCloseReason?)CloseReason, ClosedAtUtc is { } closed ? readTime(closed) : null, DefaultPayloadJson);
+            (WaitCloseReason?)CloseReason, ClosedAtUtc is { } closed ? readTime(closed) : null, DefaultPayloadJson is null ? null : StoredJson.Inline(DefaultPayloadJson));
     }
 
     private sealed class RunnableRow
@@ -1139,9 +1140,9 @@ public abstract partial class RelationalWorkflowStateRepository :
         public bool Same(StoredStamp stamp) => stamp.Revision == Revision && stamp.Incarnation == Incarnation;
 
         public WorkflowInstance Read(IEnumerable<StoredPart> parts, bool normalize) => Runnable(CheckpointParts.Assemble(StateJson,
-            parts.Select(part => new CheckpointPart(part.PartKey, part.Json)), Revision), normalize);
+            parts.Select(part => new CheckpointPart(part.PartKey, StoredJson.Inline(part.Json))), Revision), normalize);
 
-        public WorkflowInstance Summarize(string? data, bool normalize) => Runnable(CheckpointParts.Summarize(StateJson, data, Revision), normalize);
+        public WorkflowInstance Summarize(string? data, bool normalize) => Runnable(CheckpointParts.Summarize(StateJson, data is null ? null : StoredJson.Inline(data), Revision), normalize);
 
         private WorkflowInstance Runnable(WorkflowInstance instance, bool normalize)
         {

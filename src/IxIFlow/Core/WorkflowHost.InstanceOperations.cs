@@ -162,7 +162,7 @@ public sealed partial class WorkflowHost
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-            var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
+            var workflowData = JsonSerializer.Deserialize(instance.WorkflowDataJson.InlineText, dataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
 
             using var signals = Executor.PrepareAssignment(Guid.NewGuid());
@@ -656,7 +656,7 @@ public sealed partial class WorkflowHost
             InstanceId = instance.InstanceId,
             Status = StatusOf(instance.Status),
             WorkflowData = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType) is { } dataType
-                ? JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
+                ? JsonSerializer.Deserialize(instance.WorkflowDataJson.InlineText, dataType)
                 : null,
             TraceEntries = [],
             ErrorMessage = instance.LastError,
@@ -884,7 +884,7 @@ public sealed partial class WorkflowHost
         {
             var trunk = commit.ReadTrunk().ExecutionStateJson;
             var parts = commit.ApplyParts(saved.PartsAt(saved.Revision));
-            var size = Encoding.UTF8.GetByteCount(trunk) + parts.Values.Sum(value => (long)Encoding.UTF8.GetByteCount(value));
+            var size = Encoding.UTF8.GetByteCount(trunk) + parts.Values.Sum(value => value.Bytes);
             if (size <= _limits.MaxCheckpointBytes) return;
             // A stop marker may exceed the limit only when it keeps the entire saved checkpoint.
             // A terminal serialization failure may discard continuations while keeping saved data.

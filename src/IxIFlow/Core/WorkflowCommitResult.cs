@@ -449,9 +449,9 @@ public sealed class CheckpointCommit
     /// The parts the instance has once the commit is applied to <paramref name="stored"/>, those it had at the
     /// revision the commit was based on. A commit that replaces its parts needs none.
     /// </summary>
-    public IReadOnlyDictionary<string, string> ApplyParts(IReadOnlyDictionary<string, string>? stored)
+    public IReadOnlyDictionary<string, StoredJson> ApplyParts(IReadOnlyDictionary<string, StoredJson>? stored)
     {
-        var parts = new Dictionary<string, string>(StringComparer.Ordinal);
+        var parts = new Dictionary<string, StoredJson>(StringComparer.Ordinal);
         if (!ReplacesParts)
         {
             ArgumentNullException.ThrowIfNull(stored);

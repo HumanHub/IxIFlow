@@ -15,6 +15,8 @@ namespace IxIFlow.Core;
 /// </summary>
 public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowStateRepository, IAsyncDisposable
 {
+    internal override PayloadDialect PayloadSqlDialect => PayloadDialect.Sqlite;
+
     private readonly string _connectionString;
     private readonly TimeProvider _time;
     private readonly SemaphoreSlim _writer = new(1, 1);
@@ -35,7 +37,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     }
 
     public SqliteWorkflowStateRepository(string connectionString, TimeProvider? timeProvider = null,
-        OutboxSettings? outboxSettings = null) : base(outboxSettings)
+        OutboxSettings? outboxSettings = null, PayloadStoreSettings? payloadSettings = null) : base(outboxSettings, payloadSettings)
     {
         _connectionString = FileConnectionString(connectionString);
         _time = timeProvider ?? TimeProvider.System;
@@ -135,7 +137,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             Kind = (short)wait.Kind,
             wait.Key,
             wait.EventType,
-            wait.DefaultPayloadJson,
+            DefaultPayloadJson = wait.DefaultPayloadJson?.InlineText,
             Deadline = Timestamp(now + wait.Timeout),
             Sequence = inboxSequence,
             Now = Timestamp(now)
@@ -155,7 +157,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             InstanceId = instanceId,
             wait.WaitId,
             Deadline = Timestamp(now + wait.Timeout),
-            wait.DefaultPayloadJson
+            DefaultPayloadJson = wait.DefaultPayloadJson?.InlineText
         }), transaction);
     }
 
@@ -180,7 +182,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_parts (instance_id, part_key, json)
                 VALUES (@InstanceId, @Key, @Json)
-                """, parts.Select(part => new { InstanceId = instanceId, part.Key, part.Json }), transaction);
+                """, parts.Select(part => new { InstanceId = instanceId, part.Key, Json = part.Json.InlineText }), transaction);
     }
 
     internal override async Task AppendTraceAsync(DbConnection connection, DbTransaction transaction,
@@ -693,6 +695,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(PayloadSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 

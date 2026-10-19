@@ -121,7 +121,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             return null;
         try
         {
-            return JsonSerializer.Deserialize(stored.PayloadJson, type);
+            return JsonSerializer.Deserialize(stored.PayloadJson.InlineText, type);
         }
         catch (JsonException)
         {

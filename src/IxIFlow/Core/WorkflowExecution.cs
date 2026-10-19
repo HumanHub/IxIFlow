@@ -192,7 +192,7 @@ public class WorkflowInstance
     /// <summary>
     ///     Serialized workflow data
     /// </summary>
-    public string WorkflowDataJson { get; set; } = "";
+    public StoredJson WorkflowDataJson { get; set; } = StoredJson.Inline("");
 
     /// <summary>
     ///     Workflow data type for deserialization
@@ -233,14 +233,14 @@ public class WorkflowInstance
     /// known; a commit writes only the parts that differ, and deletes those that are gone.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    internal IReadOnlyDictionary<string, string>? SavedParts { get; private set; }
+    internal IReadOnlyDictionary<string, StoredJson>? SavedParts { get; private set; }
 
     // The instance and the revision SavedParts are stored at.
     private string? _savedPartsInstanceId;
     private long _savedPartsRevision;
 
     /// <summary>Records the parts the instance is stored in at <paramref name="revision"/>.</summary>
-    internal void Saved(IReadOnlyDictionary<string, string> parts, long revision)
+    internal void Saved(IReadOnlyDictionary<string, StoredJson> parts, long revision)
     {
         SavedParts = parts;
         _savedPartsInstanceId = InstanceId;
@@ -251,7 +251,7 @@ public class WorkflowInstance
     /// The parts the instance is stored in at <paramref name="revision"/>, or null when they are not known for it: the
     /// object changed revision, or names another instance, since it was read or last committed through the engine.
     /// </summary>
-    internal IReadOnlyDictionary<string, string>? PartsAt(long revision) =>
+    internal IReadOnlyDictionary<string, StoredJson>? PartsAt(long revision) =>
         SavedParts != null && _savedPartsRevision == revision && _savedPartsInstanceId == InstanceId
             ? SavedParts : null;
 
@@ -264,7 +264,7 @@ public class WorkflowInstance
     {
         var copy = (WorkflowInstance)MemberwiseClone();
         copy.ExecutionStateJson = trunk;
-        copy.WorkflowDataJson = "";
+        copy.WorkflowDataJson = StoredJson.Inline("");
         return copy;
     }
 

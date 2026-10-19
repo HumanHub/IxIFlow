@@ -29,7 +29,7 @@ internal static class ForEachTransitions
             checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
             var list = step.ForEachItems!(Context(scopes, checkpoint, continuation, step, workflowData, services))
                 ?? throw new InvalidOperationException($"ForEach step '{step.Name}' was given no list");
-            var items = new List<string>();
+            var items = new List<StoredJson>();
             foreach (var item in list)
             {
                 // The list is read up to one item past the limit, so a longer one is never read whole.
@@ -41,7 +41,7 @@ internal static class ForEachTransitions
             {
                 Items = items,
                 Results = !StoresResults(step) ? null
-                    : step.ForEachParallel ? Enumerable.Repeat<string?>(null, items.Count).ToList() : [],
+                    : step.ForEachParallel ? Enumerable.Repeat<StoredJson?>(null, items.Count).ToList() : [],
                 Finished = step.ForEachParallel ? [] : null
             };
         }
@@ -293,7 +293,7 @@ internal static class ForEachTransitions
         var bound = Bound(scopes, continuation);
         if (bound.Count == 0)
             return ItemValues.None;
-        var values = new Dictionary<ItemScope, (int, string)>(ReferenceEqualityComparer.Instance);
+        var values = new Dictionary<ItemScope, (int, StoredJson)>(ReferenceEqualityComparer.Instance);
         foreach (var item in bound)
             values[scopes.Step(item.StepId).ForEachItem!] = (item.Index, item.Item);
         return new ItemValues(values);
@@ -332,7 +332,7 @@ internal static class ForEachTransitions
 
     // Saves a value as JSON of its declared type and reads it back once, so a value that cannot be
     // restored is refused when it is saved, not when a later step reads it.
-    private static string RoundTrip(object? value, Type type, string what)
+    private static StoredJson RoundTrip(object? value, Type type, string what)
     {
         string json;
         try
@@ -344,16 +344,16 @@ internal static class ForEachTransitions
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"A ForEach {what} of type '{type.Name}' cannot be saved in a checkpoint: {error.Message}", error);
         }
-        Deserialize(json, type, what);
-        return json;
+        Deserialize(StoredJson.Inline(json), type, what);
+        return StoredJson.Inline(json);
     }
 
     /// <summary>Reads a saved item or result; one that cannot be read back is an invalid definition.</summary>
-    public static object? Deserialize(string json, Type type, string what)
+    public static object? Deserialize(StoredJson json, Type type, string what)
     {
         try
         {
-            return JsonSerializer.Deserialize(json, type);
+            return JsonSerializer.Deserialize(json.InlineText, type);
         }
         catch (Exception error) when (error is NotSupportedException or JsonException or ArgumentException or
                                           InvalidOperationException)
@@ -373,7 +373,7 @@ internal sealed class InheritedItem
 {
     public string StepId { get; set; } = "";
     public int Index { get; set; }
-    public string Item { get; set; } = "";
+    public StoredJson Item { get; set; } = StoredJson.Inline("");
 }
 
 /// <summary>A <c>ForEach</c> list is longer than the configured limit; nothing was saved.</summary>

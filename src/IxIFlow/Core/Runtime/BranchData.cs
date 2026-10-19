@@ -16,7 +16,7 @@ internal sealed class DataChange
     public List<string> Path { get; set; } = [];
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Value { get; set; }
+    public StoredJson? Value { get; set; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Removed { get; set; }
@@ -161,7 +161,7 @@ internal static class BranchData
             {
                 throw Conflict(path, $"The combined value of '{Display(path)}' could not be written: {error.Message}");
             }
-            Lay(node, new DataChange { Path = path, Value = json });
+            Lay(node, new DataChange { Path = path, Value = StoredJson.Inline(json) });
         }
 
         object merged;
@@ -343,7 +343,7 @@ internal static class BranchData
                     if (beforeObject.TryGetPropertyValue(key, out var old))
                         Compare(old, value, element, PerMember(element), child, changes);
                     else
-                        changes.Add(new DataChange { Path = child, Value = value?.ToJsonString() ?? "null" });
+                        changes.Add(new DataChange { Path = child, Value = StoredJson.Inline(value?.ToJsonString() ?? "null") });
                 }
                 foreach (var (key, _) in beforeObject)
                     if (!afterObject.ContainsKey(key))
@@ -360,7 +360,7 @@ internal static class BranchData
             return;
         }
         if (!JsonNode.DeepEquals(before, after))
-            changes.Add(new DataChange { Path = path, Value = after?.ToJsonString() ?? "null" });
+            changes.Add(new DataChange { Path = path, Value = StoredJson.Inline(after?.ToJsonString() ?? "null") });
     }
 
     // True when a value is still the one a restore would put back: the same object, or for a value type or
@@ -421,7 +421,7 @@ internal static class BranchData
         if (change.Removed)
             target.Remove(change.Path[^1]);
         else
-            target[change.Path[^1]] = JsonNode.Parse(change.Value ?? "null");
+            target[change.Path[^1]] = JsonNode.Parse(change.Value?.InlineText ?? "null");
     }
 
     private static JsonTypeInfo Info(Type type) => Options.GetTypeInfo(type);

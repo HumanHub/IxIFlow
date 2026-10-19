@@ -284,9 +284,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     {
     }
 
-    public InMemoryWorkflowStateRepository(TimeProvider time, OutboxSettings? outboxSettings = null)
+    public InMemoryWorkflowStateRepository(TimeProvider time, OutboxSettings? outboxSettings = null, PayloadStoreSettings? payloadSettings = null)
     {
         _time = time ?? throw new ArgumentNullException(nameof(time));
+        _payloadSettings = payloadSettings ?? new();
         var options = outboxSettings ?? new OutboxSettings();
         options.Validate();
         _retryHorizon = options.RetryHorizon;
@@ -307,7 +308,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly Dictionary<string, long> _inboxSequence = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _inboxReadThrough = new(StringComparer.Ordinal);
     // Each instance's stored parts by key, beside its trunk in _instances, at its revision (A-08).
-    private readonly Dictionary<string, Dictionary<string, string>> _parts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, StoredJson>> _parts = new(StringComparer.Ordinal);
     // Each instance's waits by wait ID, so appends and reads touch only that instance's waits.
     private readonly Dictionary<string, Dictionary<string, StoredWait>> _waits = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<string>> _traces = new(StringComparer.Ordinal);
@@ -564,7 +565,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
             // A commit changes only the parts it names, in place.
             if (commit.ReplacesParts || !_parts.TryGetValue(commit.InstanceId, out var parts))
-                _parts[commit.InstanceId] = parts = new Dictionary<string, string>(StringComparer.Ordinal);
+                _parts[commit.InstanceId] = parts = new Dictionary<string, StoredJson>(StringComparer.Ordinal);
             foreach (var deleted in commit.DeletedParts)
                 parts.Remove(deleted);
             foreach (var part in commit.Parts)
@@ -709,7 +710,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     private static StoredWorkflowEvent Stored(WorkflowEvent workflowEvent, long sequence, DateTime now) =>
         new(workflowEvent.InstanceId, workflowEvent.EventId, sequence, workflowEvent.EventType, workflowEvent.Key,
-            workflowEvent.TargetWaitId, workflowEvent.PayloadJson, now, EventOutcome.Pending,
+            workflowEvent.TargetWaitId, StoredJson.Inline(workflowEvent.PayloadJson), now, EventOutcome.Pending,
             Subject: workflowEvent.Subject);
 
     // Caller holds _claimLock.
@@ -919,7 +920,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private WorkflowInstance SnapshotStructured(WorkflowInstance instance)
     {
         var snapshot = CheckpointParts.Assemble(JsonSerializer.Serialize(instance),
-            (_parts.GetValueOrDefault(instance.InstanceId) ?? new Dictionary<string, string>())
+            (_parts.GetValueOrDefault(instance.InstanceId) ?? new Dictionary<string, StoredJson>())
             .Select(part => new CheckpointPart(part.Key, part.Value)), instance.Revision);
         snapshot.Incarnation = instance.Incarnation;
         return snapshot;

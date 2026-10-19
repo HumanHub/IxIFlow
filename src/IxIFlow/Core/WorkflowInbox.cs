@@ -170,7 +170,7 @@ public sealed record StoredWorkflowEvent(
     string EventType,
     string? Key,
     string? TargetWaitId,
-    string PayloadJson,
+    StoredJson PayloadJson,
     DateTime ReceivedAtUtc,
     EventOutcome Outcome,
     string? WaitId = null,
@@ -216,14 +216,14 @@ public enum WaitCloseReason
 /// timeout.
 /// </summary>
 public sealed record OpenedWait(string WaitId, WaitKind Kind, string Key, string EventType, TimeSpan? Timeout,
-    string? DefaultPayloadJson = null);
+    StoredJson? DefaultPayloadJson = null);
 
 /// <summary>
 /// A request's reserved reply wait activated when its <c>WaitFor</c> is reached, with an optional
 /// timeout and saved suggested payload. A deadline or suggestion already stored is kept.
 /// The deadline is the store's time at that commit plus <paramref name="Timeout"/>.
 /// </summary>
-public sealed record ArmedWait(string WaitId, TimeSpan? Timeout, string? DefaultPayloadJson = null);
+public sealed record ArmedWait(string WaitId, TimeSpan? Timeout, StoredJson? DefaultPayloadJson = null);
 
 /// <summary>A wait a commit closes, and why.</summary>
 public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
@@ -284,7 +284,7 @@ public sealed record StoredWait(
     DateTime OpenedAtUtc,
     WaitCloseReason? CloseReason = null,
     DateTime? ClosedAtUtc = null,
-    string? DefaultPayloadJson = null)
+    StoredJson? DefaultPayloadJson = null)
 {
     public bool IsOpen => CloseReason == null;
 

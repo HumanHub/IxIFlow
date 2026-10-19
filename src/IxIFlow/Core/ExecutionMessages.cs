@@ -3,7 +3,7 @@ using IxIFlow.Core.Runtime;
 namespace IxIFlow.Core;
 
 public sealed record Assign(Guid AssignmentId, WorkflowInstance Instance,
-    IReadOnlyDictionary<string, string>? Parts, string StructureHash, long Epoch, long InboxSequence,
+    IReadOnlyDictionary<string, StoredJson>? Parts, string StructureHash, long Epoch, long InboxSequence,
     ExecutionLimits Limits, bool CanPark, IReadOnlyList<Breakpoint> Breakpoints,
     RecoveryPreparation? Recovery = null, int ContractVersion = ExecutionContract.Version)
 {
