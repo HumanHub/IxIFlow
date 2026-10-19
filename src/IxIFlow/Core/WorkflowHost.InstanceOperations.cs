@@ -29,7 +29,6 @@ public sealed partial class WorkflowHost
     {
         private readonly IWorkflowStateRepository _store = GuardedStateRepository.Wrap(repository);
         private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
-        private readonly ChildWorkflows _children = new(services, registry, timeProvider ?? TimeProvider.System);
         private readonly ExecutionLeaseSettings _leaseSettings = leaseSettings ?? ExecutionLeaseSettings.Default;
         private readonly ExecutionLimits _limits = limits ?? ExecutionLimits.Default;
         private readonly RunControl _control = control ?? new RunControl();
@@ -707,9 +706,7 @@ public sealed partial class WorkflowHost
                     outcome = new(AssignmentOutcomeKind.OwnershipLost);
                 if (outcome.Kind == AssignmentOutcomeKind.Interrupted)
                 {
-                    // Unknown may have applied. Neither the executor's last Ack nor the receipt projection
-                    // is authoritative; recovery always starts with a new store read.
-                    _ = await _store.GetWorkflowInstanceAsync(instance.InstanceId);
+                    // Unknown may have applied; the next recovery starts with a new store read.
                     var error = _assignments[signals.AssignmentId].LastCommitError ?? new WorkflowEngineException(
                         WorkflowErrorKind.Infrastructure, outcome.ErrorMessage ?? "Execution was interrupted");
                     if (error is WorkflowEngineException engineError)
@@ -721,12 +718,17 @@ public sealed partial class WorkflowHost
                 _receipts.TryGetValue(instance.InstanceId, out var receipt);
                 // Acknowledged commits reconstruct the stored instance without retaining executor objects.
                 // After ownership loss another host may have changed it, so only a fresh read is authoritative.
-                var saved = outcome.Kind is AssignmentOutcomeKind.OwnershipLost or AssignmentOutcomeKind.Interrupted
+                var saved = outcome.Kind == AssignmentOutcomeKind.OwnershipLost
                     ? await _store.GetWorkflowInstanceAsync(instance.InstanceId)
-                    : receipt?.Instance;
-                if (saved == null)
-                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                        "The running workflow instance is missing from the store");
+                    : receipt?.Instance ?? instance;
+                if (saved == null || saved.Incarnation != instance.Incarnation)
+                    return new WorkflowExecutionResult
+                    {
+                        InstanceId = instance.InstanceId,
+                        Status = WorkflowExecutionStatus.Running,
+                        ErrorMessage = "Execution ownership was lost; the assigned incarnation is no longer available",
+                        TraceEntries = receipt?.Trace.ToList() ?? []
+                    };
                 if (outcome.Kind is not (AssignmentOutcomeKind.OwnershipLost or AssignmentOutcomeKind.Interrupted) &&
                     receipt?.WakeUtc is { } due &&
                     (outcome.Kind == AssignmentOutcomeKind.Parked ||
@@ -814,6 +816,7 @@ public sealed partial class WorkflowHost
                     {
                         receipt.Instance = CheckpointParts.Summarize(commit.Payload,
                             commit.ApplyParts(basedOn.SavedParts).GetValueOrDefault(CheckpointParts.DataKey), result.Revision);
+                        receipt.Instance.Incarnation = commit.Incarnation;
                         receipt.Instance.RunnableAtUtc = result.RunnableAtUtc;
                         receipt.Trace.AddRange(commit.TraceEntries.Select(json =>
                             JsonSerializer.Deserialize<ExecutionTraceEntry>(json)!));
@@ -891,6 +894,9 @@ public sealed partial class WorkflowHost
             var proposed = ExecutionCheckpoint.Read(StoredCheckpoint.AssembleState(trunk, parts));
             var previous = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(saved));
             var sameData = parts.GetValueOrDefault(CheckpointParts.DataKey) == saved.WorkflowDataJson;
+            // Release keeps saved data but applies recovery preparation and records the operator action.
+            // Like recording the stop, clearing it must remain possible after the limit was lowered.
+            if (sameData && previous.OperatorStop != null && proposed.OperatorStop == null) return;
             if (sameData && (commit.Stopped || previous.OperatorStop != null))
             {
                 proposed.OperatorStop = null;
@@ -917,10 +923,16 @@ public sealed partial class WorkflowHost
             _ = WorkflowDefinitionValidator.ForExecution(definition);
             var hash = await registry.GetWorkflowStructureHashAsync(child.WorkflowName, child.WorkflowVersion);
             var checkpoint = ExecutionCheckpoint.Read(child.ExecutionStateJson);
-            if (hash != request.StructureHash || checkpoint.StructureHash != hash ||
-                child.WorkflowDataType != definition.WorkflowDataType!.AssemblyQualifiedName)
+            if (child.WorkflowDataType != definition.WorkflowDataType!.AssemblyQualifiedName)
                 return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
-                    Message: "The child workflow structure hash or data type differs from its registered definition");
+                    Message: $"Workflow {definition.Name} v{definition.Version} differs from its registered definition: " +
+                        $"registered data type '{definition.WorkflowDataType.AssemblyQualifiedName}', " +
+                        $"loaded data type '{child.WorkflowDataType}'");
+            if (hash != request.StructureHash || checkpoint.StructureHash != hash)
+                return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
+                    Message: $"Workflow {definition.Name} v{definition.Version} differs from its registered definition: " +
+                        $"registered structure hash '{hash}', loaded structure hash " +
+                        $"'{(hash != request.StructureHash ? request.StructureHash : checkpoint.StructureHash)}'");
             var size = StoredCheckpoint.Of(child).Bytes;
             if (size > _limits.MaxCheckpointBytes)
                 return new(request.AssignmentId, Refusal: WorkflowErrorKind.ResourceExhausted,
@@ -939,7 +951,8 @@ public sealed partial class WorkflowHost
         internal ConflictReason? AdmitReady(Ready ready)
         {
             ExecutionContract.RequireVersion(ready.ContractVersion);
-            return _assignments.TryGetValue(ready.AssignmentId, out var assignment) && assignment.IsActive(assignment.InstanceId)
+            return _assignments.TryGetValue(ready.AssignmentId, out var assignment) &&
+                (assignment.ReleasedBy(ready.LastAcknowledgedCommit) || assignment.IsActive(assignment.InstanceId))
                 ? null : ConflictReason.NotAssigned;
         }
 
@@ -982,6 +995,7 @@ public sealed partial class WorkflowHost
             private readonly CommitQueue _queue = operations._commitQueues.GetOrAdd(instance.InstanceId, _ => new());
             private readonly Dictionary<string, (long Revision, string Hash, Task<CheckpointReply> Task)> _outstanding = [];
             private WorkflowInstance _saved = instance;
+            private AcknowledgedCommit? _releasedBy;
             public Exception? LastCommitError { get; set; }
             public WorkflowExecutionLease Owner => owner;
             public string InstanceId => instance.InstanceId;
@@ -992,10 +1006,14 @@ public sealed partial class WorkflowHost
 
             public bool IsActive(string instanceId)
             {
-                if (instanceId != instance.InstanceId || !operations._assignments.ContainsKey(identity)) return false;
+                if (instanceId != instance.InstanceId || !operations._assignments.ContainsKey(identity) ||
+                    Volatile.Read(ref _releasedBy) != null) return false;
                 try { owner.ThrowIfLost(); return true; }
                 catch (ExecutionOwnershipLostException) { return false; }
             }
+
+            public bool ReleasedBy(AcknowledgedCommit? acknowledged) =>
+                acknowledged != null && acknowledged == Volatile.Read(ref _releasedBy);
 
             public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
             {
@@ -1041,6 +1059,12 @@ public sealed partial class WorkflowHost
                         {
                             _saved = commit.ReadInstance(_saved);
                             _saved.Incarnation = commit.Incarnation;
+                            var keepsLease = reply.UnreadEvents && _saved.Status == WorkflowStatus.Suspended;
+                            if ((_saved.Status != WorkflowStatus.Running || reply.Parked) && !keepsLease)
+                            {
+                                Volatile.Write(ref _releasedBy, new AcknowledgedCommit(commit.CommitId, reply.Revision));
+                                owner.StopRenewing();
+                            }
                         }
                         if (reply.PendingCancellation is { } reason) owner.ObserveCancellation(reason);
                     }

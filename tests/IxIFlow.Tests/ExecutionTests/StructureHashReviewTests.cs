@@ -173,7 +173,6 @@ public sealed class StructureHashReviewTests
     {
         var collection = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         collection.RegisterWorkflow<ReviewChild>();
-        using var services = collection.BuildServiceProvider();
         var registry = new WorkflowVersionRegistry();
         var published = Workflow.Create<StructureHashData>("Review child")
             .Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => 1)).Build();
@@ -181,10 +180,12 @@ public sealed class StructureHashReviewTests
         var registeredHash = Hash(published);
         // Rebuilding a catalog from this object would now compare the wrong registration contract.
         published.Steps.Clear();
+        collection.AddSingleton<IWorkflowVersionRegistry>(registry);
+        using var services = collection.BuildServiceProvider();
         var parent = Workflow.Create<StructureHashData>("Parent").Step<StructureHashMultiply>()
             .Invoke<ReviewChild, StructureHashData>().Build();
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            new ChildWorkflows(services, registry, TimeProvider.System).ResolveAsync(parent.Steps[1], starting: true));
+            services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new StructureHashData()));
         Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, error.Kind);
         Assert.Contains(registeredHash, error.Message);
         Assert.Equal(registeredHash, await registry.GetWorkflowStructureHashAsync("Review child", 1));
