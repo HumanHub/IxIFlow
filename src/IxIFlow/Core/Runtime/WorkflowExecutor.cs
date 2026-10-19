@@ -82,8 +82,14 @@ public sealed class WorkflowExecutor
                 System.Text.Json.JsonSerializer.Serialize(assign.Instance))!;
             instance.Incarnation = assign.Incarnation;
             if (assign.Parts != null) instance.Saved(new Dictionary<string, StoredJson>(assign.Parts), instance.Revision);
-            instance.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
+            session.SavedInstance = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
+                System.Text.Json.JsonSerializer.Serialize(instance))!;
+            session.SavedInstance.Incarnation = instance.Incarnation;
+            if (instance.SavedParts != null) session.SavedInstance.Saved(instance.SavedParts, instance.Revision);
+            instance.ExecutionStateJson = await StoredCheckpoint.WholeStateAsync(instance, session.Reader);
+            session.NeedsHydration = instance.ExecutionStateJson.Contains("\"reference\"", StringComparison.Ordinal);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+            session.Payloads.Known(CheckpointPayloads.References(instance.ExecutionStateJson, instance.SavedParts ?? new Dictionary<string, StoredJson>()));
             checkpoint.Debug = checkpoint.Debug with { Breakpoints = assign.Breakpoints.ToArray() };
             checkpoint.Signals = signals;
             if (checkpoint.StructureHash != assign.StructureHash)
@@ -102,8 +108,10 @@ public sealed class WorkflowExecutor
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-            var data = System.Text.Json.JsonSerializer.Deserialize(instance.WorkflowDataJson.InlineText, dataType)
+            var data = System.Text.Json.JsonSerializer.Deserialize(await session.Reader.ReadAsync(instance.WorkflowDataJson), dataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
+            checkpoint.RootDataChanged = false;
+            checkpoint.RootDataUnchanged = BranchData.Observe(data);
             signals.Deliver(new Arrivals(assign.AssignmentId, assign.InboxSequence));
             if (checkpoint.StructureHash == WorkflowDefinitionValidator.ForExecution(definition).StructureHash &&
                 assign.Recovery is { } preparation)
@@ -145,9 +153,34 @@ public sealed class WorkflowExecutor
         {
             return new(assign.AssignmentId, Interrupted(error), session.LastAcknowledgedCommit, ExecutorName: _executorName);
         }
+        catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error) && error.Kind == WorkflowErrorKind.PayloadUnavailable)
+        {
+            return await StopUnreadableAsync(error.Message, OperatorStopKind.PayloadUnavailable);
+        }
+        catch (PayloadHydrationLimitException error)
+        {
+            return await StopUnreadableAsync(error.Message, OperatorStopKind.ResourceLimit);
+        }
         finally
         {
             CloseRun(assign.AssignmentId);
+        }
+
+        async Task<Ready> StopUnreadableAsync(string reason, OperatorStopKind kind)
+        {
+            var saved = session.SavedInstance ?? assign.Instance;
+            var commit = CheckpointCommit.PayloadStop(saved, assign.Epoch, reason, Now, kind);
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var reply = await session.CheckpointAsync(commit);
+                if (reply.Kind == CheckpointReplyKind.Ack)
+                    return new(assign.AssignmentId, new(AssignmentOutcomeKind.Idle, reason,
+                        kind == OperatorStopKind.PayloadUnavailable ? nameof(WorkflowErrorKind.PayloadUnavailable) : nameof(WorkflowErrorKind.ResourceExhausted)),
+                        session.LastAcknowledgedCommit, ExecutorName: _executorName);
+                if (reply.Kind == CheckpointReplyKind.Conflict)
+                    return new(assign.AssignmentId, new(AssignmentOutcomeKind.OwnershipLost), session.LastAcknowledgedCommit);
+            }
+            return new(assign.AssignmentId, new(AssignmentOutcomeKind.Interrupted, reason), session.LastAcknowledgedCommit);
         }
     }
 
@@ -380,8 +413,28 @@ public sealed class WorkflowExecutor
                 if (checkpoint.Debug.Evaluation == null)
                     uncommitted.NoteIf(_transitions.ProcessDeferredFailures(scopes, checkpoint), instance);
                 var conflicts = new List<(ContinuationState Parent, JoinConflictException Conflict)>();
+                foreach (var join in checkpoint.Joins.Where(j => host.NeedsHydration && j.Mode == ParallelJoinMode.WaitConditionally &&
+                             checkpoint.BranchesOf(j).Any(c => c.PendingJoinFrame != null)))
+                {
+                    foreach (var child in checkpoint.BranchesOf(join).Where(c => c.Status == ContinuationStatus.Completed))
+                    {
+                        await host.PrepareDataReadAsync(checkpoint, child);
+                        await host.Reader.HydrateAsync(child.PendingJoinFrame?.ForEachResult);
+                    }
+                    var parent = checkpoint.ContinuationById(join.ParentContinuationId)!;
+                    await host.PrepareDataReadAsync(checkpoint, parent);
+                    foreach (var frame in parent.Stack) await host.Reader.HydrateAsync(frame.ForEach?.Results);
+                }
                 if (checkpoint.Debug.Evaluation == null)
                     uncommitted.NoteIf(ContinuationTransitions.NotifyCompletedBranches(scopes, checkpoint), instance);
+                if (checkpoint.Joins.Any(j => j.IsCompleting && checkpoint.ContinuationById(j.ParentContinuationId)?.ParentJoinId == null))
+                    checkpoint.RootDataChanged = true;
+                foreach (var join in checkpoint.Joins.Where(j => host.NeedsHydration && j.IsCompleting))
+                {
+                    await host.PrepareDataReadAsync(checkpoint, checkpoint.ContinuationById(join.ParentContinuationId)!);
+                    foreach (var child in checkpoint.BranchesOf(join).Where(c => c.Status == ContinuationStatus.Completed))
+                        await host.PrepareDataReadAsync(checkpoint, child);
+                }
                 if (checkpoint.Debug.Evaluation == null)
                     uncommitted.NoteIf(ContinuationTransitions.FinishCompletingJoins(scopes, checkpoint, conflicts), instance);
                 // A join whose branches conflict fails at its parallel step, where a Catch can handle it.
@@ -416,7 +469,19 @@ public sealed class WorkflowExecutor
                     try
                     {
                         if (checkpoint.Debug.Evaluation == null)
+                        {
+                            foreach (var join in checkpoint.Joins.Where(j => host.NeedsHydration && !j.IsCompleting &&
+                                         SteppingPolicy.AllowsJoin(checkpoint, j) && scopes.Step(j.StepId).StepType == WorkflowStepType.ForEach))
+                            {
+                                var itemStep = scopes.Step(join.StepId);
+                                var state = ForEachTransitions.StateOf(checkpoint, join, itemStep);
+                                if (state.Next < state.Items.Count && checkpoint.BranchesOf(join).Count(c =>
+                                        c.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled)) <
+                                    (itemStep.ForEachMaxConcurrency ?? state.Items.Count))
+                                    await host.PrepareDataReadAsync(checkpoint, checkpoint.ContinuationById(join.ParentContinuationId)!);
+                            }
                             ForEachTransitions.Admit(scopes, checkpoint, host.Limits.MaxActiveBranches);
+                        }
                     }
                     catch (BranchLimitExceededException limit)
                     {
@@ -445,6 +510,7 @@ public sealed class WorkflowExecutor
                         waitingForActivity.Remove(runnable.Id);
                     if (runnable == null)
                         break;
+                    await host.PrepareReadAsync(checkpoint, runnable, scopes);
                     checkpoint.Touch(runnable);
                     runnable.RetryAfterUtc = null;
 
@@ -492,6 +558,8 @@ public sealed class WorkflowExecutor
                         var boundary = EffectBoundary.Of(checkpoint);
                         try
                         {
+                            if (runnable.ParentJoinId == null)
+                                checkpoint.RootDataChanged = true;
                             _transitions.Advance(scopes, checkpoint, runnable,
                                 host.Limits.MaxActiveBranches, host.Limits.MaxForEachItems);
                         }
@@ -727,7 +795,13 @@ public sealed class WorkflowExecutor
             return await StopForOperatorAsync(definition, instance, checkpoint, checkpoint.RootData, host,
                 OperatorStopKind.Verification, unverified.Message);
         }
-        catch (WorkflowEngineException ex) when (WorkflowEngineException.IsEngineFailure(ex) && ex.IsInterruption)
+        catch (PayloadHydrationLimitException)
+        {
+            await AbandonInFlightAsync(inFlight);
+            throw;
+        }
+        catch (WorkflowEngineException ex) when (WorkflowEngineException.IsEngineFailure(ex) &&
+                                                (ex.Kind == WorkflowErrorKind.PayloadUnavailable || ex.IsInterruption))
         {
             // The last committed checkpoint stays recoverable; nothing is written here.
             ex.At(instance.InstanceId);

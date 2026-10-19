@@ -88,7 +88,8 @@ public sealed class CheckpointCommit
         long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
-        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries)
+        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
+        IReadOnlyList<PayloadReference> payloadReferences, bool preservesPayloadPins)
     {
         Instance = instance;
         InstanceId = instance.InstanceId;
@@ -113,6 +114,8 @@ public sealed class CheckpointCommit
         ChildCancellations = childCancellations;
         ParentNotice = parentNotice;
         TraceEntries = traceEntries;
+        PayloadReferences = payloadReferences;
+        PreservesPayloadPins = preservesPayloadPins;
         _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes(
             $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}{(stopped ? 1 : 0)}\n" +
             $"{inboxReadThrough?.ToString() ?? "-"}\n{wakeAfter?.Ticks.ToString() ?? "-"}\n" +
@@ -121,7 +124,7 @@ public sealed class CheckpointCommit
             $"{JsonSerializer.Serialize(childStarts)}\n{JsonSerializer.Serialize(childCancellations)}\n" +
             $"{JsonSerializer.Serialize(parentNotice)}\n{JsonSerializer.Serialize(traceEntries)}\n" +
             $"{(replacesParts ? 1 : 0)}\n{JsonSerializer.Serialize(deletedParts)}\n{JsonSerializer.Serialize(parts)}\n" +
-            payload));
+            $"{JsonSerializer.Serialize(payloadReferences)}\n{preservesPayloadPins}\n" + payload));
     }
 
     /// <summary>The longest timeout, delay or park a commit may carry.</summary>
@@ -141,6 +144,11 @@ public sealed class CheckpointCommit
 
     /// <summary>The parts this commit writes, in key order: new ones, and those whose JSON changed.</summary>
     public IReadOnlyList<CheckpointPart> Parts { get; }
+    /// <summary>The complete checkpoint owner's references, including references nested in inline parts.</summary>
+    public IReadOnlyList<PayloadReference> PayloadReferences { get; }
+    /// <summary>A fenced metadata-only stop retains existing parts and pins, even if their bodies are unreadable.</summary>
+    public bool PreservesPayloadPins { get; }
+    public PayloadOwner PayloadOwner => new("checkpoint", $"{InstanceId}/{Incarnation:N}");
 
     /// <summary>The keys of the parts this commit deletes, in order.</summary>
     public IReadOnlyList<string> DeletedParts { get; }
@@ -283,7 +291,8 @@ public sealed class CheckpointCommit
             expectedRevision, clearsCrashCount, parks, settlements ?? [], inboxReadThrough,
             openedWaits ?? [], armedWaits ?? [], closedWaits ?? [], wakeAfter, stopped,
             childStarts ?? [], childCancellations ?? [], parentNotice,
-            (traceEntries ?? []).Select(WorkflowStoreRules.SerializeTrace).ToArray());
+            (traceEntries ?? []).Select(WorkflowStoreRules.SerializeTrace).ToArray(),
+            Runtime.CheckpointPayloads.References(stored.Trunk, stored.Parts));
     }
 
     /// <summary>
@@ -297,7 +306,8 @@ public sealed class CheckpointCommit
         long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
-        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries)
+        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
+        IReadOnlyList<PayloadReference>? payloadReferences = null, bool preservesPayloadPins = false)
     {
         ArgumentNullException.ThrowIfNull(metadata);
         ArgumentNullException.ThrowIfNull(payload);
@@ -410,6 +420,11 @@ public sealed class CheckpointCommit
         ArgumentNullException.ThrowIfNull(parts);
         ArgumentNullException.ThrowIfNull(deletedParts);
         ArgumentNullException.ThrowIfNull(traceEntries);
+        if (preservesPayloadPins && (expectedRevision == 0 || parts.Count != 0 || deletedParts.Count != 0 || replacesParts ||
+            !stopped || metadata.Status != WorkflowStatus.NeedsResolution || settled.Length != 0 || opened.Length != 0 ||
+            armed.Length != 0 || closed.Length != 0 || started.Length != 0 || cancelled.Length != 0 || parentNotice != null ||
+            traceEntries.Count != 0 || parks || wakeAfter != null))
+            throw new ArgumentException("A metadata-only stop keeps all parts and performs no workflow effects");
         var written = parts.ToArray();
         var deleted = deletedParts.ToArray();
         foreach (var part in written)
@@ -429,7 +444,29 @@ public sealed class CheckpointCommit
             replacesParts, incarnation, epoch, commitId, expectedRevision, clearsCrashCount, parks,
             Array.AsReadOnly(settled), inboxReadThrough, Array.AsReadOnly(opened), Array.AsReadOnly(armed),
             Array.AsReadOnly(closed), wakeAfter, stopped, Array.AsReadOnly(started), Array.AsReadOnly(cancelled),
-            parentNotice, Array.AsReadOnly(traceEntries.ToArray()));
+            parentNotice, Array.AsReadOnly(traceEntries.ToArray()),
+            Array.AsReadOnly((payloadReferences ?? []).Distinct().OrderBy(r => r.Digest, StringComparer.Ordinal).ToArray()),
+            preservesPayloadPins);
+    }
+
+    internal static CheckpointCommit PayloadStop(WorkflowInstance saved, long epoch, string reason, DateTime now,
+        Runtime.OperatorStopKind kind = Runtime.OperatorStopKind.PayloadUnavailable)
+    {
+        if (WorkflowStoreRules.IsTerminal(saved.Status))
+            throw new WorkflowEngineException(WorkflowErrorKind.PayloadUnavailable, reason);
+        // Only the readable trunk is parsed. No branch, data, input or list payload is assembled.
+        var instance = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(saved))!;
+        var metadata = System.Text.Json.Nodes.JsonNode.Parse(instance.ExecutionStateJson)!.AsObject();
+        metadata[nameof(Runtime.ExecutionCheckpoint.OperatorStop)] = JsonSerializer.SerializeToNode(
+            new Runtime.OperatorStopState { Kind = kind, Reason = reason, StoppedAtUtc = now });
+        // Preserve stored-only fields such as ForEach ResultCount exactly; no state object is reconstructed.
+        instance.ExecutionStateJson = metadata.ToJsonString();
+        instance.Status = WorkflowStatus.NeedsResolution;
+        instance.LastError = reason;
+        instance.LastErrorStackTrace = null;
+        return FromFields(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance), [], [], false,
+            saved.Incarnation, epoch, Guid.NewGuid().ToString("N"), saved.Revision, false, false, [], null,
+            [], [], [], null, true, [], [], null, [], preservesPayloadPins: true);
     }
 
     private static void ValidateDuration(TimeSpan? duration, string parameter)

@@ -53,7 +53,8 @@ public sealed partial class WorkflowHost
             if (current == null || current.Incarnation != instance.Incarnation ||
                 current.Status != WorkflowStatus.Paused || current.Revision != request.ExpectedRevision)
                 throw EditRefused("The edit requires the expected paused revision");
-            var checkpoint = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(current));
+            var reader = NewPayloadReader();
+            var checkpoint = await ReadCheckpointAsync(current, reader);
             if (checkpoint.Debug.PauseGeneration != request.Target.PauseGeneration)
                 throw EditRefused("The pause generation changed");
             var definition = await registry.GetWorkflowDefinitionAsync(current.WorkflowName, current.WorkflowVersion)
@@ -71,7 +72,8 @@ public sealed partial class WorkflowHost
             StoredCheckpoint prepared;
             try
             {
-                checkpoint.RootData = BranchData.Copy(current.WorkflowDataJson.InlineText, definition.WorkflowDataType);
+                checkpoint.RootData = BranchData.Copy(await reader.ReadAsync(current.WorkflowDataJson), definition.WorkflowDataType);
+                foreach (var descendant in checkpoint.Continuations) await reader.HydrateAsync(descendant.DataChanges);
                 var branch = request.Target.ContinuationId is { } id ? checkpoint.ContinuationById(id) : null;
                 if (request.Target.ContinuationId != null && (branch == null ||
                     branch.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled))
@@ -96,7 +98,7 @@ public sealed partial class WorkflowHost
                 // Prepare before accepting the command: serialization and size refusals change nothing.
                 checkpoint.CloseEndedRequests();
                 prepared = ExecutionCheckpointWriter.Prepare(current, checkpoint, checkpoint.RootData, scopes, Now,
-                    verify: _limits.VerifyCheckpointParts, preserveContinuationState: true);
+                    verify: _limits.VerifyCheckpointParts, preserveContinuationState: true, payloads: assignment.Session.Payloads);
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {

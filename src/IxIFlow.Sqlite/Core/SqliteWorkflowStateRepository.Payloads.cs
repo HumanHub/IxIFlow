@@ -17,5 +17,6 @@ public sealed partial class SqliteWorkflowStateRepository : IPayloadStoreProvide
             owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
             PRIMARY KEY (digest, owner_kind, owner_id)
         );
+        CREATE INDEX ixiflow_payload_refs_owner ON ixiflow_workflow_payload_refs(owner_kind, owner_id, digest);
         """;
 }

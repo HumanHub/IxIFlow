@@ -419,7 +419,34 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         return Commit(commit, null);
     }
 
-    private Task<WorkflowCommitResult> Commit(CheckpointCommit commit, WorkflowAdmission? admission)
+    private async Task<WorkflowCommitResult> Commit(CheckpointCommit commit, WorkflowAdmission? admission)
+    {
+        ArgumentNullException.ThrowIfNull(commit);
+        if (commit.PreservesPayloadPins) return await CommitCore(commit, admission);
+        Task<WorkflowCommitResult>? replay;
+        lock (_claimLock)
+            replay = _commits.ContainsKey((commit.InstanceId, commit.CommitId)) ? CommitCore(commit, admission) : null;
+        if (replay != null) return await replay;
+        WorkflowCommitResult? result = null;
+        try
+        {
+            await PayloadStore.InTransactionAsync(async (pins, ct) =>
+            {
+                await pins.LockAsync(commit.PayloadOwner, commit.PayloadReferences, ct);
+                await pins.ReplaceAsync(commit.PayloadOwner, commit.PayloadReferences, ct);
+                ct.ThrowIfCancellationRequested();
+                result = await CommitCore(commit, admission);
+                // A receipt replay must never replace a newer checkpoint's pins.
+                if (result.Status != WorkflowCommitStatus.Applied) throw new PayloadCommitNotAppliedException();
+            });
+        }
+        catch (PayloadCommitNotAppliedException) { }
+        return result!;
+    }
+
+    private sealed class PayloadCommitNotAppliedException : Exception;
+
+    private Task<WorkflowCommitResult> CommitCore(CheckpointCommit commit, WorkflowAdmission? admission)
     {
         ArgumentNullException.ThrowIfNull(commit);
         var snapshot = commit.ReadTrunk();
@@ -455,7 +482,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 // A terminal or parking commit released the lease; only a running owner must still hold it.
                 if (snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks)
                     return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
-                if (stored != null && (WorkflowTimerRules.Frozen(stored) || WorkflowTimerRules.Frozen(snapshot) ||
+                if (!commit.PreservesPayloadPins && stored != null && (WorkflowTimerRules.Frozen(stored) || WorkflowTimerRules.Frozen(snapshot) ||
                     CommandsOf(commit.InstanceId).Any(c => c.AcknowledgedRevision == receipt.Revision &&
                         c.Kind is DebugCommandKind.FreezeTimers or DebugCommandKind.UnfreezeTimers)))
                     timerResult = WorkflowTimerRules.Read(stored,
@@ -526,7 +553,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 CloseWait(commit.InstanceId, closed.WaitId, closed.Reason, now);
             Dictionary<string, StoredJson>? timerParts = null;
             IReadOnlyList<string> traces = commit.TraceEntries;
-            if (WorkflowTimerRules.Changes(stored, snapshot, CommandsOf(commit.InstanceId)))
+            if (!commit.PreservesPayloadPins && WorkflowTimerRules.Changes(stored, snapshot, CommandsOf(commit.InstanceId)))
             {
                 timerParts = new(commit.ApplyParts(_parts.GetValueOrDefault(commit.InstanceId) ?? new Dictionary<string, StoredJson>()));
                 var timerTraces = commit.TraceEntries.ToList();

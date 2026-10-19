@@ -33,6 +33,8 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT member_id, capability_key, capability_value FROM dbo.ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
+            if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sys.indexes WHERE object_id=OBJECT_ID('dbo.IxIFlowWorkflowPayloadRefs') AND name='IX_IxIFlowPayloadRefs_Owner'", transaction: transaction) != 1)
+                throw EarlierBuild();
             if (await connection.ExecuteScalarAsync<int>("SELECT CASE WHEN OBJECT_ID(N'dbo.IxIFlowExecutionEpoch', N'SO') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction) != 1)
                 throw EarlierBuild();
         }

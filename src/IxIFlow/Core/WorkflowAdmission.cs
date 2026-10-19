@@ -59,7 +59,8 @@ public interface IWorkflowIngressClient
 }
 
 internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWorkflowVersionRegistry registry,
-    WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null) : IWorkflowIngressClient
+    WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null,
+    IPayloadStore? payloadStore = null) : IWorkflowIngressClient
 {
     private readonly IWorkflowAdmissionStore _admission = store;
 
@@ -79,8 +80,15 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow version is deactivated");
         var now = time.GetUtcNow().UtcDateTime;
         var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, data, new(), now);
-        var prepared = ExecutionCheckpointWriter.Prepare(instance, checkpoint, data, scopes, now,
-            verify: limits.VerifyCheckpointParts);
+        var payloads = new CheckpointPayloads(limits, new(limits.MaxHydratedPayloadBytes));
+        StoredCheckpoint prepared;
+        try
+        {
+            prepared = ExecutionCheckpointWriter.Prepare(instance, checkpoint, data, scopes, now,
+                verify: limits.VerifyCheckpointParts, payloads: payloads);
+        }
+        catch (PayloadHydrationLimitException error)
+        { throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, error.Message, error); }
         if (prepared.Bytes > limits.MaxCheckpointBytes)
             throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "The admission checkpoint exceeds the configured limit");
         var commit = CheckpointCommit.CreateAdmission(instance);
@@ -89,6 +97,15 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
         for (var attempt = 1; ; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (payloads.Pending.Any())
+            {
+                await using var transfer = new ExecutionPayloadTransfer(payloadStore ?? (store as IPayloadStoreProvider)?.PayloadStore ??
+                    throw new InvalidOperationException("No payload store configured"), limits);
+                foreach (var value in payloads.Pending)
+                    for (var offset = 0; offset < value.Encoded.Length; offset += PayloadChunk.MaxChunkBytes)
+                        await transfer.AcceptAsync(new(value.Identity, offset,
+                            value.Encoded.Slice(offset, Math.Min(PayloadChunk.MaxChunkBytes, value.Encoded.Length - offset)).ToArray(), value.Dependencies));
+            }
             // Stores classify retryable concurrency errors as Retry; arbitrary exceptions propagate.
             var result = await _admission.AdmitWorkflowInstanceAsync(commit, admission);
             if (result.Status == WorkflowCommitStatus.Retry && attempt < 3)

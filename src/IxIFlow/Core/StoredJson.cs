@@ -34,30 +34,47 @@ public sealed record PayloadReference
 
 /// <summary>
 /// Immutable JSON at a persistence seam. Inline values cache their UTF-8 size and content identity.
-/// Reading a reference requires host hydration (step 2); it must never be interpreted as application JSON.
+/// Reading a reference requires asynchronous host hydration; it must never be interpreted as application JSON.
 /// </summary>
 [JsonConverter(typeof(StoredJsonConverter))]
 public sealed record StoredJson
 {
     private readonly string? _inline;
     private readonly Lazy<PayloadReference>? _identity;
+    private readonly Lazy<byte[]>? _encoded;
+    private IReadOnlyList<PayloadReference>? _dependencies;
+    private string? _hydrated;
+    private readonly int _referenceBytes;
     public PayloadReference? Reference { get; }
     public bool IsInline => Reference is null;
     public long Bytes { get; }
     public PayloadReference Identity => Reference ?? _identity!.Value;
+    internal ReadOnlyMemory<byte> Encoded => _encoded!.Value;
+    internal long CheckpointBytes => IsInline ? Bytes : _referenceBytes;
+    internal IReadOnlyList<PayloadReference> Dependencies => _dependencies ?? [];
+    internal bool HasDependencyMetadata => _dependencies != null;
 
     private StoredJson(string text)
     {
         _inline = text;
         Bytes = Encoding.UTF8.GetByteCount(text);
-        _identity = new(() => PayloadReference.Of(Encoding.UTF8.GetBytes(text)));
+        _encoded = new(() => Encoding.UTF8.GetBytes(text));
+        _identity = new(() => PayloadReference.Of(_encoded.Value));
     }
 
-    private StoredJson(PayloadReference reference) { Reference = reference; Bytes = reference.Bytes; }
+    private StoredJson(PayloadReference reference)
+    {
+        Reference = reference;
+        Bytes = reference.Bytes;
+        _referenceBytes = Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(this));
+    }
     public static StoredJson Inline(string text) => new(text ?? throw new ArgumentNullException(nameof(text)));
     public static StoredJson FromReference(PayloadReference reference) =>
         new(reference ?? throw new ArgumentNullException(nameof(reference)));
-    public string InlineText => _inline ?? throw new InvalidOperationException("Payload reference requires host hydration");
+    public string InlineText => _inline ?? _hydrated ?? throw new InvalidOperationException("Payload reference requires host hydration");
+    internal void Hydrated(string text) => _hydrated = text;
+    internal StoredJson WithDependencies(IReadOnlyList<PayloadReference> dependencies)
+    { _dependencies = dependencies; return this; }
 
     public bool Equals(StoredJson? other) => other is not null && _inline == other._inline && Reference == other.Reference;
     public override int GetHashCode() => HashCode.Combine(_inline, Reference);

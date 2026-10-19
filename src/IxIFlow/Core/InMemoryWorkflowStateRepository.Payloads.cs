@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Text.Json;
+using System.Collections.Concurrent;
 
 namespace IxIFlow.Core;
 
@@ -12,30 +13,70 @@ public partial class InMemoryWorkflowStateRepository : IPayloadStoreProvider
 
     private sealed class MemoryPayloadStore(TimeProvider time, PayloadStoreSettings settings) : CatalogPayloadStore(settings)
     {
-        private readonly SemaphoreSlim _gate = new(1, 1);
-        private Dictionary<string, PayloadRecord> _rows = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, PayloadRecord> _rows = new(StringComparer.Ordinal);
+        private readonly object _index = new();
 
         internal override async ValueTask<T> Execute<T>(Func<PayloadCatalog, CancellationToken, ValueTask<T>> action, CancellationToken ct)
         {
-            await _gate.WaitAsync(ct);
-            PayloadCatalog? catalog = null;
-            try
+            while (true)
             {
-                // Copy-on-write transaction: cancellation and callback failures cannot leave partial pins.
-                var rows = _rows.ToDictionary(pair => pair.Key, pair => Clone(pair.Value), StringComparer.Ordinal);
-                catalog = new PayloadCatalog(
-                    (digest, _) => ValueTask.FromResult(rows.GetValueOrDefault(digest)),
-                    (row, _) => { rows[row.Reference.Digest] = row; return ValueTask.CompletedTask; },
-                    _ => ValueTask.FromResult<IReadOnlyList<PayloadRecord>>(rows.Values.ToArray()),
-                    () => time.GetUtcNow().UtcDateTime, Settings);
-                var result = await action(catalog, ct);
-                // The callback may have published referencing state as its final action. Cancellation after
-                // that point must not roll back its pins. Check cancellation before publication, in the callback.
-                _rows = rows;
-                return result;
+                var held = new Dictionary<string, SemaphoreSlim>(StringComparer.Ordinal);
+                var staged = new Dictionary<string, PayloadRecord?>(StringComparer.Ordinal);
+                var written = new HashSet<string>(StringComparer.Ordinal);
+                PayloadCatalog? catalog = null;
+                SemaphoreSlim? blocked = null;
+                try
+                {
+                    ValueTask<PayloadRecord?> Read(string digest, CancellationToken token)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (staged.TryGetValue(digest, out var cached)) return ValueTask.FromResult(cached);
+                        var gate = _gates.GetOrAdd(digest, _ => new(1, 1));
+                        if (!gate.Wait(0)) throw new DigestBusyException(gate);
+                        held.Add(digest, gate);
+                        PayloadRecord? copy;
+                        lock (_index) copy = _rows.TryGetValue(digest, out var row) ? Clone(row) : null;
+                        staged.Add(digest, copy);
+                        return ValueTask.FromResult(copy);
+                    }
+                    async ValueTask<IReadOnlyList<PayloadRecord>> Rows(IEnumerable<string> digests, CancellationToken token)
+                    {
+                        var rows = new List<PayloadRecord>();
+                        foreach (var digest in digests.Distinct().Order(StringComparer.Ordinal))
+                            if (await Read(digest, token) is { } row) rows.Add(row);
+                        return rows;
+                    }
+                    string[] Digests(PayloadOwner? owner = null)
+                    {
+                        lock (_index) return _rows.Where(pair => owner == null || pair.Value.Owners.Contains(owner)).Select(pair => pair.Key)
+                            .Concat(staged.Where(pair => pair.Value != null && (owner == null || pair.Value.Owners.Contains(owner)))
+                                .Select(pair => pair.Key)).Distinct(StringComparer.Ordinal).ToArray();
+                    }
+                    catalog = new PayloadCatalog(Read,
+                        (row, _) => { staged[row.Reference.Digest] = row; written.Add(row.Reference.Digest); return ValueTask.CompletedTask; },
+                        token => Rows(Digests(), token), () => time.GetUtcNow().UtcDateTime, Settings,
+                        forOwner: (owner, token) => Rows(Digests(owner), token),
+                        discover: _ => { lock (_index) return ValueTask.FromResult<IReadOnlyList<PayloadRecord>>(_rows.Values.ToArray()); });
+                    var result = await action(catalog, ct);
+                    // Publication is the callback's final action. All pins remain locked until staged rows publish.
+                    lock (_index) foreach (var digest in written) _rows[digest] = staged[digest]!;
+                    return result;
+                }
+                catch (DigestBusyException busy) { blocked = busy.Gate; }
+                finally
+                {
+                    catalog?.End();
+                    foreach (var gate in held.Values) gate.Release();
+                }
+                // Never wait for a second digest while holding the first: dependency transactions cannot deadlock.
+                await blocked!.WaitAsync(ct);
+                blocked.Release();
             }
-            finally { catalog?.End(); _gate.Release(); }
         }
+
+        private sealed class DigestBusyException(SemaphoreSlim gate) : Exception
+        { public SemaphoreSlim Gate { get; } = gate; }
 
         private static PayloadRecord Clone(PayloadRecord row)
         {

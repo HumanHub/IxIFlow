@@ -20,7 +20,7 @@ public sealed partial class WorkflowHost
             var definition = await DebugDefinitionAsync(instanceId, cancellationToken);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId) ?? throw new InvalidOperationException("Instance is unavailable");
             return InspectionPrivacy.Clean(definition.StepTable.ToArray(), WaitIds(instance,
-                ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance))));
+                await ReadCheckpointAsync(instance)));
         }
 
         public async Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken)
@@ -45,7 +45,7 @@ public sealed partial class WorkflowHost
             if (System.Text.Encoding.UTF8.GetByteCount(content) > 1024 * 1024) throw new InvalidOperationException("Source exceeds the inspection limit");
             var instance = await _store.GetWorkflowInstanceAsync(instanceId) ?? throw new InvalidOperationException("Instance is unavailable");
             return InspectionPrivacy.Clean(new[] { content }, WaitIds(instance,
-                ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance))))[0];
+                await ReadCheckpointAsync(instance)))[0];
         }
 
         public async Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries, CancellationToken cancellationToken)
@@ -88,11 +88,13 @@ public sealed partial class WorkflowHost
             var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow definition is unavailable");
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
-            var checkpoint = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
+            var reader = NewPayloadReader();
+            var checkpoint = await ReadCheckpointAsync(instance, reader);
             if (checkpoint.StructureHash != scopes.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow structure differs");
-            checkpoint.RootData = JsonSerializer.Deserialize(instance.WorkflowDataJson.InlineText,
+            checkpoint.RootData = JsonSerializer.Deserialize(await reader.ReadAsync(instance.WorkflowDataJson),
                 WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)!)!;
+            foreach (var branch in checkpoint.Continuations) await reader.HydrateAsync(branch.DataChanges);
             var threads = InspectionProjection.Threads(instance, checkpoint, scopes, Now);
             var debug = checkpoint.Debug;
             var result = new InstanceInspection(new(instance.InstanceId, instance.WorkflowName, instance.WorkflowVersion,
@@ -123,7 +125,7 @@ public sealed partial class WorkflowHost
             cancellationToken.ThrowIfCancellationRequested();
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             var ids = instance != null && HasStructuredCheckpoint(instance)
-                ? WaitIds(instance, ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance))) : [];
+                ? WaitIds(instance, await ReadCheckpointAsync(instance)) : [];
             var entries = await _store.GetTraceAsync(instanceId, afterSequence, limit);
             return InspectionPrivacy.Clean(entries, ids);
         }

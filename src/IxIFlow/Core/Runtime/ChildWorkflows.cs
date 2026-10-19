@@ -25,7 +25,7 @@ internal sealed class ChildCompleted
                 {
                     ChildInstanceId = instance.InstanceId,
                     Status = instance.Status,
-                    DataJson = instance.WorkflowDataJson,
+                    DataJson = StoredJson.Inline(instance.WorkflowDataJson.InlineText),
                     Error = instance.Status == WorkflowStatus.Failed ? checkpoint.UnhandledError : null
                 }))
             : null;

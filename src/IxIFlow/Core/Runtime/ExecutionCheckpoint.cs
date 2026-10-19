@@ -44,6 +44,9 @@ internal sealed class ExecutionCheckpoint
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool StoredTrunk { get; set; }
+    /// <summary>Store-owned retry metadata for branches whose parts are payloads.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<PayloadRetry>? PayloadRetries { get; set; }
 
     /// <summary>
     /// Answers to requests that arrived before their <c>WaitFor</c> was reached. Each is taken
@@ -170,6 +173,10 @@ internal sealed class ExecutionCheckpoint
             .Min();
 
     private object? _rootData;
+    [JsonIgnore]
+    public bool RootDataChanged { get; set; } = true;
+    [JsonIgnore]
+    public Func<object, bool>? RootDataUnchanged { get; set; }
 
     /// <summary>The instance's workflow data, which the root continuation reads and writes.</summary>
     [JsonIgnore]
@@ -337,6 +344,12 @@ internal sealed class ExecutionCheckpoint
     }
 }
 
+internal sealed class PayloadRetry
+{
+    public string Id { get; set; } = "";
+    public DateTime? RetryAfterUtc { get; set; }
+}
+
 internal sealed class OperatorStopState
 {
     public OperatorStopKind Kind { get; set; }
@@ -354,6 +367,8 @@ internal sealed class OperatorStopState
         OperatorStopKind.Verification =>
             $"The workflow instance is stopped because the engine could not verify a commit ({Reason}); its last " +
             "checkpoint is kept. Release it to run it again, or cancel it",
+        OperatorStopKind.PayloadUnavailable =>
+            $"The workflow instance is stopped because a payload is unavailable ({Reason}); its checkpoint is kept. Restore the payload and release it",
         _ => $"The workflow instance is stopped at a resource limit ({Reason}); " +
             "raise the limit and release it, or cancel it"
     };
@@ -365,7 +380,8 @@ internal enum OperatorStopKind
     Quarantine,
 
     /// <summary>A commit failed the checkpoint parts' verification, which points at an engine fault.</summary>
-    Verification
+    Verification,
+    PayloadUnavailable
 }
 
 internal enum ContinuationStatus

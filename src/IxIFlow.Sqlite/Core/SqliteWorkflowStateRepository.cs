@@ -137,7 +137,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             Kind = (short)wait.Kind,
             wait.Key,
             wait.EventType,
-            DefaultPayloadJson = wait.DefaultPayloadJson?.InlineText,
+            DefaultPayloadJson = wait.DefaultPayloadJson is { } payload ? JsonSerializer.Serialize(payload) : null,
             Deadline = Timestamp(now + wait.Timeout),
             Sequence = inboxSequence,
             Now = Timestamp(now)
@@ -157,7 +157,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             InstanceId = instanceId,
             wait.WaitId,
             Deadline = Timestamp(now + wait.Timeout),
-            DefaultPayloadJson = wait.DefaultPayloadJson?.InlineText
+            DefaultPayloadJson = wait.DefaultPayloadJson is { } payload ? JsonSerializer.Serialize(payload) : null
         }), transaction);
     }
 
@@ -182,7 +182,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_parts (instance_id, part_key, json)
                 VALUES (@InstanceId, @Key, @Json)
-                """, parts.Select(part => new { InstanceId = instanceId, part.Key, Json = part.Json.InlineText }), transaction);
+                """, parts.Select(part => new { InstanceId = instanceId, part.Key, Json = JsonSerializer.Serialize(part.Json) }), transaction);
     }
 
     internal override async Task AppendTraceAsync(DbConnection connection, DbTransaction transaction,

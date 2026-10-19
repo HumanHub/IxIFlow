@@ -17,7 +17,7 @@ public abstract partial class RelationalWorkflowStateRepository
     private async Task<Dictionary<string, StoredJson>> TimerPartsAsync(DbConnection connection, DbTransaction transaction, string id)
     {
         using var read = await connection.QueryMultipleAsync(RequiredSql(Statement.ReadParts), new { Ids = new[] { id } }, transaction);
-        return (await read.ReadAsync<StoredPart>()).ToDictionary(p => p.PartKey, p => StoredJson.Inline(p.Json));
+        return (await read.ReadAsync<StoredPart>()).ToDictionary(p => p.PartKey, p => JsonSerializer.Deserialize<StoredJson>(p.Json)!);
     }
 
     private async Task<Dictionary<string, StoredWait>> TimerWaitsAsync(DbConnection connection, DbTransaction transaction, string id)

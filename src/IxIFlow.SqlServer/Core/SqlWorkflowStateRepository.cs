@@ -125,7 +125,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             parameters.Add($"OK{index}", (byte)wait.Kind);
             parameters.Add($"OY{index}", wait.Key);
             parameters.Add($"OT{index}", wait.EventType);
-            parameters.Add($"OP{index}", wait.DefaultPayloadJson?.InlineText, DbType.String, size: -1);
+            parameters.Add($"OP{index}", wait.DefaultPayloadJson is { } payload ? JsonSerializer.Serialize(payload) : null, DbType.String, size: -1);
             parameters.Add($"OD{index}", now + wait.Timeout, DbType.DateTime2);
         }
         await connection.ExecuteAsync($"""
@@ -150,7 +150,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             rows.Add($"(@AW{index}, @AD{index}, @AP{index})");
             parameters.Add($"AW{index}", waits[index].WaitId);
             parameters.Add($"AD{index}", now + waits[index].Timeout, DbType.DateTime2);
-            parameters.Add($"AP{index}", waits[index].DefaultPayloadJson?.InlineText, DbType.String, size: -1);
+            parameters.Add($"AP{index}", waits[index].DefaultPayloadJson is { } payload ? JsonSerializer.Serialize(payload) : null, DbType.String, size: -1);
         }
         await connection.ExecuteAsync($"""
                 UPDATE stored SET DeadlineUtc = COALESCE(stored.DeadlineUtc, armed.DeadlineUtc),
@@ -190,7 +190,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         {
             rows.Add($"(@InstanceId, @K{index}, @J{index})");
             parameters.Add($"K{index}", parts[index].Key);
-            parameters.Add($"J{index}", parts[index].Json.InlineText, DbType.String, size: -1);
+            parameters.Add($"J{index}", JsonSerializer.Serialize(parts[index].Json), DbType.String, size: -1);
         }
         await connection.ExecuteAsync($"""
                 INSERT INTO dbo.IxIFlowWorkflowParts (InstanceId, PartKey, Json) VALUES {string.Join(", ", rows)}

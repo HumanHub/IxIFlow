@@ -159,7 +159,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             Kinds = waits.Select(wait => (short)wait.Kind).ToArray(),
             Keys = waits.Select(wait => wait.Key).ToArray(),
             EventTypes = waits.Select(wait => wait.EventType).ToArray(),
-            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson?.InlineText).ToArray(),
+            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson is { } payload ? JsonSerializer.Serialize(payload) : null).ToArray(),
             Deadlines = waits.Select(wait => Timestamp(now + wait.Timeout)).ToArray()
         }, transaction);
     }
@@ -179,7 +179,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             InstanceId = instanceId,
             WaitIds = waits.Select(wait => wait.WaitId).ToArray(),
             Deadlines = waits.Select(wait => Timestamp(now + wait.Timeout)).ToArray(),
-            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson?.InlineText).ToArray()
+            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson is { } payload ? JsonSerializer.Serialize(payload) : null).ToArray()
         }, transaction);
     }
 
@@ -211,7 +211,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         {
             InstanceId = instanceId,
             Keys = parts.Select(part => part.Key).ToArray(),
-            Jsons = parts.Select(part => part.Json.InlineText).ToArray()
+            Jsons = parts.Select(part => JsonSerializer.Serialize(part.Json)).ToArray()
         }, transaction);
     }
 

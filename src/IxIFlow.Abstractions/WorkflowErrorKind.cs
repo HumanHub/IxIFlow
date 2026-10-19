@@ -27,5 +27,8 @@ public enum WorkflowErrorKind
     ResourceExhausted,
 
     /// <summary>Retention removed the instance; its ID is still reserved by a tombstone.</summary>
-    InstanceRemoved
+    InstanceRemoved,
+
+    /// <summary>A referenced payload is missing or corrupt. Restore it and release the operator stop.</summary>
+    PayloadUnavailable
 }

@@ -30,7 +30,9 @@ public static class CheckpointParts
         var instance = Read(payload);
         if (stored.TryGetValue(DataKey, out var data))
             instance.WorkflowDataJson = data;
-        instance.ExecutionStateJson = StoredCheckpoint.AssembleState(instance.ExecutionStateJson, stored);
+        // A repository never reads payload bodies. Referenced structural parts are assembled by the executor.
+        if (!stored.Any(part => part.Key != DataKey && part.Value.Reference != null))
+            instance.ExecutionStateJson = StoredCheckpoint.AssembleState(instance.ExecutionStateJson, stored);
         instance.Revision = revision;
         instance.Saved(stored.AsReadOnly(), revision);
         return instance;

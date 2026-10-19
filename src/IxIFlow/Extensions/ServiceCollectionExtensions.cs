@@ -78,6 +78,7 @@ public static class ServiceCollectionExtensions
         // Add core services
         services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton(new PayloadStoreSettings(options.MaxPayloadBytes, options.PayloadThresholdBytes)));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxHydratedPayloadBytes);
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
         if (!Enum.IsDefined(options.TraceDetail))
@@ -106,6 +107,9 @@ public static class ServiceCollectionExtensions
         services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits
         {
             MaxCheckpointBytes = options.MaxCheckpointBytes,
+            PayloadThresholdBytes = options.PayloadThresholdBytes,
+            MaxPayloadBytes = options.MaxPayloadBytes,
+            MaxHydratedPayloadBytes = options.MaxHydratedPayloadBytes,
             MaxTraceEntriesPerCommit = options.MaxTraceEntriesPerCommit,
             TraceDetail = options.TraceDetail,
             MaxTraceEntriesPerInstance = options.MaxTraceEntriesPerInstance,
@@ -252,8 +256,10 @@ internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinitio
 /// </summary>
 public class IxIFlowOptions
 {
-    /// <summary>UTF-8 claim-check threshold. Zero disables it; default zero in step 1.</summary>
-    public long PayloadThresholdBytes { get; set; } = 0;
+    /// <summary>Whole-value UTF-8 claim-check threshold, default 256 KiB. Zero disables it.</summary>
+    public long PayloadThresholdBytes { get; set; } = PayloadStoreSettings.DefaultPayloadThresholdBytes;
+    /// <summary>Aggregate hydrated and in-flight payload bytes per run, default 128 MiB.</summary>
+    public long MaxHydratedPayloadBytes { get; set; } = 128L * 1024 * 1024;
 
     /// <summary>Maximum bytes in one put, default 64 MiB.</summary>
     public long MaxPayloadBytes { get; set; } = PayloadStoreSettings.DefaultMaxPayloadBytes;

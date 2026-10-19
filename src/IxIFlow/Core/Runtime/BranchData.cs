@@ -62,6 +62,56 @@ internal static class BranchData
     /// <summary>The data as JSON, the form a fork copies from.</summary>
     public static string Snapshot(object data) => JsonSerializer.Serialize(data, data.GetType(), Options);
 
+    /// <summary>Observes mutable data without serializing or hashing immutable leaves again.</summary>
+    internal static Func<object, bool> Observe(object data)
+    {
+        var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        var unchanged = Capture(data);
+        return current => unchanged(current);
+
+        Func<object?, bool> Capture(object? value)
+        {
+            if (value == null) return current => current == null;
+            var type = value.GetType();
+            if (value is string) return current => ReferenceEquals(value, current);
+            if (type.IsPrimitive || type.IsEnum || value is decimal or DateTime or DateTimeOffset or Guid or TimeSpan)
+                return current => Equals(value, current);
+            if (!type.IsValueType && !seen.Add(value)) return current => ReferenceEquals(value, current);
+            var info = Info(type);
+            if (info.Kind == JsonTypeInfoKind.Object && info.Converter.GetType().Assembly == typeof(JsonSerializer).Assembly)
+            {
+                var properties = info.Properties.Where(p => p.Get != null).ToArray();
+                if (properties.Any(p => p.CustomConverter != null)) return _ => false;
+                var members = properties.Select(p => (Property: p, Same: Capture(p.Get!(value)))).ToArray();
+                return current => current != null && current.GetType() == type &&
+                    (type.IsValueType || ReferenceEquals(value, current)) && members.All(p => p.Same(p.Property.Get!(current)));
+            }
+            if (info.Kind == JsonTypeInfoKind.Dictionary && info.Converter.GetType().Assembly == typeof(JsonSerializer).Assembly &&
+                value is IDictionary dictionary)
+            {
+                var entries = Entries().Select(p => (p.Key, Same: Capture(p.Value))).ToArray();
+                return current => ReferenceEquals(value, current) && dictionary.Count == entries.Length &&
+                    Entries().Zip(entries).All(p => Equals(p.First.Key, p.Second.Key) && p.Second.Same(p.First.Value));
+                IEnumerable<DictionaryEntry> Entries()
+                { foreach (DictionaryEntry entry in dictionary) yield return entry; }
+            }
+            if (info.Kind == JsonTypeInfoKind.Enumerable && value is IEnumerable sequence)
+            {
+                var items = sequence.Cast<object?>().Select(Capture).ToArray();
+                return current => ReferenceEquals(value, current) && SameItems();
+                bool SameItems()
+                {
+                    var index = 0;
+                    foreach (var item in sequence)
+                        if (index == items.Length || !items[index++](item)) return false;
+                    return index == items.Length;
+                }
+            }
+            // Custom converters and opaque mutable shapes remain conservatively dirty.
+            return _ => false;
+        }
+    }
+
     /// <summary>A branch's own copy of <paramref name="data"/>.</summary>
     public static object Copy(object data) => Copy(Snapshot(data), data.GetType());
 
