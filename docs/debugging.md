@@ -35,6 +35,7 @@ Events for existing waits are appended while paused and remain pending until con
 
 `SetBreakpointsAsync` replaces the instance's entire breakpoint set. Supply stable, unique breakpoint IDs, an actor, and either an author step ID, a catalog path, or a source path and line:
 
+<!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#breakpoints -->
 ```csharp
 var verified = await operations.SetBreakpointsAsync(instanceId,
 [
