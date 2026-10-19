@@ -870,6 +870,8 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     /// </summary>
     private sealed class DueHost(TimeProvider time) : IExecutionHost
     {
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
         private readonly object _lock = new();
         private readonly List<string> _opened = [];
         private readonly Dictionary<string, WaitCloseReason> _closed = new(StringComparer.Ordinal);

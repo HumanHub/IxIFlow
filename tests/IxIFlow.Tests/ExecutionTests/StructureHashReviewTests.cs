@@ -251,6 +251,8 @@ public sealed class StructureHashReviewTests
 
     private sealed class RecordingHost : IExecutionHost
     {
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
         public List<CheckpointCommit> Commits { get; } = [];
         public WorkflowInstance? Saved { get; private set; }
         public Task<CheckpointReply> CheckpointAsync(Checkpoint request)

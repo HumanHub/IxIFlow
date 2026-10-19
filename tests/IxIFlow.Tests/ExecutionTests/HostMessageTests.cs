@@ -284,6 +284,8 @@ public sealed class HostMessageTests
 
     private sealed class MessageHost : IExecutionHost
     {
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
         public ConcurrentQueue<CheckpointCommit> Commits { get; } = new();
         public WorkflowInstance? Saved { get; private set; }
         public Action<CheckpointCommit>? OnCommit { get; set; }

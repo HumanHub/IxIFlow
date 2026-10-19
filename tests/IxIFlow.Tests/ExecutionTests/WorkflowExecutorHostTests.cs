@@ -185,6 +185,8 @@ public sealed class WorkflowExecutorHostTests
     /// <summary>A host with no store: it records what the executor asks of it.</summary>
     private sealed class RecordingHost(ExecutorProbe probe) : IExecutionHost
     {
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
         private readonly List<WorkflowStatus> _commits = [];
 
         public IReadOnlyList<WorkflowStatus> Commits => _commits;
