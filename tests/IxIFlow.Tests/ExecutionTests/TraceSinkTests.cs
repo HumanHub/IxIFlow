@@ -89,7 +89,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         var store = new FaultInjectingRepository();
         var instanceId = Guid.NewGuid().ToString("N");
         // The host dies as it saves the first step's end; the step is recovered on another host.
-        store.FailCommit = instance => instance.WorkflowDataJson.Contains("\"Value\":7");
+        store.FailCommit = instance => instance.WorkflowDataJson.InlineText.Contains("\"Value\":7");
         using (var first = Services(store))
             await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(Recoverable("UntracedRecovery"), new TraceData(),

@@ -1092,7 +1092,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 InstanceId = instanceId,
                 WorkflowName = "LeaseFencing",
                 Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}"
+                WorkflowDataJson = StoredJson.Inline("{}")
             };
             var initial = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 0, "initial"));
@@ -1101,17 +1101,17 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             var secondEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5));
             Assert.NotNull(secondEpoch);
-            oldOwner.WorkflowDataJson = "\"stale\"";
+            oldOwner.WorkflowDataJson = StoredJson.Inline("\"stale\"");
             var stale = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 1, "stale"));
             Assert.Equal(WorkflowCommitStatus.StaleEpoch, stale.Status);
             var newOwner = (await repository.GetWorkflowInstanceAsync(instanceId))!;
-            newOwner.WorkflowDataJson = "\"current\"";
+            newOwner.WorkflowDataJson = StoredJson.Inline("\"current\"");
             var current = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(newOwner, secondEpoch.Epoch, 1, "current"));
             Assert.Equal(WorkflowCommitStatus.Applied, current.Status);
             Assert.Equal("\"current\"",
-                (await repository.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson);
+                (await repository.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson.InlineText);
         }
         finally
         {
@@ -1154,7 +1154,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 InstanceId = instanceId,
                 WorkflowName = "ReceiptFencing",
                 Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}"
+                WorkflowDataJson = StoredJson.Inline("{}")
             };
             var start = CheckpointCommit.Create(formerOwner, formerEpoch.Epoch, 0, "start");
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(start)).Status);

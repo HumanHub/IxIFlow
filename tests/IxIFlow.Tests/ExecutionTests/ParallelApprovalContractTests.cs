@@ -178,7 +178,7 @@ public class ParallelApprovalContractTests
         await engine.AwaitAsync(started.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
-        Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceCompleted);
+        Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!.FinanceCompleted);
     }
 
     [Fact]
@@ -245,7 +245,7 @@ public class ParallelApprovalContractTests
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-        var data = System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!;
+        var data = System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!;
         Assert.Equal(1, data.FinanceCompleted);
         Assert.Equal(1, data.LegalCompleted);
         Assert.Equal(1, data.Finished);
@@ -499,7 +499,7 @@ public class ParallelApprovalContractTests
             CreateRecoverWorkflow(), new ApprovalData { RequestId = "request-1" }));
 
         var saved = (await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running)).Single();
-        Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceStarted);
+        Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!.FinanceStarted);
 
         var recovered = await engine.RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, recovered.Status);
@@ -1719,7 +1719,7 @@ public class ParallelApprovalContractTests
         private void ObserveSave(WorkflowInstance instance)
         {
             if (FailOnFinanceStartCount > 0 && instance.Status == WorkflowStatus.Running &&
-                System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson)?.FinanceStarted == 1)
+                System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson.InlineText)?.FinanceStarted == 1)
             {
                 FailOnFinanceStartCount--;
                 throw new IOException("The checkpoint store is temporarily unavailable");
@@ -1729,7 +1729,7 @@ public class ParallelApprovalContractTests
                 var copy = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
                     System.Text.Json.JsonSerializer.Serialize(instance))!;
                 Initial ??= copy;
-                if (System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson)?.FinanceStarted == 1)
+                if (System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson.InlineText)?.FinanceStarted == 1)
                     AfterFinance ??= copy;
             }
         }

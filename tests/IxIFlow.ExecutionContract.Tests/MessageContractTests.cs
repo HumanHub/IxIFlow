@@ -45,10 +45,10 @@ public sealed class MessageContractTests
         var child = new ChildStart("child", JsonSerializer.Serialize(new WorkflowInstance
         {
             InstanceId = "child", ParentInstanceId = assign.Instance.InstanceId, ParentWaitId = "child-wait",
-            ExecutionStateJson = assign.Instance.ExecutionStateJson, WorkflowDataJson = "{\"Value\":42}"
+            ExecutionStateJson = assign.Instance.ExecutionStateJson, WorkflowDataJson = StoredJson.Inline("{\"Value\":42}")
         }), "child-wait");
         var page = new InboxPage([new(assign.Instance.InstanceId, "event", 7, "event-type", "go", null,
-            "{\"Answer\":42}", now, EventOutcome.Pending)], 7, new Dictionary<string, long> { ["wait"] = 3 },
+            StoredJson.Inline("{\"Answer\":42}"), now, EventOutcome.Pending)], 7, new Dictionary<string, long> { ["wait"] = 3 },
             new Dictionary<string, DateTime> { ["wait"] = now.AddMinutes(1) }, now);
         object[] messages =
         [
@@ -63,7 +63,7 @@ public sealed class MessageContractTests
             new ReadInbox(assign.AssignmentId, assign.Instance.InstanceId, 3, 20), new ReadInboxReply(assign.AssignmentId, page),
             new ReadWait(assign.AssignmentId, assign.Instance.InstanceId, "wait"),
             new ReadWaitReply(assign.AssignmentId, new(assign.Instance.InstanceId, "wait", WaitKind.Event,
-                "go", "event-type", now.AddMinutes(1), 3, now, DefaultPayloadJson: "{\"Default\":true}")),
+                "go", "event-type", now.AddMinutes(1), 3, now, DefaultPayloadJson: StoredJson.Inline("{\"Default\":true}"))),
             assign.Breakpoints[0], assign.Recovery!, new AcknowledgedCommit("commit", 5),
             new AssignmentOutcome(AssignmentOutcomeKind.Interrupted, "error", "type", "stack", "root/0", "attempt")
         ];
@@ -119,7 +119,7 @@ public sealed class MessageContractTests
         {
             InstanceId = "child", ParentInstanceId = assign.Instance.InstanceId, ParentWaitId = "child-wait",
             Status = WorkflowStatus.Running, ExecutionStateJson = assign.Instance.ExecutionStateJson,
-            WorkflowDataJson = "{\"Value\":\"child-input\"}"
+            WorkflowDataJson = StoredJson.Inline("{\"Value\":\"child-input\"}")
         };
         assign.Instance.Status = WorkflowStatus.Completed;
         assign.Instance.ParentInstanceId = "grandparent";
@@ -127,7 +127,7 @@ public sealed class MessageContractTests
         var commit = CheckpointCommit.Create(assign.Instance, assign.Epoch, assign.Instance.Revision,
             clearsCrashCount: false, stopped: true, inboxReadThrough: 19,
             openedWaits: [new("child-wait", WaitKind.Child, "child", "child-completed", null)],
-            armedWaits: [new("reply-wait", TimeSpan.FromSeconds(11), "{\"Default\":42}")],
+            armedWaits: [new("reply-wait", TimeSpan.FromSeconds(11), StoredJson.Inline("{\"Default\":42}"))],
             closedWaits: [new("old-wait", WaitCloseReason.Replaced)],
             childStarts: [new("child", JsonSerializer.Serialize(child), "child-wait")],
             childCancellations: [new("former-child", new() { ReasonCode = "parent-ended" }, "former-wait")],

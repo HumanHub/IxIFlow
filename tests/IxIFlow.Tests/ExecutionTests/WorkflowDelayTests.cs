@@ -41,7 +41,7 @@ public sealed class WorkflowDelayTests : IClassFixture<SqliteTestDatabase<Workfl
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
         Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<DelayData>(
-            saved.WorkflowDataJson)!.Runs);
+            saved.WorkflowDataJson.InlineText)!.Runs);
     }
 
     [SqlServerFact]
@@ -87,7 +87,7 @@ public sealed class WorkflowDelayTests : IClassFixture<SqliteTestDatabase<Workfl
         var saved = await repository.GetWorkflowInstanceAsync(instanceId);
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
         Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<DelayData>(
-            saved.WorkflowDataJson)!.Runs);
+            saved.WorkflowDataJson.InlineText)!.Runs);
     }
 
     [Fact]
@@ -115,7 +115,7 @@ public sealed class WorkflowDelayTests : IClassFixture<SqliteTestDatabase<Workfl
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.TimedOut, saved!.Status);
         Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<DelayData>(
-            saved.WorkflowDataJson)!.Runs);
+            saved.WorkflowDataJson.InlineText)!.Runs);
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository repository, TimeProvider? time = null)
@@ -195,7 +195,7 @@ public sealed class WorkflowDelayTests : IClassFixture<SqliteTestDatabase<Workfl
             var saved = await repository.GetWorkflowInstanceAsync(instanceId);
             Assert.Equal(WorkflowStatus.Completed, saved!.Status);
             Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<DelayData>(
-                saved.WorkflowDataJson)!.Runs);
+                saved.WorkflowDataJson.InlineText)!.Runs);
         }
         finally
         {

@@ -331,7 +331,7 @@ public sealed class StoreWideEpochContractTests
                 await store.CommitWorkflowInstanceAsync(late));
             var saved = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.Equal(first.Incarnation, saved.Incarnation);
-            Assert.Equal("{\"owner\":\"replacement\"}", saved.WorkflowDataJson);
+            Assert.Equal("{\"owner\":\"replacement\"}", saved.WorkflowDataJson.InlineText);
             Assert.Equal(1, saved.Revision);
         }
         finally { await store.DeleteWorkflowInstanceAsync(id); }
@@ -418,6 +418,6 @@ public sealed class StoreWideEpochContractTests
     private static WorkflowInstance Instance(string id, string owner = "first") => new()
     { ExecutionStateJson = StoreTestSupport.CheckpointJson,
         InstanceId = id, WorkflowName = "StoreWideEpoch", Status = WorkflowStatus.Running,
-        WorkflowDataJson = "{\"owner\":\"" + owner + "\"}"
+        WorkflowDataJson = StoredJson.Inline("{\"owner\":\"" + owner + "\"}")
     };
 }

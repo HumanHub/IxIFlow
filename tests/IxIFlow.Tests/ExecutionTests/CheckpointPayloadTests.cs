@@ -99,7 +99,7 @@ public sealed class CheckpointPayloadTests
                 {
                     ScopeId = "root", ForEach = new ForEachState
                     {
-                        Items = Enumerable.Range(0, 100_000).Select(index => $"{{\"Id\":\"item-{index}\"}}").ToList()
+                        Items = Enumerable.Range(0, 100_000).Select(index => StoredJson.Inline($"{{\"Id\":\"item-{index}\"}}")).ToList()
                     }
                 }]
             }]
@@ -111,7 +111,7 @@ public sealed class CheckpointPayloadTests
 
         var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0);
 
-        Assert.True(commit.Payload.Length + commit.Parts.Sum(part => part.Json.Length) > 1_000_000);
+        Assert.True(commit.Payload.Length + commit.Parts.Sum(part => part.Json.InlineText.Length) > 1_000_000);
         Assert.True(commit.Payload.Length < 10_000);
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
         Assert.Equal(instance.ExecutionStateJson,

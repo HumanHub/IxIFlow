@@ -112,7 +112,7 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var inbox = (IWorkflowInbox)services.GetRequiredService<IWorkflowStateRepository>();
         var wait = Assert.Single(await inbox.GetOpenWaitsAsync(new(InstanceId: started.InstanceId, Kind: WaitKind.Reply)));
-        var suggestion = JsonSerializer.Deserialize<Answer>(wait.DefaultPayloadJson!)!;
+        var suggestion = JsonSerializer.Deserialize<Answer>(wait.DefaultPayloadJson!.InlineText)!;
         Assert.Equal("Ada", suggestion.Customer);
         Assert.Equal(23, suggestion.Value);
         Assert.Equal(hasDefault ? "keep" : "", suggestion.Note);

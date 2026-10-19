@@ -39,7 +39,7 @@ public sealed class InjectedTimeTests
         await RecoverOnceAsync(services, time);
         var saved = await InstanceAsync(services, started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved.Status);
-        Assert.Contains("after-delay", saved.WorkflowDataJson);
+        Assert.Contains("after-delay", saved.WorkflowDataJson.InlineText);
     }
 
     [Fact]
@@ -67,7 +67,7 @@ public sealed class InjectedTimeTests
         await RecoverOnceAsync(services, time);
         var saved = await InstanceAsync(services, started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved.Status);
-        Assert.Contains("timeout", saved.WorkflowDataJson);
+        Assert.Contains("timeout", saved.WorkflowDataJson.InlineText);
     }
 
     [Fact]

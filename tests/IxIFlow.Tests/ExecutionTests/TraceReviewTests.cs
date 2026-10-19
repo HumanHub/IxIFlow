@@ -321,7 +321,7 @@ public sealed class TraceReviewTests
         var checkpoint = new ExecutionCheckpoint { StructureHash = scopes.StructureHash,
             Continuations = [root, branch], Joins = [join], RootData = data };
         var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "verification-trace", WorkflowName = definition.Name,
-            WorkflowDataType = typeof(Data).AssemblyQualifiedName!, WorkflowDataJson = JsonSerializer.Serialize(data),
+            WorkflowDataType = typeof(Data).AssemblyQualifiedName!, WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(data)),
             Status = WorkflowStatus.Running, StartedAt = Start.UtcDateTime };
         var host = new VerificationHost();
         var commits = host.Commits;

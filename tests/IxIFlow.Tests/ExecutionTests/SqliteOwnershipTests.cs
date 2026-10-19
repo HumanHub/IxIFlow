@@ -174,7 +174,7 @@ public sealed class SqliteOwnershipTests : IClassFixture<SqliteTestDatabase<Sqli
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SQLiteRegistration",
-            Status = WorkflowStatus.Suspended, WorkflowDataJson = "{}"
+            Status = WorkflowStatus.Suspended, WorkflowDataJson = StoredJson.Inline("{}")
         };
         await repository.SeedAsync(instance);
 

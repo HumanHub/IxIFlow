@@ -17,7 +17,7 @@ internal static class CheckpointRaceContract
                 ParentJoinId = join.Id, Sequence = 1, Status = ContinuationStatus.Waiting,
                 Stack = [new ScopePosition { ScopeId = "root/0/branch/0" }] }], Joins = [join] };
         return new WorkflowInstance { InstanceId = id, WorkflowName = "CheckpointRace", Status = WorkflowStatus.Running,
-            ExecutionStateJson = JsonSerializer.Serialize(state), WorkflowDataJson = JsonSerializer.Serialize(new { marker }) };
+            ExecutionStateJson = JsonSerializer.Serialize(state), WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new { marker })) };
     }
 
     internal static async Task ConcurrentWritersPersistOnlyTheWinner(Func<IWorkflowStateRepository> repository, int revision)

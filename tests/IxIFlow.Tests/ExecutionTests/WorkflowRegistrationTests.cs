@@ -163,7 +163,7 @@ public sealed class WorkflowRegistrationTests
         Assert.Equal(WorkflowStatus.Completed, child.Status);
         Assert.Equal(3, child.WorkflowVersion);
         Assert.True(System.Text.Json.JsonSerializer.Deserialize<RegistrationData>(
-            child.WorkflowDataJson)!.Completed);
+            child.WorkflowDataJson.InlineText)!.Completed);
         using var verification = CreateProvider();
         var registeredStructureHash = new WorkflowScopeCatalog(
             Assert.IsType<WorkflowDefinition>(await verification.GetRequiredService<IWorkflowVersionRegistry>()

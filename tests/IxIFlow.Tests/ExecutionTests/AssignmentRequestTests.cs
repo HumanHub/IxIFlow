@@ -61,7 +61,7 @@ public sealed class AssignmentRequestTests
         Assert.Same(first, duplicate);
         var changed = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(run.Instance))!;
         changed.Incarnation = run.Instance.Incarnation;
-        changed.WorkflowDataJson = "{\"Value\":\"changed\"}";
+        changed.WorkflowDataJson = StoredJson.Inline("{\"Value\":\"changed\"}");
         var collision = CheckpointCommit.Create(changed, run.Owner.Epoch, run.Instance.Revision, "same");
         Assert.Equal(ConflictReason.Revision,
             (await run.Host.CheckpointAsync(new(run.Identity, collision))).Conflict);
@@ -96,7 +96,7 @@ public sealed class AssignmentRequestTests
     public async Task HostRefusesAnOversizedCheckpointEvenWhenTheExecutorBypassesItsOwnLimit()
     {
         await using var run = await Assigned.CreateAsync(limits: new() { MaxCheckpointBytes = 1_500 });
-        run.Instance.WorkflowDataJson = JsonSerializer.Serialize(new Data { Value = new string('x', 5_000) });
+        run.Instance.WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data { Value = new string('x', 5_000) }));
         var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision);
         var before = run.Probe.RequestCalls;
         await Assert.ThrowsAsync<CheckpointLimitExceededException>(() => run.Host.CheckpointAsync(new(run.Identity, commit)));
@@ -239,7 +239,7 @@ public sealed class AssignmentRequestTests
         continuation.Status = ContinuationStatus.Active;
         continuation.AcceptedWait = new AcceptedWaitState { StepId = pending.StepId,
             Event = SerializedValue.From(new ChildCompleted { ChildInstanceId = pending.ChildWorkflowId!,
-                Status = WorkflowStatus.Completed, DataJson = "{}" })! };
+                Status = WorkflowStatus.Completed, DataJson = StoredJson.Inline("{}") })! };
         checkpoint.Waits.Clear();
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var before = endpoint.Statuses.Count;

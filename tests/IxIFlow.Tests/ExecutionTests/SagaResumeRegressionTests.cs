@@ -36,7 +36,7 @@ public class SagaResumeRegressionTests
         var stored = await scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(suspended.InstanceId);
         Assert.NotNull(stored);
-        Assert.True(JsonSerializer.Deserialize<SagaRegressionData>(stored.WorkflowDataJson)!.BeforeCompleted);
+        Assert.True(JsonSerializer.Deserialize<SagaRegressionData>(stored.WorkflowDataJson.InlineText)!.BeforeCompleted);
         var snapshot = (await engine.GetSnapshotAsync(suspended.InstanceId))!;
         Assert.Equal(definition.Steps[1].SequenceSteps[1].Id, Assert.Single(snapshot.Pointers).StepId);
         Assert.Contains(snapshot.Frames, frame => frame.Kind == WorkflowStepType.Saga.ToString());

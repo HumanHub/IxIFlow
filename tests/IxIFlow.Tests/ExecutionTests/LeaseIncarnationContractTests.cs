@@ -85,7 +85,7 @@ public sealed class LeaseIncarnationContractTests
 
                 // A different first commit conflicts without changing the committed incarnation.
                 var contender = caller.CopyForResume();
-                contender.WorkflowDataJson = "{\"contender\":true}";
+                contender.WorkflowDataJson = StoredJson.Inline("{\"contender\":true}");
                 var different = CheckpointCommit.Create(contender, epoch, 0);
                 Assert.NotEqual(first.Incarnation, different.Incarnation);
                 CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1),
@@ -329,7 +329,7 @@ public sealed class LeaseIncarnationContractTests
     private static WorkflowInstance NewInstance(string id) => new()
     { ExecutionStateJson = StoreTestSupport.CheckpointJson,
         InstanceId = id, WorkflowName = "LeaseIncarnation" + id,
-        Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
+        Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}")
     };
 
     private static async Task Apply(IWorkflowStateRepository store, CheckpointCommit commit)

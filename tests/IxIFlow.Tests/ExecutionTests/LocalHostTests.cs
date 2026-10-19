@@ -395,7 +395,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(new WorkflowInstance
                 { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                     InstanceId = id, WorkflowName = "BatchCancellation", Status = WorkflowStatus.Running,
-                    WorkflowDataJson = "{}"
+                    WorkflowDataJson = StoredJson.Inline("{}")
                 }, (await StoreTestSupport.LeaseAsync(repository, id)).Epoch, 0));
             Assert.True(await repository.RequestCancellationAsync(ids[0], new CancellationReason { ReasonCode = "a" }));
             Assert.True(await repository.RequestCancellationAsync(ids[2], new CancellationReason { ReasonCode = "c" }));

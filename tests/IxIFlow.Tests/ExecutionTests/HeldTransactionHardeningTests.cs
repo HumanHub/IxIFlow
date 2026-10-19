@@ -51,7 +51,7 @@ public sealed class HeldTransactionHardeningTests
     {
         var (store, connect) = Database(sqlServer);
         var parent = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "BlockedParent",
-            Status = WorkflowStatus.Running, WorkflowDataJson = "{\"before\":true}" };
+            Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{\"before\":true}") };
         var child = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "LockedChild",
             Status = WorkflowStatus.Running, ParentInstanceId = parent.InstanceId, ParentWaitId = "child" };
         var grant = (await store.TryAcquireExecutionLeaseAsync(parent.InstanceId, "owner", TimeSpan.FromHours(1)))!;
@@ -60,7 +60,7 @@ public sealed class HeldTransactionHardeningTests
         var before = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
         var childBefore = (await store.GetWorkflowInstanceAsync(child.InstanceId))!;
         parent = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
-        parent.WorkflowDataJson = "{\"after\":true}";
+        parent.WorkflowDataJson = StoredJson.Inline("{\"after\":true}");
         var commit = CheckpointCommit.Create(parent, grant.Epoch, before.Revision, openedWaits:
             [new OpenedWait("child", WaitKind.Child, "child", "child-result", null)],
             childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child")]);

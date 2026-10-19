@@ -248,7 +248,7 @@ public sealed class StructuredChildWaitTests
         Assert.Equal(WorkflowStatus.NeedsResolution, (await store.GetWorkflowInstanceAsync(childId))!.Status);
         var waitingParent = (await store.GetWorkflowInstanceAsync(started.InstanceId))!;
         Assert.Equal(WorkflowStatus.Suspended, waitingParent.Status);
-        Assert.False(JsonSerializer.Deserialize<ParentData>(waitingParent.WorkflowDataJson)!.FinallyRan);
+        Assert.False(JsonSerializer.Deserialize<ParentData>(waitingParent.WorkflowDataJson.InlineText)!.FinallyRan);
         var pending = Assert.Single(await engine.GetPendingActivitiesAsync(childId));
         Assert.Equal(WorkflowExecutionStatus.Cancelled, (await engine.ResolveAsync(childId, pending.InvocationId,
             ActivityResolution.Completed(new Dictionary<string, object?>()))).Status);
@@ -951,7 +951,7 @@ public sealed class StructuredChildWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var child = Assert.Single(await repository.GetChildInstancesAsync(result.InstanceId));
-        Assert.Contains("\"Level\":2", child.WorkflowDataJson);
+        Assert.Contains("\"Level\":2", child.WorkflowDataJson.InlineText);
     }
 
     // A value the child's data property cannot take is an invalid definition, not passed on unconverted (F-23).

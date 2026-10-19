@@ -107,7 +107,7 @@ public sealed class HostMessageTests
         Assert.Equal(WorkflowStatus.Running, run.Host.Commits.Last().ReadTrunk().Status);
         Assert.Equal(0, run.Probe.Cleanups);
         var saved = run.Host.Saved!;
-        Assert.Equal("finished", JsonSerializer.Deserialize<Data>(saved.WorkflowDataJson)!.Value);
+        Assert.Equal("finished", JsonSerializer.Deserialize<Data>(saved.WorkflowDataJson.InlineText)!.Value);
     }
 
     [Fact]
