@@ -950,10 +950,9 @@ public sealed class ActivityRecoveryTests
             }
             if (instance.Status == WorkflowStatus.Failed && FailFailureCommits-- > 0)
                 throw new IOException("Checkpoint unavailable");
-            var started = commit.ReadTraceEntries().LastOrDefault()?.EntryType ==
-                TraceEntryType.ActivityStarted;
-            var completed = commit.ReadTraceEntries().LastOrDefault()?.EntryType ==
-                TraceEntryType.ActivityCompleted;
+            var entries = commit.ReadTraceEntries();
+            var started = entries.Any(entry => entry.EntryType == TraceEntryType.ActivityStarted);
+            var completed = entries.Any(entry => entry.EntryType == TraceEntryType.ActivityCompleted);
             if (completed && FailCompletionBeforeApply-- > 0)
                 throw new IOException("Completion commit unavailable");
             var result = await _inner.CommitWorkflowInstanceAsync(commit);

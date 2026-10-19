@@ -6,6 +6,7 @@ namespace IxIFlow.ContractTests;
 
 [Trait("Feature", "guard")]
 [Trait("Spec", "A-02")]
+[Trait("Spec", "G-11")]
 public sealed class PublicApiGuardTests
 {
     [Fact]
@@ -13,7 +14,8 @@ public sealed class PublicApiGuardTests
     {
         Type[] publicContract =
         [
-            typeof(WorkflowExecutor), typeof(IExecutionHost), typeof(IWorkflowDefinitionSource),
+            typeof(TraceReplay), typeof(WorkflowExecutor), typeof(IExecutionHost), typeof(IWorkflowDefinitionSource),
+            typeof(InstanceInspection), typeof(InspectionSummary), typeof(InspectionDebugState), typeof(InspectionThread), typeof(InspectionFrame), typeof(InspectionAttempt), typeof(InspectionWait), typeof(InspectionData), typeof(ReplayOriginTrace), typeof(ThreadPositionTrace), typeof(ReplayPosition),
             typeof(Assign), typeof(Ready), typeof(Cancel), typeof(Arrivals), typeof(Recycle), typeof(DebugCommands),
             typeof(Checkpoint), typeof(CheckpointReply), typeof(StartChild), typeof(StartChildReply),
             typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
