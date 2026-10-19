@@ -117,7 +117,11 @@ public class FaultInjectingRepository : IWorkflowStateRepository
 
     public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
         _inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
-    public Task UnregisterPublisherAsync(string name) => _inner.UnregisterPublisherAsync(name);
+    public Task UnregisterPublisherAsync(string name, string actor = "host") => _inner.UnregisterPublisherAsync(name, actor);
+    public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => _inner.ListDeliveriesAsync(query);
+    public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => _inner.RetryDeliveryAsync(eventId, publisherName, actor);
+    public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => _inner.ListPublishersAsync();
+    public Task<bool> EnablePublisherAsync(string publisherName, string actor) => _inner.EnablePublisherAsync(publisherName, actor);
     public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(
         string publisherName, string token, TimeSpan leaseDuration, int limit) =>
         _inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
