@@ -48,8 +48,15 @@ public sealed partial class SqlWorkflowStateRepository
             SELECT MetadataJson AS MetadataJson, State AS State FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name AND Version=@Version
             """,
         Statement.CatalogUnfinishedCallers => """
-            SELECT WorkflowName AS Name, CAST(JSON_VALUE(StateJson, '$.WorkflowVersion') AS int) AS Version FROM dbo.IxIFlowWorkflowInstances
-            WHERE WorkflowName IN @Names AND Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
+            SELECT TOP (1) caller.Name, caller.Version
+            FROM OPENJSON(@Callers) WITH (Name nvarchar(200), Version int) AS caller
+            WHERE EXISTS (
+                SELECT 1 FROM dbo.IxIFlowWorkflowInstances AS instance
+                -- Seek in the column's collation, then enforce ordinal name identity.
+                WHERE instance.WorkflowName = caller.Name
+                    AND instance.WorkflowVersion = caller.Version
+                    AND instance.WorkflowName = caller.Name COLLATE Latin1_General_100_BIN2
+                    AND instance.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
             """,
         Statement.CatalogVersionInsert => """
             INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson)
