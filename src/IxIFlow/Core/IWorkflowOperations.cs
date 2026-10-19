@@ -24,7 +24,8 @@ public interface IWorkflowOperations
         string? actor = null, CancellationToken cancellationToken = default);
 }
 
-internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimeProvider time) : IWorkflowOperations
+internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimeProvider time,
+    IWorkflowCatalog catalog, IWorkflowStateRepository repository) : IWorkflowOperations
 {
     public Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default)
     {

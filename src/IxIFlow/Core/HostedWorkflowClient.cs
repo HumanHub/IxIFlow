@@ -6,7 +6,7 @@ namespace IxIFlow.Core;
 /// The client every application uses: calls become work for the <see cref="WorkflowHost"/>, which runs
 /// them in slots. Reads and cancellation requests take no slot.
 /// </summary>
-internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time) : IWorkflowClient
+internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time, IWorkflowCatalog catalog, IWorkflowStateRepository repository) : IWorkflowClient
 {
     // AwaitAsync also notices work finished on another host; until the store can notify (D-05,
     // D-12), it checks the saved state at this interval.
@@ -23,8 +23,39 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
             cancellationToken);
     }
 
-    public async Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition,
+    public async Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
+        WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class
+    {
+        WorkflowCatalogRules.ValidateName(name);
+        var versionOmitted = version == null;
+        if (version == null && options?.InstanceId is { } instanceId &&
+            await repository.GetWorkflowInstanceSummaryAsync(instanceId) is { } existing)
+        {
+            if (existing.WorkflowName != name)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                    $"Workflow instance '{instanceId}' belongs to a different definition");
+            version = existing.WorkflowVersion;
+        }
+        var row = version is { } number ? await catalog.GetWorkflowVersionAsync(name, number)
+            : await catalog.GetLatestWorkflowVersionAsync(name);
+        if (row == null)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Workflow version not found: {name}");
+        var definition = await catalog.GetWorkflowDefinitionAsync(name, row.Version)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Workflow definition not found: {name} v{row.Version}");
+        return await StartDefinitionAsync(definition, workflowData, options, cancellationToken, versionOmitted);
+    }
+
+    public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
+        WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class =>
+        StartAsync(name, null, workflowData, options, cancellationToken);
+
+    public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition,
         TWorkflowData workflowData, WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+        where TWorkflowData : class => StartDefinitionAsync(definition, workflowData, options, cancellationToken, false);
+
+    private async Task<string> StartDefinitionAsync<TWorkflowData>(WorkflowDefinition definition,
+        TWorkflowData workflowData, WorkflowOptions? options, CancellationToken cancellationToken, bool versionOmitted)
         where TWorkflowData : class
     {
         ArgumentNullException.ThrowIfNull(definition);
@@ -32,7 +63,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
         options ??= new WorkflowOptions();
         // Inside a slot the start runs inline, so it cannot return before the run ends. The host
         // decides inline or queued once, so a run that ends meanwhile cannot change the choice.
-        if (host.TryRunInline((client, _, token) => client.RunAsync(definition, workflowData, options, token),
+        if (host.TryRunInline((client, _, token) => client.RunAsync(definition, workflowData, options, token, versionOmitted),
                 cancellationToken, out var inline))
             return (await inline).InstanceId;
         var accepted = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -40,7 +71,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
         var run = host.RunAsync(options.InstanceId, (client, control, token) =>
         {
             control.OnAccepted(instanceId => accepted.TrySetResult(instanceId));
-            return client.RunAsync(definition, workflowData, options, token);
+            return client.RunAsync(definition, workflowData, options, token, versionOmitted);
         }, CancellationToken.None);
         _ = run.ContinueWith(finished => _ = finished.Exception, TaskContinuationOptions.OnlyOnFaulted);
         if (await Task.WhenAny(accepted.Task, run).WaitAsync(cancellationToken) == accepted.Task)

@@ -12,6 +12,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
+                SELECT name, version, kind, source, revision, state FROM ixiflow_definitions WHERE 1=0;
+                SELECT name, version, structure_hash, state, artifact_digest, metadata_json FROM ixiflow_workflow_versions WHERE 1=0;
+                SELECT digest, kind, content, created_at_utc FROM ixiflow_artifacts WHERE 1=0;
                 SELECT instance_id, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, runnable_at_utc, ended_at_utc, state_json, cancellation_json, cancellation_acknowledged, revision, inbox_sequence, inbox_read_through, incarnation, parent_instance_id FROM ixiflow_workflow_instances WHERE 1=0;
                 SELECT instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, payload_json, payload_hash, received_at_utc, outcome, wait_id, rejection, settled_at_utc FROM ixiflow_workflow_events WHERE 1=0;
                 SELECT instance_id, part_key, json FROM ixiflow_workflow_parts WHERE 1=0;
@@ -30,6 +33,46 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
+            // Opening an existing database must retain catalog, operations and outbox access paths.
+            var indexes = (await connection.QueryAsync<string>("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()",
+                transaction: transaction)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            string[] requiredIndexes =
+            [
+                "ix_artifacts_created",
+                "ix_ixiflow_admissions_expiry",
+                "ix_ixiflow_hosts_heartbeat",
+                "ix_ixiflow_instances_correlation_creation",
+                "ix_ixiflow_instances_creation",
+                "ix_ixiflow_instances_ended",
+                "ix_ixiflow_instances_ended_creation",
+                "ix_ixiflow_instances_parent_creation",
+                "ix_ixiflow_instances_status_creation",
+                "ix_ixiflow_instances_stop_creation",
+                "ix_ixiflow_instances_version_creation",
+                "ix_ixiflow_instances_workflow_creation",
+                "ix_ixiflow_instances_workflow_status_creation",
+                "ix_ixiflow_instances_workflow_version_creation",
+                "ix_ixiflow_outbox_deliveries_listing",
+                "ix_ixiflow_outbox_deliveries_pending",
+                "ix_ixiflow_outbox_deliveries_publisher_listing",
+                "ix_ixiflow_outbox_deliveries_status_listing",
+                "ix_ixiflow_outbox_events_instance",
+                "ix_ixiflow_outbox_events_listing",
+                "ix_ixiflow_tombstones_expiry",
+                "ix_ixiflow_webhook_deliveries_expiry",
+                "ix_ixiflow_workflow_events_pending",
+                "ix_ixiflow_workflow_instances_correlation_id",
+                "ix_ixiflow_workflow_instances_parent",
+                "ix_ixiflow_workflow_instances_runnable",
+                "ix_ixiflow_workflow_instances_status",
+                "ix_ixiflow_workflow_instances_unfinished_workflow",
+                "ix_ixiflow_workflow_instances_workflow_name",
+                "ix_ixiflow_workflow_leases_expires_at",
+                "ix_ixiflow_workflow_waits_open",
+                "ixiflow_workflow_waits_page",
+            ];
+            if (requiredIndexes.Any(name => !indexes.Contains(name)))
+                throw EarlierBuild();
             if (await connection.ExecuteScalarAsync<int>("SELECT CASE WHEN to_regclass('ixiflow_execution_epoch') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction) != 1)
                 throw EarlierBuild();
         }

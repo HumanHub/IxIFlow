@@ -31,85 +31,88 @@ public sealed partial class WorkflowHost
 
         // Also used by recovery before looking up a definition or deserializing user data. A remote owner
         // stops renewing after termination, so an activity that hangs cannot keep its lease indefinitely.
-        public async Task<bool> FinishTerminationAsync(string instanceId, long? ownedEpoch = null, Guid? expectedIncarnation = null)
+        public async Task<bool> FinishTerminationAsync(string instanceId, Guid? expectedIncarnation = null)
         {
             var reason = await _store.GetCancellationRequestAsync(instanceId);
             if (reason?.Mode != WorkflowControlMode.Terminate) return false;
-            var token = Guid.NewGuid().ToString("N");
-            var epoch = ownedEpoch ?? (await _store.TryAcquireExecutionLeaseAsync(instanceId, token, _leaseSettings.Duration))?.Epoch;
-            if (epoch == null) return false;
-            try
+            var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+            if (instance == null || expectedIncarnation is { } identity && instance.Incarnation != identity ||
+                WorkflowStoreRules.IsTerminal(instance.Status)) return false;
+            using var signals = Executor.PrepareAssignment(Guid.NewGuid());
+            await using var owner = await AcquireAsync(instance, signals);
+            if (owner == null) return false;
+            using var assignment = Admit(instance, owner, signals.AssignmentId);
+            var commit = await PrepareTerminationAsync(instance, owner.Epoch);
+            if (commit == null) return false;
+            for (var attempt = 1; ; attempt++)
             {
-                var instance = await _store.GetWorkflowInstanceAsync(instanceId);
-                if (instance == null || expectedIncarnation is { } identity && instance.Incarnation != identity || WorkflowStoreRules.IsTerminal(instance.Status)) return false;
-                // A command blocks all further ordinary commits, including child starts. Every child
-                // committed before acceptance is therefore visible to this scan. Detached children follow
-                // the same subtree policy: their work is hard-stopped too, even after the parent stopped waiting.
-                var children = new List<ChildCancellation>();
-                var parents = new Queue<string>();
-                var visited = new HashSet<string>(StringComparer.Ordinal) { instanceId };
-                parents.Enqueue(instanceId);
-                while (parents.TryDequeue(out var parentId))
+                var reply = await assignment.CheckpointAsync(new(signals.AssignmentId, commit));
+                if (reply.Kind == CheckpointReplyKind.Ack)
                 {
-                    string? after = null;
-                    do
+                    _control.Unschedule(instanceId);
+                    return true;
+                }
+                if (reply.Kind is not (CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown) || attempt == 3)
+                    return false;
+            }
+        }
+
+        // Called inside the assignment's commit queue. Only saved state is used: termination does
+        // not require a loaded definition or deserializable user data.
+        private async Task<CheckpointCommit?> PrepareTerminationAsync(WorkflowInstance assigned, long epoch)
+        {
+            var instanceId = assigned.InstanceId;
+            var reason = await _store.GetCancellationRequestAsync(instanceId);
+            if (reason?.Mode != WorkflowControlMode.Terminate) return null;
+            var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+            if (instance == null || instance.Incarnation != assigned.Incarnation || WorkflowStoreRules.IsTerminal(instance.Status)) return null;
+            // A command blocks all further ordinary commits, including child starts. Every child
+            // committed before acceptance is therefore visible to this scan. Detached children follow
+            // the same subtree policy: their work is hard-stopped too, even after the parent stopped waiting.
+            var children = new List<ChildCancellation>();
+            var parents = new Queue<string>();
+            var visited = new HashSet<string>(StringComparer.Ordinal) { instanceId };
+            parents.Enqueue(instanceId);
+            while (parents.TryDequeue(out var parentId))
+            {
+                string? after = null;
+                do
+                {
+                    var page = await _store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parentId, After: after, Limit: 1000));
+                    foreach (var child in page.Items)
                     {
-                        var page = await _store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parentId, After: after, Limit: 1000));
-                        foreach (var child in page.Items)
+                        if (!visited.Add(child.InstanceId)) continue;
+                        if (WorkflowStoreRules.IsTerminal(child.Status))
                         {
-                            if (!visited.Add(child.InstanceId)) continue;
-                            if (WorkflowStoreRules.IsTerminal(child.Status))
-                            {
-                                // A completed child can still have detached descendants. Its result stays
-                                // intact, while administrative subtree termination reaches their work.
-                                parents.Enqueue(child.InstanceId);
-                                continue;
-                            }
-                            var saved = await _store.GetWorkflowInstanceSummaryAsync(child.InstanceId);
-                            if (saved != null)
-                                children.Add(new ChildCancellation(child.InstanceId, reason, saved.ParentWaitId));
+                            // A completed child can still have detached descendants. Its result stays
+                            // intact, while administrative subtree termination reaches their work.
+                            parents.Enqueue(child.InstanceId);
+                            continue;
                         }
-                        after = page.NextCursor;
-                    } while (after != null);
-                }
-                instance.Status = WorkflowStatus.Terminated;
-                instance.CompletedAt = Now;
-                instance.CancellationReason = reason;
-                instance.LastError = null;
-                instance.LastErrorStackTrace = null;
-                var state = JsonNode.Parse(instance.ExecutionStateJson)!;
-                state["OperatorStop"] = null;
-                instance.ExecutionStateJson = state.ToJsonString();
-                instance.Stored = null;
-                var trace = new ExecutionTraceEntry
-                {
-                    Timestamp = Now, EntryType = TraceEntryType.WorkflowTerminated,
-                    Payload = new CancellationTrace(reason.RequestedBy, reason.RequestedAt, reason.ReasonCode)
-                };
-                var checkpoint = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
-                var commit = CheckpointCommit.Create(instance, epoch.Value, instance.Revision,
-                    childCancellations: children, parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: [trace]);
-                WorkflowCommitResult receipt;
-                for (var attempt = 1; ; attempt++)
-                {
-                    try
-                    {
-                        receipt = await _store.CommitWorkflowInstanceAsync(commit);
-                        if (receipt.Status != WorkflowCommitStatus.Retry || attempt == 3) break;
+                        var saved = await _store.GetWorkflowInstanceSummaryAsync(child.InstanceId);
+                        if (saved != null)
+                            children.Add(new ChildCancellation(child.InstanceId, reason, saved.ParentWaitId));
                     }
-                    catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.Infrastructure && attempt < 3)
-                    {
-                        // An unknown outcome resends the immutable commit and learns its receipt.
-                    }
-                }
-                if (receipt.Status is not (WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied)) return false;
-                foreach (var runnable in receipt.MadeRunnable) _control.Runnable(runnable);
-                return true;
+                    after = page.NextCursor;
+                } while (after != null);
             }
-            finally
+            instance.Status = WorkflowStatus.Terminated;
+            instance.CompletedAt = Now;
+            instance.CancellationReason = reason;
+            instance.LastError = null;
+            instance.LastErrorStackTrace = null;
+            var state = JsonNode.Parse(instance.ExecutionStateJson)!;
+            state["OperatorStop"] = null;
+            instance.ExecutionStateJson = state.ToJsonString();
+            instance.Stored = null;
+            var trace = new ExecutionTraceEntry
             {
-                if (ownedEpoch == null) await _store.ReleaseExecutionLeaseAsync(instanceId, token);
-            }
+                Timestamp = Now, EntryType = TraceEntryType.WorkflowTerminated,
+                Payload = new CancellationTrace(reason.RequestedBy, reason.RequestedAt, reason.ReasonCode)
+            };
+            var checkpoint = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
+            return CheckpointCommit.Create(instance, epoch, instance.Revision,
+                childCancellations: children, parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: [trace]);
         }
     }
 }

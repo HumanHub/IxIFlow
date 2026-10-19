@@ -143,7 +143,7 @@ public static class WorkflowStoreRules
 /// Stores workflow instances. First commits carry a fresh incarnation; child starts allocate
 /// one in the store on insertion. Every instance read round-trips it separately from serialized state.
 /// </summary>
-public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore
+public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStore, IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore
 {
     /// <summary>Registers a member and its capabilities atomically, stamping start and heartbeat with store time.</summary>
     Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default);
@@ -442,10 +442,23 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         return Commit(commit, null);
     }
 
-    private Task<WorkflowCommitResult> Commit(CheckpointCommit commit, WorkflowAdmission? admission)
+    private async Task<WorkflowCommitResult> Commit(CheckpointCommit commit, WorkflowAdmission? admission)
+    {
+        ArgumentNullException.ThrowIfNull(commit);
+        var catalogStart = commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0;
+        if (catalogStart) await _catalogLock.WaitAsync();
+        try { return await CommitUnderClaimLock(commit, admission); }
+        finally { if (catalogStart) _catalogLock.Release(); }
+    }
+
+    private Task<WorkflowCommitResult> CommitUnderClaimLock(CheckpointCommit commit, WorkflowAdmission? admission)
     {
         ArgumentNullException.ThrowIfNull(commit);
         var snapshot = commit.ReadTrunk();
+        WorkflowCommitResult Result(WorkflowCommitStatus status, long revision,
+            CancellationReason? cancellation = null, bool parked = false, bool unread = false,
+            IReadOnlyList<string>? runnable = null) => new(status, revision, cancellation, parked, unread, runnable,
+                _instances.TryGetValue(commit.InstanceId, out var current) ? current.RunnableAtUtc : null, Now);
         lock (_claimLock)
         {
             WorkflowAdmissionRecord? admitted = null;
@@ -454,10 +467,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 admission.ValidateCommit(commit);
                 var identity = (admission.Sender, admission.Trigger, admission.Key);
                 if (_admissions.TryGetValue(identity, out var winner) && winner.ExpiresAtUtc > Now)
-                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 0) { Admission = winner });
+                    return Task.FromResult(Result(WorkflowCommitStatus.AlreadyApplied, 0) with { Admission = winner });
                 if (_instances.ContainsKey(commit.InstanceId) ||
                     _leases.TryGetValue(commit.InstanceId, out var owner) && owner.ExpiresAtUtc > Now)
-                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 0));
+                    return Task.FromResult(Result(WorkflowCommitStatus.Conflict, 0));
                 admitted = new(admission.Sender, admission.Trigger, admission.Key, admission.Fingerprint,
                     commit.InstanceId, snapshot.WorkflowName, snapshot.WorkflowVersion, Now + admission.KeyRetention, commit.Incarnation);
             }
@@ -472,33 +485,35 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     throw new InvalidOperationException("A commit ID cannot be reused for a different transition");
                 // A terminal or parking commit released the lease; only a running owner must still hold it.
                 if (snapshot.Status == WorkflowStatus.Running && !owns && !commit.Parks)
-                    return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+                    return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
                 // The same commit gets the same answer, including arrivals it has not read.
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
+                return Task.FromResult(Result(WorkflowCommitStatus.AlreadyApplied, receipt.Revision,
                     PendingCancellation(commit.InstanceId), commit.Parks && !owns, Unread(commit)));
             }
 
             // Receipts are deleted with the instance, so any replay above belongs to its current creation.
             if (commit.ExpectedRevision > 0 && stored != null &&
                 stored.Incarnation != commit.Incarnation)
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+                return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
             if (!owns)
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, revision));
+                return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
             if (_cancellations.TryGetValue(commit.InstanceId, out var command) &&
                 command.Mode == WorkflowControlMode.Terminate &&
                 (snapshot.Status != WorkflowStatus.Terminated || snapshot.CancellationReason?.CommandVersion != command.CommandVersion))
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.TerminationRequested, revision, PendingCancellation(commit.InstanceId)));
+                return Task.FromResult(Result(WorkflowCommitStatus.TerminationRequested, revision, PendingCancellation(commit.InstanceId)));
             // An event this commit settles must still be pending.
             if (commit.Settlements.Any(settlement =>
                     !_events.TryGetValue((commit.InstanceId, settlement.EventId), out var pending) ||
                     pending.Event.Outcome != EventOutcome.Pending))
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.EventsChanged, revision));
+                return Task.FromResult(Result(WorkflowCommitStatus.EventsChanged, revision));
             if (revision != commit.ExpectedRevision ||
                 ((snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or
                     WorkflowStatus.TimedOut) &&
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
-                return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+                return Task.FromResult(Result(WorkflowCommitStatus.Conflict, revision));
+            if (stored == null) CheckCatalogStart(snapshot);
+            foreach (var child in commit.ChildStarts) CheckCatalogStart(JsonSerializer.Deserialize<WorkflowInstance>(child.Payload)!);
             foreach (var child in commit.ChildStarts)
                 RefuseRemoved(child.ChildInstanceId, Now);
             // A child's ID is new; a commit that names an existing instance changes nothing.
@@ -622,8 +637,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 _admissions[(admission!.Sender, admission.Trigger, admission.Key)] = admitted;
                 _ownership[commit.InstanceId] = (commit.Incarnation, new(commit.InstanceId, admission.Sender, admission.Trigger, admission.Owner, admission.Tenant, commit.Incarnation, admission.OwnerKind));
             }
-            return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Applied, snapshot.Revision,
-                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable) { Admission = admitted });
+            return Task.FromResult(Result(WorkflowCommitStatus.Applied, snapshot.Revision,
+                PendingCancellation(commit.InstanceId), parked, unread, madeRunnable) with { Admission = admitted });
         }
     }
 
@@ -910,119 +925,5 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(duration));
-    }
-}
-
-/// <summary>
-///     Workflow version registry interface
-/// </summary>
-public interface IWorkflowVersionRegistry
-{
-    /// <summary>A snapshot of all registered definitions the host can load.</summary>
-    Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync();
-
-    /// <summary>
-    ///     Register a workflow version
-    /// </summary>
-    Task RegisterWorkflowAsync(WorkflowDefinition definition);
-
-    /// <summary>
-    ///     Get workflow definition by name and version
-    /// </summary>
-    Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
-
-    /// <summary>
-    ///     The structure hash recorded when the version was registered, or null if it is not registered.
-    ///     Typed child resolution compares a DI-built definition against it.
-    /// </summary>
-    Task<string?> GetWorkflowStructureHashAsync(string name, int version);
-
-    /// <summary>
-    ///     Deactivate a workflow version
-    /// </summary>
-    Task DeactivateWorkflowVersionAsync(string name, int version);
-}
-
-/// <summary>
-///     Concrete implementation of workflow version registry
-/// </summary>
-public class WorkflowVersionRegistry : IWorkflowVersionRegistry
-{
-    private sealed record Registration(WorkflowDefinition Definition, string StructureHash);
-    private readonly ConcurrentDictionary<(string Name, int Version), Registration> _workflows = new();
-
-    public WorkflowVersionRegistry() { }
-
-    public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
-        Task.FromResult<IReadOnlyList<WorkflowDefinition>>(_workflows.Values.Select(registration => registration.Definition).ToArray());
-
-    public WorkflowVersionRegistry(IEnumerable<WorkflowDefinition> definitions)
-    {
-        foreach (var definition in definitions)
-            RegisterWorkflow(definition);
-    }
-
-    public Task RegisterWorkflowAsync(WorkflowDefinition definition)
-    {
-        RegisterWorkflow(definition);
-        return Task.CompletedTask;
-    }
-
-    private void RegisterWorkflow(WorkflowDefinition definition)
-    {
-        WorkflowDefinitionValidator.Validate(definition);
-        var key = (definition.Name, definition.Version);
-        var loadedHash = new WorkflowScopeCatalog(definition).StructureHash;
-        var published = _workflows.GetOrAdd(key, new Registration(definition, loadedHash));
-        var registeredHash = published.StructureHash;
-        if (registeredHash != loadedHash)
-        {
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                $"Workflow {definition.Name} v{definition.Version} is already registered with structure hash " +
-                $"'{registeredHash}'; loaded structure hash '{loadedHash}' differs");
-        }
-    }
-
-    public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)
-    {
-        var key = (name, version);
-        _workflows.TryGetValue(key, out var registration);
-        return Task.FromResult(registration?.Definition);
-    }
-
-    public Task<string?> GetWorkflowStructureHashAsync(string name, int version)
-    {
-        _workflows.TryGetValue((name, version), out var registration);
-        return Task.FromResult(registration?.StructureHash);
-    }
-
-    public Task DeactivateWorkflowVersionAsync(string name, int version)
-    {
-        var key = (name, version);
-        if (_workflows.TryGetValue(key, out var registration))
-        {
-            var definition = registration.Definition;
-            // Create a copy with IsActive = false
-            var updatedDefinition = new WorkflowDefinition
-            {
-                Id = definition.Id,
-                Name = definition.Name,
-                Version = definition.Version,
-                Description = definition.Description,
-                WorkflowDataType = definition.WorkflowDataType,
-                CreatedAt = definition.CreatedAt,
-                CreatedBy = definition.CreatedBy,
-                Tags = definition.Tags,
-                Steps = definition.Steps,
-                Metadata = new Dictionary<string, object>(definition.Metadata)
-                {
-                    ["IsActive"] = false
-                }
-            };
-            WorkflowDefinitionValidator.Validate(updatedDefinition);
-            _workflows.TryUpdate(key, new Registration(updatedDefinition, registration.StructureHash), registration);
-        }
-
-        return Task.CompletedTask;
     }
 }

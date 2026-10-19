@@ -1,11 +1,10 @@
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>Limits the host applies to every instance it runs.</summary>
-internal sealed record ExecutionLimits
+public sealed record ExecutionLimits
 {
     public const long DefaultMaxCheckpointBytes = 4 * 1024 * 1024;
     public const int DefaultMaxTraceEntriesPerCommit = 1_000;
-    public const int DefaultMaxCrashes = 3;
     public const int DefaultMaxActiveBranches = 1_000;
     public const int DefaultMaxActivitiesPerRun = 100;
     public const int DefaultMaxForEachItems = 1_000;
@@ -20,9 +19,6 @@ internal sealed record ExecutionLimits
     public int MaxTraceEntriesPerCommit { get; init; } = DefaultMaxTraceEntriesPerCommit;
     public TraceDetail TraceDetail { get; init; } = TraceDetail.Full;
     public long? MaxTraceEntriesPerInstance { get; init; }
-
-    /// <summary>How many owners in a row may lose a running instance before it is quarantined.</summary>
-    public int MaxCrashes { get; init; } = DefaultMaxCrashes;
 
     /// <summary>
     /// Maximum live branches of one instance, excluding the root, parents waiting at joins, and

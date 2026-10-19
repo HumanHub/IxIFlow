@@ -18,7 +18,7 @@ using Microsoft.Extensions.Options;
 
 namespace IxIFlow.Tests.Conformance;
 
-internal sealed class OperationsHttpFactory(IWorkflowStateRepository repository, IWorkflowVersionRegistry? registry = null)
+internal sealed class OperationsHttpFactory(IWorkflowStateRepository repository, IWorkflowCatalog? registry = null)
     : WebApplicationFactory<OperationsHttpFactory.Application>
 {
     internal sealed class Application;
@@ -45,7 +45,7 @@ internal sealed class OperationsHttpFactory(IWorkflowStateRepository repository,
         {
             services.AddIxIFlow(o => { o.PollInterval = TimeSpan.FromMilliseconds(30); o.Slots = Slots; });
             services.Replace(ServiceDescriptor.Singleton(repository));
-            services.Replace(ServiceDescriptor.Singleton(registry ?? new WorkflowVersionRegistry()));
+            services.Replace(ServiceDescriptor.Singleton(registry ?? new WorkflowCatalog()));
             services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
             services.AddSingleton(ActivityProbe);
             services.AddTransient<Noop>(); services.AddTransient<Block>(); services.AddTransient<Uncertain>();

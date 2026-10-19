@@ -459,7 +459,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             """,
         Statement.CommitState => """
             SELECT revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
-                cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence
+                cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence, runnable_at_utc AS RunnableAtUtc
             FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId
             """,
         Statement.Receipt => """
@@ -597,7 +597,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key IN @Keys
                 """,
-        _ => RegistrySql(statement) ?? AdmissionSql(statement)
+        _ => CatalogSql(statement) ?? RegistrySql(statement) ?? AdmissionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -646,6 +646,17 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_correlation_creation ON ixiflow_workflow_instances (correlation_id, created_at_utc DESC, instance_id ASC);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_parent_creation ON ixiflow_workflow_instances (parent_instance_id, created_at_utc DESC, instance_id ASC);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_ended_creation ON ixiflow_workflow_instances (ended_at_utc, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_status
+            ON ixiflow_workflow_instances (status);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_workflow_name
+            ON ixiflow_workflow_instances (workflow_name);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_unfinished_workflow
+            ON ixiflow_workflow_instances (workflow_name, workflow_version)
+            WHERE status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut');
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_correlation_id
+            ON ixiflow_workflow_instances (correlation_id);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_parent
+            ON ixiflow_workflow_instances (parent_instance_id) WHERE parent_instance_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_runnable
             ON ixiflow_workflow_instances (runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_events (
@@ -725,6 +736,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(CatalogSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 

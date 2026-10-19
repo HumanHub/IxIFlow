@@ -60,7 +60,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     internal override int OwnershipReadBatchSize => 1000;
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
+        operation is Operation.Catalog or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
             or Operation.Termination
             ? await connection.BeginTransactionAsync() : null;
 
@@ -519,7 +519,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         // A first commit must exclude another insertion of this ID. Read the clock in the next
         // statement, after any lock wait, so the captured commit time cannot predate the lock (D-35).
         Statement.CommitState => """
-            SELECT Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence
+            SELECT Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence, RunnableAtUtc
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
             WHERE InstanceId = @InstanceId;
             SELECT SYSUTCDATETIME();
@@ -670,7 +670,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         Statement.DeleteParts => """
                     DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId AND PartKey IN @Keys
                     """,
-        _ => RegistrySql(statement) ?? AdmissionSql(statement)
+        _ => CatalogSql(statement) ?? RegistrySql(statement) ?? AdmissionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -731,6 +731,18 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             CREATE INDEX IX_IxIFlowWorkflowInstances_correlation_creation ON dbo.IxIFlowWorkflowInstances (CorrelationId, CreatedAtUtc DESC, InstanceId ASC);
             CREATE INDEX IX_IxIFlowWorkflowInstances_parent_creation ON dbo.IxIFlowWorkflowInstances (ParentInstanceId, CreatedAtUtc DESC, InstanceId ASC);
             CREATE INDEX IX_IxIFlowWorkflowInstances_ended_creation ON dbo.IxIFlowWorkflowInstances (EndedAtUtc, CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_Status
+                ON dbo.IxIFlowWorkflowInstances (Status);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_WorkflowName
+                ON dbo.IxIFlowWorkflowInstances (WorkflowName);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_UnfinishedWorkflow
+                ON dbo.IxIFlowWorkflowInstances (WorkflowName, WorkflowVersion)
+                WHERE Status <> 'Completed' AND Status <> 'Failed' AND Status <> 'Cancelled'
+                    AND Status <> 'Terminated' AND Status <> 'TimedOut';
+            CREATE INDEX IX_IxIFlowWorkflowInstances_CorrelationId
+                ON dbo.IxIFlowWorkflowInstances (CorrelationId);
+            EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_Parent
+                ON dbo.IxIFlowWorkflowInstances (ParentInstanceId) WHERE ParentInstanceId IS NOT NULL');
             EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_Runnable
                 ON dbo.IxIFlowWorkflowInstances (RunnableAtUtc, InstanceId)
                 WHERE RunnableAtUtc IS NOT NULL');
@@ -822,6 +834,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(CatalogSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }

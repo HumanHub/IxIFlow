@@ -56,8 +56,9 @@ internal static class CheckpointRaceContract
                 Assert.Equal(revision + 1, saved.Revision);
                 Assert.Equal(expected.WorkflowDataJson, saved.WorkflowDataJson);
                 Assert.Equal(expected.ExecutionStateJson, saved.ExecutionStateJson);
-                Assert.Equal(commits[winner].StoredParts.OrderBy(p => p.Key),
-                    CheckpointCommit.Create(saved, epoch, saved.Revision).StoredParts.OrderBy(p => p.Key));
+                Assert.Equal(commits[winner].ApplyParts(null).OrderBy(p => p.Key),
+                    CheckpointCommit.Create(saved, epoch, saved.Revision).ApplyParts(saved.PartsAt(saved.Revision))
+                        .OrderBy(p => p.Key));
             }
         }
         finally { await stores[0].DeleteWorkflowInstanceAsync(id); }

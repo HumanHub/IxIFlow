@@ -62,7 +62,7 @@ public static class WorkflowTriggerExtensions
             throw new InvalidOperationException("Workflow trigger identities must be unique");
         if (all.GroupBy(r => r.Method + " " + Shape(r.Pattern), StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1))
             throw new InvalidOperationException("Conflicting workflow routes");
-        var registry = endpoints.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = endpoints.ServiceProvider.GetRequiredService<IWorkflowCatalog>();
         foreach (var definition in builder.Registrations.Select(r => r.Definition).OfType<WorkflowDefinition>())
             registry.RegisterWorkflowAsync(definition).GetAwaiter().GetResult();
         catalog.Registrations.AddRange(builder.Registrations);

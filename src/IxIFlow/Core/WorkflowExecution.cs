@@ -91,7 +91,7 @@ public class CancellationReason
     /// <summary>
     ///     Additional metadata about the cancellation
     /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
+    public Dictionary<string, System.Text.Json.JsonElement> Metadata { get; set; } = new();
 }
 
 /// <summary>
@@ -231,7 +231,7 @@ public class WorkflowInstance
     /// <summary>
     ///     Custom properties for this instance
     /// </summary>
-    public Dictionary<string, object> Properties { get; set; } = new();
+    public Dictionary<string, System.Text.Json.JsonElement> Properties { get; set; } = new();
 
     /// <summary>Whether trace entries are recorded.</summary>
     public bool TracingEnabled { get; set; } = true;

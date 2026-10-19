@@ -85,7 +85,7 @@ internal sealed partial class HostedWorkflowOperations
     {
         var result = await run;
         if (result.Status is WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Running)
-            result = await new HostedWorkflowClient(host, time).AwaitAsync(result.InstanceId);
+            result = await new HostedWorkflowClient(host, time, catalog, repository).AwaitAsync(result.InstanceId);
         return new(result.InstanceId, result.Status, result.ErrorMessage);
     }
 }
