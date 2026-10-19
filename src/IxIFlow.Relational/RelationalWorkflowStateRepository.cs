@@ -734,6 +734,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             snapshot.InstanceId,
             snapshot.WorkflowName,
+            snapshot.WorkflowVersion,
             snapshot.CorrelationId,
             snapshot.ParentInstanceId,
             commit.Incarnation,

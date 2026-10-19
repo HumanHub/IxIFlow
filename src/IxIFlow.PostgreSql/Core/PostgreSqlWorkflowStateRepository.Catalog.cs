@@ -56,9 +56,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             WHERE EXISTS (
                 SELECT 1 FROM ixiflow_workflow_instances AS instance
                 WHERE instance.workflow_name = caller."Name"
-                AND CASE WHEN instance.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
-                    AND instance.workflow_name = caller."Name"
-                    THEN (instance.state_json::jsonb ->> 'WorkflowVersion')::integer END = caller."Version")
+                    AND instance.workflow_version = caller."Version"
+                    AND instance.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
             LIMIT 1
             """,
         Statement.CatalogVersionInsert => """
