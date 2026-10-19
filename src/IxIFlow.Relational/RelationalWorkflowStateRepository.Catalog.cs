@@ -25,9 +25,18 @@ public abstract partial class RelationalWorkflowStateRepository
         { State = Enum.Parse<WorkflowVersionState>(State) };
     }
 
+    private sealed class UnfinishedCallerRow
+    {
+        public string Name { get; set; } = "";
+        public int Version { get; set; }
+    }
+
     private async Task<IReadOnlyList<WorkflowVersion>> ReadVersionsAsync(DbConnection connection, DbTransaction? transaction) =>
         (await connection.QueryAsync<VersionRow>(RequiredSql(Statement.CatalogVersions), transaction: transaction))
         .Select(row => row.Value).ToArray();
+
+    // A provider operation forwarded through decorators reuses the transaction holding the catalog lock.
+    private readonly AsyncLocal<(DbConnection Connection, DbTransaction Transaction)?> _catalogTransaction = new();
 
     private async Task<T> CatalogWriteAsync<T>(Func<DbConnection, DbTransaction, Task<T>> action)
     {
@@ -37,14 +46,21 @@ public abstract partial class RelationalWorkflowStateRepository
             await using var connection = await OpenConnectionAsync();
             await using var transaction = (await BeginTransactionAsync(connection, Operation.Catalog))!;
             await ExecuteOptionalAsync(connection, transaction, Statement.CatalogLock, null);
-            var result = await action(connection, transaction);
-            await transaction.CommitAsync();
-            return result;
+            var previous = _catalogTransaction.Value;
+            _catalogTransaction.Value = (connection, transaction);
+            try
+            {
+                var result = await action(connection, transaction);
+                await transaction.CommitAsync();
+                return result;
+            }
+            finally { _catalogTransaction.Value = previous; }
         });
     }
 
     public async Task<WorkflowDraft?> GetDefinitionAsync(string name, int version)
     {
+        WorkflowCatalogRules.ValidateName(name);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         return (await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition), new { Name = name, Version = version }))?.Value;
@@ -52,26 +68,37 @@ public abstract partial class RelationalWorkflowStateRepository
 
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(definition.Name);
+        WorkflowCatalogRules.ValidateName(definition.Name);
         ArgumentOutOfRangeException.ThrowIfLessThan(definition.Version, 1);
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
-        return CatalogWriteAsync(async (connection, transaction) =>
+        return SaveDraftAsync();
+
+        async Task<WorkflowDraft> SaveDraftAsync()
         {
-            var existing = await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition),
-                new { definition.Name, definition.Version }, transaction);
-            if ((existing?.Revision ?? 0) != expectedRevision)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed");
-            var saved = definition with { Revision = checked(expectedRevision + 1) };
-            await connection.ExecuteAsync(RequiredSql(existing == null ? Statement.CatalogDefinitionInsert : Statement.CatalogDefinitionUpdate), saved, transaction);
-            return saved;
-        });
+            await EnsureSchemaAsync();
+            return await ExecuteOperationAsync(Operation.Catalog, async () =>
+            {
+                await using var connection = await OpenConnectionAsync();
+                await using var transaction = (await BeginTransactionAsync(connection, Operation.Catalog))!;
+                var saved = definition with { Revision = checked(expectedRevision + 1) };
+                // Insert-if-absent and compare-and-swap updates need no catalog lock.
+                var changed = await connection.ExecuteAsync(RequiredSql(expectedRevision == 0
+                    ? Statement.CatalogDefinitionInsert : Statement.CatalogDefinitionUpdate),
+                    new { saved.Name, saved.Version, saved.Kind, saved.Source, saved.Revision, ExpectedRevision = expectedRevision }, transaction);
+                if (changed == 0)
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed");
+                await transaction.CommitAsync();
+                return saved;
+            });
+        }
     }
 
-    public Task RegisterWorkflowVersionAsync(WorkflowVersion version)
+    public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)
     {
         WorkflowCatalogRules.Validate(version);
         return CatalogWriteAsync(async (connection, transaction) =>
         {
+            await WorkflowCatalogRules.CheckArtifactsAsync(version, artifacts ?? this);
             var versions = await ReadVersionsAsync(connection, transaction);
             var existing = versions.SingleOrDefault(row => row.Name == version.Name && row.Version == version.Version);
             if (existing != null) WorkflowCatalogRules.CheckRegistration(existing, version);
@@ -91,29 +118,50 @@ public abstract partial class RelationalWorkflowStateRepository
         });
     }
 
-    public async Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
-        (await GetWorkflowVersionsAsync(name)).SingleOrDefault(row => row.Version == version);
+    public async Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version)
+    {
+        WorkflowCatalogRules.ValidateName(name);
+        await EnsureSchemaAsync();
+        await using var connection = await OpenConnectionAsync();
+        return (await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion),
+            new { Name = name, Version = version }))?.Value;
+    }
 
     public async Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null)
     {
+        if (name != null) WorkflowCatalogRules.ValidateName(name);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        return (await ReadVersionsAsync(connection, null)).Where(row => name == null || row.Name == name).ToArray();
+        return (await connection.QueryAsync<VersionRow>(RequiredSql(name == null ? Statement.CatalogVersions : Statement.CatalogNamedVersions),
+            new { Name = name })).Select(row => row.Value).ToArray();
     }
 
-    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>
-        CatalogWriteAsync(async (connection, transaction) =>
+    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null)
+    {
+        WorkflowCatalogRules.ValidateName(name);
+        return CatalogWriteAsync(async (connection, transaction) =>
         {
             var versions = await ReadVersionsAsync(connection, transaction);
             var row = versions.SingleOrDefault(row => row.Name == name && row.Version == version)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow version not found");
             WorkflowCatalogRules.CheckTransition(row.State, state);
+            if (state == WorkflowVersionState.Published)
+                await WorkflowCatalogRules.CheckArtifactsAsync(row, artifacts ?? this);
             if (row.State == state) return true;
             if (state == WorkflowVersionState.Retired)
             {
-                var trunks = await connection.QueryAsync<StoredRow>(QuerySql("1=1"), transaction: transaction);
-                WorkflowCatalogRules.CheckRetirement(row, versions,
-                    trunks.Select(trunk => JsonSerializer.Deserialize<WorkflowInstance>(trunk.StateJson)!));
+                var reference = new WorkflowVersionReference(name, version);
+                var names = versions.Where(caller => (caller.Dependencies ?? []).Contains(reference))
+                    .Select(caller => caller.Name).Distinct(StringComparer.Ordinal).ToArray();
+                // Leave ample space below SQL Server's 2,100-parameter limit.
+                WorkflowCatalogRules.CheckRetirement(row, versions, []);
+                foreach (var chunk in names.Chunk(1000))
+                {
+                    var parents = await connection.QueryAsync<UnfinishedCallerRow>(RequiredSql(Statement.CatalogUnfinishedCallers),
+                        new { Names = chunk }, transaction);
+                    WorkflowCatalogRules.CheckRetirement(row, versions,
+                        parents.Select(parent => new WorkflowVersionReference(parent.Name, parent.Version)));
+                }
             }
             if (state == WorkflowVersionState.Published)
                 foreach (var dependency in row.Dependencies ?? [])
@@ -123,18 +171,22 @@ public abstract partial class RelationalWorkflowStateRepository
             await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionState), new { Name = name, Version = version, State = state.ToString() }, transaction);
             return true;
         });
+    }
 
     private async Task CheckCatalogStartsAsync(DbConnection connection, DbTransaction transaction,
         CheckpointCommit commit, bool newInstance)
     {
         if (!newInstance && commit.ChildStarts.Count == 0) return;
-        var versions = await ReadVersionsAsync(connection, transaction);
         var starts = commit.ChildStarts.Select(child => JsonSerializer.Deserialize<WorkflowInstance>(child.Payload)!).ToList();
         if (newInstance) starts.Add(commit.ReadTrunk());
         foreach (var start in starts)
+        {
+            WorkflowCatalogRules.ValidateNameWhitespace(start.WorkflowName);
             // Low-level commits may store instances without a catalog registration. Engine starts register first.
-            if (versions.SingleOrDefault(row => row.Name == start.WorkflowName && row.Version == start.WorkflowVersion) is { } row)
+            if ((await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion),
+                new { Name = start.WorkflowName, Version = start.WorkflowVersion }, transaction))?.Value is { } row)
                 WorkflowCatalogRules.CheckStartable(row, start.WorkflowName, start.WorkflowVersion);
+        }
     }
 
     public async ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default)
@@ -193,25 +245,46 @@ public abstract partial class RelationalWorkflowStateRepository
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retention, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
         cancellationToken.ThrowIfCancellationRequested();
-        artifacts = RepositoryArtifactStore.Unwrap(artifacts);
         return CatalogWriteAsync(async (connection, transaction) =>
         {
             var references = WorkflowCatalogRules.ArtifactReferences(await ReadVersionsAsync(connection, transaction));
             var cutoff = await OutboxNowAsync(connection, transaction) - retention;
-            if (!ReferenceEquals(artifacts, this))
-                return await ((IArtifactRetentionStore)artifacts).PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
+            return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
+        });
+    }
+
+    internal virtual object ArtifactReferencesParameter(IReadOnlySet<ArtifactDigest> references) =>
+        JsonSerializer.Serialize(references.Select(digest => digest.Value));
+
+    public async ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc,
+        int batchSize, CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_catalogTransaction.Value is { } current)
+            return await CollectAsync(current.Connection, current.Transaction);
+        await EnsureSchemaAsync();
+        return await ExecuteOperationAsync(Operation.Artifact, async () =>
+        {
+            await using var connection = await OpenConnectionAsync();
+            await using var transaction = (await BeginTransactionAsync(connection, Operation.Artifact))!;
+            var removed = await CollectAsync(connection, transaction);
+            await transaction.CommitAsync();
+            return removed;
+        });
+
+        async Task<int> CollectAsync(DbConnection connection, DbTransaction transaction)
+        {
             var candidates = await connection.QueryAsync<string>(RequiredSql(Statement.ArtifactCandidates),
-                WithTimes(new { }, ("Cutoff", cutoff)), transaction);
+                WithTimes(new { References = ArtifactReferencesParameter(references), Limit = batchSize }, ("Cutoff", olderThanUtc)), transaction);
             var removed = 0;
             foreach (var digest in candidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (references.Contains(new ArtifactDigest(digest))) continue;
-                await connection.ExecuteAsync(RequiredSql(Statement.ArtifactDelete), new { Digest = digest }, transaction);
-                if (++removed == batchSize) break;
+                removed += await connection.ExecuteAsync(RequiredSql(Statement.ArtifactDeleteOld),
+                    WithTimes(new { Digest = digest }, ("Cutoff", olderThanUtc)), transaction);
             }
             return removed;
-        });
+        }
     }
 }
-

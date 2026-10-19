@@ -164,10 +164,10 @@ public sealed class DefinitionValidationTests
         }
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _catalog.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) => _catalog.SaveDefinitionAsync(definition, expectedRevision);
-        public Task RegisterWorkflowVersionAsync(WorkflowVersion version) => _catalog.RegisterWorkflowVersionAsync(version);
+        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) => _catalog.RegisterWorkflowVersionAsync(version, artifacts);
         public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _catalog.GetWorkflowVersionAsync(name, version);
         public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _catalog.GetWorkflowVersionsAsync(name);
-        public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) => _catalog.SetWorkflowVersionStateAsync(name, version, state);
+        public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) => _catalog.SetWorkflowVersionStateAsync(name, version, state, artifacts);
         public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _catalog.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
         public Task<WorkflowVersion?> GetLatestWorkflowVersionAsync(string name) => _catalog.GetLatestWorkflowVersionAsync(name);
         public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>

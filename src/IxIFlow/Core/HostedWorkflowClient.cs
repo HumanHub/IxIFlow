@@ -6,7 +6,7 @@ namespace IxIFlow.Core;
 /// The client every application uses: calls become work for the <see cref="WorkflowHost"/>, which runs
 /// them in slots. Reads and cancellation requests take no slot.
 /// </summary>
-internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time, IWorkflowCatalog catalog) : IWorkflowClient
+internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time, IWorkflowCatalog catalog, IWorkflowStateRepository repository) : IWorkflowClient
 {
     // AwaitAsync also notices work finished on another host; until the store can notify (D-05,
     // D-12), it checks the saved state at this interval.
@@ -26,7 +26,15 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     public async Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
         WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        WorkflowCatalogRules.ValidateName(name);
+        if (version == null && options?.InstanceId is { } instanceId &&
+            await repository.GetWorkflowInstanceSummaryAsync(instanceId) is { } existing)
+        {
+            if (existing.WorkflowName != name)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                    $"Workflow instance '{instanceId}' belongs to a different definition");
+            version = existing.WorkflowVersion;
+        }
         var row = version is { } number ? await catalog.GetWorkflowVersionAsync(name, number)
             : await catalog.GetLatestWorkflowVersionAsync(name);
         if (row == null)

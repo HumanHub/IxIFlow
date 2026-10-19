@@ -31,8 +31,8 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>SQL steps in the shared protocol. Optional steps return null.</summary>
     internal enum Statement
     {
-        CatalogLock, CatalogSharedLock, CatalogVersions, CatalogVersionInsert, CatalogVersionState,
-        CatalogDefinition, CatalogDefinitionInsert, CatalogDefinitionUpdate, ArtifactPut, ArtifactRead, ArtifactExists, ArtifactDelete, ArtifactCandidates,
+        CatalogLock, CatalogSharedLock, CatalogVersions, CatalogNamedVersions, CatalogVersion, CatalogUnfinishedCallers, CatalogVersionInsert, CatalogVersionState,
+        CatalogDefinition, CatalogDefinitionInsert, CatalogDefinitionUpdate, ArtifactPut, ArtifactRead, ArtifactExists, ArtifactDelete, ArtifactDeleteOld, ArtifactCandidates,
         WebhookDeliveryRead, WebhookDeliveryDelete, WebhookDeliveryInsert, WebhookDeliveryExpire,
         AdmissionLock, AdmissionRead, AdmissionDelete, AdmissionInsert, OwnershipRead, OwnershipInsert, OwnershipDelete, AdmissionExpire, OwnershipExpire,
         RegistryLock, RegisterMember, MemberHeartbeat, UnregisterMember, PruneMembers,
@@ -611,7 +611,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         var revision = checked(commit.ExpectedRevision + 1);
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (await BeginTransactionAsync(connection, Operation.Commit))!;
-        await ExecuteOptionalAsync(connection, transaction, Statement.CatalogSharedLock, null);
+        if (commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0)
+            await ExecuteOptionalAsync(connection, transaction, Statement.CatalogSharedLock, null);
         WorkflowAdmissionRecord? admitted = null;
         if (admission != null)
         {

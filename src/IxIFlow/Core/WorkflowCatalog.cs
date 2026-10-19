@@ -21,10 +21,10 @@ public interface IWorkflowCatalogStore
 {
     Task<WorkflowDraft?> GetDefinitionAsync(string name, int version);
     Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision);
-    Task RegisterWorkflowVersionAsync(WorkflowVersion version);
+    Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null);
     Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version);
     Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null);
-    Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state);
+    Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null);
     /// <summary>Collects old artifacts while catalog references cannot change. No instance names an artifact yet.</summary>
     Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default);
@@ -45,14 +45,19 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
 {
     private readonly IWorkflowCatalogStore _store;
     private readonly ConcurrentDictionary<(string, int), WorkflowDefinition> _definitions = new();
+    private readonly Dictionary<(string, int), WorkflowVersion> _registrations = new();
+    private readonly SemaphoreSlim _registrationLock = new(1, 1);
+    private readonly IArtifactStore? _artifacts;
 
     public WorkflowCatalog() : this(new InMemoryWorkflowStateRepository()) { }
     public WorkflowCatalog(IEnumerable<WorkflowDefinition> definitions)
         : this(new InMemoryWorkflowStateRepository(), definitions) { }
 
-    public WorkflowCatalog(IWorkflowCatalogStore store, IEnumerable<WorkflowDefinition>? definitions = null)
+    public WorkflowCatalog(IWorkflowCatalogStore store, IEnumerable<WorkflowDefinition>? definitions = null,
+        IArtifactStore? artifacts = null)
     {
         _store = store;
+        _artifacts = artifacts;
         foreach (var definition in definitions ?? [])
             RegisterWorkflowAsync(definition).GetAwaiter().GetResult();
     }
@@ -65,16 +70,32 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
             .Where(step => step.WorkflowName != null && step.WorkflowVersion != null)
             .Select(step => new WorkflowVersionReference(step.WorkflowName!, step.WorkflowVersion!.Value))
             .Distinct().OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
-        await _store.RegisterWorkflowVersionAsync(new(definition.Name, definition.Version, scopes.StructureHash,
-            Dependencies: dependencies));
-        _definitions.TryAdd((definition.Name, definition.Version), definition);
+        var registration = new WorkflowVersion(definition.Name, definition.Version, scopes.StructureHash,
+            Dependencies: dependencies);
+        await _registrationLock.WaitAsync();
+        try
+        {
+            var key = (definition.Name, definition.Version);
+            if (_registrations.TryGetValue(key, out var existing))
+                WorkflowCatalogRules.CheckRegistration(existing, registration);
+            else
+            {
+                await _store.RegisterWorkflowVersionAsync(registration, _artifacts);
+                _registrations.Add(key, registration);
+                _definitions.TryAdd(key, definition);
+            }
+        }
+        finally { _registrationLock.Release(); }
     }
 
     public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
         Task.FromResult<IReadOnlyList<WorkflowDefinition>>(_definitions.Values.ToArray());
 
-    public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version) =>
-        Task.FromResult(_definitions.GetValueOrDefault((name, version)));
+    public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)
+    {
+        WorkflowCatalogRules.ValidateName(name);
+        return Task.FromResult(_definitions.GetValueOrDefault((name, version)));
+    }
 
     public async Task<string?> GetWorkflowStructureHashAsync(string name, int version) =>
         (await _store.GetWorkflowVersionAsync(name, version))?.StructureHash;
@@ -88,11 +109,12 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _store.GetDefinitionAsync(name, version);
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
         _store.SaveDefinitionAsync(definition, expectedRevision);
-    public Task RegisterWorkflowVersionAsync(WorkflowVersion version) => _store.RegisterWorkflowVersionAsync(version);
+    public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
+        _store.RegisterWorkflowVersionAsync(version, artifacts ?? _artifacts);
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _store.GetWorkflowVersionAsync(name, version);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _store.GetWorkflowVersionsAsync(name);
-    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>
-        _store.SetWorkflowVersionStateAsync(name, version, state);
+    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
+        _store.SetWorkflowVersionStateAsync(name, version, state, artifacts ?? _artifacts);
     public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default) => _store.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
 }
@@ -100,9 +122,31 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
 /// <summary>Rules used under each store's catalog/start lock.</summary>
 internal static class WorkflowCatalogRules
 {
+    public static void ValidateName(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ValidateNameWhitespace(name);
+    }
+
+    // The raw instance protocol also permits unnamed instances; any supplied name must be exact.
+    public static void ValidateNameWhitespace(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (name.Length != name.Trim().Length)
+            throw new ArgumentException("A workflow name cannot have leading or trailing whitespace", nameof(name));
+    }
+
+    public static async Task CheckArtifactsAsync(WorkflowVersion row, IArtifactStore artifacts)
+    {
+        foreach (var digest in ArtifactReferences([row]))
+            if (!await artifacts.ExistsAsync(digest))
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    $"Workflow {row.Name} v{row.Version} references missing artifact {digest}");
+    }
+
     public static void Validate(WorkflowVersion row)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(row.Name);
+        ValidateName(row.Name);
         ArgumentOutOfRangeException.ThrowIfLessThan(row.Version, 1);
         ArgumentException.ThrowIfNullOrWhiteSpace(row.StructureHash);
         if (!Enum.IsDefined(row.State)) throw new ArgumentOutOfRangeException(nameof(row.State));
@@ -110,7 +154,7 @@ internal static class WorkflowCatalogRules
             _ = new ArtifactDigest(digest.Value);
         foreach (var dependency in row.Dependencies ?? [])
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(dependency.Name);
+            ValidateName(dependency.Name);
             ArgumentOutOfRangeException.ThrowIfLessThan(dependency.Version, 1);
         }
     }
@@ -139,6 +183,7 @@ internal static class WorkflowCatalogRules
 
     public static void CheckStartable(WorkflowVersion? row, string name, int version)
     {
+        ValidateName(name);
         if (row == null || row.State is WorkflowVersionState.Draft or WorkflowVersionState.Retired)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 row?.State == WorkflowVersionState.Retired
@@ -147,14 +192,15 @@ internal static class WorkflowCatalogRules
     }
 
     public static void CheckRetirement(WorkflowVersion target, IReadOnlyList<WorkflowVersion> versions,
-        IEnumerable<WorkflowInstance> instances)
+        IEnumerable<WorkflowVersionReference> unfinishedInstances)
     {
         var reference = new WorkflowVersionReference(target.Name, target.Version);
         var callers = versions.Where(row => (row.Dependencies ?? []).Contains(reference)).ToArray();
+        var callerVersions = callers.Select(row => new WorkflowVersionReference(row.Name, row.Version)).ToHashSet();
+        // Published and Deprecated callers both keep their pinned dependencies startable.
         if (callers.Any(row => (row.Name, row.Version) != (target.Name, target.Version) &&
                 row.State is WorkflowVersionState.Published or WorkflowVersionState.Deprecated) ||
-            instances.Any(instance => !WorkflowStoreRules.IsTerminal(instance.Status) &&
-                callers.Any(row => row.Name == instance.WorkflowName && row.Version == instance.WorkflowVersion)))
+            unfinishedInstances.Any(callerVersions.Contains))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Workflow {target.Name} v{target.Version} is required by a caller or unfinished parent");
     }
