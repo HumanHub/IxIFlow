@@ -184,10 +184,12 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output)
         output.WriteLine($"{scenario}, complete production scan");
         if (postgres)
         {
+            await using var transaction = await PostgreSqlPeriodicPlan.BeginAsync(store, connection, "RunnableRead");
             var plan = string.Join(Environment.NewLine, await connection.QueryAsync<string>(
-                "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) " + sql, parameters, commandTimeout: 60));
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) " + sql, parameters, transaction, commandTimeout: 60));
             Assert.Contains("Execution Time", plan);
             output.WriteLine(plan);
+            Assert.DoesNotContain("JIT:", plan);
         }
         else
         {
