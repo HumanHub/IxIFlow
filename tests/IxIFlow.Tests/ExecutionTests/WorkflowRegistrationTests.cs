@@ -251,25 +251,34 @@ public sealed class WorkflowRegistrationTests
         var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         services.RegisterWorkflow<NamedWorkflow>();
         using var provider = services.BuildServiceProvider();
-        var builder = IxIFlow.Builders.Workflow.Create<ParentData>("Retired child parent")
-            .Step<RegistrationActivity>();
-        var parent = invokeByName
-            ? builder.Invoke<RegistrationData>("Customer approval", 3, step => step
-                .Output(data => data.Completed).To(ctx => ctx.WorkflowData.ChildCompleted)).Build()
-            : builder.Invoke<NamedWorkflow, RegistrationData>(step => step
-                .Output(data => data.Completed).To(ctx => ctx.WorkflowData.ChildCompleted)).Build();
+        WorkflowDefinition Parent(int version)
+        {
+            var builder = IxIFlow.Builders.Workflow.Create<ParentData>("Retired child parent", version)
+                .Step<RegistrationActivity>();
+            return invokeByName
+                ? builder.Invoke<RegistrationData>("Customer approval", 3, step => step
+                    .Output(data => data.Completed).To(ctx => ctx.WorkflowData.ChildCompleted)).Build()
+                : builder.Invoke<NamedWorkflow, RegistrationData>(step => step
+                    .Output(data => data.Completed).To(ctx => ctx.WorkflowData.ChildCompleted)).Build();
+        }
+        var parent = Parent(1);
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(parent, new ParentData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var repository = provider.GetRequiredService<IWorkflowStateRepository>();
         var childId = await repository.WaitingInstanceAsync("Customer approval", "approval");
-        await provider.GetRequiredService<IWorkflowCatalog>()
-            .RetireWorkflowVersionAsync("Customer approval", 3);
+        var catalog = provider.GetRequiredService<IWorkflowCatalog>();
+        await catalog.RetireWorkflowVersionAsync(parent.Name, parent.Version);
+        var retirement = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+            catalog.RetireWorkflowVersionAsync("Customer approval", 3));
+        Assert.Equal(WorkflowErrorKind.InvalidState, retirement.Kind);
+        Assert.Contains("unfinished parent", retirement.Message);
 
         EventAssert.Consumed(await engine.ResumeAsync(childId, "approval", new RegistrationEvent()));
         AssertCompleted(await engine.FinishedAsync(started));
+        await catalog.RetireWorkflowVersionAsync("Customer approval", 3);
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
-            () => engine.RunAsync(parent, new ParentData()));
+            () => engine.RunAsync(Parent(2), new ParentData()));
         Assert.Contains("is deactivated", error.Message);
         Assert.Single(await repository.GetWorkflowInstancesByNameAsync("Customer approval"));
     }
