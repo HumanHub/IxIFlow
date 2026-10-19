@@ -47,7 +47,7 @@ public sealed class OperatorActorTests
             instanceId = stopped.InstanceId;
         }
         using var raised = Services(store, "orders-service");
-        await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Growing());
+        await raised.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Growing());
         var client = raised.GetRequiredService<IWorkflowClient>();
 
         var released = await client.ReleaseAsync(instanceId, "joe@ops");

@@ -143,7 +143,7 @@ public static class WorkflowStoreRules
 /// Stores workflow instances. First commits carry a fresh incarnation; child starts allocate
 /// one in the store on insertion. Every instance read round-trips it separately from serialized state.
 /// </summary>
-public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore
+public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStore, IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore
 {
     /// <summary>Registers a member and its capabilities atomically, stamping start and heartbeat with store time.</summary>
     Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default);
@@ -501,6 +501,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, revision));
+            if (stored == null) CheckCatalogStart(snapshot);
+            foreach (var child in commit.ChildStarts) CheckCatalogStart(JsonSerializer.Deserialize<WorkflowInstance>(child.Payload)!);
             foreach (var child in commit.ChildStarts)
                 RefuseRemoved(child.ChildInstanceId, Now);
             // A child's ID is new; a commit that names an existing instance changes nothing.
@@ -927,119 +929,5 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(duration));
-    }
-}
-
-/// <summary>
-///     Workflow version registry interface
-/// </summary>
-public interface IWorkflowVersionRegistry
-{
-    /// <summary>A snapshot of all registered definitions the host can load.</summary>
-    Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync();
-
-    /// <summary>
-    ///     Register a workflow version
-    /// </summary>
-    Task RegisterWorkflowAsync(WorkflowDefinition definition);
-
-    /// <summary>
-    ///     Get workflow definition by name and version
-    /// </summary>
-    Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
-
-    /// <summary>
-    ///     The structure hash recorded when the version was registered, or null if it is not registered.
-    ///     Typed child resolution compares a DI-built definition against it.
-    /// </summary>
-    Task<string?> GetWorkflowStructureHashAsync(string name, int version);
-
-    /// <summary>
-    ///     Deactivate a workflow version
-    /// </summary>
-    Task DeactivateWorkflowVersionAsync(string name, int version);
-}
-
-/// <summary>
-///     Concrete implementation of workflow version registry
-/// </summary>
-public class WorkflowVersionRegistry : IWorkflowVersionRegistry
-{
-    private sealed record Registration(WorkflowDefinition Definition, string StructureHash);
-    private readonly ConcurrentDictionary<(string Name, int Version), Registration> _workflows = new();
-
-    public WorkflowVersionRegistry() { }
-
-    public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
-        Task.FromResult<IReadOnlyList<WorkflowDefinition>>(_workflows.Values.Select(registration => registration.Definition).ToArray());
-
-    public WorkflowVersionRegistry(IEnumerable<WorkflowDefinition> definitions)
-    {
-        foreach (var definition in definitions)
-            RegisterWorkflow(definition);
-    }
-
-    public Task RegisterWorkflowAsync(WorkflowDefinition definition)
-    {
-        RegisterWorkflow(definition);
-        return Task.CompletedTask;
-    }
-
-    private void RegisterWorkflow(WorkflowDefinition definition)
-    {
-        WorkflowDefinitionValidator.Validate(definition);
-        var key = (definition.Name, definition.Version);
-        var loadedHash = new WorkflowScopeCatalog(definition).StructureHash;
-        var published = _workflows.GetOrAdd(key, new Registration(definition, loadedHash));
-        var registeredHash = published.StructureHash;
-        if (registeredHash != loadedHash)
-        {
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                $"Workflow {definition.Name} v{definition.Version} is already registered with structure hash " +
-                $"'{registeredHash}'; loaded structure hash '{loadedHash}' differs");
-        }
-    }
-
-    public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)
-    {
-        var key = (name, version);
-        _workflows.TryGetValue(key, out var registration);
-        return Task.FromResult(registration?.Definition);
-    }
-
-    public Task<string?> GetWorkflowStructureHashAsync(string name, int version)
-    {
-        _workflows.TryGetValue((name, version), out var registration);
-        return Task.FromResult(registration?.StructureHash);
-    }
-
-    public Task DeactivateWorkflowVersionAsync(string name, int version)
-    {
-        var key = (name, version);
-        if (_workflows.TryGetValue(key, out var registration))
-        {
-            var definition = registration.Definition;
-            // Create a copy with IsActive = false
-            var updatedDefinition = new WorkflowDefinition
-            {
-                Id = definition.Id,
-                Name = definition.Name,
-                Version = definition.Version,
-                Description = definition.Description,
-                WorkflowDataType = definition.WorkflowDataType,
-                CreatedAt = definition.CreatedAt,
-                CreatedBy = definition.CreatedBy,
-                Tags = definition.Tags,
-                Steps = definition.Steps,
-                Metadata = new Dictionary<string, object>(definition.Metadata)
-                {
-                    ["IsActive"] = false
-                }
-            };
-            WorkflowDefinitionValidator.Validate(updatedDefinition);
-            _workflows.TryUpdate(key, new Registration(updatedDefinition, registration.StructureHash), registration);
-        }
-
-        return Task.CompletedTask;
     }
 }

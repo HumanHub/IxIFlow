@@ -53,7 +53,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(new ClientActor(null));
         
         // Workflow state and persistence
-        services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
+        services.AddSingleton<IWorkflowCatalog>(provider => new WorkflowCatalog(
+            provider.GetRequiredService<IWorkflowStateRepository>(), provider.GetServices<WorkflowDefinition>()));
+        services.TryAddSingleton<IArtifactStore>(provider => new RepositoryArtifactStore(provider.GetRequiredService<IWorkflowStateRepository>()));
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
         return new IxIFlowBuilder(services);
     }
@@ -125,8 +127,9 @@ public static class ServiceCollectionExtensions
         RetentionSettings.Validate(options.FinishedInstanceRetention, options.TombstoneRetention, options.RetentionBatchSize);
         if (options.RetentionScanInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(options.RetentionScanInterval), "The retention scan interval must be positive");
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ArtifactRetention, TimeSpan.Zero);
         services.Replace(ServiceDescriptor.Singleton(new RetentionSettings(options.FinishedInstanceRetention,
-            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize)));
+            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize) { ArtifactRetention = options.ArtifactRetention }));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -243,6 +246,9 @@ internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinitio
 /// </summary>
 public class IxIFlowOptions
 {
+    /// <summary>How long unreferenced artifacts are retained; defaults to 90 days.</summary>
+    public TimeSpan ArtifactRetention { get; set; } = TimeSpan.FromDays(90);
+
     /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
     public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;
 

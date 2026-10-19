@@ -58,7 +58,7 @@ public interface IWorkflowIngressClient
     Task<WorkflowOwnership?> GetOwnershipAsync(string instanceId);
 }
 
-internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWorkflowVersionRegistry registry,
+internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWorkflowCatalog registry,
     WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null) : IWorkflowIngressClient
 {
     private readonly IWorkflowAdmissionStore _admission = store;
@@ -74,9 +74,6 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             host.WakeNow(existing.InstanceId);
             return existing;
         }
-        var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
-        if (registered?.Metadata.TryGetValue("IsActive", out var active) == true && active is false)
-            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow version is deactivated");
         var now = time.GetUtcNow().UtcDateTime;
         var (instance, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(definition, data, new(), now);
         var prepared = ExecutionCheckpointWriter.Prepare(instance, checkpoint, data, scopes, now,
@@ -85,6 +82,8 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "The admission checkpoint exceeds the configured limit");
         var commit = CheckpointCommit.CreateAdmission(instance);
         await registry.RegisterWorkflowAsync(definition);
+        WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(definition.Name, definition.Version),
+            definition.Name, definition.Version);
         // Keep the exact commit across store-classified retries; no key reservation or separate instance insert.
         for (var attempt = 1; ; attempt++)
         {

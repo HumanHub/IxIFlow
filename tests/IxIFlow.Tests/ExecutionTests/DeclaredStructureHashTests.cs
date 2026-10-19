@@ -148,7 +148,7 @@ public sealed class DeclaredStructureHashTests
     [Fact]
     public async Task RegistrationUsesIdentityAndStructureAndKeepsTheFirstMetadata()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var first = Waiting();
         first.Description = "Original description";
         var reworded = Waiting();
@@ -178,7 +178,7 @@ public sealed class DeclaredStructureHashTests
         services.AddIxIFlow();
         services.RegisterWorkflow<TypedChild>();
         using var provider = services.BuildServiceProvider();
-        var registered = provider.GetRequiredService<IWorkflowVersionRegistry>();
+        var registered = provider.GetRequiredService<IWorkflowCatalog>();
         var children = new ChildWorkflows(provider, registered, TimeProvider.System);
         Assert.Equal(3, (await children.ResolveAsync(parent.Steps[1], starting: true)).Version);
         var wrongStep = Parent().Steps[1];
@@ -189,7 +189,7 @@ public sealed class DeclaredStructureHashTests
         Assert.Contains("v4", wrongVersion.Message);
 
         var replacement = Workflow.Create<StructureHashData>("Pinned child", 3).Step<StructureHashMultiply>().Step<StructureHashMultiply>().Build();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await registry.RegisterWorkflowAsync(replacement);
         var mismatch = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
             new ChildWorkflows(provider, registry, TimeProvider.System).ResolveAsync(parent.Steps[1], starting: true));
@@ -200,7 +200,7 @@ public sealed class DeclaredStructureHashTests
     [Fact]
     public async Task RegistrationRemembersTheHashBeforeTheDefinitionWasMutated()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var definition = Waiting();
         var savedHash = Hash(definition);
         await registry.RegisterWorkflowAsync(definition);
@@ -239,7 +239,7 @@ public sealed class DeclaredStructureHashTests
             id = started.InstanceId;
         }
         using var second = Services(store);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(changed);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(changed);
         var client = second.GetRequiredService<IWorkflowClient>();
         if (operation == "start")
         {

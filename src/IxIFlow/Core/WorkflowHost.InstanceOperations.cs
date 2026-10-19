@@ -17,7 +17,7 @@ public sealed partial class WorkflowHost
         IServiceProvider services,
         IActivityExecutor activityExecutor,
         IWorkflowStateRepository repository,
-        IWorkflowVersionRegistry registry,
+        IWorkflowCatalog registry,
         InProcessInstanceGate gate,
         ExecutionLeaseSettings? leaseSettings = null,
         TimeProvider? timeProvider = null,
@@ -374,13 +374,10 @@ public sealed partial class WorkflowHost
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } existing)
                     return ExistingStart(existing, definition, scopes);
-                var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
-                if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true &&
-                    isActive is false)
-                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                        $"Workflow {definition.Name} v{definition.Version} is deactivated");
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
                 await registry.RegisterWorkflowAsync(definition);
+                WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(definition.Name, definition.Version),
+                    definition.Name, definition.Version);
                 await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
                 // The start is durable from here; a caller waiting only for acceptance continues.
                 _control.Accept(instance.InstanceId);

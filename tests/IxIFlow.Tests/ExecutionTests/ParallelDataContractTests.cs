@@ -645,7 +645,7 @@ public sealed class ParallelDataContractTests
             instanceId = (await Engine(first).RunAsync(definition, new Sparse { Note = null })).InstanceId;
 
         using var second = Services(store);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var finished = await Engine(second).ResumeAsync(instanceId, "go", new Go());
 
         // The saved data says the note is null, so the next host reads null, not the initial value.

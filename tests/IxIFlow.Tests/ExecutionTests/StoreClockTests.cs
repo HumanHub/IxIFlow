@@ -294,7 +294,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
                 .Do(branch => branch.Step<GatedActivity>())
                 .Do(branch => branch.Invoke<ClockData>("SlotlessChild", 1)))
             .Build();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var instanceId = Guid.NewGuid().ToString("N");
         var run = Engine(services).RunAsync(parent, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -333,7 +333,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
                 .Do(branch => branch.Step<GatedActivity>())
                 .Do(branch => branch.Invoke<ClockData>("StoreClockChild", 1)))
             .Build();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var instanceId = Guid.NewGuid().ToString("N");
         var run = Engine(services).RunAsync(parent, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -395,7 +395,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         store.Advance(TimeSpan.FromSeconds(61));
         correct.Advance(TimeSpan.FromSeconds(61));
         using var second = HostServices(correct, repository, failures);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         await RecoverOnceAsync(second, correct);
 
         Assert.Equal(WorkflowStatus.Completed, (await repository.GetWorkflowInstanceAsync(instanceId))!.Status);

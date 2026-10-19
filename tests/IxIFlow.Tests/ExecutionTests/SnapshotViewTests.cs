@@ -61,7 +61,7 @@ public sealed class SnapshotViewTests
         Assert.Contains("is unavailable", missing.Message);
 
         using var changed = Services(repository, TimeProvider.System);
-        await changed.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await changed.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ViewData>("SnapshotDefinition").Step<ViewActivity>().Step<ViewActivity>()
                 .WaitFor<ViewEvent>("go").Build());
         var differs = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
