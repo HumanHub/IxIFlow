@@ -89,6 +89,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         try
         {
             await connection.OpenAsync();
+            // Keep the owned pool identity stable while enforcing set references and cascades.
+            await connection.ExecuteAsync("PRAGMA foreign_keys=ON");
             return connection;
         }
         catch
@@ -222,26 +224,11 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         return settled;
     }
 
-    internal override async Task InsertChildrenAsync(DbConnection connection, DbTransaction transaction,
-        string parentInstanceId, IReadOnlyList<ChildStart> children, DateTime now)
-    {
-        await connection.ExecuteAsync("""
-                INSERT INTO ixiflow_workflow_instances
-                    (instance_id, incarnation, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision,
-                     parent_instance_id)
-                VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @Now, @Payload, 1, @ParentInstanceId)
-                """, children.Select(child => new
-        {
-            child.Instance!.InstanceId,
-            Incarnation = Guid.NewGuid(),
-            child.Instance!.WorkflowName,
-            Status = child.Instance!.Status.ToString(),
-            child.Instance!.CorrelationId,
-            Payload = StampStartPayload(child.Payload, now),
-            Now = Timestamp(now),
-            ParentInstanceId = parentInstanceId
-        }), transaction);
-    }
+    internal override string InsertChildSql => """
+        INSERT INTO ixiflow_workflow_instances (instance_id, incarnation, workflow_name, status, correlation_id, runnable_at_utc, state_json, revision, parent_instance_id, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit)
+        VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @Now, @Payload, 1,
+            @ParentInstanceId, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit)
+        """;
 
     internal override string ReadInstanceSql(string filter, bool wholly) => $"""
             SELECT {StampedRowColumns} FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId;
@@ -500,8 +487,8 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
-              VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
+                  (instance_id, incarnation, workflow_name, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit)
+              VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
@@ -541,7 +528,6 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 DELETE FROM ixiflow_workflow_leases WHERE instance_id = @InstanceId
                 """,
         Statement.DeleteRows => """
-                DELETE FROM ixiflow_workflow_demands WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_outbox_deliveries WHERE event_id IN (SELECT e.event_id FROM ixiflow_outbox_events e WHERE e.instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=e.event_id AND pending.status=0));
                 DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
@@ -583,6 +569,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         return;
     }
 
+    await connection.ExecuteAsync(DemandsSchema, transaction: transaction);
     await connection.ExecuteAsync("""
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
@@ -592,6 +579,10 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             correlation_id TEXT COLLATE BINARY NULL,
             runnable_at_utc TEXT NULL,
             last_host_id TEXT NULL,
+            demand_set_id TEXT COLLATE BINARY NOT NULL REFERENCES ixiflow_demand_sets (demand_set_id),
+            pinned_host TEXT COLLATE BINARY NULL,
+            pin_expires_at_utc TEXT NULL,
+            pin_inherit INTEGER NOT NULL DEFAULT 0,
             ended_at_utc TEXT NULL,
             state_json TEXT NOT NULL,
             cancellation_json TEXT NULL,
@@ -613,6 +604,11 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             ON ixiflow_workflow_instances (runnable_at_utc, instance_id, last_host_id) WHERE runnable_at_utc IS NOT NULL;
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_affinity
             ON ixiflow_workflow_instances (last_host_id, runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
+        CREATE INDEX ix_ixiflow_instances_demand_set ON ixiflow_workflow_instances (demand_set_id);
+        CREATE INDEX ix_ixiflow_instances_set_runnable
+            ON ixiflow_workflow_instances (demand_set_id, runnable_at_utc, instance_id, last_host_id, pinned_host, pin_expires_at_utc) WHERE runnable_at_utc IS NOT NULL;
+        CREATE INDEX ix_ixiflow_instances_set_affinity
+            ON ixiflow_workflow_instances (demand_set_id, last_host_id, runnable_at_utc, instance_id, pinned_host, pin_expires_at_utc) WHERE runnable_at_utc IS NOT NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_events (
             instance_id TEXT COLLATE BINARY NOT NULL,
             event_id TEXT COLLATE BINARY NOT NULL,
@@ -688,7 +684,6 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
-    await connection.ExecuteAsync(DemandsSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 

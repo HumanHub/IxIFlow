@@ -201,7 +201,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         var repository = new PostgreSqlWorkflowStateRepository(connectionString);
         var parent = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
-            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Parent", Status = WorkflowStatus.Suspended,
+            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Parent", Status = WorkflowStatus.Running,
             WorkflowDataJson = "{}"
         };
         var child = new WorkflowInstance
@@ -211,7 +211,9 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         };
         Assert.Equal(WorkflowCommitStatus.Applied,
             (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(repository, parent.InstanceId)).Epoch, 0))).Status);
+        // The running parent keeps its lease and suspends in the commit that starts its child.
         parent.Revision = 1;
+        parent.Status = WorkflowStatus.Suspended;
         try
         {
             Task deleting;
@@ -293,10 +295,12 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
                     $"completed-{child.InstanceId}", "IxIFlow.ChildCompleted", "{}"))));
 
             // A child that is gone when its idle parent asks it to cancel.
-            var orphaned = Instance(WorkflowStatus.Suspended);
+            // The running parent keeps its lease and is idle again in the commit that cancels the child.
+            var orphaned = Instance(WorkflowStatus.Running);
             await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(orphaned, (await StoreTestSupport.LeaseAsync(repository, orphaned.InstanceId)).Epoch, 0,
                 openedWaits: [new OpenedWait("missing", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)]));
             orphaned.Revision = 1;
+            orphaned.Status = WorkflowStatus.Suspended;
             await notifications.ExpectAsync(async () => await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(orphaned, (await StoreTestSupport.LeaseAsync(repository, orphaned.InstanceId)).Epoch, 1, childCancellations: [new ChildCancellation("missing-child", reason, "missing")])));
         }
         finally
