@@ -201,21 +201,6 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers multiple workflows at once
-    /// </summary>
-    /// <param name="services">The service collection</param>
-    /// <param name="configure">Configuration action for workflow registration</param>
-    /// <returns>The service collection for chaining</returns>
-    public static IServiceCollection RegisterWorkflows(
-        this IServiceCollection services,
-        Action<IWorkflowRegistrationBuilder> configure)
-    {
-        var builder = new WorkflowRegistrationBuilder(services);
-        configure(builder);
-        return services;
-    }
-
-    /// <summary>
     /// Builds a workflow definition from a workflow class instance
     /// </summary>
     /// <typeparam name="TWorkflow">The workflow class type</typeparam>
@@ -235,73 +220,6 @@ public static class ServiceCollectionExtensions
         return builder.Build();
     }
 
-    /// <summary>
-    /// Gets a workflow definition by type from the service provider (automatically infers workflow data type)
-    /// </summary>
-    /// <typeparam name="TWorkflow">The workflow class type</typeparam>
-    /// <param name="serviceProvider">The service provider</param>
-    /// <returns>The workflow definition</returns>
-    public static WorkflowDefinition GetWorkflowDefinition<TWorkflow>(
-        this IServiceProvider serviceProvider)
-        where TWorkflow : class
-    {
-        var registration = serviceProvider.GetService<RegisteredWorkflowDefinition<TWorkflow>>();
-        if (registration != null)
-            return registration.Definition;
-
-        // Try to get a registered definition first
-        var definitions = serviceProvider.GetServices<WorkflowDefinition>();
-        var definition = definitions.FirstOrDefault(d => d.Name == typeof(TWorkflow).Name);
-        
-        if (definition != null)
-            return definition;
-
-        // If not found, build it on demand using reflection
-        var workflowInterface = typeof(TWorkflow)
-            .GetInterfaces()
-            .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IWorkflow<>));
-        
-        if (workflowInterface == null)
-            throw new ArgumentException($"{typeof(TWorkflow).Name} must implement IWorkflow<T>");
-        
-        var workflowDataType = workflowInterface.GetGenericArguments()[0];
-        
-        var buildMethod = typeof(ServiceCollectionExtensions)
-            .GetMethod(nameof(BuildWorkflowDefinition), BindingFlags.Public | BindingFlags.Static)!
-            .MakeGenericMethod(typeof(TWorkflow), workflowDataType);
-        
-        var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-        return (WorkflowDefinition)buildMethod.Invoke(null, new object?[] { workflow, null })!;
-    }
-
-    /// <summary>
-    /// Gets a workflow definition by type from the service provider (explicit types for advanced scenarios)
-    /// </summary>
-    /// <typeparam name="TWorkflow">The workflow class type</typeparam>
-    /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
-    /// <param name="serviceProvider">The service provider</param>
-    /// <returns>The workflow definition</returns>
-    public static WorkflowDefinition GetWorkflowDefinition<TWorkflow, TWorkflowData>(
-        this IServiceProvider serviceProvider)
-        where TWorkflow : class, IWorkflow<TWorkflowData>
-        where TWorkflowData : class
-    {
-        var registration = serviceProvider.GetService<RegisteredWorkflowDefinition<TWorkflow>>();
-        if (registration != null)
-            return registration.Definition;
-
-        // Try to get a registered definition first
-        var definitions = serviceProvider.GetServices<WorkflowDefinition>();
-        var definition = definitions.FirstOrDefault(d => d.Name == typeof(TWorkflow).Name);
-        
-        if (definition != null)
-            return definition;
-
-        // If not found, build it on demand
-        var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-        return BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow);
-    }
-
     private static void EnsureWorkflowTypeIsNotRegistered<TWorkflow>(IServiceCollection services)
         where TWorkflow : class
     {
@@ -313,55 +231,6 @@ public static class ServiceCollectionExtensions
 }
 
 internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinition Definition);
-
-/// <summary>
-/// Builder for registering multiple workflows
-/// </summary>
-public interface IWorkflowRegistrationBuilder
-{
-    /// <summary>
-    /// Registers a workflow with automatic type inference
-    /// </summary>
-    IWorkflowRegistrationBuilder RegisterWorkflow<TWorkflow>(string? name = null)
-        where TWorkflow : class;
-
-    /// <summary>
-    /// Registers a workflow with explicit types (for advanced scenarios)
-    /// </summary>
-    IWorkflowRegistrationBuilder RegisterWorkflow<TWorkflow, TWorkflowData>(
-        string? name = null)
-        where TWorkflow : class, IWorkflow<TWorkflowData>
-        where TWorkflowData : class;
-}
-
-/// <summary>
-/// Implementation of workflow registration builder
-/// </summary>
-internal class WorkflowRegistrationBuilder : IWorkflowRegistrationBuilder
-{
-    private readonly IServiceCollection _services;
-
-    public WorkflowRegistrationBuilder(IServiceCollection services)
-    {
-        _services = services;
-    }
-
-    public IWorkflowRegistrationBuilder RegisterWorkflow<TWorkflow>(string? name = null)
-        where TWorkflow : class
-    {
-        _services.RegisterWorkflow<TWorkflow>(name);
-        return this;
-    }
-
-    public IWorkflowRegistrationBuilder RegisterWorkflow<TWorkflow, TWorkflowData>(
-        string? name = null)
-        where TWorkflow : class, IWorkflow<TWorkflowData>
-        where TWorkflowData : class
-    {
-        _services.RegisterWorkflow<TWorkflow, TWorkflowData>(name);
-        return this;
-    }
-}
 
 /// <summary>
 /// Configuration options for IxIFlow services

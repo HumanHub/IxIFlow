@@ -493,11 +493,9 @@ public sealed partial class YamlParityTests
         collection.AddTransient<ParityFlaky>();
         collection.AddTransient<ParityPolicyPath>();
         collection.AddIxIFlow();
+        collection.RegisterWorkflow<ParityChildWorkflow>();
         await using var services = collection.BuildServiceProvider();
         await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Workflow_child.Build());
-        var typedBuilder = new WorkflowBuilder<FlowData>(nameof(ParityChildWorkflow), 3);
-        new ParityChildWorkflow().Build(typedBuilder);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(typedBuilder.Build());
         var client = services.GetRequiredService<IWorkflowClient>();
         var result = await client.RunAsync(definition, data?.Invoke() ?? new ParityData { Values = [4, 6] });
         if (idle != null) result = await idle(services, result);
