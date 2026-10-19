@@ -37,48 +37,57 @@ public sealed class WorkflowPublishingTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task PublishRoundTripsArchiveAndCatalogAndRetry(bool sqlite)
+    public Task PublishRoundTripsArchiveAndCatalogAndRetry(bool sqlite) => WithStore(sqlite, RoundTrip);
+
+    [SqlServerFact, Trait("Category", "SqlIntegration")]
+    public Task PublishRoundTripsArchiveAndCatalogAndRetryOnSqlServer() =>
+        RoundTrip(new SqlWorkflowStateRepository(SqlTestDatabase<RoundTripScope>.ConnectionString));
+
+    [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
+    public Task PublishRoundTripsArchiveAndCatalogAndRetryOnPostgreSql() =>
+        RoundTrip(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<RoundTripScope>.ConnectionString));
+
+    private static async Task RoundTrip(IWorkflowStateRepository store)
     {
-        await WithStore(sqlite, async store =>
-        {
-            var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), 0);
-            Assert.Equal(WorkflowVersionState.Draft, draft.State);
-            var catalog = new WorkflowCatalog(store);
-            Assert.Null(await catalog.GetLatestWorkflowVersionAsync(draft.Name));
-            Assert.Null(await catalog.GetWorkflowDefinitionAsync(draft.Name, draft.Version));
-            var result = await new WorkflowPublisher(catalog, store, Options()).PublishAsync(draft.Id);
-            Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-            var version = Assert.IsType<WorkflowVersion>(result.Version);
-            Assert.Equal(WorkflowVersionState.Published, version.State);
-            Assert.Equal(draft.Revision, version.PublishedDraftRevision);
-            Assert.Null(await store.GetDefinitionAsync(draft.Name, draft.Version));
-            Assert.Equal(version.ArtifactDigest, (await store.GetWorkflowVersionAsync(draft.Name, draft.Version))!.ArtifactDigest);
-            await using var stored = await store.OpenAsync(version.ArtifactDigest!.Value);
-            using var bytes = new MemoryStream();
-            await stored!.CopyToAsync(bytes);
-            Assert.Equal(version.ArtifactDigest, ArtifactDigest.Of(bytes.ToArray()));
-            var bundle = await WorkflowBundleArchive.ReadAsync(new MemoryStream(bytes.ToArray()), version.ArtifactDigest.Value);
-            Assert.Equal(version.StructureHash, bundle.Manifest.StructureHash);
-            Assert.Equal("Bundled", bundle.Manifest.Name);
-            Assert.Equal(1, bundle.Manifest.Version);
-            Assert.Equal(typeof(Data).AssemblyQualifiedName, bundle.Manifest.DataType);
-            Assert.Equal(WorkflowCompilation.Settings, bundle.Manifest.Compiler);
-            Assert.Contains(typeof(WorkflowDefinition).Assembly.FullName!, bundle.Manifest.SharedAssemblies.Keys);
-            Assert.Contains(typeof(Data).Assembly.FullName!, bundle.Manifest.SharedAssemblies.Keys);
-            Assert.Equal(4, bundle.Entries.Count);
-            foreach (var entry in bundle.Entries)
-                Assert.Equal(bundle.Manifest.Entries[entry.Key], ArtifactDigest.Of(entry.Value.Span));
-            Assert.Equal(WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(Yaml)), Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.YamlPath].Span));
-            Assert.Contains("#line", Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.SourcePath].Span));
-            Assert.Equal(JsonSerializer.Serialize(bundle.Manifest), version.ManifestJson);
-            // A fresh publisher/catalog sees the durable receipt after the draft has gone.
-            var retry = await new WorkflowPublisher(new WorkflowCatalog(store), store, Options()).PublishAsync(draft.Id);
-            Assert.True(retry.Success);
-            Assert.Equal(version.ArtifactDigest, retry.Version!.ArtifactDigest);
-            Assert.Single(await store.GetWorkflowVersionsAsync());
-            await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SaveDefinitionAsync(draft, 0));
-        });
+        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), 0);
+        Assert.Equal(WorkflowVersionState.Draft, draft.State);
+        var catalog = new WorkflowCatalog(store);
+        Assert.Null(await catalog.GetLatestWorkflowVersionAsync(draft.Name));
+        Assert.Null(await catalog.GetWorkflowDefinitionAsync(draft.Name, draft.Version));
+        var result = await new WorkflowPublisher(catalog, store, Options()).PublishAsync(draft.Id);
+        Assert.True(result.Success, string.Join("; ", result.Diagnostics));
+        var version = Assert.IsType<WorkflowVersion>(result.Version);
+        Assert.Equal(WorkflowVersionState.Published, version.State);
+        Assert.Equal(draft.Revision, version.PublishedDraftRevision);
+        Assert.Null(await store.GetDefinitionAsync(draft.Name, draft.Version));
+        Assert.Equal(version.ArtifactDigest, (await store.GetWorkflowVersionAsync(draft.Name, draft.Version))!.ArtifactDigest);
+        await using var stored = await store.OpenAsync(version.ArtifactDigest!.Value);
+        using var bytes = new MemoryStream();
+        await stored!.CopyToAsync(bytes);
+        Assert.Equal(version.ArtifactDigest, ArtifactDigest.Of(bytes.ToArray()));
+        var bundle = await WorkflowBundleArchive.ReadAsync(new MemoryStream(bytes.ToArray()), version.ArtifactDigest.Value);
+        Assert.Equal(version.StructureHash, bundle.Manifest.StructureHash);
+        Assert.Equal("Bundled", bundle.Manifest.Name);
+        Assert.Equal(1, bundle.Manifest.Version);
+        Assert.Equal(typeof(Data).AssemblyQualifiedName, bundle.Manifest.DataType);
+        Assert.Equal(WorkflowCompilation.Settings, bundle.Manifest.Compiler);
+        Assert.Contains(typeof(WorkflowDefinition).Assembly.FullName!, bundle.Manifest.SharedAssemblies.Keys);
+        Assert.Contains(typeof(Data).Assembly.FullName!, bundle.Manifest.SharedAssemblies.Keys);
+        Assert.Equal(4, bundle.Entries.Count);
+        foreach (var entry in bundle.Entries)
+            Assert.Equal(bundle.Manifest.Entries[entry.Key], ArtifactDigest.Of(entry.Value.Span));
+        Assert.Equal(WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(Yaml)), Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.YamlPath].Span));
+        Assert.Contains("#line", Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.SourcePath].Span));
+        Assert.Equal(JsonSerializer.Serialize(bundle.Manifest), version.ManifestJson);
+        // A fresh publisher/catalog sees the durable receipt after the draft has gone.
+        var retry = await new WorkflowPublisher(new WorkflowCatalog(store), store, Options()).PublishAsync(draft.Id);
+        Assert.True(retry.Success);
+        Assert.Equal(version.ArtifactDigest, retry.Version!.ArtifactDigest);
+        Assert.Single(await store.GetWorkflowVersionsAsync());
+        await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SaveDefinitionAsync(draft, 0));
     }
+
+    private sealed class RoundTripScope;
 
     [Theory]
     [InlineData("validate", WorkflowPublishStage.Validate, 4)]
@@ -120,25 +129,34 @@ public sealed class WorkflowPublishingTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ConcurrentEditAfterUploadRefusesTheStaleRevision(bool sqlite)
+    public Task ConcurrentEditAfterUploadRefusesTheStaleRevision(bool sqlite) => WithStore(sqlite, StaleRevision);
+
+    [SqlServerFact, Trait("Category", "SqlIntegration")]
+    public Task ConcurrentEditAfterUploadRefusesTheStaleRevisionOnSqlServer() =>
+        StaleRevision(new SqlWorkflowStateRepository(SqlTestDatabase<StaleRevisionScope>.ConnectionString));
+
+    [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
+    public Task ConcurrentEditAfterUploadRefusesTheStaleRevisionOnPostgreSql() =>
+        StaleRevision(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<StaleRevisionScope>.ConnectionString));
+
+    private static async Task StaleRevision(IWorkflowStateRepository store)
     {
-        await WithStore(sqlite, async store =>
+        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), 0);
+        var upload = new ObservedArtifacts(store, async () =>
         {
-            var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), 0);
-            var upload = new ObservedArtifacts(store, async () =>
-            {
-                Assert.Null(await store.GetWorkflowVersionAsync(draft.Name, draft.Version));
-                Assert.NotNull(await store.GetDefinitionAsync(draft.Name, draft.Version));
-                await store.SaveDefinitionAsync(draft with { Source = Yaml + "\n# edited" }, draft.Revision);
-            });
-            var result = await new WorkflowPublisher(store, upload, Options()).PublishAsync(draft.Id);
-            Assert.False(result.Success);
-            Assert.Equal(WorkflowPublishStage.Publish, Assert.Single(result.Diagnostics).Stage);
-            Assert.Equal(2, (await store.GetDefinitionAsync(draft.Name, draft.Version))!.Revision);
-            Assert.Empty(await store.GetWorkflowVersionsAsync());
-            Assert.True(await store.ExistsAsync(upload.Digest!.Value));
+            Assert.Null(await store.GetWorkflowVersionAsync(draft.Name, draft.Version));
+            Assert.NotNull(await store.GetDefinitionAsync(draft.Name, draft.Version));
+            await store.SaveDefinitionAsync(draft with { Source = Yaml + "\n# edited" }, draft.Revision);
         });
+        var result = await new WorkflowPublisher(store, upload, Options()).PublishAsync(draft.Id);
+        Assert.False(result.Success);
+        Assert.Equal(WorkflowPublishStage.Publish, Assert.Single(result.Diagnostics).Stage);
+        Assert.Equal(2, (await store.GetDefinitionAsync(draft.Name, draft.Version))!.Revision);
+        Assert.Empty(await store.GetWorkflowVersionsAsync());
+        Assert.True(await store.ExistsAsync(upload.Digest!.Value));
     }
+
+    private sealed class StaleRevisionScope;
 
     [Fact]
     public async Task SameRevisionConcurrentPublicationsAreIdempotent()
