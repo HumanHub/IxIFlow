@@ -38,13 +38,31 @@ public abstract partial class RelationalWorkflowStateRepository
     // A provider operation forwarded through decorators reuses the transaction holding the catalog lock.
     private readonly AsyncLocal<(DbConnection Connection, DbTransaction Transaction)?> _catalogTransaction = new();
 
+    private async Task<T> CatalogConnectionAsync<T>(Func<DbConnection, DbTransaction?, Task<T>> action,
+        Operation? operation = null)
+    {
+        await EnsureSchemaAsync();
+        if (_catalogTransaction.Value is { } current)
+            return await action(current.Connection, current.Transaction);
+        return operation is { } write ? await ExecuteOperationAsync(write, RunAsync) : await RunAsync();
+
+        async Task<T> RunAsync()
+        {
+            await using var connection = await OpenConnectionAsync();
+            return await action(connection, null);
+        }
+    }
+
     private async Task<T> CatalogWriteAsync<T>(Func<DbConnection, DbTransaction, Task<T>> action)
     {
         await EnsureSchemaAsync();
+        if (_catalogTransaction.Value is { } current)
+            return await action(current.Connection, current.Transaction);
         return await ExecuteOperationAsync(Operation.Catalog, async () =>
         {
             await using var connection = await OpenConnectionAsync();
-            await using var transaction = (await BeginTransactionAsync(connection, Operation.Catalog))!;
+            await using var transaction = await BeginTransactionAsync(connection, Operation.Catalog)
+                ?? throw new InvalidOperationException("Catalog writes require a transaction");
             await ExecuteOptionalAsync(connection, transaction, Statement.CatalogLock, null);
             var previous = _catalogTransaction.Value;
             _catalogTransaction.Value = (connection, transaction);
@@ -61,9 +79,9 @@ public abstract partial class RelationalWorkflowStateRepository
     public async Task<WorkflowDraft?> GetDefinitionAsync(string name, int version)
     {
         WorkflowCatalogRules.ValidateName(name);
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        return (await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition), new { Name = name, Version = version }))?.Value;
+        return await CatalogConnectionAsync(async (connection, transaction) =>
+            (await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition),
+                new { Name = name, Version = version }, transaction))?.Value);
     }
 
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision)
@@ -73,13 +91,17 @@ public abstract partial class RelationalWorkflowStateRepository
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         return SaveDraftAsync();
 
-        async Task<WorkflowDraft> SaveDraftAsync()
+        Task<WorkflowDraft> SaveDraftAsync() => CatalogConnectionAsync(async (connection, current) =>
         {
-            await EnsureSchemaAsync();
-            return await ExecuteOperationAsync(Operation.Catalog, async () =>
+            if (current != null) return await WriteAsync(current);
+            await using var transaction = await BeginTransactionAsync(connection, Operation.Catalog)
+                ?? throw new InvalidOperationException("Saving a definition requires a transaction");
+            var result = await WriteAsync(transaction);
+            await transaction.CommitAsync();
+            return result;
+
+            async Task<WorkflowDraft> WriteAsync(DbTransaction transaction)
             {
-                await using var connection = await OpenConnectionAsync();
-                await using var transaction = (await BeginTransactionAsync(connection, Operation.Catalog))!;
                 var saved = definition with { Revision = checked(expectedRevision + 1) };
                 // Insert-if-absent and compare-and-swap updates need no catalog lock.
                 var changed = await connection.ExecuteAsync(RequiredSql(expectedRevision == 0
@@ -92,10 +114,9 @@ public abstract partial class RelationalWorkflowStateRepository
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A published version cannot be edited");
                 if (changed == 0)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed");
-                await transaction.CommitAsync();
                 return saved;
-            });
-        }
+            }
+        }, Operation.Catalog);
     }
 
     public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) =>
@@ -147,19 +168,17 @@ public abstract partial class RelationalWorkflowStateRepository
     public async Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version)
     {
         WorkflowCatalogRules.ValidateName(name);
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        return (await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion),
-            new { Name = name, Version = version }))?.Value;
+        return await CatalogConnectionAsync(async (connection, transaction) =>
+            (await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion),
+                new { Name = name, Version = version }, transaction))?.Value);
     }
 
     public async Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null)
     {
         if (name != null) WorkflowCatalogRules.ValidateName(name);
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        return (await connection.QueryAsync<VersionRow>(RequiredSql(name == null ? Statement.CatalogVersions : Statement.CatalogNamedVersions),
-            new { Name = name })).Select(row => row.Value).ToArray();
+        return await CatalogConnectionAsync<IReadOnlyList<WorkflowVersion>>(async (connection, transaction) =>
+            (await connection.QueryAsync<VersionRow>(RequiredSql(name == null ? Statement.CatalogVersions : Statement.CatalogNamedVersions),
+                new { Name = name }, transaction)).Select(row => row.Value).ToArray());
     }
 
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null)
@@ -222,14 +241,13 @@ public abstract partial class RelationalWorkflowStateRepository
         await content.CopyToAsync(buffer, cancellationToken);
         var bytes = buffer.ToArray();
         var digest = ArtifactDigest.Of(bytes);
-        await EnsureSchemaAsync();
-        await ExecuteOperationAsync(Operation.Artifact, async () =>
+        await CatalogConnectionAsync(async (connection, transaction) =>
         {
-            await using var connection = await OpenConnectionAsync();
-            await connection.ExecuteAsync(RequiredSql(Statement.ArtifactPut), WithTimes(new
-            { Digest = digest.Value, Kind = kind.ToString(), Content = bytes }, ("Now", await OutboxNowAsync(connection, null))));
+            await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.ArtifactPut), WithTimes(new
+            { Digest = digest.Value, Kind = kind.ToString(), Content = bytes }, ("Now", await OutboxNowAsync(connection, transaction))),
+                transaction, cancellationToken: cancellationToken));
             return true;
-        });
+        }, Operation.Artifact);
         return digest;
     }
 
@@ -237,9 +255,9 @@ public abstract partial class RelationalWorkflowStateRepository
     {
         cancellationToken.ThrowIfCancellationRequested();
         _ = new ArtifactDigest(digest.Value);
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        var content = await connection.QuerySingleOrDefaultAsync<byte[]>(RequiredSql(Statement.ArtifactRead), new { Digest = digest.Value });
+        var content = await CatalogConnectionAsync((connection, transaction) =>
+            connection.QuerySingleOrDefaultAsync<byte[]>(new CommandDefinition(RequiredSql(Statement.ArtifactRead),
+                new { Digest = digest.Value }, transaction, cancellationToken: cancellationToken)));
         return content == null ? null : new MemoryStream(content, writable: false);
     }
 
@@ -247,22 +265,21 @@ public abstract partial class RelationalWorkflowStateRepository
     {
         cancellationToken.ThrowIfCancellationRequested();
         _ = new ArtifactDigest(digest.Value);
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        return await connection.ExecuteScalarAsync<int>(RequiredSql(Statement.ArtifactExists), new { Digest = digest.Value }) != 0;
+        return await CatalogConnectionAsync((connection, transaction) =>
+            connection.ExecuteScalarAsync<int>(new CommandDefinition(RequiredSql(Statement.ArtifactExists),
+                new { Digest = digest.Value }, transaction, cancellationToken: cancellationToken))) != 0;
     }
 
     public async ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         _ = new ArtifactDigest(digest.Value);
-        await EnsureSchemaAsync();
-        await ExecuteOperationAsync(Operation.Artifact, async () =>
+        await CatalogConnectionAsync(async (connection, transaction) =>
         {
-            await using var connection = await OpenConnectionAsync();
-            await connection.ExecuteAsync(RequiredSql(Statement.ArtifactDelete), new { Digest = digest.Value });
+            await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.ArtifactDelete),
+                new { Digest = digest.Value }, transaction, cancellationToken: cancellationToken));
             return true;
-        });
+        }, Operation.Artifact);
     }
 
     public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
@@ -290,10 +307,12 @@ public abstract partial class RelationalWorkflowStateRepository
         if (_catalogTransaction.Value is { } current)
             return await CollectAsync(current.Connection, current.Transaction);
         await EnsureSchemaAsync();
-        return await ExecuteOperationAsync(Operation.Artifact, async () =>
+        return await ExecuteOperationAsync(Operation.Purge, async () =>
         {
             await using var connection = await OpenConnectionAsync();
-            await using var transaction = (await BeginTransactionAsync(connection, Operation.Artifact))!;
+            // Purge is a multi-statement atomic write on every provider; Artifact may autocommit.
+            await using var transaction = await BeginTransactionAsync(connection, Operation.Purge)
+                ?? throw new InvalidOperationException("Artifact purge requires a transaction");
             var removed = await CollectAsync(connection, transaction);
             await transaction.CommitAsync();
             return removed;
@@ -301,14 +320,15 @@ public abstract partial class RelationalWorkflowStateRepository
 
         async Task<int> CollectAsync(DbConnection connection, DbTransaction transaction)
         {
-            var candidates = await connection.QueryAsync<string>(RequiredSql(Statement.ArtifactCandidates),
-                WithTimes(new { References = ArtifactReferencesParameter(references), Limit = batchSize }, ("Cutoff", olderThanUtc)), transaction);
+            var candidates = await connection.QueryAsync<string>(new CommandDefinition(RequiredSql(Statement.ArtifactCandidates),
+                WithTimes(new { References = ArtifactReferencesParameter(references), Limit = batchSize }, ("Cutoff", olderThanUtc)),
+                transaction, cancellationToken: cancellationToken));
             var removed = 0;
             foreach (var digest in candidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                removed += await connection.ExecuteAsync(RequiredSql(Statement.ArtifactDeleteOld),
-                    WithTimes(new { Digest = digest }, ("Cutoff", olderThanUtc)), transaction);
+                removed += await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.ArtifactDeleteOld),
+                    WithTimes(new { Digest = digest }, ("Cutoff", olderThanUtc)), transaction, cancellationToken: cancellationToken));
             }
             return removed;
         }

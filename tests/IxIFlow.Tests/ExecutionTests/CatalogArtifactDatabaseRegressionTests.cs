@@ -57,7 +57,7 @@ public sealed class CatalogArtifactDatabaseRegressionTests
             var commit = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(ordinary, ordinaryLease.Epoch, ordinary.Revision))
                 .WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(WorkflowCommitStatus.Applied, commit.Status);
-            var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", "source"), 0).WaitAsync(TimeSpan.FromSeconds(5));
+            var draft = await store.SaveDefinitionAsync(new(name, 2, "workflow", "source"), 0).WaitAsync(TimeSpan.FromSeconds(5));
             await store.SaveDefinitionAsync(draft with { Source = "edit" }, 1).WaitAsync(TimeSpan.FromSeconds(5));
             // The blocked child-start must not have locked its parent's row before the catalog lock.
             await using var probe = connect();

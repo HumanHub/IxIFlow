@@ -211,12 +211,17 @@ public partial class InMemoryWorkflowStateRepository
         cancellationToken.ThrowIfCancellationRequested();
         lock (_claimLock)
         {
-            var removed = _artifacts.Where(pair => pair.Value.Created < olderThanUtc && !references.Contains(pair.Key))
-                .OrderBy(pair => pair.Value.Created).ThenBy(pair => pair.Key.Value, StringComparer.Ordinal)
-                .Take(batchSize).Select(pair => pair.Key).ToArray();
-            foreach (var digest in removed)
-                if (_artifacts[digest].Created < olderThanUtc) _artifacts.Remove(digest);
-            return ValueTask.FromResult(removed.Length);
+            var removed = 0;
+            // Dictionary removal does not invalidate enumeration. The monitor excludes refreshes.
+            foreach (var (digest, artifact) in _artifacts)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (artifact.Created >= olderThanUtc || references.Contains(digest)) continue;
+                cancellationToken.ThrowIfCancellationRequested();
+                _artifacts.Remove(digest);
+                if (++removed == batchSize) break;
+            }
+            return ValueTask.FromResult(removed);
         }
     }
 }
