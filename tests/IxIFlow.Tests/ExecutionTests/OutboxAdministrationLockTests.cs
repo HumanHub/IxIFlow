@@ -46,7 +46,8 @@ public sealed class OutboxAdministrationLockTests
             await using var observer = Connect();
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             while (await observer.ExecuteScalarAsync<int>(new CommandDefinition(sqlServer
-                ? "SELECT COUNT(*) FROM sys.dm_exec_requests WHERE blocking_session_id=@Session"
+                // SQL Server reports a queued waiter as blocked by the waiter ahead of it, so count the lock's waiters.
+                ? "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_type='APPLICATION' AND request_status='WAIT' AND resource_database_id=DB_ID() AND request_session_id<>@Session"
                 : "SELECT COUNT(*)::int FROM pg_stat_activity WHERE @Session=ANY(pg_blocking_pids(pid))",
                 new { Session = session }, cancellationToken: timeout.Token)) < count)
                 await Task.Yield();
