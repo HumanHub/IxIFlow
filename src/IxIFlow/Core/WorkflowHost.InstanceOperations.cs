@@ -37,6 +37,24 @@ public sealed partial class WorkflowHost
 
         private readonly string? _defaultActor = (services.GetService(typeof(ClientActor)) as ClientActor)?.Name;
 
+        private readonly HostSettings _hostSettings = (services.GetService(typeof(HostSettings)) as HostSettings) ?? HostSettings.Default;
+
+        private async Task<ClaimQuery> ClaimQueryAsync() => new(_hostSettings.Id,
+            await WorkflowHeartbeatService.CapabilitiesAsync(registry, _hostSettings));
+
+        private async Task<bool> MeetsDemandsAsync(string instanceId, IReadOnlyList<WorkflowDemand> demands, ClaimQuery query)
+        {
+            // A host clock must neither expire a pin early nor keep an expired pin alive.
+            var now = demands.Any(demand => demand.ExpiresAtUtc != null)
+                ? (await _store.GetPendingEventsAsync(instanceId, 0, 1)).StoreTimeUtc
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The store did not return its clock")
+                : DateTime.MinValue;
+            return DemandMatching.Meets(demands, query.Capabilities, now);
+        }
+
+        private static WorkflowExecutionResult Scheduled(string instanceId) => new()
+        { InstanceId = instanceId, Status = WorkflowExecutionStatus.Scheduled };
+
         private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
         public static bool HasStructuredCheckpoint(
@@ -128,6 +146,8 @@ public sealed partial class WorkflowHost
                 await RefuseRemovedAsync(instanceId);
             if (instance?.Status != WorkflowStatus.NeedsResolution || !HasStructuredCheckpoint(instance))
                 return Rejected(instanceId, "The workflow instance has no activity awaiting resolution");
+            var claim = await ClaimQueryAsync();
+            if (!await MeetsDemandsAsync(instanceId, WorkflowDemands.Saved(instance), claim)) return Scheduled(instanceId);
 
             var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
@@ -163,7 +183,7 @@ public sealed partial class WorkflowHost
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
 
             await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-                _store, instance, _leaseSettings, _watch, _time);
+                _store, instance, _leaseSettings, _watch, claim, _time, ExecutionClaimKind.Operator);
             if (owner == null)
                 return WorkflowExecutor.Busy(instanceId);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
@@ -372,7 +392,7 @@ public sealed partial class WorkflowHost
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } started)
                     return ExistingStart(started, definition, scopes);
-                await using var owner = await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, _time)
+                await using var owner = await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, await ClaimQueryAsync(), _time)
                         ?? (options.InstanceId == null
                             ? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
                                 "The new workflow instance could not acquire execution ownership")
@@ -392,7 +412,9 @@ public sealed partial class WorkflowHost
                 await registry.RegisterWorkflowAsync(definition);
                 if (options.WhenUnschedulable == WhenUnschedulable.Fail)
                     await WorkflowDemands.RefuseUnschedulableAsync(_store, checkpoint.Demands, cancellationToken);
-                await PersistAsync(instance, checkpoint, workflowData, scopes, owner);
+                var startClaim = await ClaimQueryAsync();
+                var handoff = !await MeetsDemandsAsync(instance.InstanceId, checkpoint.Demands, startClaim);
+                await PersistAsync(instance, checkpoint, workflowData, scopes, owner, handoff ? TimeSpan.Zero : null);
                 if (checkpoint.HostPinLifetime != null)
                 {
                     var saved = await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId)
@@ -403,6 +425,11 @@ public sealed partial class WorkflowHost
                 }
                 // The start is durable from here; a caller waiting only for acceptance continues.
                 _control.Accept(instance.InstanceId);
+                if (handoff)
+                {
+                    _control.Runnable(instance.InstanceId);
+                    return Scheduled(instance.InstanceId);
+                }
                 return await RunAndSaveAsync(definition, instance, checkpoint, workflowData,
                     owner, cancellationToken);
             }
@@ -589,6 +616,10 @@ public sealed partial class WorkflowHost
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null)
                 await RefuseRemovedAsync(instanceId);
+            var claim = await ClaimQueryAsync();
+            if (instance != null && !WorkflowStoreRules.IsTerminal(instance.Status) &&
+                HasStructuredCheckpoint(instance) && !await MeetsDemandsAsync(instanceId, WorkflowDemands.Saved(instance), claim))
+                return Scheduled(instanceId);
             // Even an idle recovery must refuse a different loaded structure before answering
             // from saved positions. Read the schema envelope before interpreting its state.
             var checkedCheckpoint = HasStructuredCheckpoint(instance)
@@ -631,7 +662,8 @@ public sealed partial class WorkflowHost
             // Ownership comes before the workflow data is read, so an instance whose data or code kills
             // its host is still counted by the next claim, and quarantined (B-08).
             await using var owner = await WorkflowExecutionLease.TryAcquireAsync(
-                _store, instance, _leaseSettings, _watch, _time);
+                _store, instance, _leaseSettings, _watch, claim, _time,
+                release ? ExecutionClaimKind.Operator : ExecutionClaimKind.Runnable);
             if (owner == null)
                 return WorkflowExecutor.Busy(instanceId);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
@@ -778,12 +810,12 @@ public sealed partial class WorkflowHost
 
         // A request whose checkpoint would exceed a limit is refused; the instance keeps its saved state.
         private async Task PersistAsync(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
-            object workflowData, WorkflowScopeCatalog scopes, WorkflowExecutionLease owner)
+            object workflowData, WorkflowScopeCatalog scopes, WorkflowExecutionLease owner, TimeSpan? parkFor = null)
         {
             try
             {
                 await ExecutionCheckpointWriter.CommitAsync(new HostedRun(this, instance, owner), instance,
-                    checkpoint, workflowData, scopes, Now);
+                    checkpoint, workflowData, scopes, Now, parkFor: parkFor);
             }
             catch (CheckpointLimitExceededException error)
             {

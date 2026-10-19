@@ -80,7 +80,8 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
     public static async Task<WorkflowExecutionLease?> TryAcquireAsync(
         IWorkflowStateRepository repository, WorkflowInstance instance,
-        ExecutionLeaseSettings settings, CancellationWatch watch, TimeProvider? time = null)
+        ExecutionLeaseSettings settings, CancellationWatch watch, ClaimQuery query, TimeProvider? time = null,
+        ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
     {
         if (settings.Duration <= TimeSpan.Zero || settings.RenewalInterval <= TimeSpan.Zero ||
             settings.RenewalInterval >= settings.Duration)
@@ -92,7 +93,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         // The store may have granted the lease at any point after it was asked.
         var requestedAtUtc = time.GetUtcNow().UtcDateTime;
         if (await repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, token,
-                settings.Duration) is not { } grant)
+                settings.Duration, query, kind) is not { } grant)
             return null;
         return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, requestedAtUtc, settings,
             time, watch);

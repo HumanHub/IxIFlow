@@ -142,8 +142,8 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
         var receipt = result.Event;
         var status = result.Status;
         while (receipt?.Outcome == EventOutcome.Pending
-                   ? status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended
-                   : status == WorkflowExecutionStatus.Running)
+                   ? status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended
+                   : status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Scheduled)
         {
             using var watch = host.WatchSettled(instanceId, out var settled);
             receipt = await host.ReadAsync(client => client.ReadEventAsync(instanceId, eventId));

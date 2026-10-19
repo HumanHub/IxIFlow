@@ -192,10 +192,10 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWo
         IReadOnlyCollection<string> instanceIds);
 
     /// <summary>
-    /// Lists up to <paramref name="limit"/> instances a host may claim now: their runnable time has
-    /// passed and nobody holds their lease. The earliest come first.
+    /// Lists up to the query limit of due, unowned instances whose active demands this host meets.
+    /// This host's last-run rows come first, each group ordered by runnable time and instance ID.
     /// </summary>
-    Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit);
+    Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query);
 
     /// <summary>
     /// Atomically saves a valid schema-4 checkpoint at its expected revision + 1, under a granted,
@@ -217,10 +217,12 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWo
     /// being released while the instance was <see cref="WorkflowStatus.Running"/>, its owner lost the
     /// instance with work in flight, and the grant's crash count is one higher, in the same atomic
     /// step. Returns null while another owner holds the lease or the ID has a live tombstone,
-    /// checked atomically with the claim. An absent ID without a live tombstone may be claimed.
+    /// checked atomically with the claim. Existing rows must be due and meet the query's capabilities.
+    /// Operator claims may also enter an idle resolution or stopped checkpoint, never a future park;
+    /// demands still apply. An absent ID without a live tombstone may be claimed for creation.
     /// </summary>
     Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
-        TimeSpan duration);
+        TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable);
 
     /// <summary>Extends a lease held by the same execution token.</summary>
     Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
@@ -304,7 +306,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private long _executionEpoch;
     // A lease record keeps the instance's crash count until deletion. Epochs come from the store-wide
     // counter and survive lease-row deletion. A released lease expires at DateTime.MinValue.
-    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch, int CrashCount)> _leases =
+    private readonly Dictionary<string, (string Token, DateTime ExpiresAtUtc, long Epoch, int CrashCount, Guid HostId)> _leases =
         new();
     private readonly Dictionary<string, CancellationReason> _cancellations = new();
     private readonly Dictionary<(string InstanceId, string EventId), (StoredWorkflowEvent Event, byte[] Hash)> _events = new();
@@ -379,18 +381,20 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         return requests;
     }
 
-    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit)
+    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query)
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(limit);
+        ArgumentNullException.ThrowIfNull(query);
         lock (_claimLock)
         {
             var now = Now;
             var runnable = _instances.Values
                 .Where(instance => instance.RunnableAtUtc <= now &&
+                    DemandMatching.Meets(_demands.GetValueOrDefault(instance.InstanceId) ?? [], query.Capabilities, now) &&
                     !(_leases.TryGetValue(instance.InstanceId, out var lease) && lease.ExpiresAtUtc > now))
-                .OrderBy(instance => instance.RunnableAtUtc)
+                .OrderByDescending(instance => instance.LastHostId == query.HostId)
+                .ThenBy(instance => instance.RunnableAtUtc)
                 .ThenBy(instance => instance.InstanceId, StringComparer.Ordinal)
-                .Take(limit)
+                .Take(query.Limit)
                 .Select(instance => new RunnableInstance(instance.InstanceId, instance.RunnableAtUtc!.Value))
                 .ToArray();
             return Task.FromResult<IReadOnlyList<RunnableInstance>>(runnable);
@@ -398,12 +402,20 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     }
 
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
-        TimeSpan duration)
+        TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
     {
+        ArgumentNullException.ThrowIfNull(query);
+        if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
         ValidateLeaseArguments(instanceId, token, duration);
         lock (_claimLock)
         {
             var now = Now;
+            if (_instances.TryGetValue(instanceId, out var candidate) &&
+                (!(candidate.RunnableAtUtc <= now || kind == ExecutionClaimKind.Operator &&
+                    candidate.RunnableAtUtc == null && (candidate.Status == WorkflowStatus.NeedsResolution ||
+                        ExecutionCheckpoint.IsStructured(candidate.ExecutionStateJson) && ExecutionCheckpoint.StopOf(candidate) != null)) ||
+                 !DemandMatching.Meets(_demands.GetValueOrDefault(instanceId) ?? [], query.Capabilities, now)))
+                return Task.FromResult<ExecutionLeaseGrant?>(null);
             if (ActiveTombstone(instanceId, now) != null)
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
             var exists = _leases.TryGetValue(instanceId, out var lease);
@@ -413,7 +425,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 _instances.TryGetValue(instanceId, out var instance) && instance.Status == WorkflowStatus.Running;
             var grant = new ExecutionLeaseGrant(++_executionEpoch,
                 (exists ? lease.CrashCount : 0) + (crashed ? 1 : 0));
-            _leases[instanceId] = (token, now.Add(duration), grant.Epoch, grant.CrashCount);
+            _leases[instanceId] = (token, now.Add(duration), grant.Epoch, grant.CrashCount, query.HostId);
+            if (candidate != null) candidate.LastHostId = query.HostId;
             return Task.FromResult<ExecutionLeaseGrant?>(grant);
         }
     }
@@ -558,6 +571,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     };
             foreach (var closed in commit.ClosedWaits)
                 CloseWait(commit.InstanceId, closed.WaitId, closed.Reason, now);
+            snapshot.LastHostId = admission == null && _leases.TryGetValue(commit.InstanceId, out var committingLease)
+                ? committingLease.HostId : null;
             snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit,
                 (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
                 WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.CancellationReason != null, unacknowledged),
@@ -703,8 +718,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         var sequence = _inboxSequence.GetValueOrDefault(workflowEvent.InstanceId) + 1;
         _inboxSequence[workflowEvent.InstanceId] = sequence;
         _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, sequence, now), hash);
-        // A stopped instance waits for its operator; the event is consumed after the release.
-        var madeRunnable = instance.Status is WorkflowStatus.Running or WorkflowStatus.Suspended;
+        // Resolution can hold one branch while another consumes this event. The host still refuses an operator stop.
+        var madeRunnable = (instance.Status is WorkflowStatus.Running or WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) &&
+            (!ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) || ExecutionCheckpoint.StopOf(instance) == null);
         if (madeRunnable)
             instance.RunnableAtUtc = now;
         return new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable);
@@ -848,6 +864,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             var summary = CheckpointParts.Summarize(JsonSerializer.Serialize(instance),
                 _parts.GetValueOrDefault(instanceId)?.GetValueOrDefault(CheckpointParts.DataKey), instance.Revision);
             summary.Incarnation = instance.Incarnation;
+            summary.LastHostId = instance.LastHostId;
             return Task.FromResult<WorkflowInstance?>(summary);
         }
     }
@@ -943,6 +960,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             (_parts.GetValueOrDefault(instance.InstanceId) ?? new Dictionary<string, string>())
             .Select(part => new CheckpointPart(part.Key, part.Value)), instance.Revision);
         snapshot.Incarnation = instance.Incarnation;
+        snapshot.LastHostId = instance.LastHostId;
         return snapshot;
     }
 
