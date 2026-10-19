@@ -16,6 +16,8 @@ internal sealed class ActivityAttempts(
     private readonly ILogger _logger = LogScope.Logger(services);
     private readonly string _hostName = (services.GetService(typeof(HostSettings)) as HostSettings ?? HostSettings.Default).Name;
 
+    private readonly ReplyTokenKeyRing _replyTokenKeys = (ReplyTokenKeyRing)services.GetService(typeof(ReplyTokenKeyRing))!;
+
     private DateTime Now => time.GetUtcNow().UtcDateTime;
 
     public async Task<RunningActivity?> StartActivityAsync(
@@ -244,9 +246,9 @@ internal sealed class ActivityAttempts(
         ActivityInvocationState pending)
     {
         if (checkpoint.Waits.FirstOrDefault(wait => wait.IsReply && wait.InvocationId == pending.Id) is { } open)
-            return new ReplyAddress(ReplyToken.Create(instance.InstanceId, open.Id, open.Subject));
+            return new ReplyAddress(ReplyToken.Sign(_replyTokenKeys, instance.InstanceId, open.Id, open.Subject));
         if (checkpoint.BoundReplies.FirstOrDefault(reply => reply.InvocationId == pending.Id) is { } answered)
-            return new ReplyAddress(ReplyToken.Create(instance.InstanceId, answered.WaitId, answered.Subject));
+            return new ReplyAddress(ReplyToken.Sign(_replyTokenKeys, instance.InstanceId, answered.WaitId, answered.Subject));
         var position = continuation.Stack[^1];
         var waitFor = scopes.Steps(position.ScopeId).Skip(position.NextStepIndex + 1)
             .First(candidate => candidate.ReplyToRequest == step.RequestName);
@@ -268,7 +270,7 @@ internal sealed class ActivityAttempts(
             Subject = subject
         };
         checkpoint.AddWait(wait);
-        return new ReplyAddress(ReplyToken.Create(instance.InstanceId, wait.Id, subject));
+        return new ReplyAddress(ReplyToken.Sign(_replyTokenKeys, instance.InstanceId, wait.Id, subject));
     }
 
     private static string NewInvocationId(WorkflowInstance instance,

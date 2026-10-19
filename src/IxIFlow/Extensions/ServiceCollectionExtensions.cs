@@ -25,9 +25,10 @@ public static class ServiceCollectionExtensions
     {
         // Core workflow services
         services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
+        services.TryAddSingleton<ReplyTokenKeyRing>(_ => throw new InvalidOperationException("Configure a reply token key ring before starting IxIFlow"));
         services.TryAddSingleton(RetentionSettings.Default);
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
-            provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
+            provider.GetRequiredService<HostSettings>(), provider.GetRequiredService<ReplyTokenKeyRing>(), provider.GetService<TimeProvider>(),
             provider.GetService<ILogger<WorkflowHost>>()));
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
@@ -72,6 +73,8 @@ public static class ServiceCollectionExtensions
 
         // Add core services
         services.AddIxIFlow();
+        if (options.ReplyTokenKeys != null)
+            services.Replace(ServiceDescriptor.Singleton(options.ReplyTokenKeys));
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
         if (!Enum.IsDefined(options.TraceDetail))
@@ -244,6 +247,9 @@ internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinitio
 /// </summary>
 public class IxIFlowOptions
 {
+    /// <summary>Required shared signing key and previous verification keys. Each key is at least 256 bits.</summary>
+    public ReplyTokenKeyRing? ReplyTokenKeys { get; set; }
+
     /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
     public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;
 

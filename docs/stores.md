@@ -14,6 +14,8 @@ Choose one store on the builder returned by `services.AddIxIFlow()`. Provider ex
 
 All four registrations compile in [Hosting.Services](../samples/IxIFlow.Samples/Hosting.cs). [SampleTests.cs](../tests/IxIFlow.Samples.Tests/SampleTests.cs) runs memory/SQLite and constructs the other providers. Database execution has additional provider and conformance tests under [tests](../tests).
 
+Every host requires a [reply-token signing key ring](reply-tokens.md). The executable examples use ephemeral demo keys; deployed hosts must load a persistent shared ring from protected configuration.
+
 ## Common contract
 
 `IWorkflowStateRepository` includes revisioned checkpoint commits and receipts, execution leases, row-projected instance search, inboxes, waits, committed trace history, outbox subscriptions/deliveries, retention, tombstones and the member registry. Provider schemas are created on first use in a transaction. Creation supplies complete tables and indexes; it does not upgrade existing tables or repair their missing indexes. Before 1.0, recreate a database from an earlier schema build rather than reuse it. All relational providers leave the schema alone once the instance table exists.

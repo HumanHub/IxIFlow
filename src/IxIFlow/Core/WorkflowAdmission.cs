@@ -54,6 +54,7 @@ public interface IWorkflowIngressClient
     Task<WorkflowAdmissionRecord> AdmitAsync<TData>(WorkflowDefinition definition, TData data,
         WorkflowAdmission admission, CancellationToken cancellationToken = default) where TData : class;
     Task<EventAppendResult> AcceptEventAsync(WorkflowEvent workflowEvent, CancellationToken cancellationToken = default);
+    Task<EventAppendResult> AcceptReplyAsync(string token, WorkflowEvent workflowEvent, CancellationToken cancellationToken = default);
     Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId);
     Task<WorkflowOwnership?> GetOwnershipAsync(string instanceId);
 }
@@ -109,6 +110,23 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (workflowEvent.TargetWaitId != null || workflowEvent.Subject != null)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown reply token");
+        return await AppendAsync(workflowEvent);
+    }
+
+    public Task<EventAppendResult> AcceptReplyAsync(string token, WorkflowEvent workflowEvent,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!ReplyToken.TryVerify(host.ReplyTokenKeys, token, out var instanceId, out var waitId, out var subject) ||
+            instanceId != workflowEvent.InstanceId)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown reply token");
+        return AppendAsync(workflowEvent with { TargetWaitId = waitId, Subject = subject, Key = null });
+    }
+
+    private async Task<EventAppendResult> AppendAsync(WorkflowEvent workflowEvent)
+    {
         var receipt = await store.AppendEventAsync(workflowEvent);
         if (receipt.MadeRunnable) host.WakeNow(workflowEvent.InstanceId);
         return receipt;

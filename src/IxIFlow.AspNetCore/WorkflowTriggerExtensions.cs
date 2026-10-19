@@ -160,6 +160,10 @@ public static class WorkflowTriggerExtensions
         if (registration.Status || registration.Events)
         {
             var id = http.Request.RouteValues["id"]!.ToString()!;
+            if (registration.Events && http.Request.Headers.ContainsKey("X-IxIFlow-Reply-Token") &&
+                (!ReplyToken.TryVerify(http.RequestServices.GetRequiredService<ReplyTokenKeyRing>(),
+                    SingleHeader(http, "X-IxIFlow-Reply-Token"), out var tokenInstance, out _, out _) || tokenInstance != id))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown reply token");
             var ownership = await ingress.GetOwnershipAsync(id);
             if (ownership == null) return Results.Problem(statusCode: 404, title: "Unknown workflow");
             var ownerKind = registration.SignedSender != null ? WorkflowOwnerKind.SignedSender : WorkflowOwnerKind.Principal;
@@ -265,12 +269,15 @@ public static class WorkflowTriggerExtensions
             return Results.Problem(statusCode: 400, title: "CloudEvents type is not allowlisted");
         var data = map(parsed.Data);
         var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new[] { envelope.Source, envelope.Id }))));
-        var receipt = await ingress.AcceptEventAsync(new WorkflowEvent(instanceId, identity, data.GetType().AssemblyQualifiedName!,
+        var workflowEvent = new WorkflowEvent(instanceId, identity, data.GetType().AssemblyQualifiedName!,
             JsonSerializer.Serialize(data, data.GetType()), http.Request.RouteValues["key"]!.ToString(),
             DeliveryIdentity: http.Items.TryGetValue(WebhookIdKey, out var webhookId)
                 ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
                     new[] { registration.SignedSender, registration.Id, (string)webhookId! })))) : null,
-            Source: envelope.Source, DeliveryRetention: registration.Retention), http.RequestAborted);
+            Source: envelope.Source, DeliveryRetention: registration.Retention);
+        var receipt = http.Request.Headers.ContainsKey("X-IxIFlow-Reply-Token")
+            ? await ingress.AcceptReplyAsync(SingleHeader(http, "X-IxIFlow-Reply-Token"), workflowEvent, http.RequestAborted)
+            : await ingress.AcceptEventAsync(workflowEvent, http.RequestAborted);
         if (receipt.Status == EventAppendStatus.Duplicate)
         {
             if (receipt.Rejection != null)
