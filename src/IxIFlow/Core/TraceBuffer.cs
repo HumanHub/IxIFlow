@@ -15,6 +15,7 @@ internal sealed partial class TraceBuffer
     private ExecutionCheckpoint? _checkpoint;
     private long _acknowledgedCount;
     private bool _acknowledgedBudget;
+    private DebugCheckpoint _acknowledgedDebug = new();
     private WorkflowScopeCatalog? _scopes;
     private string _instanceId = "";
     private TimeProvider _time = TimeProvider.System;
@@ -39,6 +40,7 @@ internal sealed partial class TraceBuffer
         {
             _acknowledgedCount = checkpoint.TraceEntriesRecorded;
             _acknowledgedBudget = checkpoint.TraceBudgetExhausted;
+            _acknowledgedDebug = checkpoint.Debug;
         }
         _checkpoint = checkpoint;
         _scopes = scopes;
@@ -129,6 +131,7 @@ internal sealed partial class TraceBuffer
         {
             _acknowledgedCount = _checkpoint.TraceEntriesRecorded;
             _acknowledgedBudget = _checkpoint.TraceBudgetExhausted;
+            _acknowledgedDebug = _checkpoint.Debug;
         }
         _pending.Clear();
         _truncated = null;
@@ -141,6 +144,7 @@ internal sealed partial class TraceBuffer
         {
             _checkpoint.TraceEntriesRecorded = _acknowledgedCount;
             _checkpoint.TraceBudgetExhausted = _acknowledgedBudget;
+            _checkpoint.Debug = _acknowledgedDebug;
         }
         _pending.Clear();
         _truncated = null;

@@ -12,7 +12,6 @@ public sealed record Assign(Guid AssignmentId, WorkflowInstance Instance,
     public WorkflowDebugState? DebugState { get; init; }
     public bool DebuggingEnabled { get; init; }
 }
-public sealed record Breakpoint(string StepId, string? Condition = null, int? HitCount = null);
 public sealed record RecoveryPreparation(IReadOnlyList<string> ReactivatedContinuations,
     CancellationReason? PendingCancellation, bool ClearOperatorStop = false, bool Released = false, string? Actor = null);
 public sealed record AcknowledgedCommit(string CommitId, long Revision);

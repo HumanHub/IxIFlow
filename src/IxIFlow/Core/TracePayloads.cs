@@ -16,6 +16,7 @@ namespace IxIFlow.Core;
 [JsonDerivedType(typeof(TraceTruncation), "truncation")]
 [JsonDerivedType(typeof(TraceBudget), "budget")]
 [JsonDerivedType(typeof(DebugCommandTrace), "debugCommand")]
+[JsonDerivedType(typeof(BreakpointHitTrace), "breakpointHit")]
 public abstract record TracePayload;
 
 /// <summary>Identifiers only; item indices start at zero and loop iterations at one.</summary>
@@ -72,3 +73,5 @@ public enum TraceDetail { Activities, Full }
 public enum TraceClock { Host, Store }
 
 public sealed record DebugCommandTrace(string Actor, string CommandId, long PauseGeneration) : TracePayload;
+public sealed record BreakpointHitTrace(string BranchId, string StepId, string BreakpointId,
+    long HitCount, long PauseGeneration) : TracePayload;

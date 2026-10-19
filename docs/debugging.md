@@ -1,9 +1,9 @@
 ---
-title: Pausing and continuing
-description: Pause durable workflow instances and continue them on an enabled host.
+title: Pausing and breakpoints
+description: Pause durable workflow instances, set breakpoints, and continue on an enabled host.
 ---
 
-# Pausing and continuing
+# Pausing and breakpoints
 
 Enable debugging on hosts that will accept operator commands:
 
@@ -30,3 +30,25 @@ A committed pause has no runnable time and releases its lease. Commands live out
 Events for existing waits are appended while paused and remain pending until continue. Normal arrival validation still applies. Timers keep advancing; due deadlines are handled when execution continues. Pausing a parent does not pause its children.
 
 `WorkflowDefinition.StepTable` lists each executable step's catalog ID, author ID, name, kind, scope path and source location. Builder calls capture their file and line automatically. Source locations do not affect the workflow structure hash. Snapshot pointers expose the catalog address as `StepId` and the author identity as `AuthorStepId`; frames include loop iteration and ForEach item index. Activity trace entries expose the catalog address as `StepId`.
+
+## Breakpoints
+
+`SetBreakpointsAsync` replaces the instance's entire breakpoint set. Supply stable, unique breakpoint IDs, an actor, and either an author step ID, a catalog path, or a source path and line:
+
+```csharp
+var verified = await operations.SetBreakpointsAsync(instanceId,
+[
+    new Breakpoint("charge", "charge-card"),
+    new Breakpoint("third-item", "root/2/foreach/0", HitCondition: "== 3"),
+    new Breakpoint("source", Source: new BreakpointSource("order.yaml", 20))
+], actor: "operator@example.com");
+var current = await operations.GetBreakpointsAsync(instanceId);
+```
+
+A function address must resolve uniquely. A source address resolves to the first step in that file at or after the requested line, including generated YAML steps. The returned `StepId` is the resolved catalog path; `Source` retains the requested location, `VerifiedSource` answers the actual line, and `StructureHash` pins the definition used for resolution. Unresolved or ambiguous addresses and invalid hit conditions are refused before saving the change.
+
+An enabled breakpoint counts each visit before its step runs. `HitCondition` accepts `"== n"` (the nth visit), `">= n"` (the nth and subsequent visits), or `"% n"` (every nth visit), with positive `n`. Omit it to stop on every visit. Counts survive recovery, and an abandoned execution pass abandons its uncommitted counts. Updating an existing ID at the same catalog step preserves its count; removing it and later adding it resets the count. Disabled breakpoints neither count nor pause. Expression conditions are not available yet.
+
+On a hit, all branches stop admitting new work. Activities already in flight finish and commit before `Paused` is saved and the lease released. The committed stop names the branch, step and breakpoint, and the trace records `BreakpointHit`. Continue records a durable skip for that stopped occurrence before dispatch; the first pick of that branch at that step skips all breakpoints once without incrementing counts. Later loop visits and ForEach items can stop again.
+
+Changes use the same ordered, acknowledged command rows and watch as pause and continue, so a change submitted on another host reaches the running owner. The set returned by the operations read includes the latest requested configuration and committed counts; command acknowledgement marks when the owner has applied it. A configuration accepted just before an automatic breakpoint pause remains applicable after that pause. Setting breakpoints does not continue a paused instance; passing an empty list removes them. Debug-disabled hosts ignore breakpoint matching, refuse breakpoint writes, and continue to honor durable pauses.
