@@ -200,7 +200,7 @@ public sealed class WorkflowExecutorHostTests
             var commit = request.Commit;
             if (_commits.Count + 1 == LoseOwnershipAtCommit)
                 return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Conflict,
-                    Error: new InvalidOperationException("Another owner committed")));
+                    Error: "Another owner committed"));
             Saved = commit.ReadInstance(Saved);
             _commits.Add(Saved.Status);
             ChildStarts.AddRange(commit.ChildStarts);

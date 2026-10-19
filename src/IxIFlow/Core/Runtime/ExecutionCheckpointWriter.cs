@@ -87,7 +87,7 @@ internal static class ExecutionCheckpointWriter
                         System.Diagnostics.Stopwatch.GetElapsedTime(startedAt).TotalSeconds, tags);
                     Telemetry.CommitSize.Record(size, tags);
                     instance.Revision = reply.Revision;
-                    instance.Saved(commit.StoredParts, reply.Revision);
+                    instance.Saved(commit.ApplyParts(instance.SavedParts), reply.Revision);
                     checkpoint.Trace.Committed();
                     checkpoint.ChildStarts.Clear();
                     checkpoint.ChildCancellations.Clear();
@@ -98,12 +98,13 @@ internal static class ExecutionCheckpointWriter
                     return reply.Parked;
                 // Only the owner settles its pending events, so a settled one means another owner ran.
                 case CheckpointReplyKind.Conflict:
-                    throw new ExecutionOwnershipLostException(reply.Error!);
+                    throw new ExecutionOwnershipLostException(new InvalidOperationException(reply.Error));
                 case CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown when attempt < MaxAttempts:
                     // The commit is immutable, so sending it again cannot apply a different payload.
                     continue;
                 default:
-                    throw new CheckpointInterruptedException(reply.Error);
+                    throw new CheckpointInterruptedException(reply.Error == null ? null :
+                        new WorkflowEngineException(WorkflowErrorKind.Infrastructure, reply.Error));
             }
         }
     }
