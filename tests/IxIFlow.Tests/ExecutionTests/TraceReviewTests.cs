@@ -325,16 +325,33 @@ public sealed class TraceReviewTests
             Status = WorkflowStatus.Running, StartedAt = Start.UtcDateTime };
         var host = new VerificationHost();
         var commits = host.Commits;
-        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, data, scopes, Start.UtcDateTime);
+        var session = new ExecutionSession(host, Guid.NewGuid(), instance.InstanceId, 1,
+            new() { VerifyCheckpointParts = true }, false);
+        await ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, data, scopes, Start.UtcDateTime);
+        var savedState = StoredCheckpoint.WholeState(instance);
+        var savedData = instance.WorkflowDataJson;
         // Deliberately change a saved branch without its dirty mark: diagnostic verification must stop this pass.
         branch.Status = ContinuationStatus.WaitingResolution;
         checkpoint.Trace.Add(new ExecutionTraceEntry { EntryType = TraceEntryType.ConditionTaken,
             Payload = new ConditionTrace("root/0", WorkflowStepType.Conditional, root.Id, 0, "root/0/then", ConditionPath.Then) });
         checkpoint.Trace.Add(new ExecutionTraceEntry { EntryType = TraceEntryType.EventReceived,
             Payload = new ReceivedEventTrace("pending", "go", typeof(Go).AssemblyQualifiedName!, "wait", "root/0") });
-        var executor = new WorkflowExecutor(services, services.GetRequiredService<IActivityExecutor>(), time);
-        using var run = executor.OpenRun();
-        var outcome = await executor.RunAsync(definition, instance, checkpoint, data, host, run.RunId);
+        Assert.Equal(2, checkpoint.Trace.Pending.Count);
+        var rejected = await Assert.ThrowsAsync<CheckpointVerificationException>(() =>
+            ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, data, scopes, Start.UtcDateTime));
+        Assert.Contains(StoredCheckpoint.BranchKey(branch.Id), rejected.Message);
+        Assert.Single(commits);
+        Assert.Equal(savedState, StoredCheckpoint.WholeState(instance));
+        Assert.Equal(savedData, instance.WorkflowDataJson);
+        Assert.Empty(checkpoint.Trace.Pending);
+
+        // Assign cannot inject an unmarked live branch. Check the writer directly, then exercise the
+        // existing stop handler to retain coverage of the verification marker and its saved checkpoint.
+        var executor = new WorkflowExecutor(services, host);
+        var stop = typeof(WorkflowExecutor).GetMethod("StopForOperatorAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var outcome = await (Task<AssignmentOutcome>)stop.Invoke(executor,
+            [definition, instance, checkpoint, data, session, OperatorStopKind.Verification, rejected.Message])!;
         Assert.Equal(AssignmentOutcomeKind.Idle, outcome.Kind);
         Assert.NotNull(host.Saved);
         instance = host.Saved;
@@ -344,6 +361,8 @@ public sealed class TraceReviewTests
         Assert.All(commits, commit => Assert.Empty(commit.TraceEntries));
         var saved = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
         Assert.Equal(OperatorStopKind.Verification, saved.OperatorStop!.Kind);
+        Assert.Equal(scopes.StructureHash, saved.StructureHash);
+        Assert.Equal(savedData, instance.WorkflowDataJson);
         Assert.Equal(ContinuationStatus.Waiting, saved.Continuations.Single(item => item.Id == branch.Id).Status);
         Assert.Empty(checkpoint.Trace.Pending);
     }
@@ -375,22 +394,17 @@ public sealed class TraceReviewTests
         public List<CheckpointCommit> Commits { get; } = [];
         public WorkflowInstance? Saved { get; private set; }
         public List<ExecutionTraceEntry> TraceEntries { get; } = [];
-        public ExecutionLimits Limits { get; } = new() { VerifyCheckpointParts = true };
-        public long Epoch => 1;
-        public bool CanPark => false;
-        public Task<CheckpointReply> CommitAsync(CheckpointCommit commit)
+        public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
+            var commit = request.Commit;
             Saved = commit.ReadInstance(Saved);
             TraceEntries.AddRange(commit.TraceEntries.Select(json => JsonSerializer.Deserialize<ExecutionTraceEntry>(json)!));
             Commits.Add(commit);
-            return Task.FromResult(new CheckpointReply(CheckpointReplyKind.Acknowledged, Commits.Count));
+            return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Ack, Commits.Count));
         }
-        public Task<InboxPage> ReadInboxAsync(long afterSequence, int limit) =>
-            Task.FromResult(new InboxPage([], afterSequence, new Dictionary<string, long>()));
-        public Task<StoredWait?> ReadWaitAsync(string waitId) => Task.FromResult<StoredWait?>(null);
-        public Task<WorkflowDefinition> ResolveChildAsync(WorkflowStep step, bool starting) => throw new NotSupportedException();
-        public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
-            string childInstanceId, string parentWaitId) => throw new NotSupportedException();
+        public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => throw new NotSupportedException();
+        public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => throw new NotSupportedException();
+        public Task<StartChildReply> StartChildAsync(StartChild request) => throw new NotSupportedException();
     }
 
     private static ServiceProvider Services(FakeTimeProvider time, Action<IxIFlowOptions>? configure = null,

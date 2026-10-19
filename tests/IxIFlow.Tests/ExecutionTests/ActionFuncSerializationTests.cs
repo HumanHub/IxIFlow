@@ -55,11 +55,12 @@ public class ActionFuncSerializationTests
 
         // Act & Assert - Should not throw serialization exception
         var result = await _workflowEngine.RunAsync(definition, data);
+        var finished = Assert.IsType<ActionTestWorkflowData>(result.WorkflowData);
 
         Assert.NotNull(result);
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.NotNull(data.ErrorResponse);
-        Assert.Equal("Security Error: Security check failed. Invalid credentials.", data.ErrorResponse.Status.StatusDesc);
+        Assert.NotNull(finished.ErrorResponse);
+        Assert.Equal("Security Error: Security check failed. Invalid credentials.", finished.ErrorResponse.Status.StatusDesc);
     }
 
     [Fact]
@@ -89,12 +90,13 @@ public class ActionFuncSerializationTests
 
         // Act
         var result = await _workflowEngine.RunAsync(definition, data);
+        var finished = Assert.IsType<StaticMethodTestWorkflowData>(result.WorkflowData);
 
         // Assert
         Assert.NotNull(result);
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.NotNull(data.ErrorResponse);
-        Assert.Equal("-3", data.ErrorResponse.Status.StatusCode);
+        Assert.NotNull(finished.ErrorResponse);
+        Assert.Equal("-3", finished.ErrorResponse.Status.StatusCode);
     }
 
     [Fact]
@@ -110,11 +112,12 @@ public class ActionFuncSerializationTests
 
         // Act
         var result = await _workflowEngine.RunAsync(definition, data);
+        var finished = Assert.IsType<AsyncActionTestWorkflowData>(result.WorkflowData);
 
         // Assert
         Assert.NotNull(result);
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.True(data.AsyncLogExecuted);
+        Assert.True(finished.AsyncLogExecuted);
     }
 
     [Fact]
@@ -157,12 +160,13 @@ public class ActionFuncSerializationTests
 
         // Act
         var result = await _workflowEngine.RunAsync(definition, data);
+        var finished = Assert.IsType<ComplexCatchTestWorkflowData>(result.WorkflowData);
 
         // Assert
         Assert.NotNull(result);
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.NotNull(data.ErrorResponse);
-        Assert.Contains("Security Error:", data.ErrorResponse.Status.StatusDesc);
+        Assert.NotNull(finished.ErrorResponse);
+        Assert.Contains("Security Error:", finished.ErrorResponse.Status.StatusDesc);
     }
 
     [Fact]
@@ -192,12 +196,13 @@ public class ActionFuncSerializationTests
 
         // Act
         var result = await _workflowEngine.RunAsync(definition, data);
+        var finished = Assert.IsType<WorkflowDataWithMethods>(result.WorkflowData);
 
         // Assert
         Assert.NotNull(result);
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.NotNull(data.ErrorResponse);
-        Assert.Contains("Security Error for WorkflowDataMethodTest:", data.ErrorResponse.Status.StatusDesc);
+        Assert.NotNull(finished.ErrorResponse);
+        Assert.Contains("Security Error for WorkflowDataMethodTest:", finished.ErrorResponse.Status.StatusDesc);
     }
 
     #region Test Workflow Data Models

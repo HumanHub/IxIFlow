@@ -64,6 +64,7 @@ public class SuspendResumeExecutionTests
 
         // Act - Execute workflow (should suspend)
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var startedData = Assert.IsType<SuspendResumeTestData>(result.WorkflowData);
 
         // Assert - Workflow should be suspended
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
@@ -73,9 +74,9 @@ public class SuspendResumeExecutionTests
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
         
-        Assert.True(workflowData.ProcessOrderCompleted);
-        Assert.False(workflowData.CompleteOrderCompleted);
-        Assert.NotEmpty(workflowData.ProcessedOrder);
+        Assert.True(startedData.ProcessOrderCompleted);
+        Assert.False(startedData.CompleteOrderCompleted);
+        Assert.NotEmpty(startedData.ProcessedOrder);
 
         // Act - Resume with approval event
         var approvalEvent = new ApprovalEvent
@@ -226,6 +227,7 @@ public class SuspendResumeExecutionTests
 
         // Act - Execute workflow (should suspend at first suspend point)
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var startedData = Assert.IsType<SuspendResumeTestData>(result.WorkflowData);
 
         // Assert - Workflow should be suspended at first suspend point
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
@@ -234,8 +236,8 @@ public class SuspendResumeExecutionTests
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
         
-        Assert.True(workflowData.ProcessOrderCompleted);
-        Assert.False(workflowData.ValidateOrderCompleted);
+        Assert.True(startedData.ProcessOrderCompleted);
+        Assert.False(startedData.ValidateOrderCompleted);
 
         // Act - Resume with first approval event
         var firstApprovalEvent = new ApprovalEvent
@@ -535,6 +537,7 @@ public class SuspendResumeExecutionTests
 
         // Act - Execute workflow (should suspend in conditional branch)
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var startedData = Assert.IsType<SuspendResumeTestData>(result.WorkflowData);
 
         // Assert - Workflow should be suspended
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
@@ -543,8 +546,8 @@ public class SuspendResumeExecutionTests
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
         
-        Assert.True(workflowData.ProcessOrderCompleted);
-        Assert.False(workflowData.CompleteOrderCompleted);
+        Assert.True(startedData.ProcessOrderCompleted);
+        Assert.False(startedData.CompleteOrderCompleted);
 
         // Act - Resume with approval event
         var approvalEvent = new ApprovalEvent
@@ -593,6 +596,7 @@ public class SuspendResumeExecutionTests
 
         // Act - Execute workflow (should suspend)
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
+        var startedData = Assert.IsType<SuspendResumeTestData>(result.WorkflowData);
 
         // Assert - Workflow should be suspended
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
@@ -601,8 +605,8 @@ public class SuspendResumeExecutionTests
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
         
-        Assert.True(workflowData.ProcessOrderCompleted);
-        Assert.False(workflowData.CompleteOrderCompleted);
+        Assert.True(startedData.ProcessOrderCompleted);
+        Assert.False(startedData.CompleteOrderCompleted);
 
         // The open wait records what it waits for
         var wait = Assert.Single(await _stateRepository.GetOpenWaitsAsync(new WaitQuery(InstanceId: result.InstanceId)));

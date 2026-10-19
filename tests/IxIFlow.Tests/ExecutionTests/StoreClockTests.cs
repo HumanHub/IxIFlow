@@ -311,10 +311,15 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         Assert.Equal(1, (await store.GetWorkflowInstanceAsync(started!.InstanceId))!.Revision);
 
         // Once the parent waits for it, the slot is free: the child runs, times out and wakes its parent.
+        using var settled = services.GetRequiredService<WorkflowHost>().WatchSettled(started.InstanceId,
+            out var childRunFinished);
         gate.Release.TrySetResult();
         var idle = await run.WaitAsync(TimeSpan.FromSeconds(10));
         await ArmedWaitIdAsync(store, started.InstanceId);
-        await clocks.AdvanceInStepsAsync(TimeSpan.FromSeconds(61));
+        // The armed wait is visible before its run disposes the lease. Settlement follows disposal,
+        // so neither the parent nor the child has a live lease that needs renewal during this advance.
+        await childRunFinished.WaitAsync(TimeSpan.FromSeconds(10));
+        clocks.Advance(TimeSpan.FromSeconds(61));
         Assert.Equal(WorkflowExecutionStatus.Success, (await Engine(services).FinishedAsync(idle)).Status);
     }
 
