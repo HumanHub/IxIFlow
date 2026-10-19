@@ -27,6 +27,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
         services.TryAddSingleton(RetentionSettings.Default);
         services.TryAddSingleton<IRunnableNotifier, NullRunnableNotifier>();
+        services.TryAddSingleton<CoordinationState>();
         services.AddSingleton<RunnableNotifications>();
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
