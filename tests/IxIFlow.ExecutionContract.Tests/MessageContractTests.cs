@@ -11,11 +11,13 @@ namespace IxIFlow.ContractTests;
 
 [Trait("Feature", "host")]
 [Trait("Spec", "A-02")]
+[Trait("Spec", "G-11")]
 public sealed class MessageContractTests
 {
     internal static readonly Type[] MessageTypeList =
     [
-        typeof(Assign), typeof(Ready), typeof(Cancel), typeof(Arrivals), typeof(Recycle),
+        typeof(InstanceInspection), typeof(InspectionSummary), typeof(InspectionDebugState), typeof(InspectionThread), typeof(InspectionFrame), typeof(InspectionAttempt), typeof(InspectionWait), typeof(InspectionData), typeof(ReplayOriginTrace), typeof(ThreadPositionTrace), typeof(ReplayPosition),
+            typeof(Assign), typeof(Ready), typeof(Cancel), typeof(Arrivals), typeof(Recycle),
         typeof(Checkpoint), typeof(CheckpointReply), typeof(StartChild), typeof(StartChildReply),
         typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
         typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome),
@@ -56,6 +58,7 @@ public sealed class MessageContractTests
             new Dictionary<string, DateTime> { ["wait"] = now.AddMinutes(1) }, now);
         object[] messages =
         [
+            .. InspectionMessageExamples.Create(now),
             assign, new Ready(assign.AssignmentId, new(AssignmentOutcomeKind.Interrupted, "error", "type", "stack"),
                 new("commit", 5), ExecutorName: "executor", Capabilities: new Dictionary<string, string> { ["host"] = "local" }),
             new Cancel(assign.AssignmentId, CancelKind.Workflow, reason), new Arrivals(assign.AssignmentId, 7),
