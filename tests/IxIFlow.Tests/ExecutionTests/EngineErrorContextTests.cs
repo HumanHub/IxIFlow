@@ -54,7 +54,7 @@ public sealed class EngineErrorContextTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddTransient<NoopActivity>();
         return services.BuildServiceProvider();
     }

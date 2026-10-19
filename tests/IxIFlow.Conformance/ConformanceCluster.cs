@@ -43,7 +43,7 @@ internal sealed class ConformanceCluster : IAsyncDisposable
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(provider =>
         {
             var repository = _store.NewRepository(provider.GetRequiredService<TimeProvider>());

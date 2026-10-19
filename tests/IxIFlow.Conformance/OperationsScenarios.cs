@@ -13,7 +13,7 @@ public sealed class OperationsScenarios
     {
         await using var profileStore = await StoreProfiles.CreateAsync(profile);
         var services = new ServiceCollection();
-        services.AddLogging(); services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddLogging(); services.AddIxIFlow();
         services.AddSingleton(profileStore.NewRepository());
         services.AddTransient<Begin>();
         await using var host = services.BuildServiceProvider();

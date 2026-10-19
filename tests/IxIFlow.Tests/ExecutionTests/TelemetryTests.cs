@@ -96,7 +96,7 @@ public sealed class TelemetryTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(
             Workflow.Create<Data>(name)

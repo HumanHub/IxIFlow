@@ -303,7 +303,8 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
         services.AddSingleton(store);
         if (time != null)
             services.AddSingleton(time);
-        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring;
+        services.AddIxIFlow(options =>
+        {
             options.Slots = slots;
             options.ParkRetriesLongerThan = TimeSpan.FromMilliseconds(100);
         });

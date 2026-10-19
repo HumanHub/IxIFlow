@@ -16,7 +16,7 @@ public sealed class StoreBuilderTests : IClassFixture<SqliteTestDatabase<StoreBu
     [Fact]
     public void WithoutAChoiceInstancesLiveInMemory()
     {
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
 
         Assert.IsType<InMemoryWorkflowStateRepository>(provider.GetRequiredService<IWorkflowStateRepository>());
     }
@@ -26,7 +26,7 @@ public sealed class StoreBuilderTests : IClassFixture<SqliteTestDatabase<StoreBu
     public void ASecondStoreChoiceIsRefused()
     {
         var builder = new ServiceCollection().AddLogging()
-            .AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.UseCustomStateRepository = typeof(InMemoryWorkflowStateRepository); });
+            .AddIxIFlow(options => options.UseCustomStateRepository = typeof(InMemoryWorkflowStateRepository));
 
         var error = Assert.Throws<InvalidOperationException>(() => builder.UseSqlServer("Server=unused"));
 
@@ -40,7 +40,7 @@ public sealed class StoreBuilderTests : IClassFixture<SqliteTestDatabase<StoreBu
     [Fact]
     public void PostgreSqlIsRefusedAsASecondStoreChoice()
     {
-        var builder = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).UseSqlServer("Server=unused");
+        var builder = new ServiceCollection().AddLogging().AddIxIFlow().UseSqlServer("Server=unused");
 
         var error = Assert.Throws<InvalidOperationException>(() => builder.UsePostgreSql("Host=unused"));
 
@@ -67,7 +67,7 @@ public sealed class StoreBuilderTests : IClassFixture<SqliteTestDatabase<StoreBu
     private static async Task VerifyBuilderKeepsInstancesInTheDatabase<TStore>(Action<IIxIFlowBuilder> chooseStore, Func<IWorkflowStateRepository> reopen, string workflowName, bool expectWakeSource) where TStore : IWorkflowStateRepository
     {
         var services = new ServiceCollection().AddLogging();
-        chooseStore(services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring));
+        chooseStore(services.AddIxIFlow());
         await using var provider = services.BuildServiceProvider();
 
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(

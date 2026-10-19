@@ -16,7 +16,7 @@ public static class DocumentationExamples
     {
         // snippet: hosted-run
         var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddIxIFlow(options => { options.ReplyTokenKeys = SampleReplyKeys.Ring; options.Slots = 8; });
+        builder.Services.AddIxIFlow(options => options.Slots = 8);
         using var host = builder.Build();
         await host.StartAsync();
         try
@@ -35,7 +35,7 @@ public static class DocumentationExamples
     public static void RegisterWebhook(IServiceCollection services, IConfiguration configuration)
     {
         // snippet: webhook-registration
-        services.AddIxIFlow(options => options.ReplyTokenKeys = SampleReplyKeys.Ring)
+        services.AddIxIFlow()
             .ConfigureOutbox(concurrency: 8)
             .AddWebhook(new WebhookEndpoint(
                 "orders", new Uri("https://receiver.example/workflow-events"),
@@ -50,7 +50,6 @@ public static class DocumentationExamples
         // snippet: retention
         services.AddIxIFlow(options =>
         {
-            options.ReplyTokenKeys = SampleReplyKeys.Ring;
             options.FinishedInstanceRetention = TimeSpan.FromDays(30);
             options.TombstoneRetention = TimeSpan.FromDays(90);
             options.RetentionScanInterval = TimeSpan.FromHours(1);
@@ -63,7 +62,7 @@ public static class DocumentationExamples
     public static void RegisterPublisher(IServiceCollection services)
     {
         // snippet: publisher-registration
-        services.AddIxIFlow(options => options.ReplyTokenKeys = SampleReplyKeys.Ring)
+        services.AddIxIFlow()
             .ConfigureOutbox(concurrency: 8)
             .AddOutboxPublisher<CompletionLog>();
         // end-snippet: publisher-registration

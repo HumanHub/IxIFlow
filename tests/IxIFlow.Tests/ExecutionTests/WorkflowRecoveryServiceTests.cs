@@ -52,7 +52,7 @@ public sealed class WorkflowRecoveryServiceTests
         };
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
         services.AddTransient<ActivityRecoveryTests.NoopActivity>();
         using var provider = services.BuildServiceProvider();
@@ -82,7 +82,7 @@ public sealed class WorkflowRecoveryServiceTests
         var probe = new RecoveryStopProbe();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
         services.AddSingleton(probe);
         services.AddTransient<RecoveryStopActivity>();
@@ -144,7 +144,7 @@ public sealed class WorkflowRecoveryServiceTests
         var repository = new InMemoryWorkflowStateRepository();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
         services.AddTransient<ActivityRecoveryTests.NoopActivity>();
         using var provider = services.BuildServiceProvider();
@@ -173,7 +173,7 @@ public sealed class WorkflowRecoveryServiceTests
         var repository = new InMemoryWorkflowStateRepository();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
         services.AddTransient<ActivityRecoveryTests.NoopActivity>();
         using var provider = services.BuildServiceProvider();
@@ -209,7 +209,7 @@ public sealed class WorkflowRecoveryServiceTests
         };
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
         services.AddTransient<ActivityRecoveryTests.NoopActivity>();
         using var provider = services.BuildServiceProvider();

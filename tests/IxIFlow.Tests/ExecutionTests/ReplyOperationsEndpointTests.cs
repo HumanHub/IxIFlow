@@ -12,15 +12,15 @@ using Moq;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "durability")]
-public sealed class SignedReplyOperationsEndpointTests
+public sealed class ReplyOperationsEndpointTests
 {
     [Theory]
     [InlineData("/ops/waits"), InlineData("/ops/instances/{id}/waits")]
-    public async Task OperationsRejectForgedTokenCursorsBeforeAnyStoreAccess(string path)
+    public async Task OperationsRejectMalformedAndReplyTokenCursorsBeforeAnyStoreAccess(string path)
     {
         var store = new Mock<IWorkflowStateRepository>(MockBehavior.Strict);
         var builder = WebApplication.CreateBuilder(); builder.Logging.ClearProviders();
-        builder.Services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        builder.Services.AddIxIFlow();
         builder.Services.AddSingleton(store.Object);
         builder.Services.AddSingleton<IInstanceQueryScope, Scope>();
         builder.Services.AddAuthorization(options => options.AddPolicy("operator", policy => policy.RequireAuthenticatedUser()));
@@ -31,7 +31,7 @@ public sealed class SignedReplyOperationsEndpointTests
         });
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints)
             .OfType<RouteEndpoint>().Single(e => e.RoutePattern.RawText == path);
-        foreach (var token in new[] { "raw-wait-id", ReplyToken.Sign(new(Enumerable.Repeat((byte)74, 32).ToArray()), "instance", "wait") })
+        foreach (var token in new[] { "raw-wait-id", ReplyToken.Create("instance", "wait") })
         {
             var http = new DefaultHttpContext { RequestServices = app.Services,
                 User = new(new ClaimsIdentity([new Claim(ClaimTypes.Name, "operator")], "test")) };

@@ -30,7 +30,7 @@ public sealed class DefinitionValidationTests
             }]
         };
         Assert.NotEmpty(new WorkflowScopeCatalog(definition).StructureHash);
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var registry = provider.GetRequiredService<IWorkflowVersionRegistry>();
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
         {
@@ -91,7 +91,7 @@ public sealed class DefinitionValidationTests
     [InlineData(true)]
     public async Task ChildResolutionRequiresValidationEvenWhenRegistrationIsSkipped(bool starting)
     {
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var built = Workflow.Create<RegistrationData>("Child source").Step<RegistrationActivity>().Build();
         var definition = new WorkflowDefinition
         {
@@ -113,7 +113,7 @@ public sealed class DefinitionValidationTests
     [Fact]
     public async Task RecoveryRefusesAnUnvalidatedRegistryDefinitionWithoutRunningRules()
     {
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var visits = new CountingCondition();
         var definition = new WorkflowDefinition
         {
@@ -167,7 +167,7 @@ public sealed class DefinitionValidationTests
     [Fact]
     public async Task ExecutorRejectsADefinitionThatOnlyComputedAStructureHash()
     {
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var built = Workflow.Create<RegistrationData>("Validated source").Step<RegistrationActivity>().Build();
         var definition = new WorkflowDefinition
         {

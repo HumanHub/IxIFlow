@@ -1022,12 +1022,12 @@ public sealed class ForEachTests
             .Build();
         await engine.RunAsync(definition, Order(1, 2));
         var first = Assert.Single(outbox.Sent);
-        Assert.True(ReplyToken.TryVerify(TestReplyKeys.Ring, first.Token, out _, out _, out var subject));
+        Assert.True(ReplyToken.TryRead(first.Token, out _, out _, out var subject));
         Assert.Equal(ReplyToken.Digest("line-0"), subject);
 
         EventAssert.Consumed(await engine.ReplyAsync(first.Token, new LineApproval { Name = "line-0" }));
 
-        Assert.True(ReplyToken.TryVerify(TestReplyKeys.Ring, outbox.Sent[1].Token, out _, out _, out subject));
+        Assert.True(ReplyToken.TryRead(outbox.Sent[1].Token, out _, out _, out subject));
         Assert.Equal(ReplyToken.Digest("line-1"), subject);
     }
 
@@ -1046,9 +1046,9 @@ public sealed class ForEachTests
         if (store != null)
             services.AddSingleton(store);
         if (configure != null)
-            services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; configure(options); });
+            services.AddIxIFlow(configure);
         else
-            services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+            services.AddIxIFlow();
         services.AddSingleton<Outbox>();
         services.AddTransient<AskActivity>();
         services.AddSingleton<Notes>();

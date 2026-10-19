@@ -161,7 +161,7 @@ public static class WorkflowTriggerExtensions
         {
             var id = http.Request.RouteValues["id"]!.ToString()!;
             if (registration.Events && http.Request.Headers.ContainsKey("X-IxIFlow-Reply-Token") &&
-                (!ReplyToken.TryVerify(http.RequestServices.GetRequiredService<ReplyTokenKeyRing>(),
+                (!ReplyToken.TryRead(
                     SingleHeader(http, "X-IxIFlow-Reply-Token"), out var tokenInstance, out _, out _) || tokenInstance != id))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown reply token");
             var ownership = await ingress.GetOwnershipAsync(id);

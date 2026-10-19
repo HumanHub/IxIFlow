@@ -5,8 +5,6 @@ description: Run a first IxIFlow workflow on .NET 10.
 
 Use a .NET 10 application and reference `IxIFlow`. Activity libraries can depend on `IxIFlow.Abstractions` alone. Add `IxIFlow.Sqlite`, `IxIFlow.SqlServer` or `IxIFlow.PostgreSql` for durable storage; add `IxIFlow.Authoring` for document serialization and the installed activity catalog.
 
-Every host requires a [reply-token signing key ring](reply-tokens.md). The executable examples use ephemeral demo keys; deployed hosts must load a persistent shared ring from protected configuration.
-
 ## Run a quote
 
 The sample's [Quote.cs](../samples/IxIFlow.Samples/Quote.cs) supplies `QuoteData` and `AddFee`. The activity has a required customer, an in-out amount and a typed default fee of 2.50. With the sample types available, this complete async-method body runs a quote:
@@ -15,7 +13,7 @@ The sample's [Quote.cs](../samples/IxIFlow.Samples/Quote.cs) supplies `QuoteData
 ```csharp
 var services = new ServiceCollection();
 services.AddLogging();
-services.AddIxIFlow(options => options.ReplyTokenKeys = new ReplyTokenKeyRing(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+services.AddIxIFlow();
 await using var provider = services.BuildServiceProvider();
 var client = provider.GetRequiredService<IWorkflowClient>();
 

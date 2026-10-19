@@ -10,15 +10,14 @@ namespace IxIFlow.Core;
 /// </summary>
 public static class ReplyToken
 {
-    private const string Version = "2";
+    private const string Version = "3";
 
-    public static string Sign(ReplyTokenKeyRing keys, string instanceId, string waitId, string? subject = null)
+    public static string Create(string instanceId, string waitId, string? subject = null)
     {
-        ArgumentNullException.ThrowIfNull(keys);
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(waitId);
         var json = JsonSerializer.SerializeToUtf8Bytes(new[] { Version, instanceId, waitId, subject });
-        return Convert.ToBase64String(json.Concat(keys.Sign(json)).ToArray()).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return Convert.ToBase64String(json).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
     /// <summary>The digest a token carries for what a request is about.</summary>
@@ -28,10 +27,9 @@ public static class ReplyToken
         return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(subject)));
     }
 
-    /// <summary>Authenticates the complete token before returning any of its address fields.</summary>
-    public static bool TryVerify(ReplyTokenKeyRing keys, string? token, out string instanceId, out string waitId, out string? subject)
+    /// <summary>Reads a supported, well-formed token. The store checks that its wait was issued.</summary>
+    public static bool TryRead(string? token, out string instanceId, out string waitId, out string? subject)
     {
-        ArgumentNullException.ThrowIfNull(keys);
         instanceId = waitId = "";
         subject = null;
         if (string.IsNullOrWhiteSpace(token) || token.Length > 2000)
@@ -45,9 +43,7 @@ public static class ReplyToken
             var bytes = Convert.FromBase64String(base64);
             if (Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_') != token)
                 return false;
-            if (bytes.Length <= 32 || !keys.Verify(bytes.AsSpan(0, bytes.Length - 32), bytes.AsSpan(bytes.Length - 32)))
-                return false;
-            var parts = JsonSerializer.Deserialize<string?[]>(bytes.AsSpan(0, bytes.Length - 32));
+            var parts = JsonSerializer.Deserialize<string?[]>(bytes);
             if (parts is not [Version, { Length: > 0 } instance, { Length: > 0 } wait, var digest])
                 return false;
             (instanceId, waitId, subject) = (instance, wait, digest);

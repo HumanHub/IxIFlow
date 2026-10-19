@@ -2,31 +2,32 @@ using System.Text;
 
 namespace IxIFlow.Core;
 
-/// <summary>An authenticated, encrypted wait-page boundary. A cursor grants no reply permission.</summary>
+/// <summary>A plainly encoded diagnostic wait reference. A cursor grants no reply permission.</summary>
 public static class WaitPageCursor
 {
-    public static string Create(ReplyTokenKeyRing keys, string waitId)
+    public static string Create(string waitRef)
     {
-        ArgumentNullException.ThrowIfNull(keys);
-        ArgumentException.ThrowIfNullOrWhiteSpace(waitId);
-        return Encode(keys.ProtectCursor(Encoding.UTF8.GetBytes(waitId)));
+        if (!IsReference(waitRef)) throw new ArgumentException("Invalid wait reference", nameof(waitRef));
+        return Encode(Encoding.UTF8.GetBytes(waitRef));
     }
 
-    public static bool TryRead(ReplyTokenKeyRing keys, string? cursor, out string waitId)
+    public static bool TryRead(string? cursor, out string waitRef)
     {
-        ArgumentNullException.ThrowIfNull(keys);
-        waitId = "";
-        if (string.IsNullOrEmpty(cursor) || cursor.Length > 2000 ||
+        waitRef = "";
+        if (string.IsNullOrEmpty(cursor) || cursor.Length != 22 ||
             cursor.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('-' or '_'))) return false;
         try
         {
-            var bytes = Convert.FromBase64String(cursor.Replace('-', '+').Replace('_', '/').PadRight((cursor.Length + 3) / 4 * 4, '='));
-            if (Encode(bytes) != cursor || !keys.TryUnprotectCursor(bytes, out var payload)) return false;
-            waitId = Encoding.UTF8.GetString(payload);
-            return waitId.Length > 0;
+            var bytes = Convert.FromBase64String(cursor.Replace('-', '+').Replace('_', '/') + "==");
+            var reference = Encoding.UTF8.GetString(bytes);
+            if (Encode(bytes) != cursor || !IsReference(reference)) return false;
+            waitRef = reference;
+            return true;
         }
         catch (FormatException) { return false; }
     }
 
+    private static bool IsReference(string? value) => value is { Length: 16 } &&
+        value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
     private static string Encode(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }

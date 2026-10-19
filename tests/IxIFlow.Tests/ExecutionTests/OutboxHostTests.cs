@@ -26,7 +26,7 @@ public sealed class OutboxHostTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<TimeProvider>(time);
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
         Assert.Empty(provider.GetServices<IOutboxPublisher>());
         var client = provider.GetRequiredService<IWorkflowClient>();
@@ -173,7 +173,7 @@ public sealed class OutboxHostTests
         var publisher = new Publisher("custom", (_, _) => Task.FromResult(OutboxPublishResult.Delivered()));
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).ConfigureOutbox(2).AddOutboxPublisher(_ => publisher);
+        services.AddIxIFlow().ConfigureOutbox(2).AddOutboxPublisher(_ => publisher);
         await using var provider = services.BuildServiceProvider();
         Assert.Contains(publisher, provider.GetServices<IOutboxPublisher>());
         Assert.Equal(2, provider.GetRequiredService<OutboxSettings>().Concurrency);

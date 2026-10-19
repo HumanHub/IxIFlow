@@ -108,8 +108,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         };
     }
 
-    // Six parameters per opened wait, plus shared values, stay below SQL Server's 2,100 limit.
-    private const int StatementBatch = 300;
+    // Rows per statement. The widest row, an opened wait, binds 7 parameters; SQL Server allows 2,100 per request.
+    private const int StatementBatch = 250;
 
     internal override async Task InsertWaitsAsync(DbConnection connection, DbTransaction transaction,
         string instanceId, IReadOnlyList<OpenedWait> waits, long inboxSequence, DateTime now)
@@ -119,8 +119,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         for (var index = 0; index < waits.Count; index++)
         {
             var wait = waits[index];
-            rows.Add($"(@OW{index}, @OK{index}, @OY{index}, @OT{index}, @OD{index}, @OP{index})");
+            rows.Add($"(@OW{index}, @OR{index}, @OK{index}, @OY{index}, @OT{index}, @OD{index}, @OP{index})");
             parameters.Add($"OW{index}", wait.WaitId);
+            parameters.Add($"OR{index}", WaitReference.Of(instanceId, wait.WaitId));
             parameters.Add($"OK{index}", (byte)wait.Kind);
             parameters.Add($"OY{index}", wait.Key);
             parameters.Add($"OT{index}", wait.EventType);
@@ -129,10 +130,10 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         }
         await connection.ExecuteAsync($"""
                 INSERT INTO dbo.IxIFlowWorkflowWaits
-                    (InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, DefaultPayloadJson)
-                SELECT @InstanceId, opened.WaitId, opened.Kind, opened.WaitKey, opened.EventType, opened.DeadlineUtc,
+                    (InstanceId, WaitId, WaitRef, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, DefaultPayloadJson)
+                SELECT @InstanceId, opened.WaitId, opened.WaitRef, opened.Kind, opened.WaitKey, opened.EventType, opened.DeadlineUtc,
                     @Sequence, @Now, opened.DefaultPayloadJson
-                FROM (VALUES {string.Join(", ", rows)}) AS opened (WaitId, Kind, WaitKey, EventType, DeadlineUtc, DefaultPayloadJson)
+                FROM (VALUES {string.Join(", ", rows)}) AS opened (WaitId, WaitRef, Kind, WaitKey, EventType, DeadlineUtc, DefaultPayloadJson)
                 WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowWaits AS stored
                     WHERE stored.InstanceId = @InstanceId AND stored.WaitId = opened.WaitId);
 
@@ -596,8 +597,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
               AND (@Key IS NULL OR WaitKey = @Key)
               AND (@EventType IS NULL OR EventType = @EventType)
               AND (@Kind IS NULL AND Kind NOT IN (@Delay, @Execution) OR Kind = @Kind)
-              AND (@AfterWaitId IS NULL OR WaitId > @AfterWaitId)
-            ORDER BY WaitId
+              AND (@AfterWaitRef IS NULL OR WaitRef > @AfterWaitRef)
+            ORDER BY WaitRef
             """,
         Statement.EarliestDeadline => """
                 SELECT MIN(DeadlineUtc) FROM dbo.IxIFlowWorkflowWaits
@@ -777,6 +778,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             CREATE TABLE dbo.IxIFlowWorkflowWaits (
                 InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 WaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                WaitRef VARCHAR(16) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 Kind TINYINT NOT NULL,
                 WaitKey NVARCHAR(400) NOT NULL,
                 EventType NVARCHAR(400) NOT NULL,
@@ -789,7 +791,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 CONSTRAINT PK_IxIFlowWorkflowWaits PRIMARY KEY (InstanceId, WaitId)
             );
             EXEC(N'CREATE INDEX IX_IxIFlowWorkflowWaits_Open
-                ON dbo.IxIFlowWorkflowWaits (WaitKey, EventType, WaitId) WHERE CloseReason IS NULL');
+                ON dbo.IxIFlowWorkflowWaits (WaitKey, EventType, WaitRef) WHERE CloseReason IS NULL');
+            EXEC(N'CREATE INDEX IX_IxIFlowWorkflowWaits_Page ON dbo.IxIFlowWorkflowWaits (WaitRef) WHERE CloseReason IS NULL');
         END
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowCommits', N'U') IS NULL
             CREATE TABLE dbo.IxIFlowWorkflowCommits (

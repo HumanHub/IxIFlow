@@ -124,7 +124,7 @@ public sealed class AttemptContextTests
         services.AddTransient<TriesAnotherEndpoint>();
         services.AddTransient<RecoversByRunningAgain>();
         services.AddTransient<CapturesItsAttempt>();
-        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.HostName = hostName; });
+        services.AddIxIFlow(options => options.HostName = hostName);
         return services.BuildServiceProvider();
     }
 

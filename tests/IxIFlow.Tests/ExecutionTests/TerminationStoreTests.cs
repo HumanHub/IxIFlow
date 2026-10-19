@@ -50,7 +50,7 @@ public sealed class TerminationStoreTests : IClassFixture<SqliteTestDatabase<Ter
             Assert.Equal(WorkflowCommitStatus.TerminationRequested, (await store.CommitWorkflowInstanceAsync(completion)).Status);
             Assert.False(await store.RenewExecutionLeaseAsync(instance.InstanceId, "wrong-owner", TimeSpan.FromSeconds(30)));
             await StoreTestSupport.ReleaseAsync(store, instance.InstanceId);
-            var services = new ServiceCollection(); services.AddLogging(); services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring); services.AddSingleton(store);
+            var services = new ServiceCollection(); services.AddLogging(); services.AddIxIFlow(); services.AddSingleton(store);
             // The store remains owned by this fixture; the service scope does not dispose its externally supplied instance.
             await using var host = services.BuildServiceProvider();
             var stopped = await host.GetRequiredService<IWorkflowOperations>().TerminateAsync(instance.InstanceId, "repeat");

@@ -293,7 +293,7 @@ public sealed class CommitBudgetTests
         services.AddSingleton(store);
         if (time != null)
             services.AddSingleton(time);
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddTransient<WorkActivity>();
         services.AddTransient<CountActivity>();
         services.AddTransient<FailActivity>();

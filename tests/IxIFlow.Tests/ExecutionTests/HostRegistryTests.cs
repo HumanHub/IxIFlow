@@ -34,7 +34,8 @@ public sealed class HostRegistryTests
         builder.Services.AddSingleton<TimeProvider>(hostTime);
         builder.Services.AddSingleton<IWorkflowStateRepository>(store);
         builder.Services.AddSingleton(definition);
-        builder.Services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring;
+        builder.Services.AddIxIFlow(options =>
+        {
             options.HostName = "orders-display";
             options.Slots = 7;
             options.HeartbeatInterval = interval;
@@ -122,8 +123,8 @@ public sealed class HostRegistryTests
     public void TheSameDisplayNameGetsANewIdInEachHost(bool configured)
     {
         var services = new ServiceCollection().AddLogging();
-        if (configured) services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.HostName = "same-name"; });
-        else services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        if (configured) services.AddIxIFlow(options => options.HostName = "same-name");
+        else services.AddIxIFlow();
         using var first = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
         using var second = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
         var one = first.GetRequiredService<HostSettings>();
@@ -140,7 +141,7 @@ public sealed class HostRegistryTests
         Assert.Equal(TimeSpan.FromSeconds(5), new IxIFlowOptions().HeartbeatInterval);
         var input = new Dictionary<string, string> { ["region"] = "eu" };
         var services = new ServiceCollection();
-        services.AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.Capabilities = input; });
+        services.AddIxIFlow(options => options.Capabilities = input);
         input["region"] = "changed";
         using var provider = services.BuildServiceProvider();
         Assert.Equal("eu", provider.GetRequiredService<HostSettings>().Capabilities["region"]);
@@ -154,14 +155,15 @@ public sealed class HostRegistryTests
     [InlineData("workflow:Forged@1")]
     [InlineData(" ")]
     public void InvalidOrAutomaticConfiguredCapabilitiesAreRefused(string key) =>
-        Assert.ThrowsAny<ArgumentException>(() => new ServiceCollection().AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.Capabilities[key] = "fake"; }));
+        Assert.ThrowsAny<ArgumentException>(() => new ServiceCollection().AddIxIFlow(options => options.Capabilities[key] = "fake"));
 
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
     [InlineData(1)]
     public void InvalidHeartbeatIntervalIsRefused(long ticks) =>
-        Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(options => { options.ReplyTokenKeys = TestReplyKeys.Ring; options.HeartbeatInterval = TimeSpan.FromTicks(ticks); }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(options =>
+            options.HeartbeatInterval = TimeSpan.FromTicks(ticks)));
 
     [Fact]
     public async Task DecoratorsForwardRegistryOperations()

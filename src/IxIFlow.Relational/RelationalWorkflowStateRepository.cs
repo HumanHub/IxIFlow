@@ -592,7 +592,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             query.InstanceId,
             query.Key,
             query.EventType,
-            query.AfterWaitId
+            query.AfterWaitRef
         }, ("Kind", (short?)query.Kind), ("Delay", (short)WaitKind.Delay), ("Execution", (short)WaitKind.Execution));
         var sql = RequiredSql(Statement.OpenWaits);
         if (query.InstanceIds is { } ids)

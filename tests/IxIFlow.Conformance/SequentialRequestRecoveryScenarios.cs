@@ -58,7 +58,7 @@ public sealed class SequentialRequestRecoveryScenarios
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddSingleton(store);
         services.AddSingleton(registry);
         services.AddSingleton(probe);

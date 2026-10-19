@@ -25,10 +25,9 @@ public static class ServiceCollectionExtensions
     {
         // Core workflow services
         services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
-        services.TryAddSingleton<ReplyTokenKeyRing>(_ => throw new InvalidOperationException("Configure a reply token key ring before starting IxIFlow"));
         services.TryAddSingleton(RetentionSettings.Default);
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
-            provider.GetRequiredService<HostSettings>(), provider.GetRequiredService<ReplyTokenKeyRing>(), provider.GetService<TimeProvider>(),
+            provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
             provider.GetService<ILogger<WorkflowHost>>()));
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
@@ -53,7 +52,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(ExecutionLimits.Default);
         services.TryAddSingleton(new ClientActor(null));
-        
+
         // Workflow state and persistence
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
@@ -73,8 +72,6 @@ public static class ServiceCollectionExtensions
 
         // Add core services
         services.AddIxIFlow();
-        if (options.ReplyTokenKeys != null)
-            services.Replace(ServiceDescriptor.Singleton(options.ReplyTokenKeys));
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
         if (!Enum.IsDefined(options.TraceDetail))
@@ -157,20 +154,20 @@ public static class ServiceCollectionExtensions
         var workflowInterface = typeof(TWorkflow)
             .GetInterfaces()
             .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IWorkflow<>));
-        
+
         if (workflowInterface == null)
             throw new ArgumentException($"{typeof(TWorkflow).Name} must implement IWorkflow<T>");
-        
+
         var workflowDataType = workflowInterface.GetGenericArguments()[0];
-        
+
         // Register the workflow class
         services.AddTransient<TWorkflow>();
-        
+
         // Use reflection to call the generic BuildWorkflowDefinition method
         var buildMethod = typeof(ServiceCollectionExtensions)
             .GetMethod(nameof(BuildWorkflowDefinition), BindingFlags.Public | BindingFlags.Static)!
             .MakeGenericMethod(typeof(TWorkflow), workflowDataType);
-        
+
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
@@ -199,7 +196,7 @@ public static class ServiceCollectionExtensions
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
         // Register the workflow class
         services.AddTransient<TWorkflow>();
-        
+
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
@@ -247,9 +244,6 @@ internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinitio
 /// </summary>
 public class IxIFlowOptions
 {
-    /// <summary>Required shared signing key and previous verification keys. Each key is at least 256 bits.</summary>
-    public ReplyTokenKeyRing? ReplyTokenKeys { get; set; }
-
     /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
     public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;
 

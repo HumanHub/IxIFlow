@@ -43,7 +43,7 @@ internal sealed class OperationsHttpFactory(IWorkflowStateRepository repository,
     protected override IHostBuilder CreateHostBuilder() => Host.CreateDefaultBuilder().ConfigureLogging(logging => logging.ClearProviders()).ConfigureWebHostDefaults(web =>
         web.ConfigureServices(services =>
         {
-            services.AddIxIFlow(o => { o.ReplyTokenKeys = TestReplyKeys.Ring; o.PollInterval = TimeSpan.FromMilliseconds(30); o.Slots = Slots; });
+            services.AddIxIFlow(o => { o.PollInterval = TimeSpan.FromMilliseconds(30); o.Slots = Slots; });
             services.Replace(ServiceDescriptor.Singleton(repository));
             services.Replace(ServiceDescriptor.Singleton(registry ?? new WorkflowVersionRegistry()));
             services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));

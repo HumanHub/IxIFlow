@@ -42,7 +42,7 @@ public sealed class WaitDefaultYamlTests
         var document = WorkflowYamlSerializer.Read(WaitYaml(kind));
         if (jsonRoundTrip) document = WorkflowJsonSerializer.Read(WorkflowJsonSerializer.Write(document));
         var definition = GeneratorRegressionTests.Build(WorkflowYamlSerializer.Write(document));
-        using var services = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
+        using var services = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var client = services.GetRequiredService<IWorkflowClient>();
         var started = await client.RunAsync(definition, new FlowData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);

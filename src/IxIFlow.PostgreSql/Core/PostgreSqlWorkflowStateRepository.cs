@@ -141,12 +141,12 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_waits
-                    (instance_id, wait_id, kind, wait_key, event_type, deadline_utc, opened_sequence, opened_at_utc, default_payload_json)
-                SELECT @InstanceId, opened.wait_id, opened.kind, opened.wait_key, opened.event_type,
+                    (instance_id, wait_id, wait_ref, kind, wait_key, event_type, deadline_utc, opened_sequence, opened_at_utc, default_payload_json)
+                SELECT @InstanceId, opened.wait_id, opened.wait_ref, opened.kind, opened.wait_key, opened.event_type,
                     opened.deadline_utc, @Sequence, @Now, opened.default_payload_json
-                FROM unnest(@WaitIds::text[], @Kinds::smallint[], @Keys::text[], @EventTypes::text[],
+                FROM unnest(@WaitIds::text[], @WaitRefs::text[], @Kinds::smallint[], @Keys::text[], @EventTypes::text[],
                     @Deadlines::timestamptz[], @DefaultPayloads::text[])
-                    AS opened (wait_id, kind, wait_key, event_type, deadline_utc, default_payload_json)
+                    AS opened (wait_id, wait_ref, kind, wait_key, event_type, deadline_utc, default_payload_json)
                 ON CONFLICT (instance_id, wait_id) DO NOTHING
                 """, new
         {
@@ -154,6 +154,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             Sequence = inboxSequence,
             Now = Timestamp(now),
             WaitIds = waits.Select(wait => wait.WaitId).ToArray(),
+            WaitRefs = waits.Select(wait => WaitReference.Of(instanceId, wait.WaitId)).ToArray(),
             Kinds = waits.Select(wait => (short)wait.Kind).ToArray(),
             Keys = waits.Select(wait => wait.Key).ToArray(),
             EventTypes = waits.Select(wait => wait.EventType).ToArray(),
@@ -593,8 +594,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
               AND (@Key::text IS NULL OR wait_key = @Key)
               AND (@EventType::text IS NULL OR event_type = @EventType)
               AND (@Kind::smallint IS NULL AND kind NOT IN (@Delay, @Execution) OR kind = @Kind)
-              AND (@AfterWaitId::text IS NULL OR wait_id > @AfterWaitId)
-            ORDER BY wait_id
+              AND (@AfterWaitRef::text IS NULL OR wait_ref > @AfterWaitRef)
+            ORDER BY wait_ref
             LIMIT @Limit
             """,
         Statement.EarliestDeadline => """
@@ -751,6 +752,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_waits (
             instance_id varchar(100) COLLATE "C" NOT NULL,
             wait_id varchar(100) COLLATE "C" NOT NULL,
+            wait_ref varchar(16) COLLATE "C" NOT NULL,
             kind smallint NOT NULL,
             wait_key varchar(400) COLLATE "C" NOT NULL,
             event_type varchar(400) COLLATE "C" NOT NULL,
@@ -763,7 +765,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             PRIMARY KEY (instance_id, wait_id)
         );
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_waits_open
-            ON ixiflow_workflow_waits (wait_key, event_type, wait_id) WHERE close_reason IS NULL;
+            ON ixiflow_workflow_waits (wait_key, event_type, wait_ref) WHERE close_reason IS NULL;
+        CREATE INDEX IF NOT EXISTS ixiflow_workflow_waits_page
+            ON ixiflow_workflow_waits (wait_ref) WHERE close_reason IS NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_commits (
             instance_id varchar(100) COLLATE "C" NOT NULL,
             commit_id varchar(100) COLLATE "C" NOT NULL,

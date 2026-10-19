@@ -77,7 +77,7 @@ public sealed class SnapshotViewTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(time);
-        services.AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring);
+        services.AddIxIFlow();
         services.AddSingleton(repository);
         return services.BuildServiceProvider();
     }

@@ -11,9 +11,8 @@ public sealed partial class IncomingWebhookEndpointTests
     {
         var store = new Mock<IWorkflowStateRepository>(MockBehavior.Strict);
         await using var host = new Harness(store.Object);
-        var wrongRing = new ReplyTokenKeyRing(Enumerable.Repeat((byte)81, 32).ToArray());
-        foreach (var token in new[] { "not-a-token", ReplyToken.Sign(wrongRing, "instance", "wait"),
-                     ReplyToken.Sign(TestReplyKeys.Ring, "another-instance", "wait") })
+        foreach (var token in new[] { "not-a-token", "tampered-token",
+                     ReplyToken.Create("another-instance", "wait") })
         {
             var response = await host.Send(signedWebhook ? "/signed/workflows/{id}/events/{key}" : "/workflows/{id}/events/{key}",
                 Cloud(), instanceId: "instance", contentType: "application/cloudevents+json",
@@ -26,7 +25,7 @@ public sealed partial class IncomingWebhookEndpointTests
     }
 
     [Fact]
-    public async Task TheWebhookAnswersASignedTokenThroughEngineIngress()
+    public async Task TheWebhookAnswersACapabilityThroughEngineIngress()
     {
         await using var host = new Harness();
         var start = await host.Send("/orders/{orderId}");

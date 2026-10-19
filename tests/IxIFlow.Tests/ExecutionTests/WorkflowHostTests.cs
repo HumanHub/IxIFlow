@@ -17,7 +17,7 @@ public sealed class WorkflowHostTests
     [Fact]
     public void AddIxIFlowRegistersOneHostAsAHostedService()
     {
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
 
         var host = provider.GetRequiredService<WorkflowHost>();
         var hosted = provider.GetServices<IHostedService>().ToArray();
@@ -32,7 +32,7 @@ public sealed class WorkflowHostTests
     [Fact]
     public void EachWorkItemScopeHasItsOwnInstanceOperations()
     {
-        using var provider = new ServiceCollection().AddLogging().AddIxIFlow(options => options.ReplyTokenKeys = TestReplyKeys.Ring).Services.BuildServiceProvider();
+        using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         using var first = provider.CreateScope();
         using var second = provider.CreateScope();
 

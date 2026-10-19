@@ -17,7 +17,7 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Activity SDK](activity-sdk.md) | Activity contracts, .NET metadata, DI and installed catalogs |
 | [Execution model](execution-model.md) | Commits, recovery, leases, inboxes, waits, children and parallel data |
 | [Sagas](sagas.md) | Compensation, saved faults and retry scopes |
-| [Signed reply tokens](reply-tokens.md) | Shared signing keys, rotation, verification and reply authorization |
+| [Reply tokens](reply-tokens.md) | Capability tokens, safe handling and reply authorization |
 | [Hosting](coordinator-and-hosts.md) | The core host, slots, store selection, recovery and shutdown |
 | [Workflow operations](operations.md) | Instance search, wait inspection, trace pages and hard termination |
 | [Operations over HTTP](operations-http.md) | Management endpoints, policies, query scope, actors and bounded waits |
