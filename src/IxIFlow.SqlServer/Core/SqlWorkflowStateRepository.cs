@@ -649,7 +649,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         Statement.DeleteParts => """
                     DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId AND PartKey IN @Keys
                     """,
-        _ => RetentionSql(statement)
+        _ => AdmissionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -667,6 +667,12 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         """, transaction: transaction);
     if (lockResult < 0)
         throw new InvalidOperationException($"Could not lock the workflow schema ({lockResult})");
+    if (await connection.ExecuteScalarAsync<bool>(
+        "SELECT CASE WHEN OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction))
+    {
+        await transaction.CommitAsync();
+        return;
+    }
     await connection.ExecuteAsync("""
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NULL
         BEGIN
@@ -781,6 +787,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         """, transaction: transaction);
     await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
+    await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }

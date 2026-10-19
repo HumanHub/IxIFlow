@@ -17,7 +17,10 @@ public sealed record WorkflowEvent(
     string PayloadJson,
     string? Key = null,
     string? TargetWaitId = null,
-    string? Subject = null)
+    string? Subject = null,
+    string? DeliveryIdentity = null,
+    string? RequestFingerprint = null,
+    TimeSpan? DeliveryRetention = null)
 {
     /// <summary>
     /// SHA-256 of the type, key, target wait, subject and payload, each a separate JSON string. An
@@ -25,7 +28,9 @@ public sealed record WorkflowEvent(
     /// compared byte for byte, so a retry sends the same text.
     /// </summary>
     public byte[] ContentHash() => SHA256.HashData(Encoding.UTF8.GetBytes(
-        JsonSerializer.Serialize(new[] { EventType, Key, TargetWaitId, Subject, PayloadJson })));
+        JsonSerializer.Serialize(RequestFingerprint == null
+            ? new[] { EventType, Key, TargetWaitId, Subject, PayloadJson }
+            : new[] { EventType, Key, TargetWaitId, Subject, PayloadJson, RequestFingerprint })));
 
     /// <summary>Checks the fields every store can hold.</summary>
     public void Validate()
@@ -34,6 +39,10 @@ public sealed record WorkflowEvent(
         ArgumentException.ThrowIfNullOrWhiteSpace(EventId);
         ArgumentException.ThrowIfNullOrWhiteSpace(EventType);
         ArgumentNullException.ThrowIfNull(PayloadJson);
+        if (DeliveryIdentity != null && (DeliveryIdentity.Length != 64 || !DeliveryIdentity.All(Uri.IsHexDigit)) ||
+            RequestFingerprint != null && (RequestFingerprint.Length != 64 || !RequestFingerprint.All(Uri.IsHexDigit)) ||
+            DeliveryRetention is { } retention && (retention <= TimeSpan.Zero || retention > CheckpointCommit.MaxDuration))
+            throw new ArgumentException("Invalid delivery identity, fingerprint or retention");
         if (InstanceId.Length > 100 || EventId.Length > 100 || TargetWaitId?.Length > 100 || Subject?.Length > 100)
             throw new ArgumentException("Instance, event and wait IDs and subjects are at most 100 characters");
         if (EventType.Length > 400 || Key?.Length > 400)

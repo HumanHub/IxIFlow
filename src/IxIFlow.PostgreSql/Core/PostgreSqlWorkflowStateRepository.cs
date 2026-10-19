@@ -646,7 +646,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key = ANY(@Keys)
                 """,
-        _ => RetentionSql(statement)
+        _ => AdmissionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -760,6 +760,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         """, transaction: transaction);
     await connection.ExecuteAsync(OutboxSchema, transaction: transaction);
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
+    await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }

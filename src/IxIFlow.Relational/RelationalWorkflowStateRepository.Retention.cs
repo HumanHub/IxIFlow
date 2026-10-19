@@ -113,6 +113,12 @@ public abstract partial class RelationalWorkflowStateRepository
             var expired = await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.ExpireTombstones),
                 WithTimes(new { Limit = batchSize }, ("Now", expiryNow)), expiry,
                 cancellationToken: cancellationToken));
+            await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.AdmissionExpire),
+                WithTimes(new { Limit = batchSize }, ("Now", expiryNow)), expiry, cancellationToken: cancellationToken));
+            await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.OwnershipExpire),
+                WithTimes(new { Limit = batchSize }, ("Now", expiryNow)), expiry, cancellationToken: cancellationToken));
+            await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.WebhookDeliveryExpire),
+                WithTimes(new { Limit = batchSize }, ("Now", expiryNow)), expiry, cancellationToken: cancellationToken));
             await expiry.CommitAsync(cancellationToken);
             return new RetentionResult(removed, expired) { SkippedUnattemptedByPublisher = blocked };
         });

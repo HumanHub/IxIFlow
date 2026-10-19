@@ -29,6 +29,7 @@ public partial class InMemoryWorkflowStateRepository
         lock (_claimLock)
         {
             var now = Now;
+            ExpireAdmissions(now, batchSize);
             // Sweep every publisher, including subscriptions no host currently serves.
             var unclaimed = _deliveries.Values.Where(d => d.Status == OutboxDeliveryStatus.Pending &&
                     d.Attempts == 0 && d.FirstAttemptAtUtc == null && now - d.Event.OccurredAtUtc >= _retryHorizon)
