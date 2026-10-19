@@ -55,6 +55,8 @@ public sealed class SqlServerReadInterleavingTests
         var replacement = CheckpointRaceContract.Instance(id, "new");
         replacement.WorkflowName = original.WorkflowName;
         replacement.CorrelationId = id;
+        // Without re-creation the replacement is a later commit, so it names the row's incarnation.
+        replacement.Incarnation = original.Incarnation;
         try
         {
             await using var observer = new SqlConnection(cs);

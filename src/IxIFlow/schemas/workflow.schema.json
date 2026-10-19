@@ -369,7 +369,7 @@
     },
     "functionExpression": {
       "type": "object",
-      "description": "A named code asset or C# method invocation.",
+      "description": "A reference to a named csharp-expression code asset, taking no arguments.",
       "additionalProperties": false,
       "properties": {
         "kind": {
@@ -379,14 +379,7 @@
         },
         "function": {
           "type": "string",
-          "description": "The code asset key or C# method name."
-        },
-        "arguments": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/expression"
-          },
-          "description": "Arguments for a C# method, with local code assets taking none."
+          "description": "The key of a code asset whose language is csharp-expression; method calls belong in the asset source."
         }
       },
       "required": [
@@ -401,17 +394,7 @@
       "properties": {
         "source": {
           "type": "string",
-          "description": "The CLR output property name."
-        },
-        "sourceContext": {
-          "type": "string",
-          "description": "The output context declared by the document.",
-          "enum": [
-            "activity",
-            "event",
-            "workflow"
-          ],
-          "default": "activity"
+          "description": "The CLR output property name, read from the activity, the wait event or the invoked child workflow data according to the step kind."
         },
         "to": {
           "$ref": "#/definitions/pathExpression",
@@ -1317,14 +1300,14 @@
           "description": "The optional expression deciding whether an event is accepted."
         },
         "defaultPayload": {
-          "description": "A suggested event payload for discovery UIs, never applied automatically."
+          "description": "The initial suggested event payload, overlaid with input mappings when the wait opens; never used as an answer automatically."
         },
         "input": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/inputMapping"
           },
-          "description": "Input mappings configured for the wait."
+          "description": "Pure input mappings evaluated once against workflow data and the previous step when the wait opens, overlaid on defaultPayload or a new event instance and saved as the suggested payload."
         },
         "output": {
           "type": "array",
@@ -2045,14 +2028,14 @@
           "description": "The optional expression deciding whether an event is accepted."
         },
         "defaultPayload": {
-          "description": "A suggested event payload for discovery UIs, never applied automatically."
+          "description": "The initial suggested event payload, overlaid with input mappings when the wait opens; never used as an answer automatically."
         },
         "input": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/inputMapping"
           },
-          "description": "Input mappings configured for the wait."
+          "description": "Pure input mappings evaluated once against workflow data and the previous step when the wait opens, overlaid on defaultPayload or a new event instance and saved as the suggested payload."
         },
         "output": {
           "type": "array",
@@ -2195,21 +2178,7 @@
       "properties": {
         "language": {
           "type": "string",
-          "description": "The code language, with local expressions requiring csharp-expression."
-        },
-        "returns": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The declared return type retained for publishing."
-        },
-        "entryPoint": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The declared entry point retained for publishing."
+          "description": "The code language, which must be csharp-expression."
         },
         "source": {
           "type": "string",

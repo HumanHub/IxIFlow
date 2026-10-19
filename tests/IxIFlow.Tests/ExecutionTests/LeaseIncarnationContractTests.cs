@@ -99,7 +99,7 @@ public sealed class LeaseIncarnationContractTests
                 await Apply(store, next);
                 Assert.Equal(2, (await store.GetWorkflowInstanceAsync(id))!.Revision);
 
-                // Re-creation repeats epoch one and revision one; only the incarnation differs.
+                // Re-creation starts a new incarnation at revision one, under a later epoch.
                 var oldEpoch = leased ? epoch
                     : (await store.TryAcquireExecutionLeaseAsync(id, "owner", duration))!.Epoch;
                 var stale = new[]
@@ -113,7 +113,7 @@ public sealed class LeaseIncarnationContractTests
                 await store.SaveWorkflowInstanceAsync(replacement);
                 replacement = (await store.GetWorkflowInstanceAsync(id))!.CopyForResume();
                 var grant = (await store.TryAcquireExecutionLeaseAsync(id, "replacement", duration))!;
-                Assert.Equal(oldEpoch, grant.Epoch);
+                Assert.True(grant.Epoch > oldEpoch);
                 var replacementFirst = CheckpointCommit.Create(replacement, grant.Epoch, 0);
                 await Apply(store, replacementFirst);
                 Assert.NotEqual(first.Incarnation, replacementFirst.Incarnation);
@@ -209,13 +209,14 @@ public sealed class LeaseIncarnationContractTests
             original = (await store.GetWorkflowInstanceAsync(id))!;
             var originalIncarnation = original.Incarnation;
             Assert.NotEqual(Guid.Empty, originalIncarnation);
-            Assert.Equal(1, (await store.TryAcquireExecutionLeaseAsync(id, "old-first", duration))!.Epoch);
+            var oldFirst = (await store.TryAcquireExecutionLeaseAsync(id, "old-first", duration))!;
+            Assert.True(oldFirst.Epoch > 0);
             await advance(id, TimeSpan.FromMinutes(2));
             var oldGrant = (await store.TryAcquireExecutionLeaseAsync(id, "old-owner", duration))!;
-            Assert.Equal(2, oldGrant.Epoch);
+            Assert.True(oldGrant.Epoch > oldFirst.Epoch);
             Assert.Equal(1, oldGrant.CrashCount);
 
-            // These all name revision one and epoch two. The completed one is also a receipt replay.
+            // These all name revision one and the old owner's epoch. The completed one is also a receipt replay.
             var lateRunning = CheckpointCommit.Create(original, oldGrant.Epoch, original.Revision);
             var latePark = CheckpointCommit.Create(original, oldGrant.Epoch, original.Revision,
                 parks: true, wakeAfter: TimeSpan.FromHours(1));
@@ -261,11 +262,11 @@ public sealed class LeaseIncarnationContractTests
                 Assert.Single(await store.GetWorkflowInstancesByNameAsync(replacement.WorkflowName)).Incarnation);
 
             var first = (await store.TryAcquireExecutionLeaseAsync(id, "new-first", duration))!;
-            Assert.Equal(1, first.Epoch);
+            Assert.True(first.Epoch > oldGrant.Epoch);
             Assert.Equal(0, first.CrashCount);
             Assert.True(await store.ReleaseExecutionLeaseAsync(id, "new-first"));
             var current = (await store.TryAcquireExecutionLeaseAsync(id, "new-owner", duration))!;
-            Assert.Equal(oldGrant.Epoch, current.Epoch);
+            Assert.True(current.Epoch > first.Epoch);
             Assert.Equal(0, current.CrashCount);
             await VerifyStaleEffects(store, original, replacement, oldGrant.Epoch, duration);
 
@@ -295,11 +296,15 @@ public sealed class LeaseIncarnationContractTests
             Assert.Equal(WorkflowStatus.Completed, finished.Status);
             Assert.Equal(replacement.Incarnation, finished.Incarnation);
 
-            // Epoch zero still uses the lease/revision rule, even with a different incarnation in its payload.
+            // An unleased commit after the first must also name the row's incarnation.
             var unleased = NewInstance(id);
             unleased.Status = WorkflowStatus.Completed;
-            await Apply(store, CheckpointCommit.Create(unleased, 0, finished.Revision));
-            Assert.Equal(replacement.Incarnation, (await store.GetWorkflowInstanceAsync(id))!.Incarnation);
+            Assert.Equal(WorkflowCommitStatus.StaleEpoch,
+                (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(unleased, 0, finished.Revision))).Status);
+            var untouched = (await store.GetWorkflowInstanceAsync(id))!;
+            Assert.Equal(finished.Revision, untouched.Revision);
+            Assert.Equal(finished.WorkflowDataJson, untouched.WorkflowDataJson);
+            Assert.Equal(replacement.Incarnation, untouched.Incarnation);
 
             // Save also allocates a fresh incarnation when reusing an old object to create a row.
             await store.DeleteWorkflowInstanceAsync(id, tombstones);
@@ -393,14 +398,15 @@ public sealed class LeaseIncarnationContractTests
     {
         try
         {
-            Assert.Equal(1, (await store.TryAcquireExecutionLeaseAsync(id, "orphan", duration))!.Epoch);
+            var orphan = (await store.TryAcquireExecutionLeaseAsync(id, "orphan", duration))!;
+            Assert.True(orphan.Epoch > 0);
             await store.DeleteWorkflowInstanceAsync(id);
             await AssertLeaseRows(open, id, 0);
             Assert.Null(await store.GetTombstoneAsync(id));
             Assert.False(await store.RenewExecutionLeaseAsync(id, "orphan", duration));
             Assert.False(await store.ReleaseExecutionLeaseAsync(id, "orphan"));
             var grant = (await store.TryAcquireExecutionLeaseAsync(id, "after-delete", duration))!;
-            Assert.Equal(1, grant.Epoch);
+            Assert.True(grant.Epoch > orphan.Epoch);
             Assert.Equal(0, grant.CrashCount);
         }
         finally { await store.DeleteWorkflowInstanceAsync(id); }

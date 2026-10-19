@@ -312,8 +312,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     ContinuationId = continuation.Id,
                     StepId = scopes.Id(step),
                     Key = key,
-                    DefaultPayloadJson = step.DefaultPayload == null ? null
-                        : System.Text.Json.JsonSerializer.Serialize(step.DefaultPayload, step.ResumeEventType!),
+                    DefaultPayloadJson = WaitSuggestions.Create(step, workflowData, continuation.GetPrevious(services),
+                        ForEachTransitions.ItemsOf(scopes, checkpoint, continuation)),
                     Timeout = step.WaitTimeout,
                     DeadlineUtc = StoreNow(checkpoint) + step.WaitTimeout,
                     EventType = step.ResumeEventType?.AssemblyQualifiedName
@@ -387,6 +387,12 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 item.IsReply && item.StepId == stepId && item.ScopeActivationId == activation)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"The request '{step.ReplyToRequest}' this wait answers has no open wait");
+        if (wait.DefaultPayloadJson == null)
+        {
+            wait.DefaultPayloadJson = WaitSuggestions.Create(step, checkpoint.DataOf(continuation),
+                continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+            checkpoint.TouchOwner(wait.ContinuationId);
+        }
         if (wait.Timeout == null && step.WaitTimeout is { } timeout)
         {
             wait.Timeout = timeout;

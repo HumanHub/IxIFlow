@@ -29,7 +29,6 @@ public sealed class WaitDefaultYamlTests
               Choices: [1, 2]
             output:
               - source: Value
-                sourceContext: event
                 to: {path: workflow.Result}
         """;
 

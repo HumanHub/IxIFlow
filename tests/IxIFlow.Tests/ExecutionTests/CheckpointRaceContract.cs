@@ -27,11 +27,17 @@ internal static class CheckpointRaceContract
         var id = Guid.NewGuid().ToString("N");
         try
         {
+            var seed = Instance(id, "seed");
             if (revision > 0)
                 Assert.Equal(WorkflowCommitStatus.Applied, (await stores[0].CommitWorkflowInstanceAsync(
-                    CheckpointCommit.Create(Instance(id, "seed"), 0, 0))).Status);
-            var commits = stores.Select((_, index) => CheckpointCommit.Create(
-                Instance(id, "writer-" + index), 0, revision, "writer-" + index)).ToArray();
+                    CheckpointCommit.Create(seed, 0, 0))).Status);
+            // Contenders after the first commit name the seeded row's incarnation.
+            var commits = stores.Select((_, index) =>
+            {
+                var writer = Instance(id, "writer-" + index);
+                writer.Incarnation = seed.Incarnation;
+                return CheckpointCommit.Create(writer, 0, revision, "writer-" + index);
+            }).ToArray();
             Assert.All(commits, c => Assert.True(c.Parts.Count >= 2, "The race must write branch and data parts"));
             var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var tasks = stores.Select((store, index) => Task.Run(async () =>
