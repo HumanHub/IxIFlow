@@ -152,7 +152,10 @@ internal static class OutboxStoreContract
         var instance = await CompleteAsync(store);
         var pending = await Claim(store, "removed");
         await store.UnregisterPublisherAsync("removed");
-        Assert.Null(await store.GetPublisherAsync("removed"));
+        // Unregistering is a durable administrative state, kept with its actor and time.
+        var removed = Assert.IsType<OutboxPublisherState>(await store.GetPublisherAsync("removed"));
+        Assert.Equal("host", removed.UnregisteredBy);
+        Assert.NotNull(removed.UnregisteredAtUtc);
         Assert.Equal(OutboxDeliveryStatus.GivenUp, (await store.GetDeliveryAsync(pending.Event.Id, "removed"))!.Status);
         Assert.False(await store.SettleDeliveryAsync(pending.Event.Id, "removed", "owner", OutboxPublishResult.Delivered()));
         Assert.False(await store.RenewDeliveryLeaseAsync(pending.Event.Id, "removed", "owner", TimeSpan.FromSeconds(30)));

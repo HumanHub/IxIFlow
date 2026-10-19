@@ -153,9 +153,13 @@ public sealed class CatalogInstanceVersionTests
     {
         await connection.ExecuteAsync(profile == "sqlserver" ? """
             DROP INDEX IX_IxIFlowWorkflowInstances_UnfinishedWorkflow ON dbo.IxIFlowWorkflowInstances;
+            DROP INDEX IX_IxIFlowWorkflowInstances_version_creation ON dbo.IxIFlowWorkflowInstances;
+            DROP INDEX IX_IxIFlowWorkflowInstances_workflow_version_creation ON dbo.IxIFlowWorkflowInstances;
             ALTER TABLE dbo.IxIFlowWorkflowInstances DROP COLUMN WorkflowVersion;
             """ : """
             DROP INDEX ix_ixiflow_workflow_instances_unfinished_workflow;
+            DROP INDEX ix_ixiflow_instances_version_creation;
+            DROP INDEX ix_ixiflow_instances_workflow_version_creation;
             ALTER TABLE ixiflow_workflow_instances DROP COLUMN workflow_version;
             """);
         var reopened = Repository(profile, cs);
@@ -185,21 +189,21 @@ public sealed class CatalogInstanceVersionTests
         await connection.ExecuteAsync(profile switch
         {
             "sqlserver" => """
-                INSERT INTO dbo.IxIFlowWorkflowInstances (InstanceId, WorkflowName, WorkflowVersion, Status, StateJson, Revision)
-                SELECT Id, Name, Version, Status, 'not-json', 1
+                INSERT INTO dbo.IxIFlowWorkflowInstances (InstanceId, WorkflowName, WorkflowVersion, CreatedAtUtc, Status, StateJson, Revision)
+                SELECT Id, Name, Version, '2026-01-01T00:00:00', Status, 'not-json', 1
                 FROM OPENJSON(@Rows) WITH (Id nvarchar(100), Name nvarchar(200), Version int, Status nvarchar(50));
                 UPDATE STATISTICS dbo.IxIFlowWorkflowInstances WITH FULLSCAN;
                 """,
             "postgresql" => """
-                INSERT INTO ixiflow_workflow_instances (instance_id, workflow_name, workflow_version, status, state_json, revision)
-                SELECT "Id", "Name", "Version", "Status", 'not-json', 1
+                INSERT INTO ixiflow_workflow_instances (instance_id, workflow_name, workflow_version, created_at_utc, status, state_json, revision)
+                SELECT "Id", "Name", "Version", TIMESTAMPTZ '2026-01-01 00:00:00+00', "Status", 'not-json', 1
                 FROM jsonb_to_recordset(CAST(@Rows AS jsonb)) AS row("Id" text, "Name" text, "Version" integer, "Status" text);
                 ANALYZE ixiflow_workflow_instances;
                 """,
             _ => """
-                INSERT INTO ixiflow_workflow_instances (instance_id, incarnation, workflow_name, workflow_version, status, state_json, revision)
+                INSERT INTO ixiflow_workflow_instances (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, status, state_json, revision)
                 SELECT json_extract(value, '$.Id'), @Incarnation, json_extract(value, '$.Name'),
-                    json_extract(value, '$.Version'), json_extract(value, '$.Status'), 'not-json', 1 FROM json_each(@Rows);
+                    json_extract(value, '$.Version'), '2026-01-01 00:00:00.0000000', json_extract(value, '$.Status'), 'not-json', 1 FROM json_each(@Rows);
                 ANALYZE ixiflow_workflow_instances;
                 """
         }, new { Rows = JsonSerializer.Serialize(rows), Incarnation = Guid.NewGuid().ToString() });
