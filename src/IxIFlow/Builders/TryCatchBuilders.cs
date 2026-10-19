@@ -162,9 +162,8 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
         where TEvent : class
     {
-        var expression = matchesExpression == null ? null : WorkflowExpressionSignature.Checked(matchesExpression);
         var result = WaitFor<TEvent>(key, matchesExpression?.Compile(), configure);
-        steps[^1].ConditionExpression = expression;
+        steps[^1].ConditionExpression = matchesExpression;
         return result;
     }
 
@@ -188,9 +187,8 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
         where TEvent : class
     {
-        var expression = matchesExpression == null ? null : WorkflowExpressionSignature.Checked(matchesExpression);
         var result = Suspend<TEvent>(reason, matchesExpression?.Compile(), configure);
-        steps[^1].ConditionExpression = expression;
+        steps[^1].ConditionExpression = matchesExpression;
         return result;
     }
 
@@ -260,9 +258,8 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression)
     {
-        var expression = WorkflowExpressionSignature.Checked(conditionExpression);
         var result = DoWhile(configure, conditionExpression.Compile());
-        steps[^1].ConditionExpression = expression;
+        steps[^1].ConditionExpression = conditionExpression;
         return result;
     }
 
@@ -281,9 +278,8 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
-        var expression = WorkflowExpressionSignature.Checked(conditionExpression);
         var result = WhileDo(conditionExpression.Compile(), configure);
-        steps[^1].ConditionExpression = expression;
+        steps[^1].ConditionExpression = conditionExpression;
         return result;
     }
 
@@ -303,9 +299,8 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
         Action<IForEachSetup<TWorkflowData>>? setup = null)
     {
-        var expression = WorkflowExpressionSignature.Checked(itemsExpression);
         var result = ForEach(itemsExpression.Compile(), body, setup);
-        steps[^1].ForEachItemsExpression = expression;
+        steps[^1].ForEachItemsExpression = itemsExpression;
         return result;
     }
 
@@ -370,7 +365,7 @@ public sealed class CatchActivitySetupInputBuilder<TWorkflowData, TActivity, TPr
         {
             Direction = PropertyMappingDirection.Input,
             TargetProperty = member.Member.Name,
-            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            Expression = source,
             ContextFactory = Core.Runtime.WorkflowStepDelegates.Fault<TWorkflowData, TFault, TPreviousStepData>,
             TargetType = typeof(TProperty),
             SourceType = typeof(TProperty),

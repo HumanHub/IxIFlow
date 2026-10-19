@@ -16,16 +16,21 @@ internal static class WorkflowExpressionSignature
         return JsonSerializer.Serialize(shape.Parts);
     }
 
-    public static TExpression Checked<TExpression>(TExpression expression) where TExpression : LambdaExpression
-    {
-        Of(expression);
-        return expression;
-    }
-
     private static bool Generated(Type? type) => type?.IsDefined(typeof(CompilerGeneratedAttribute), false) == true;
+    private static bool Anonymous(Type? type) => Generated(type) && type!.IsSealed &&
+        type.BaseType == typeof(object) && type.GetConstructors().Length == 1 &&
+        type.GetProperties().Length > 0 && type.GetProperties().All(property => property.SetMethod == null) &&
+        type.GetConstructors()[0].GetParameters().Select(parameter => parameter.Name)
+            .SequenceEqual(type.GetProperties().Select(property => property.Name));
+
     private static string TypeName(Type? type)
     {
         if (type == null) return "";
+        if (Anonymous(type))
+            return "anonymous:" + JsonSerializer.Serialize(type.GetProperties()
+                .Select(property => new { property.Name, Type = TypeName(property.PropertyType) }));
+        if (type.GetCustomAttribute<WorkflowAttribute>(inherit: false) is { } identity)
+            return "workflow:" + JsonSerializer.Serialize(new { identity.Name, identity.Version });
         if (Generated(type)) return "closure";
         if (type.IsArray) return TypeName(type.GetElementType()) + "[" + type.GetArrayRank() + "]";
         if (type.IsConstructedGenericType)
@@ -81,7 +86,7 @@ internal static class WorkflowExpressionSignature
                 if (typeof(ItemScope).IsAssignableFrom(field.FieldType) && ReadHandle(node) is { } item)
                     Parts.Add(Item(item));
                 else
-                    Parts.Add(field.Name.Contains('<') ? "capture" : field.Name);
+                    Parts.Add("capture");
                 return node;
             }
             Member(node.Member);
@@ -175,7 +180,8 @@ internal static class WorkflowExpressionSignature
         {
             Parts.Add(member?.MemberType.ToString());
             Parts.Add(TypeName(member?.DeclaringType));
-            Parts.Add(Generated(member?.DeclaringType) || member?.IsDefined(typeof(CompilerGeneratedAttribute), false) == true
+            Parts.Add(!Anonymous(member?.DeclaringType) && (Generated(member?.DeclaringType) ||
+                member?.IsDefined(typeof(CompilerGeneratedAttribute), false) == true)
                 ? "generated" : member?.Name);
             if (member is MethodBase method)
             {

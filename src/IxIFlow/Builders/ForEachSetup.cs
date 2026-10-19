@@ -39,9 +39,8 @@ internal sealed class ForEachSetup<TWorkflowData>(WorkflowStep step) : IForEachS
         Expression<Func<TWorkflowData, IReadOnlyList<ItemResult<TResult>>, bool>> completeWhenExpression)
     {
         ArgumentNullException.ThrowIfNull(completeWhenExpression);
-        var expression = Core.Runtime.WorkflowExpressionSignature.Checked(completeWhenExpression);
         WaitConditionally(completeWhenExpression.Compile());
-        step.ForEachCompletionExpression = expression;
+        step.ForEachCompletionExpression = completeWhenExpression;
         return this;
     }
 
@@ -79,7 +78,7 @@ internal sealed class ForEachSetup<TWorkflowData>(WorkflowStep step) : IForEachS
         ArgumentNullException.ThrowIfNull(target);
         var path = Core.Runtime.MemberPath.Of(target);
         step.ForEachIntoPath = path;
-        step.ForEachIntoExpression = Core.Runtime.WorkflowExpressionSignature.Checked(target);
+        step.ForEachIntoExpression = target;
         step.ForEachStoredResultType = typeof(TResult);
         step.ResultType ??= typeof(TResult);
         if (target.Body is not MemberExpression { Member: PropertyInfo { SetMethod: not null } property } member ||

@@ -94,8 +94,13 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
         var published = await registry.GetWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Workflow definition not found: {definition.Name} v{definition.Version}");
-        var registeredHash = new WorkflowScopeCatalog(published).StructureHash;
-        var loadedHash = new WorkflowScopeCatalog(definition).StructureHash;
+        if (registry is not IWorkflowStructureRegistry structures)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                "Typed child resolution requires a registry that exposes its stored structure hashes");
+        var registeredHash = await structures.GetWorkflowStructureHashAsync(step.WorkflowName!, step.WorkflowVersion!.Value)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Registered structure hash not found: {definition.Name} v{definition.Version}");
+        var loadedHash = WorkflowDefinitionValidator.ForExecution(definition).StructureHash;
         if (registeredHash != loadedHash)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Workflow {definition.Name} v{definition.Version} differs from its registered definition: " +

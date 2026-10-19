@@ -50,7 +50,7 @@ public sealed class RequestCompensationActivityInputBuilder<TWorkflowData, TComp
                 : throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Expected {typeof(RequestCompensationContext<TWorkflowData, TCurrentStepData, TReply>).Name}, " +
                     $"got {context.GetType().Name}"),
-            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            Expression = source,
             ContextFactory = Core.Runtime.WorkflowStepDelegates.RequestCompensation<TWorkflowData, TCurrentStepData, TReply>,
             SourceType = typeof(RequestCompensationContext<TWorkflowData, TCurrentStepData, TReply>),
             CompensationSource = CompensationInputSource.CurrentStepContext,
