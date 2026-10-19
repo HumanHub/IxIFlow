@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using IxIFlow.Builders;
@@ -130,7 +131,7 @@ public sealed class WorkflowExecutorHostTests
         var now = time.GetUtcNow().UtcDateTime;
         var data = new ExecutorData();
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
@@ -218,7 +219,7 @@ public sealed class WorkflowExecutorHostTests
         public ChildStart StartChild(WorkflowDefinition definition, object data, WorkflowInstance parent,
             string childInstanceId, string parentWaitId) =>
             new(childInstanceId, System.Text.Json.JsonSerializer.Serialize(new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = childInstanceId, WorkflowName = definition.Name, Status = WorkflowStatus.Running,
                 ParentInstanceId = parent.InstanceId, ParentWaitId = parentWaitId
             }), parentWaitId);

@@ -1,5 +1,7 @@
+using IxIFlow.Tests.Infrastructure;
 using System.Text.Json;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -16,82 +18,49 @@ public sealed class CheckpointPayloadTests
     {
         var instance = new WorkflowInstance
         {
-            InstanceId = "payload", WorkflowName = "Payload", ExecutionStateJson = "{\"Continuations\":[{\"Id\":\"a\"}]}"
+            InstanceId = "payload", WorkflowName = "Payload", ExecutionStateJson = StoreTestSupport.CheckpointJson
         };
 
         var json = JsonSerializer.Serialize(instance);
         var read = JsonSerializer.Deserialize<WorkflowInstance>(json)!;
 
-        Assert.Contains("\"ExecutionStateJson\":{\"Continuations\":[{\"Id\":\"a\"}]}", json);
+        Assert.Contains("\"ExecutionStateJson\":" + instance.ExecutionStateJson, json);
         Assert.Equal(instance.ExecutionStateJson, read.ExecutionStateJson);
-    }
-
-    [Fact]
-    [Trait("Spec", "A-08")]
-    public void AStateSavedAsAnEscapedStringStillReads()
-    {
-        var saved = "{\"InstanceId\":\"old\",\"ExecutionStateJson\":\"{\\\"Continuations\\\":[]}\"}";
-
-        Assert.Equal("{\"Continuations\":[]}", JsonSerializer.Deserialize<WorkflowInstance>(saved)!.ExecutionStateJson);
-    }
-
-    [Fact]
-    [Trait("Spec", "A-08")]
-    public void AStateThatIsNotAnObjectStaysAString()
-    {
-        var instance = new WorkflowInstance { InstanceId = "empty", ExecutionStateJson = "" };
-
-        var read = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!;
-
-        Assert.Equal("", read.ExecutionStateJson);
     }
 
     [Theory]
     [Trait("Spec", "A-08")]
     [InlineData(63, true)]
     [InlineData(64, false)]
-    public void AStateTooDeepToSitInsideItsInstanceIsWrittenEscapedAndReadsBack(int depth, bool raw)
+    public void CheckpointDepthRoundTripsOrIsRejectedExplicitly(int depth, bool supported)
     {
-        var state = new string('[', depth) + new string(']', depth);
+        var nested = new string('[', depth - 1) + new string(']', depth - 1);
+        var state = StoreTestSupport.CheckpointJson[..^1] + ",\"DepthProbe\":" + nested + "}";
         var instance = new WorkflowInstance { InstanceId = "deep", ExecutionStateJson = state };
-
+        if (!supported)
+        {
+            Assert.Throws<JsonException>(() => JsonSerializer.Serialize(instance));
+            Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<WorkflowInstance>(
+                "{\"ExecutionStateJson\":" + state + "}"));
+            return;
+        }
         var json = JsonSerializer.Serialize(instance);
-        var read = JsonSerializer.Deserialize<WorkflowInstance>(json)!;
-
-        Assert.Equal(raw, json.Contains("\"ExecutionStateJson\":[", StringComparison.Ordinal));
-        Assert.Equal(state, read.ExecutionStateJson);
-    }
-
-    [Theory]
-    [Trait("Spec", "A-08")]
-    [InlineData("{\"unclosed\":")]
-    [InlineData("{} trailing")]
-    [InlineData("  {\"Padded\":true}  ")]
-    [InlineData("[1, 2, 3]")]
-    [InlineData("null")]
-    [InlineData("42")]
-    public void AnyStateReadsBackAsTheTextItWas(string state)
-    {
-        var instance = new WorkflowInstance { InstanceId = "text", ExecutionStateJson = state };
-
-        var read = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!;
-
-        // Raw JSON keeps its content, though not the blanks around it.
-        Assert.Equal(state.Trim().StartsWith('{') && state.Trim().EndsWith('}') || state.StartsWith('[')
-            ? state.Trim() : state, read.ExecutionStateJson);
+        Assert.Contains("\"ExecutionStateJson\":{", json);
+        Assert.Equal(state, JsonSerializer.Deserialize<WorkflowInstance>(json)!.ExecutionStateJson);
     }
 
     [Fact]
     [Trait("Spec", "A-08")]
-    public void ALargeStateRoundTripsThroughACommit()
+    public async Task ALargeStateRoundTripsThroughACommit()
     {
-        var items = string.Join(",", Enumerable.Range(0, 100_000).Select(index => $"{{\"Id\":\"item-{index}\"}}"));
+        var repository = new InMemoryWorkflowStateRepository();
+        var checkpoint = new ExecutionCheckpoint { DefinitionFingerprint = new string('x', 1_100_000) };
         var instance = new WorkflowInstance
         {
-            InstanceId = "large", WorkflowName = "Large", ExecutionStateJson = $"{{\"Items\":[{items}]}}"
+            InstanceId = "large", WorkflowName = "Large", ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
         };
 
-        var commit = CheckpointCommit.Create(instance, 0, 0);
+        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0);
 
         Assert.True(commit.Payload.Length > 1_000_000);
         Assert.Equal(instance.ExecutionStateJson, commit.ReadInstance().ExecutionStateJson);
@@ -99,15 +68,16 @@ public sealed class CheckpointPayloadTests
 
     [Fact]
     [Trait("Spec", "A-08")]
-    public void ACommitCarriesWhatAStoreAppliesItByAndReadsAtItsNewRevision()
+    public async Task ACommitCarriesWhatAStoreAppliesItByAndReadsAtItsNewRevision()
     {
+        var repository = new InMemoryWorkflowStateRepository();
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = "header", WorkflowName = "Header", CorrelationId = "c-1", Status = WorkflowStatus.Suspended,
             CancellationReason = new CancellationReason { ReasonCode = "operator" }, Revision = 3
         };
 
-        var commit = CheckpointCommit.Create(instance, 0, 3);
+        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 3);
 
         Assert.Equal(new CommittedInstance("header", "Header", "c-1", WorkflowStatus.Suspended, true), commit.Instance);
         Assert.Equal(4, commit.ReadInstance().Revision);

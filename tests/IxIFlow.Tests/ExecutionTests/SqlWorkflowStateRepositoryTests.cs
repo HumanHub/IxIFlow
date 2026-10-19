@@ -54,7 +54,7 @@ public class SqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDatabase<
         try
         {
             var instance = new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "DurableTest",
                 WorkflowVersion = 2,
@@ -62,7 +62,7 @@ public class SqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDatabase<
                 CorrelationId = "correlation-1",
                 WorkflowDataJson = "{\"Value\":42}"
             };
-            await firstRepository.SaveWorkflowInstanceAsync(instance);
+            await firstRepository.SeedAsync(instance);
 
             await firstRepository.DisposeAsync();
             secondRepository = new SqliteWorkflowStateRepository(SqliteTestDatabase<SqlWorkflowStateRepositoryTests>.ConnectionString);
@@ -74,7 +74,7 @@ public class SqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDatabase<
                 candidate => candidate.InstanceId == instanceId);
 
             restored.Status = WorkflowStatus.Completed;
-            await secondRepository.SaveWorkflowInstanceAsync(restored);
+            await secondRepository.SeedAsync(restored);
             Assert.DoesNotContain(await secondRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended),
                 candidate => candidate.InstanceId == instanceId);
             Assert.Contains(await secondRepository.GetWorkflowInstancesByNameAsync("DurableTest"),

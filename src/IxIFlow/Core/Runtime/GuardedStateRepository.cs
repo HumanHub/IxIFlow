@@ -101,10 +101,6 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetChildInstancesAsync(parentInstanceId),
             $"Reading the children of workflow instance '{parentInstanceId}'");
 
-    public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) =>
-        Guard(() => _store.SaveWorkflowInstanceAsync(instance),
-            $"Saving workflow instance '{instance.InstanceId}'");
-
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
         Guard(() => _store.GetWorkflowInstanceAsync(instanceId),
             $"Reading workflow instance '{instanceId}'");

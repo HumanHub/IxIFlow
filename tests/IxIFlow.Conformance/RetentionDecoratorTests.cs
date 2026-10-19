@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using IxIFlow.Core;
 using Microsoft.Extensions.Time.Testing;
 
@@ -13,8 +14,8 @@ public sealed class RetentionDecoratorTests
     {
         var time = new FakeTimeProvider();
         IWorkflowStateRepository store = new FaultRepository(new InMemoryWorkflowStateRepository(time));
-        await store.SaveWorkflowInstanceAsync(new WorkflowInstance
-            { InstanceId = "retained", WorkflowName = "Retention", Status = WorkflowStatus.Completed });
+        await store.SeedAsync(new WorkflowInstance
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "retained", WorkflowName = "Retention", Status = WorkflowStatus.Completed });
         time.Advance(TimeSpan.FromDays(31));
         Assert.Equal(1, (await store.PurgeAsync(TimeSpan.FromDays(30), TimeSpan.FromDays(7), 10)).InstancesRemoved);
         var tombstone = (await store.GetTombstoneAsync("retained"))!;

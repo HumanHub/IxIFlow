@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using System.Text.Json;
 using IxIFlow.Core;
 
@@ -39,7 +40,7 @@ public sealed class TraceMetadataTests
             EntryType = TraceEntryType.Released,
             Payload = new ReleaseTrace("operator")
         };
-        var commit = CheckpointCommit.Create(new WorkflowInstance { InstanceId = "trace" }, 0, 0,
+        var commit = CheckpointCommit.Create(new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "trace" }, 0, 0,
             traceEntries: [entry]);
 
         using var json = JsonDocument.Parse(Assert.Single(commit.TraceEntries));
@@ -56,7 +57,7 @@ public sealed class TraceMetadataTests
     {
         var entry = new ExecutionTraceEntry { EntryType = TraceEntryType.ActivityStarted, ActivityName = "Activity" };
         entry.Metadata.Add("Attempt", 2);
-        var commit = CheckpointCommit.Create(new WorkflowInstance { InstanceId = "trace" }, 0, 0,
+        var commit = CheckpointCommit.Create(new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "trace" }, 0, 0,
             traceEntries: [entry]);
 
         using var json = JsonDocument.Parse(Assert.Single(commit.TraceEntries));

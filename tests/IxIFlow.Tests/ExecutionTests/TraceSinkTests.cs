@@ -44,8 +44,8 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
     public async Task AResentCommitAppendsItsTraceOnce()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Resent" };
-        var commit = CheckpointCommit.Create(instance, 0, 0, traceEntries:
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Resent" };
+        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, traceEntries:
         [
             new ExecutionTraceEntry { EntryType = TraceEntryType.ActivityStarted, ActivityName = "First" },
             new ExecutionTraceEntry { EntryType = TraceEntryType.ActivityCompleted, ActivityName = "First" }
@@ -229,16 +229,16 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
 
     private static async Task VerifyTraceOrderOncePerCommit(IWorkflowStateRepository repository)
     {
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace" };
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace" };
         try
         {
-            var first = CheckpointCommit.Create(instance, 0, 0, traceEntries:
+            var first = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, traceEntries:
                 Enumerable.Range(0, 1_500).Select(index => new ExecutionTraceEntry { ActivityName = $"step-{index}" })
                     .ToArray());
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
             instance.Revision = 1;
-            var second = CheckpointCommit.Create(instance, 0, 1, traceEntries:
+            var second = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 1, traceEntries:
                 [new ExecutionTraceEntry { ActivityName = "last" }]);
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(second)).Status);
 

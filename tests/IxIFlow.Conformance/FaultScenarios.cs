@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
@@ -47,7 +48,7 @@ public sealed class FaultScenarios
         await using var cluster = await CreateClusterAsync(profile, time: time);
         var store = cluster.NewRepository();
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Takeover", Status = WorkflowStatus.Running,
             WorkflowDataJson = "{}"
         };

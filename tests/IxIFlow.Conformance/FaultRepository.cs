@@ -77,7 +77,12 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.RenewExecutionLeaseAsync(instanceId, token, duration);
     public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         inner.ReleaseExecutionLeaseAsync(instanceId, token);
-    public Task SaveWorkflowInstanceAsync(WorkflowInstance instance) => inner.SaveWorkflowInstanceAsync(instance);
+
+    public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
+        inner.GetWorkflowInstanceSummaryAsync(instanceId);
+    public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
+        inner.GetChildInstancesAsync(parentInstanceId);
+
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
         inner.GetWorkflowInstanceAsync(instanceId);
     public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>

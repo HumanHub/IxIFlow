@@ -11,22 +11,22 @@ internal static class StateRepositoryContract
         try
         {
             var instance = new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 Status = WorkflowStatus.Suspended,
                 RunnableAtUtc = DateTime.UtcNow.AddMinutes(1)
             };
-            await repository.SaveWorkflowInstanceAsync(instance);
+            await repository.SeedAsync(instance, TimeSpan.FromMinutes(1));
             Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
                 candidate => candidate.InstanceId == instanceId);
 
             instance.RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1);
-            await repository.SaveWorkflowInstanceAsync(instance);
+            await repository.SeedAsync(instance, TimeSpan.Zero);
             Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 candidate => candidate.InstanceId == instanceId);
 
             instance.Status = WorkflowStatus.NeedsResolution;
-            await repository.SaveWorkflowInstanceAsync(instance);
+            await repository.SeedAsync(instance, TimeSpan.Zero);
             Assert.Contains(await repository.GetRunnableInstancesAsync(100),
                 candidate => candidate.InstanceId == instanceId);
         }
@@ -34,7 +34,8 @@ internal static class StateRepositoryContract
         {
             await repository.DeleteWorkflowInstanceAsync(instanceId);
         }
-    }
+    }
+
 
     internal static async Task VerifyCommitPayloadAndColumns(IWorkflowStateRepository repository, Func<System.Data.Common.DbConnection> newConnection)
     {
@@ -44,9 +45,9 @@ internal static class StateRepositoryContract
             var instance = new WorkflowInstance
             {
                 InstanceId = instanceId, WorkflowName = "Columns", Status = WorkflowStatus.Suspended,
-                ExecutionStateJson = "{\"Waits\":[]}", Revision = 0, RunnableAtUtc = DateTime.UtcNow.AddYears(5)
+                ExecutionStateJson = StoreTestSupport.CheckpointJson, Revision = 0, RunnableAtUtc = DateTime.UtcNow.AddYears(5)
             };
-            var commit = CheckpointCommit.Create(instance, 0, 0);
+            var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0);
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
 
             await using (var connection = newConnection())
@@ -68,13 +69,14 @@ internal static class StateRepositoryContract
             Assert.Null(stored.RunnableAtUtc);
             Assert.Equal(1, Assert.Single(await repository.GetWorkflowInstancesByNameAsync("Columns"),
                 candidate => candidate.InstanceId == instanceId).Revision);
-            Assert.Equal("{\"Waits\":[]}", stored.ExecutionStateJson);
+            Assert.Equal(instance.ExecutionStateJson, stored.ExecutionStateJson);
         }
         finally
         {
             await repository.DeleteWorkflowInstanceAsync(instanceId);
         }
-    }
+    }
+
 
     internal static async Task VerifyDeliveryOnceAcrossRepositories(Func<IWorkflowStateRepository> newRepository)
     {
@@ -89,7 +91,8 @@ internal static class StateRepositoryContract
         {
             await firstRepository.DeleteWorkflowInstanceAsync(instanceId);
         }
-    }
+    }
+
 
     internal static async Task VerifyRepositoryRecreation(Func<IWorkflowStateRepository> newRepository)
     {
@@ -98,7 +101,7 @@ internal static class StateRepositoryContract
         try
         {
             var instance = new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "DurableTest",
                 WorkflowVersion = 2,
@@ -106,7 +109,7 @@ internal static class StateRepositoryContract
                 CorrelationId = "correlation-1",
                 WorkflowDataJson = "{\"Value\":42}"
             };
-            await firstRepository.SaveWorkflowInstanceAsync(instance);
+            await firstRepository.SeedAsync(instance);
 
             var secondRepository = newRepository();
             var restored = await secondRepository.GetWorkflowInstanceAsync(instanceId);
@@ -117,7 +120,7 @@ internal static class StateRepositoryContract
                 candidate => candidate.InstanceId == instanceId);
 
             restored.Status = WorkflowStatus.Completed;
-            await secondRepository.SaveWorkflowInstanceAsync(restored);
+            await secondRepository.SeedAsync(restored);
             Assert.DoesNotContain(await firstRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended),
                 candidate => candidate.InstanceId == instanceId);
             Assert.Contains(await firstRepository.GetWorkflowInstancesByNameAsync("DurableTest"),
@@ -127,5 +130,6 @@ internal static class StateRepositoryContract
         {
             await firstRepository.DeleteWorkflowInstanceAsync(instanceId);
         }
-    }
+    }
+
 }

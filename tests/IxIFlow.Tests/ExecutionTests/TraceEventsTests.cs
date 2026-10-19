@@ -207,7 +207,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
                 entry => entry.EntryType == TraceEntryType.DelayFired).Payload).WaitRef);
 
         var stored = await store.GetTraceAsync(started.InstanceId);
-        var commit = CheckpointCommit.Create(new WorkflowInstance { InstanceId = started.InstanceId }, 0, 0,
+        var commit = CheckpointCommit.Create(new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = started.InstanceId }, 0, 0,
             traceEntries: trace);
         var results = new[] { started, refused, taken, closed, timedOut, expired, recovered, finished };
         var copies = trace.Concat(stored.Select(entry => entry.Entry)).Concat(commit.ReadTraceEntries())
@@ -501,7 +501,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
     }
 
     [Fact]
-    public void TheExactBoundFitsAndACommitFreezesItsTruncationMarker()
+    public async Task TheExactBoundFitsAndACommitFreezesItsTruncationMarker()
     {
         var time = new FakeTimeProvider(Start);
         var trace = new TraceBuffer();
@@ -511,8 +511,9 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         Assert.Equal([TraceEntryType.LoopIteration, TraceEntryType.LoopIteration], trace.Pending.Select(entry => entry.EntryType));
         time.Advance(TimeSpan.FromSeconds(1));
         trace.Add(new ExecutionTraceEntry { Timestamp = time.GetUtcNow().UtcDateTime, EntryType = TraceEntryType.LoopIteration });
-        var instance = new WorkflowInstance { InstanceId = "frozen-truncation", WorkflowName = "trace" };
-        var commit = CheckpointCommit.Create(instance, 0, 0, traceEntries: trace.Pending);
+        var store = new InMemoryWorkflowStateRepository();
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "frozen-truncation", WorkflowName = "trace" };
+        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0, traceEntries: trace.Pending);
         var markerId = trace.Pending[^1].TraceId;
         trace.Add(new ExecutionTraceEntry { EntryType = TraceEntryType.LoopCompleted });
         Assert.Equal(3, ((TraceTruncation)trace.Pending[^1].Payload!).DroppedCount);

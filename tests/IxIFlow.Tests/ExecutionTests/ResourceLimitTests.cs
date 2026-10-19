@@ -292,7 +292,7 @@ public sealed class ResourceLimitTests
         var time = new FakeTimeProvider();
         var store = new HangingRenewalStore();
         var settings = new ExecutionLeaseSettings(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(1));
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Hanging" };
+        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Hanging" };
         await using var lease = (await WorkflowExecutionLease.TryAcquireAsync(store, instance, settings,
             new CancellationWatch(store, time), time))!;
         store.Hang = true;
@@ -453,7 +453,7 @@ public sealed class ResourceLimitTests
         var instanceId = Guid.NewGuid().ToString("N");
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
             new WorkflowInstance
-            {
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "PoolReservation", Status = WorkflowStatus.Running,
                 WorkflowDataJson = "{}"
             }, 0, 0))).Status);

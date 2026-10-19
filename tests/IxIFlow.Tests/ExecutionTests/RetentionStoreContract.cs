@@ -1,3 +1,4 @@
+using IxIFlow.Tests.Infrastructure;
 using System.Data.Common;
 using System.Text.Json;
 using Dapper;
@@ -39,13 +40,13 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
     {
         var id = Guid.NewGuid().ToString("N");
         _ids.Add(id);
-        return new WorkflowInstance { InstanceId = id, WorkflowName = "Retention", WorkflowVersion = 1,
+        return new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = id, WorkflowName = "Retention", WorkflowVersion = 1,
             Status = status, ParentInstanceId = parent, WorkflowDataType = typeof(ResultData).AssemblyQualifiedName!,
             WorkflowDataJson = """{"Value":42}""", CompletedAt = DateTime.MinValue };
     }
     private async Task<CheckpointCommit> Commit(WorkflowInstance instance, ParentNotice? notice = null)
     {
-        var commit = CheckpointCommit.Create(instance, 0, instance.Revision, parentNotice: notice);
+        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, instance.Revision, parentNotice: notice);
         var result = await store.CommitWorkflowInstanceAsync(commit);
         Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
         instance.Revision = result.Revision;
@@ -149,7 +150,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
             DefinitionFingerprint = "retention", Continuations = [new ContinuationState
                 { Id = "branch", Status = ContinuationStatus.Waiting, Stack = [new ScopePosition { ScopeId = "root" }] }]
         });
-        var first = CheckpointCommit.Create(instance, 0, 0, openedWaits:
+        var first = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0, openedWaits:
             [new OpenedWait("wait", WaitKind.Event, "reply", "reply-type", null)],
             traceEntries: [new ExecutionTraceEntry { ActivityName = "step" }]);
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(first)).Status);
@@ -198,7 +199,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         Assert.Equal(WorkflowErrorKind.InstanceRemoved, exception.Kind);
         var saved = InstanceWithId(instance.InstanceId);
         Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            store.SaveWorkflowInstanceAsync(saved))).Kind);
+            store.SeedAsync(saved))).Kind);
         foreach (var target in new string?[] { null, "old-wait" })
             Assert.Equal(EventAppendStatus.Closed, (await store.AppendEventAsync(
                 new WorkflowEvent(instance.InstanceId, Guid.NewGuid().ToString("N"), "event", "{}", TargetWaitId: target))).Status);
@@ -224,7 +225,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
     }
 
     private static WorkflowInstance InstanceWithId(string id) => new()
-        { InstanceId = id, WorkflowName = "Replacement", Status = WorkflowStatus.Running };
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = id, WorkflowName = "Replacement", Status = WorkflowStatus.Running };
 
     private async Task TombstoneExpiry()
     {
@@ -237,7 +238,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         await Advance(TimeSpan.FromDays(2));
         Assert.Null(await store.GetTombstoneAsync(instance.InstanceId));
         // Admission consults expiry without waiting for a sweep.
-        await store.SaveWorkflowInstanceAsync(InstanceWithId(instance.InstanceId));
+        await store.SeedAsync(InstanceWithId(instance.InstanceId));
         Assert.Equal(1, (await Purge()).TombstonesRemoved);
         Assert.NotNull(await store.GetWorkflowInstanceAsync(instance.InstanceId));
         Assert.Equal(EventAppendStatus.Rejected, (await store.AppendEventAsync(
@@ -359,7 +360,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var parent = Instance(WorkflowStatus.Suspended);
         var child = Instance(WorkflowStatus.Running, parent.InstanceId);
         child.ParentWaitId = "child-wait";
-        var start = CheckpointCommit.Create(parent, 0, 0,
+        var start = CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, 0,
             openedWaits: [new OpenedWait("child-wait", WaitKind.Child, "child", "child-result", null)],
             childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child-wait")]);
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(start)).Status);
@@ -413,7 +414,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var child = InstanceWithId(removed.InstanceId);
         child.ParentInstanceId = parent.InstanceId;
         child.ParentWaitId = "child-wait";
-        var commit = CheckpointCommit.Create(parent, 0, 0,
+        var commit = CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, 0,
             openedWaits: [new OpenedWait("child-wait", WaitKind.Child, "child", "child-result", null)],
             childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child-wait")]);
         var refused = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.CommitWorkflowInstanceAsync(commit));
@@ -467,12 +468,12 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
             await store.DeleteWorkflowInstanceAsync(instance.InstanceId, period);
             Assert.Equal(beforeRepeat, await store.GetTombstoneAsync(instance.InstanceId));
             Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-                store.SaveWorkflowInstanceAsync(InstanceWithId(instance.InstanceId)))).Kind);
+                store.SeedAsync(InstanceWithId(instance.InstanceId)))).Kind);
             Assert.Equal(EventAppendStatus.Closed, (await store.AppendEventAsync(
                 new WorkflowEvent(instance.InstanceId, "late", "type", "{}"))).Status);
             await Advance(period);
             Assert.Null(await store.GetTombstoneAsync(instance.InstanceId));
-            await store.SaveWorkflowInstanceAsync(InstanceWithId(instance.InstanceId));
+            await store.SeedAsync(InstanceWithId(instance.InstanceId));
         }
         var defaulted = await Complete();
         await store.DeleteWorkflowInstanceAsync(defaulted.InstanceId);
@@ -555,12 +556,12 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
                 return;
             }
             var replacement = InstanceWithId(removed.InstanceId);
-            var commit = CheckpointCommit.Create(replacement, 0, 0);
+            var commit = CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(store, replacement.InstanceId)).Epoch, 0);
             if (scenario == RetentionScenario.PurgeMeetsChildStart)
             {
                 replacement.ParentInstanceId = parent.InstanceId;
                 replacement.ParentWaitId = "child";
-                commit = CheckpointCommit.Create(parent, 0, parent.Revision,
+                commit = CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(store, parent.InstanceId)).Epoch, parent.Revision,
                     openedWaits: [new OpenedWait("child", WaitKind.Child, "child", "type", null)],
                     childStarts: [new ChildStart(replacement.InstanceId, JsonSerializer.Serialize(replacement), "child")]);
             }

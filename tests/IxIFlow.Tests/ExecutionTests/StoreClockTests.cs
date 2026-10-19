@@ -654,7 +654,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             var instance = await CommitAsync(store, instanceId, null,
                 new OpenedWait("reply", WaitKind.Reply, "payment", "Payment", null));
             Assert.Null((await store.GetWaitAsync(instanceId, "reply"))!.DeadlineUtc);
-            var arming = CheckpointCommit.Create(instance, 0, instance.Revision, commitId: "arm",
+            var arming = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, instance.Revision, commitId: "arm",
                 armedWaits: [new ArmedWait("reply", TimeSpan.FromHours(1))]);
             var armed = await store.CommitWorkflowInstanceAsync(arming);
             Assert.Equal(WorkflowCommitStatus.Applied, armed.Status);
@@ -666,7 +666,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(arming)).Status);
             instance.Revision = armed.Revision;
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(instance, 0, instance.Revision,
+                CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, instance.Revision,
                     armedWaits: [new ArmedWait("reply", TimeSpan.FromHours(2))]))).Status);
             Assert.Equal(deadline, (await store.GetWaitAsync(instanceId, "reply"))!.DeadlineUtc);
         }
@@ -681,11 +681,11 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         TimeSpan? wakeAfter, params OpenedWait[] waits)
     {
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "StoreClock", Status = WorkflowStatus.Suspended,
             WorkflowDataJson = "{}"
         };
-        var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, 0, 0,
+        var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0,
             openedWaits: waits, wakeAfter: wakeAfter));
         Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
         instance.Revision = result.Revision;
@@ -823,7 +823,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         var now = time.GetUtcNow().UtcDateTime;
         var data = new ClockData();
         var instance = new WorkflowInstance
-        {
+        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
