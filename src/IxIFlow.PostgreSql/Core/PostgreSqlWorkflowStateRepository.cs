@@ -127,7 +127,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                         THEN false ELSE cancellation_acknowledged END,
                     runnable_at_utc = CASE WHEN cancellation_json IS NULL OR NOT cancellation_acknowledged
                         THEN {now} ELSE runnable_at_utc END
-                WHERE instance_id = @InstanceId AND status IN ('Running', 'Suspended', 'NeedsResolution')
+                WHERE instance_id = @InstanceId AND status IN ('Ready', 'Running', 'Suspended', 'NeedsResolution', 'Paused')
                 RETURNING cancellation_acknowledged
             )
             SELECT CASE
@@ -490,7 +490,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // Identity serialization protects a missing instance; the row lock also orders appends.
         // Read clock_timestamp() in the next statement so commit time follows the lock wait (D-35).
         Statement.CommitState => """
-            SELECT revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
+            SELECT state_json AS StateJson, revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
                 cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence, runnable_at_utc AS RunnableAtUtc
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
@@ -620,6 +620,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             DELETE FROM ixiflow_workflow_leases WHERE instance_id = @InstanceId
             """,
         Statement.DeleteRows => """
+                DELETE FROM ixiflow_workflow_debug_commands WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_outbox_deliveries WHERE event_id IN (SELECT e.event_id FROM ixiflow_outbox_events e WHERE e.instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=e.event_id AND pending.status=0));
                 DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
@@ -668,6 +669,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     }
     // Identifiers compare as the engine compares them, ordinally.
     await connection.ExecuteAsync("""
+        CREATE TABLE IF NOT EXISTS ixiflow_workflow_debug_commands (
+            instance_id TEXT NOT NULL, command_id TEXT NOT NULL, command_order BIGINT NOT NULL,
+            command_json TEXT NOT NULL, PRIMARY KEY (instance_id, command_id), UNIQUE (instance_id, command_order));
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id varchar(100) COLLATE "C" NOT NULL PRIMARY KEY,
             workflow_name varchar(200) COLLATE "C" NOT NULL,

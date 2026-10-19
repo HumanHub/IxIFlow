@@ -51,5 +51,8 @@ public enum WorkflowExecutionStatus
     NeedsResolution,
 
     /// <summary>Retention removed the result; the instance ID is still reserved.</summary>
-    Removed
+    Removed,
+
+    /// <summary>Held until an authorized continue or cancellation.</summary>
+    Paused
 }

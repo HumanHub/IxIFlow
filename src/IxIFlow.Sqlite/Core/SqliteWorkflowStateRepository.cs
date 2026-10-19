@@ -115,7 +115,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                     THEN false ELSE cancellation_acknowledged END,
                 runnable_at_utc = CASE WHEN cancellation_json IS NULL OR NOT cancellation_acknowledged
                     THEN @Now ELSE runnable_at_utc END
-            WHERE instance_id = @InstanceId AND status IN ('Running', 'Suspended', 'NeedsResolution')
+            WHERE instance_id = @InstanceId AND status IN ('Ready', 'Running', 'Suspended', 'NeedsResolution', 'Paused')
             """, new { InstanceId = instanceId, ReasonJson = reasonJson, Now = Timestamp(now) }, transaction);
         return row == null ? CancellationOutcome.Gone : changed == 0 ? CancellationOutcome.Unchanged
             : row.CancellationJson == null || !row.CancellationAcknowledged
@@ -430,7 +430,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             WHERE instance_id = @InstanceId
             """,
         Statement.CommitState => """
-            SELECT revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
+            SELECT state_json AS StateJson, revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
                 cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence, runnable_at_utc AS RunnableAtUtc
             FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId
             """,
@@ -553,6 +553,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 DELETE FROM ixiflow_workflow_leases WHERE instance_id = @InstanceId
                 """,
         Statement.DeleteRows => """
+                DELETE FROM ixiflow_workflow_debug_commands WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_outbox_deliveries WHERE event_id IN (SELECT e.event_id FROM ixiflow_outbox_events e WHERE e.instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=e.event_id AND pending.status=0));
                 DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
@@ -595,6 +596,9 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     }
 
     await connection.ExecuteAsync("""
+        CREATE TABLE IF NOT EXISTS ixiflow_workflow_debug_commands (
+            instance_id TEXT NOT NULL, command_id TEXT NOT NULL, command_order BIGINT NOT NULL,
+            command_json TEXT NOT NULL, PRIMARY KEY (instance_id, command_id), UNIQUE (instance_id, command_order));
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
             incarnation TEXT NOT NULL,

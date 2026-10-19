@@ -9,6 +9,7 @@ public class CompensationActivityInfo
 {
     internal Core.Runtime.WorkflowStepDelegates Runtime { get; set; } = null!;
 
+    public string? SourceLocation { get; set; }
     public Type ActivityType { get; set; } = null!;
     public Type? PreviousChainActivityType { get; set; }
 

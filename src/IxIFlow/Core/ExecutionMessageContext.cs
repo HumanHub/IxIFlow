@@ -10,6 +10,7 @@ namespace IxIFlow.Core;
 [JsonSerializable(typeof(Cancel))]
 [JsonSerializable(typeof(Arrivals))]
 [JsonSerializable(typeof(Recycle))]
+[JsonSerializable(typeof(DebugCommands))]
 [JsonSerializable(typeof(Checkpoint))]
 [JsonSerializable(typeof(CheckpointReply))]
 [JsonSerializable(typeof(StartChild))]

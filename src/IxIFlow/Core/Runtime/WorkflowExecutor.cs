@@ -48,6 +48,10 @@ public sealed class WorkflowExecutor
     {
         if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
     }
+    public void Deliver(DebugCommands message)
+    {
+        if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
+    }
     public void Deliver(Recycle message)
     {
         if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
@@ -66,6 +70,7 @@ public sealed class WorkflowExecutor
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     "Breakpoints are not supported until G-04");
             signals.ThrowIfOwnershipLost();
+            if (assign.DebugState != null) signals.Deliver(new DebugCommands(assign.AssignmentId, assign.DebugState));
             var definition = await _definitions.GetWorkflowDefinitionAsync(assign.Instance.WorkflowName,
                 assign.Instance.WorkflowVersion) ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     "The assigned workflow definition is unavailable");
@@ -108,15 +113,16 @@ public sealed class WorkflowExecutor
                     checkpoint.Touch(continuation);
                     continuation.Status = ContinuationStatus.Active;
                 }
-                instance.Status = WorkflowStatus.Running;
                 if (preparation.PendingCancellation is { } reason && !checkpoint.CancellationRequested &&
-                    checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
+                    (instance.Status == WorkflowStatus.Paused || checkpoint.Continuations[0].Status != ContinuationStatus.Completed))
                     OperatorTrace.ApplyCancellation(instance, checkpoint, reason, Now);
+                if (instance.Status != WorkflowStatus.Paused || preparation.PendingCancellation != null)
+                    instance.Status = WorkflowStatus.Running;
                 if (preparation.ClearOperatorStop)
                     await ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, null, scopes, Now,
                         preserveSavedWorkflowData: true, enforceLimit: false);
             }
-            var outcome = await RunCoreAsync(definition, instance, checkpoint, data, session, signals);
+            var outcome = await RunCoreAsync(definition, instance, checkpoint, data, session, signals, assign.DebuggingEnabled);
             return new(assign.AssignmentId, outcome, session.LastAcknowledgedCommit, ExecutorName: _executorName);
         }
         catch (ExecutionOwnershipLostException)
@@ -134,6 +140,11 @@ public sealed class WorkflowExecutor
         }
     }
 
+    private static bool PausePending(ExecutionCheckpoint checkpoint, ExecutionSignals signals) =>
+        !checkpoint.CancellationRequested && signals.Cancellation == null &&
+        signals.Debug?.Commands.Any(c => c.AcknowledgedRevision == null &&
+            c.Order > checkpoint.Debug.AppliedOrder && c.Kind == DebugCommandKind.Pause) == true;
+
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
     private static AssignmentOutcome Interrupted(CheckpointInterruptedException error) =>
@@ -148,7 +159,7 @@ public sealed class WorkflowExecutor
         ExecutionCheckpoint checkpoint,
         object workflowData,
         ExecutionSession host,
-        ExecutionSignals signals)
+        ExecutionSignals signals, bool debuggingEnabled)
     {
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         if (checkpoint.StructureHash != scopes.StructureHash)
@@ -185,6 +196,54 @@ public sealed class WorkflowExecutor
                 signals.ThrowIfOwnershipLost();
                 var messageWake = signals.Changed;
                 var progressed = false;
+                // A pause holds every transition path, including inbox intake, joins and ForEach admission.
+                // Activities already admitted finish and have their own commits before the pause commit.
+                var command = signals.Debug?.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null &&
+                    c.Order > checkpoint.Debug.AppliedOrder);
+                if (!checkpoint.CancellationRequested && signals.Cancellation == null && command != null &&
+                    command.PauseGeneration == checkpoint.Debug.PauseGeneration)
+                {
+                    if (command.Kind == DebugCommandKind.Pause)
+                    {
+                        if (inFlight.Count == 0)
+                        {
+                            signals.ThrowIfOwnershipLost();
+                            checkpoint.Debug = new(checkpoint.Debug.PauseGeneration + 1, command.Order);
+                            instance.Status = WorkflowStatus.Paused;
+                            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.Paused,
+                                Payload = new DebugCommandTrace(command.Actor, command.Id, checkpoint.Debug.PauseGeneration) });
+                            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                            return new(AssignmentOutcomeKind.Idle);
+                        }
+                        var finishedDuringPause = await Task.WhenAny(inFlight.Values.Select(a => (Task)a.Task).Append(messageWake));
+                        signals.ThrowIfStopped();
+                        if (finishedDuringPause == messageWake) continue;
+                        var completedDuringPause = inFlight.Values.First(a => a.Task == finishedDuringPause);
+                        try
+                        {
+                            await _attempts.SettleAsync(scopes, checkpoint, completedDuringPause, inFlight, instance, host);
+                        }
+                        catch (Exception error)
+                        {
+                            AttachStep(error, instance, scopes.Id(completedDuringPause.Step), completedDuringPause.Continuation.PendingActivity);
+                            if (!_transitions.CaptureFailure(scopes, checkpoint, completedDuringPause.Continuation,
+                                    error, !completedDuringPause.ActivityReturned)) throw;
+                        }
+                        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                        continue;
+                    }
+                    if (command.Kind == DebugCommandKind.Continue && instance.Status == WorkflowStatus.Paused && debuggingEnabled)
+                    {
+                        checkpoint.Debug = checkpoint.Debug with { AppliedOrder = command.Order };
+                        instance.Status = WorkflowStatus.Running;
+                        checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.Continued,
+                            Payload = new DebugCommandTrace(command.Actor, command.Id, checkpoint.Debug.PauseGeneration) });
+                        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                        continue;
+                    }
+                }
+                if (instance.Status == WorkflowStatus.Paused && !checkpoint.CancellationRequested && signals.Cancellation == null)
+                    return new(AssignmentOutcomeKind.Idle);
                 // The store says which deadlines are due when the run reads its inbox, and that read
                 // covers every event received before them, so events are taken before deadlines and one
                 // received in time beats its deadline (D-33, D-35). A cancellation request the run has
@@ -255,7 +314,7 @@ public sealed class WorkflowExecutor
                     signals.ThrowIfOwnershipLost();
                     // A draining host starts no new steps (B-12), nor does a run stopping at a limit.
                     if (_transitions.MayBeDue(checkpoint) || signals.Recycle ||
-                        limitStop != null)
+                        limitStop != null || PausePending(checkpoint, signals))
                         break;
                     await ApplyCancellationRequestAsync(instance, checkpoint, checkpoint.RootData,
                         scopes, host, signals.Cancellation);
@@ -360,6 +419,8 @@ public sealed class WorkflowExecutor
                     }
                 }
 
+                if (PausePending(checkpoint, signals))
+                    continue;
                 if (!checkpoint.CancellationRequested && signals.Cancellation != null &&
                     checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                     continue;

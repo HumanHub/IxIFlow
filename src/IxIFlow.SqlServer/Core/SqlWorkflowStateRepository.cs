@@ -83,7 +83,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                     THEN 0 ELSE CancellationAcknowledged END,
                 RunnableAtUtc = CASE WHEN CancellationJson IS NULL OR CancellationAcknowledged = 0
                     THEN {clock} ELSE RunnableAtUtc END
-            WHERE InstanceId = @InstanceId AND Status IN ('Running', 'Suspended', 'NeedsResolution')
+            WHERE InstanceId = @InstanceId AND Status IN ('Ready', 'Running', 'Suspended', 'NeedsResolution', 'Paused')
             """;
         var parameters = new DynamicParameters(new { InstanceId = instanceId, ReasonJson = reasonJson });
         if (now == null)
@@ -492,7 +492,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         // A first commit must exclude another insertion of this ID. Read the clock in the next
         // statement, after any lock wait, so the captured commit time cannot predate the lock (D-35).
         Statement.CommitState => """
-            SELECT Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence, RunnableAtUtc
+            SELECT StateJson, Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence, RunnableAtUtc
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
             WHERE InstanceId = @InstanceId;
             SELECT SYSUTCDATETIME();
@@ -626,6 +626,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         // tables are deleted by key. A cascading delete would take range locks in those tables, which
         // deadlock with commits of other instances inserting into the same ranges.
         Statement.DeleteRows => """
+            DELETE FROM dbo.IxIFlowWorkflowDebugCommands WHERE InstanceId = @InstanceId;
             SELECT InstanceId FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowOutboxDeliveries WHERE EventId IN (SELECT e.EventId FROM dbo.IxIFlowOutboxEvents e WHERE e.InstanceId=@InstanceId AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowOutboxDeliveries pending WHERE pending.EventId=e.EventId AND pending.Status=0));
@@ -678,6 +679,12 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         return;
     }
     await connection.ExecuteAsync("""
+        CREATE TABLE dbo.IxIFlowWorkflowDebugCommands (
+            InstanceId nvarchar(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            CommandId nvarchar(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            CommandOrder bigint NOT NULL,
+            CommandJson nvarchar(max) NOT NULL,
+            PRIMARY KEY (InstanceId, CommandId), UNIQUE (InstanceId, CommandOrder));
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NULL
         BEGIN
             CREATE TABLE dbo.IxIFlowWorkflowInstances (

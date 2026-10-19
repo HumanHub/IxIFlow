@@ -24,7 +24,8 @@ internal static class ExecutionSnapshotFactory
             snapshot.Pointers.Add(new ExecutionPointer
             {
                 PointerId = continuation.Id,
-                StepId = next?.Id ?? "",
+                StepId = next == null ? "" : scopes.Id(next),
+                AuthorStepId = next?.Id ?? "",
                 StepIndex = position.NextStepIndex,
                 Status = continuation.Status.ToString(),
                 FrameId = position.ActivationId
@@ -38,6 +39,8 @@ internal static class ExecutionSnapshotFactory
                 snapshot.Frames.Add(new ExecutionFrame
                 {
                     FrameId = frame.ActivationId,
+                    LoopIteration = frame.LoopIterationCount,
+                    ForEachItemIndex = frame.ForEachIndex,
                     Kind = owner?.StepType.ToString() ?? frame.ScopeId,
                     StepId = frame.ScopeId,
                     ParentFrameId = parent?.ActivationId,

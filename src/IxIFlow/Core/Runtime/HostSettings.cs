@@ -4,6 +4,7 @@ namespace IxIFlow.Core.Runtime;
 internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan PollInterval, string Name)
 {
     public const int DefaultMaxCrashes = 3;
+    public bool Debugging { get; init; }
     public int MaxCrashes { get; init; } = DefaultMaxCrashes;
 
     public Guid Id { get; } = Guid.NewGuid();

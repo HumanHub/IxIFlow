@@ -51,7 +51,9 @@ public enum WorkflowStatus
     /// </summary>
     NeedsResolution,
     /// <summary>The whole-instance execution deadline expired.</summary>
-    TimedOut
+    TimedOut,
+    /// <summary>Execution is held until continued or cancelled.</summary>
+    Paused
 }
 
 /// <summary>
@@ -324,6 +326,8 @@ public class WorkflowExecutionSnapshot
 /// </summary>
 public class ExecutionPointer
 {
+    /// <summary>The author-supplied step identity.</summary>
+    public string AuthorStepId { get; set; } = string.Empty;
     /// <summary>
     ///     Pointer identity
     /// </summary>
@@ -355,6 +359,8 @@ public class ExecutionPointer
 /// </summary>
 public class ExecutionFrame
 {
+    public int LoopIteration { get; set; }
+    public int? ForEachItemIndex { get; set; }
     /// <summary>
     ///     Frame identity
     /// </summary>
@@ -392,6 +398,8 @@ public class ExecutionFrame
 /// </summary>
 public class ExecutionTraceEntry
 {
+    /// <summary>The catalog identity of the activity step.</summary>
+    public string? StepId { get; set; }
     /// <summary>
     ///     Unique identifier for this trace entry
     /// </summary>
@@ -562,7 +570,9 @@ public enum TraceEntryType
     SagaRetryStarted,
     StepRetryScheduled,
     CompensationFailed,
-    TraceBudgetReached
+    TraceBudgetReached,
+    Paused,
+    Continued
 }
 
 /// <summary>
@@ -570,6 +580,9 @@ public enum TraceEntryType
 /// </summary>
 public class WorkflowDefinition
 {
+    /// <summary>The executable definition's catalog, including author identities and call sites.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public StepTable StepTable => WorkflowDefinitionValidator.ForExecution(this).StepTable;
     /// <summary>
     ///     Unique identifier for this workflow definition
     /// </summary>

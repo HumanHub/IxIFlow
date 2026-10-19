@@ -71,7 +71,7 @@ public sealed partial class WorkflowHost
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                         $"Workflow instance '{instanceId}' does not exist");
                 if (existing.Status is WorkflowStatus.Running or WorkflowStatus.Suspended or
-                    WorkflowStatus.NeedsResolution)
+                    WorkflowStatus.NeedsResolution or WorkflowStatus.Paused)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                         "The workflow instance changed while cancellation was requested; retry");
                 return ExistingResult(existing);
@@ -117,6 +117,54 @@ public sealed partial class WorkflowHost
             if (await _store.GetTombstoneAsync(instanceId) != null)
                 throw new WorkflowEngineException(WorkflowErrorKind.InstanceRemoved,
                     $"Workflow instance '{instanceId}' was removed; its ID is reserved").At(instanceId);
+        }
+
+        public async Task<WorkflowExecutionResult> RequestDebugAsync(string instanceId, DebugCommandKind kind,
+            string actor, CancellationToken cancellationToken)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!(hostSettings ?? HostSettings.Default).Debugging)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Debugging is disabled on this host");
+            if (_store is not GuardedStateRepository { SupportsDebugging: true } debugStore)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The configured store does not support debug commands");
+            var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+            if (instance == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow instance does not exist");
+            var state = (await debugStore.GetDebugStatesAsync([instanceId]))[instanceId];
+            var generation = state.PauseGeneration + (kind == DebugCommandKind.Continue && instance.Status != WorkflowStatus.Paused &&
+                state.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause) ? 1 : 0);
+            var requested = await debugStore.RequestDebugCommandAsync(instanceId,
+                new(Guid.NewGuid().ToString("N"), kind, generation, actor));
+            if (requested.Status is not (DebugCommandStatus.Accepted or DebugCommandStatus.AlreadyAccepted))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, $"Debug command refused: {requested.Status}");
+            if (kind != DebugCommandKind.Pause || instance.Status == WorkflowStatus.Running) return ExistingResult(instance);
+            using var entered = await gate.EnterAsync(instanceId, cancellationToken);
+            using var signals = Executor.PrepareAssignment(Guid.NewGuid());
+            await using var owner = await AcquireAsync(instance, signals);
+            if (owner == null) return Busy(instanceId);
+            using var assignment = Admit(instance, owner, signals.AssignmentId);
+            var current = await _store.GetWorkflowInstanceAsync(instanceId);
+            if (current == null || current.Incarnation != instance.Incarnation || current.Revision != instance.Revision ||
+                current.Status != instance.Status) return current == null ? Busy(instanceId) : ExistingResult(current);
+            var checkpoint = ExecutionCheckpoint.Read(current.ExecutionStateJson);
+            var latest = (await debugStore.GetDebugStatesAsync([instanceId]))[instanceId];
+            var first = latest.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null);
+            if (first?.Id != requested.Command!.Id || first.PauseGeneration != checkpoint.Debug.PauseGeneration ||
+                await _store.GetCancellationRequestAsync(instanceId) != null) return ExistingResult(current);
+            var definition = await registry.GetWorkflowDefinitionAsync(current.WorkflowName, current.WorkflowVersion)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow definition is unavailable");
+            var scopes = WorkflowDefinitionValidator.ForExecution(definition);
+            if (scopes.StructureHash != checkpoint.StructureHash) return Rejected(instanceId, "Workflow structure differs");
+            checkpoint.Signals = signals;
+            checkpoint.Trace.Configure(current, checkpoint, _limits, _time, scopes);
+            checkpoint.Debug = new(checkpoint.Debug.PauseGeneration + 1, first.Order);
+            current.Status = WorkflowStatus.Paused;
+            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.Paused,
+                Payload = new DebugCommandTrace(actor, first.Id, checkpoint.Debug.PauseGeneration) });
+            await ExecutionCheckpointWriter.CommitAsync(assignment.Session, current, checkpoint, null, scopes, Now,
+                preserveSavedWorkflowData: true, preserveContinuationState: true);
+            return ExistingResult(current);
         }
 
         public async Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
@@ -543,9 +591,17 @@ public sealed partial class WorkflowHost
             if (!release && !forEvent && instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
                 return ReadResult(instance);
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
-            var canRecover = instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
+            var debugState = _store is GuardedStateRepository { SupportsDebugging: true } debugStore
+                ? (await debugStore.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId) : null;
+            var pendingDebug = debugState?.Commands.Any(c => c.AcknowledgedRevision == null) == true;
+            var pendingContinue = (hostSettings ?? HostSettings.Default).Debugging &&
+                debugState?.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Continue) == true;
+            if (instance?.Status == WorkflowStatus.Paused && cancellationReason == null && !pendingContinue)
+                return ExistingResult(instance);
+            var canRecover = instance?.Status == WorkflowStatus.Paused && (cancellationReason != null || pendingContinue) ||
+                instance?.Status == WorkflowStatus.Ready && pendingDebug || instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
                 instance?.Status == WorkflowStatus.Suspended &&
-                (cancellationReason != null || await HasInboxWorkAsync(instanceId));
+                (cancellationReason != null || pendingDebug || await HasInboxWorkAsync(instanceId));
             // Another run may have decided the event since the instance was read, so it is read again.
             if (!canRecover || !HasStructuredCheckpoint(instance))
                 return forEvent && await ReadAsync(instanceId) is { } latest ? latest
@@ -557,7 +613,7 @@ public sealed partial class WorkflowHost
                 return Rejected(instanceId, "The workflow instance is not stopped for an operator");
             // A request already applied is being unwound; only a new one changes what the run does.
             var newCancellation = cancellationReason != null && !checkpoint.CancellationRequested &&
-                checkpoint.Continuations[0].Status != ContinuationStatus.Completed;
+                (instance!.Status == WorkflowStatus.Paused || checkpoint.Continuations[0].Status != ContinuationStatus.Completed);
             // Only a release or a new cancellation moves a stopped instance, so recovery, including a
             // parent checking its child, answers it without claiming it. A cancellation that is already
             // unwinding and stopped again needs a release.
@@ -643,6 +699,7 @@ public sealed partial class WorkflowHost
         {
             WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
             WorkflowStatus.Suspended => WorkflowExecutionStatus.Suspended,
+            WorkflowStatus.Paused => WorkflowExecutionStatus.Paused,
             WorkflowStatus.NeedsResolution => WorkflowExecutionStatus.NeedsResolution,
             WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
             WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
@@ -671,7 +728,8 @@ public sealed partial class WorkflowHost
             WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch,
                 _ => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Ownership)),
                 reason => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reason)),
-                sequence => Executor.Deliver(new Arrivals(signals.AssignmentId, sequence)), _time);
+                sequence => Executor.Deliver(new Arrivals(signals.AssignmentId, sequence)), _time,
+                state => Executor.Deliver(new DebugCommands(signals.AssignmentId, state)));
 
         private sealed class RunReceipt
         {
@@ -697,7 +755,12 @@ public sealed partial class WorkflowHost
                 assigned.Incarnation = instance.Incarnation;
                 assigned.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
                 var assign = new Assign(signals.AssignmentId, assigned, instance.PartsAt(instance.Revision),
-                    checkpoint.StructureHash, owner.Epoch, signals.InboxSequence, _limits, depth == 1, [], preparation);
+                    checkpoint.StructureHash, owner.Epoch, signals.InboxSequence, _limits, depth == 1, [], preparation)
+                {
+                    DebugState = _store is GuardedStateRepository { SupportsDebugging: true } debug
+                        ? (await debug.GetDebugStatesAsync([instance.InstanceId])).GetValueOrDefault(instance.InstanceId) : null,
+                    DebuggingEnabled = (hostSettings ?? HostSettings.Default).Debugging
+                };
                 var ready = await Executor.ExecuteAsync(assign, CancellationToken.None);
                 if (ready.AssignmentId != signals.AssignmentId)
                     throw new ExecutionOwnershipLostException(new InvalidOperationException("Ready is not assigned"));

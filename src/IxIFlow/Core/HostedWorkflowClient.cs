@@ -6,7 +6,7 @@ namespace IxIFlow.Core;
 /// The client every application uses: calls become work for the <see cref="WorkflowHost"/>, which runs
 /// them in slots. Reads and cancellation requests take no slot.
 /// </summary>
-internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time) : IWorkflowClient
+internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time) : IWorkflowClient, IWorkflowOperations
 {
     // AwaitAsync also notices work finished on another host; until the store can notify (D-05,
     // D-12), it checks the saved state at this interval.
@@ -243,6 +243,19 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
         if (requested.Status == WorkflowExecutionStatus.Running)
             host.WakeNow(instanceId);
         return requested;
+    }
+
+    public async Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default)
+    {
+        var result = await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Pause, actor, cancellationToken));
+        if (result.Status != WorkflowExecutionStatus.Paused) host.WakeNow(instanceId);
+        return result;
+    }
+
+    public async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default)
+    {
+        await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor, cancellationToken));
+        return await RecoverAsync(instanceId, cancellationToken);
     }
 
     public Task<WorkflowExecutionResult> ResolveAsync(string instanceId, string invocationId,
