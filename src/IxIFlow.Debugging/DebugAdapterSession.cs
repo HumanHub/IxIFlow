@@ -46,8 +46,6 @@ public sealed partial class DebugAdapterSession : DebugAdapterBase, IDisposable
         if (Interlocked.Exchange(ref _started, 1) != 0) throw new InvalidOperationException("A DAP session accepts one connection");
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         InitializeProtocolClient(input, output);
-        Protocol.RegisterRequestType<FreezeTimersRequest, TimerArguments>(r => Dispatch(r));
-        Protocol.RegisterRequestType<UnfreezeTimersRequest, TimerArguments>(r => Dispatch(r));
         Protocol.Run();
         var reader = Task.Run(() => Protocol.WaitForReader());
         var monitor = MonitorAsync(linked.Token);
@@ -152,12 +150,6 @@ public sealed partial class DebugAdapterSession : DebugAdapterBase, IDisposable
                 }
             }
             if (args.Value<bool?>("replay") == true) await EnterReplayAsync(token);
-            if (args.Value<bool?>("freezeTimers") == true)
-            {
-                if (_replay != null || _inspection.Summary.Status != WorkflowStatus.Paused) throw new ProtocolException("Freeze requires a live paused instance");
-                await AuthorizeAsync(DebugOperation.PauseAndStep, token);
-                await _operations.FreezeTimersAsync(_instanceId, _endpoint.Actor, token);
-            }
             _subscription = _operations.WatchChanges(_instanceId, Wake);
         }
         catch { _instanceId = null; _authenticated = false; throw; }

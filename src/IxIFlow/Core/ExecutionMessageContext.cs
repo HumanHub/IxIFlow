@@ -5,10 +5,6 @@ namespace IxIFlow.Core;
 
 /// <summary>JSON metadata for every host/executor message and its typed payload.</summary>
 [JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata)]
-[JsonSerializable(typeof(FrozenRetry))]
-[JsonSerializable(typeof(TimerFreeze))]
-[JsonSerializable(typeof(TimerCommitResult))]
-[JsonSerializable(typeof(TimersTrace))]
 [JsonSerializable(typeof(InstanceInspection))]
 [JsonSerializable(typeof(InspectionSummary))]
 [JsonSerializable(typeof(InspectionDebugState))]

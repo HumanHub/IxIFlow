@@ -100,7 +100,7 @@ public sealed partial class WorkflowHost
             var result = new InstanceInspection(new(instance.InstanceId, instance.WorkflowName, instance.WorkflowVersion,
                 instance.Status, instance.ParentInstanceId, instance.CreatedAt, instance.CompletedAt, instance.LastError),
                 instance.Revision, checkpoint.StructureHash,
-                new(debug.PauseGeneration, debug.AppliedOrder, debug.Stop, debug.Stepping, debug.Timers?.StartedAtUtc)
+                new(debug.PauseGeneration, debug.AppliedOrder, debug.Stop, debug.Stepping)
                     { Evaluation = debug.Evaluation, SkipOnce = debug.SkipOnce },
                 debug.Breakpoints, threads,
                 checkpoint.Continuations.Where(c => c.PendingActivity != null).Select(c =>

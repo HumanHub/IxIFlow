@@ -7,9 +7,6 @@ namespace IxIFlow.Debugging;
 
 public sealed partial class DebugAdapterSession
 {
-    private sealed class TimerArguments { }
-    private sealed class FreezeTimersRequest() : DebugRequest<TimerArguments>("ixiflow/freezeTimers");
-    private sealed class UnfreezeTimersRequest() : DebugRequest<TimerArguments>("ixiflow/unfreezeTimers");
     protected override void HandleInitializeRequestAsync(IRequestResponder<InitializeArguments, InitializeResponse> r) => Dispatch(r);
     protected override void HandleAttachRequestAsync(IRequestResponder<AttachArguments> r) => Dispatch(r);
     protected override void HandleLaunchRequestAsync(IRequestResponder<LaunchArguments> r) => Dispatch(r);
@@ -130,12 +127,6 @@ public sealed partial class DebugAdapterSession
                 return new { exceptionId = failure.Kind ?? "WorkflowFailure", description = failure.Reason, breakMode = "always" };
             case "pause":
                 await ExecuteAsync(ct => _operations.PauseAsync(_instanceId!, _endpoint.Actor, ct), token); return null;
-            case "ixiflow/freezeTimers": case "ixiflow/unfreezeTimers":
-                await AuthorizeAsync(DebugOperation.PauseAndStep, token);
-                if (_replay != null) throw new ProtocolException("Timers are unavailable in replay");
-                if (command == "ixiflow/freezeTimers") await _operations.FreezeTimersAsync(_instanceId!, _endpoint.Actor, token);
-                else await _operations.UnfreezeTimersAsync(_instanceId!, _endpoint.Actor, token);
-                ClearHandles(); return null;
             case "continue":
                 if (_replay != null) { _replay.Continue(); ClearHandles(); ReplayStopped(true); return new { allThreadsContinued = true }; }
                 if (args.Value<bool?>("singleThread") == true)

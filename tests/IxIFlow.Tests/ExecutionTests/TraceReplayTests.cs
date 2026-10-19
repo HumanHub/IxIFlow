@@ -188,7 +188,6 @@ public sealed class TraceReplayTests : IClassFixture<SqliteTestDatabase<TraceRep
         await ops.PauseAsync(result.InstanceId, "inspect");
         var paused = (await ops.InspectAsync(result.InstanceId))!;
         Assert.NotEmpty(paused.Threads); Assert.NotEmpty(paused.Data); Assert.NotEmpty(paused.Waits);
-        await ops.FreezeTimersAsync(result.InstanceId, "freeze");
         await client.ReplyAsync(wait.Token, new Wrong());
         var texts = new List<string> { JsonSerializer.Serialize(await ops.InspectAsync(result.InstanceId)), JsonSerializer.Serialize(await Read(services, result.InstanceId)) };
         // Seed a separate workflow with a copied token, then include it in the activity error.
