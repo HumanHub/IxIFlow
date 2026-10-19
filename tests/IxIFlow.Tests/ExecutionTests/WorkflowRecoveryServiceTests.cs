@@ -245,6 +245,9 @@ public sealed class WorkflowRecoveryServiceTests
 
     private sealed class RecordingEngine : IWorkflowClient
     {
+        public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
@@ -311,6 +314,9 @@ public sealed class WorkflowRecoveryServiceTests
 
     private sealed class BlockingRecoveryEngine : IWorkflowClient
     {
+        public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
