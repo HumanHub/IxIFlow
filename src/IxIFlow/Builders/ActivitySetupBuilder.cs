@@ -113,7 +113,7 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty> : IA
         {
             TargetProperty = propertyName,
             SourceFunction = wrappedFunction,
-            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            Expression = source,
             ContextFactory = Core.Runtime.WorkflowStepDelegates.Data<TWorkflowData>,
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
@@ -194,7 +194,7 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPre
         {
             TargetProperty = propertyName,
             SourceFunction = wrappedFunction,
-            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(source),
+            Expression = source,
             ContextFactory = Core.Runtime.WorkflowStepDelegates.Previous<TWorkflowData, TPreviousStepData>,
             SourceType = typeof(TProperty),
             TargetType = typeof(TProperty),
@@ -283,7 +283,7 @@ public class ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : I
             TargetProperty = propertyName,
             SourceFunction = dummySourceFunction, // Not used for outputs
             TargetAssignmentFunction = assignmentFunction,
-            Expression = Core.Runtime.WorkflowExpressionSignature.Checked(destination),
+            Expression = destination,
             ContextFactory = Core.Runtime.WorkflowStepDelegates.Data<TWorkflowData>,
             TargetPath = Core.Runtime.MemberPath.Of(destination),
             SourceType = typeof(TProperty),

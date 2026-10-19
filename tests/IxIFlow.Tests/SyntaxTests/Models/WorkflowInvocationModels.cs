@@ -3,9 +3,9 @@ using IxIFlow.Builders.Interfaces;
 
 namespace IxIFlow.Tests.SyntaxTests.Models;
 
+[IxIFlow.Core.Workflow("ValidationWorkflow", Version = 1)]
 public class ValidationWorkflow : IWorkflow<ValidationWorkflowData>
 {
-    public int Version { get; } = 1;
 
     public void Build(IWorkflowBuilder<ValidationWorkflowData> builder)
     {

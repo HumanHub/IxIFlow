@@ -64,7 +64,7 @@ public sealed class WaitDefaultYamlTests
     [Theory]
     [InlineData("suspend")]
     [InlineData("waitFor")]
-    public void YamlDefaultsMatchFluentMetadataAndDoNotChangeTheFingerprint(string kind)
+    public void YamlDefaultsMatchFluentMetadataAndDoNotChangeTheStructureHash(string kind)
     {
         var yaml = WaitYaml(kind);
         var generated = GeneratorRegressionTests.Build(yaml);
@@ -78,9 +78,9 @@ public sealed class WaitDefaultYamlTests
             .WithId("approval").Build();
         Assert.Equal(JsonSerializer.Serialize(Assert.Single(fluent.Steps).DefaultPayload),
             JsonSerializer.Serialize(Assert.Single(generated.Steps).DefaultPayload));
-        var original = new WorkflowScopeCatalog(generated).Fingerprint;
-        Assert.Equal(original, new WorkflowScopeCatalog(fluent).Fingerprint);
-        Assert.Equal(original, new WorkflowScopeCatalog(GeneratorRegressionTests.Build(yaml.Replace("Value: 7", "Value: 9"))).Fingerprint);
+        var original = new WorkflowScopeCatalog(generated).StructureHash;
+        Assert.Equal(original, new WorkflowScopeCatalog(fluent).StructureHash);
+        Assert.Equal(original, new WorkflowScopeCatalog(GeneratorRegressionTests.Build(yaml.Replace("Value: 7", "Value: 9"))).StructureHash);
     }
 
     [Theory]

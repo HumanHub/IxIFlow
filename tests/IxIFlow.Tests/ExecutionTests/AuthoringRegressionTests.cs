@@ -39,31 +39,31 @@ public sealed class AuthoringRegressionTests
 
     [Fact]
     [Trait("Spec", "F-06")]
-    public void ExistingFluentFingerprintIsUnchangedByIdsAndLocations()
+    public void ExistingFluentStructureHashIsUnchangedByIdsAndLocations()
     {
         var definition = Workflow.Create<SyntaxTests.WorkflowBuilderIdentityTests.WorkflowData>("OrderApproval", 2)
             .Step<SyntaxTests.WorkflowBuilderIdentityTests.StartActivity>()
             .Try(body => body.Step<SyntaxTests.WorkflowBuilderIdentityTests.StartActivity>())
             .Catch<InvalidOperationException>(body => body.Step<SyntaxTests.WorkflowBuilderIdentityTests.StartActivity>())
             .Build();
-        const string expected = "DF67EB3871421EDB063B975A21DF63168F7BC8B04015E4E92E19357BC9F63D48";
-        Assert.Equal(expected, new WorkflowScopeCatalog(definition).Fingerprint);
+        const string expected = "64C56A809F112A9DD3CF4AD0645A9041828CC2C5B6A9EB2DEBE8A215BAC98F10";
+        Assert.Equal(expected, new WorkflowScopeCatalog(definition).StructureHash);
         foreach (var step in ParallelRules.Flatten(definition.Steps))
         {
             step.Id = "located/" + step.Id;
             step.SourceLocation = "another.yaml:3";
         }
-        Assert.Equal(expected, new WorkflowScopeCatalog(definition).Fingerprint);
+        Assert.Equal(expected, new WorkflowScopeCatalog(definition).StructureHash);
     }
 
     [Fact]
-    public async Task DiRegisteredChildMustMatchTheRegistryFingerprint()
+    public async Task DiRegisteredChildMustMatchTheRegistryStructureHash()
     {
         var registry = new WorkflowVersionRegistry();
         await registry.RegisterWorkflowAsync(Workflow.Create<RegistrationData>("Customer approval", 3)
             .Step<RegistrationActivity>().Build());
         var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
-        services.RegisterWorkflow<NamedWorkflow>("Customer approval");
+        services.RegisterWorkflow<NamedWorkflow>();
         services.AddSingleton<IWorkflowVersionRegistry>(registry);
         using var provider = services.BuildServiceProvider();
         var parent = Workflow.Create<ParentData>("Mismatch parent").Step<RegistrationActivity>()
@@ -142,6 +142,8 @@ public sealed class AuthoringRegressionTests
     {
         var sagaDefinition = new WorkflowDefinition
         {
+            Name = "Hand-built saga",
+            Version = 1,
             Steps = [new WorkflowStep
             {
                 StepType = WorkflowStepType.Saga,
@@ -163,6 +165,7 @@ public sealed class AuthoringRegressionTests
         Assert.Contains("not a step of the saga", saga.Message);
         var definition = new WorkflowDefinition
         {
+            Name = "Hand-built fixture", Version = 1,
             Steps = [new WorkflowStep
             {
                 Id = "incomplete", StepType = WorkflowStepType.WorkflowInvocation,
@@ -239,6 +242,7 @@ public sealed class AuthoringRegressionTests
     {
         var definition = new WorkflowDefinition
         {
+            Name = "Hand-built fixture", Version = 1,
             WorkflowDataType = typeof(RegistrationData),
             Steps = [new WorkflowStep
             {
@@ -263,14 +267,14 @@ public sealed class AuthoringRegressionTests
             Runtime = WorkflowStepDelegates.Create<RegistrationData>(),
             ConditionExpression = System.Linq.Expressions.Expression.Lambda<Func<bool>>(visits)
         };
-        var definition = new WorkflowDefinition { WorkflowDataType = typeof(RegistrationData), Steps = [step] };
+        var definition = new WorkflowDefinition { Name = "Hand-built fixture", Version = 1, WorkflowDataType = typeof(RegistrationData), Steps = [step] };
         WorkflowDefinitionValidator.Validate(definition);
         var count = visits.Visits;
         Assert.Equal(1, count);
         System.Threading.Tasks.Parallel.For(0, 20, _ =>
         {
             WorkflowDefinitionValidator.Validate(definition);
-            _ = new WorkflowScopeCatalog(definition).Fingerprint.Length;
+            _ = new WorkflowScopeCatalog(definition).StructureHash.Length;
         });
         Assert.Equal(count, visits.Visits);
     }
@@ -293,7 +297,7 @@ public sealed class AuthoringRegressionTests
 
     [Fact]
     [Trait("Spec", "F-06")]
-    public void ItemCapturingForEachWithIntoAndCombineHasAPinnedFingerprint()
+    public void ItemCapturingForEachWithIntoAndCombineHasAPinnedStructureHash()
     {
         var definition = new WorkflowBuilder<FingerprintItems, object>([], "Captured items")
             .ForEach(ctx => ctx.WorkflowData.Values, (body, item) => body
@@ -304,8 +308,8 @@ public sealed class AuthoringRegressionTests
                 setup => setup.Parallel(2).Into(ctx => ctx.WorkflowData.Results)
                     .Combine<int, Sum<int>>(data => data.Total))
             .Build();
-        var fingerprint = new WorkflowScopeCatalog(definition).Fingerprint;
-        Assert.True(fingerprint == "04AB74D8F4D49B463C044E1B2616E95A69C96BEF79BF0CB7DD348BFAB7184C45", fingerprint);
+        var structureHash = new WorkflowScopeCatalog(definition).StructureHash;
+        Assert.True(structureHash == "53A44D25847F346A080908D32E1B97CA7EB88D9CE055B1F9C596777D80CCF9F7", structureHash);
     }
 
     private sealed class CountingCondition : System.Linq.Expressions.Expression

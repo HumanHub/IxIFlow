@@ -79,7 +79,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
             Items = Enumerable.Range(0, 2_000).Select(index => $"{index}").ToList(), Finished = [3, 600, 1_500]
         };
         root.Stack[0].ForEach = state;
-        var checkpoint = new ExecutionCheckpoint { DefinitionFingerprint = "finished-chunks", Continuations = [root] };
+        var checkpoint = new ExecutionCheckpoint { StructureHash = "finished-chunks", Continuations = [root] };
         var before = StoredCheckpoint.Split(checkpoint, "{}");
 
         state.Finished.Add(700);
@@ -126,7 +126,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         var started = new[] { "z-first", "y-second", "x-third" };
         var checkpoint = new ExecutionCheckpoint
         {
-            DefinitionFingerprint = "branch-order",
+            StructureHash = "branch-order",
             BranchesStarted = 3,
             Continuations = [root, .. started.Select((id, index) => new ContinuationState
             {
@@ -399,7 +399,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         var join = new ParallelJoinState { StepId = "root/0", ParentContinuationId = root.Id };
         var checkpoint = new ExecutionCheckpoint
         {
-            DefinitionFingerprint = "mixed-reads",
+            StructureHash = "mixed-reads",
             BranchesStarted = first + count - 1,
             Continuations = [root, .. Enumerable.Range(first, count).Select(sequence => new ContinuationState
             {

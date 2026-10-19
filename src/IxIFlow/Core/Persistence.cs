@@ -198,7 +198,7 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWo
     Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit);
 
     /// <summary>
-    /// Atomically saves a valid schema-3 checkpoint at its expected revision + 1, under a granted,
+    /// Atomically saves a valid schema-4 checkpoint at its expected revision + 1, under a granted,
     /// active execution lease with the same epoch. The first commit inserts a fresh incarnation;
     /// later commits must carry the row's incarnation. A different incarnation or missing, expired or
     /// mismatched lease returns <see cref="WorkflowCommitStatus.StaleEpoch"/>.
@@ -932,6 +932,12 @@ public interface IWorkflowVersionRegistry
     Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
 
     /// <summary>
+    ///     The structure hash recorded when the version was registered, or null if it is not registered.
+    ///     Typed child resolution compares a DI-built definition against it.
+    /// </summary>
+    Task<string?> GetWorkflowStructureHashAsync(string name, int version);
+
+    /// <summary>
     ///     Deactivate a workflow version
     /// </summary>
     Task DeactivateWorkflowVersionAsync(string name, int version);
@@ -942,12 +948,13 @@ public interface IWorkflowVersionRegistry
 /// </summary>
 public class WorkflowVersionRegistry : IWorkflowVersionRegistry
 {
-    private readonly ConcurrentDictionary<string, WorkflowDefinition> _workflows = new();
+    private sealed record Registration(WorkflowDefinition Definition, string StructureHash);
+    private readonly ConcurrentDictionary<(string Name, int Version), Registration> _workflows = new();
 
     public WorkflowVersionRegistry() { }
 
     public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
-        Task.FromResult<IReadOnlyList<WorkflowDefinition>>(_workflows.Values.ToArray());
+        Task.FromResult<IReadOnlyList<WorkflowDefinition>>(_workflows.Values.Select(registration => registration.Definition).ToArray());
 
     public WorkflowVersionRegistry(IEnumerable<WorkflowDefinition> definitions)
     {
@@ -964,33 +971,37 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
     private void RegisterWorkflow(WorkflowDefinition definition)
     {
         WorkflowDefinitionValidator.Validate(definition);
-        Runtime.WorkflowDefinitionIdentity.AssignImplicitName(definition);
-        var key = $"{definition.Name}:{definition.Version}";
-        var published = _workflows.GetOrAdd(key, definition);
-        if (!ReferenceEquals(published, definition) &&
-            (published.Description != definition.Description ||
-             published.WorkflowDataType != definition.WorkflowDataType ||
-             !published.Tags.SequenceEqual(definition.Tags) ||
-             new WorkflowScopeCatalog(published).Fingerprint !=
-             new WorkflowScopeCatalog(definition).Fingerprint))
+        var key = (definition.Name, definition.Version);
+        var loadedHash = new WorkflowScopeCatalog(definition).StructureHash;
+        var published = _workflows.GetOrAdd(key, new Registration(definition, loadedHash));
+        var registeredHash = published.StructureHash;
+        if (registeredHash != loadedHash)
         {
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                $"Workflow {definition.Name} v{definition.Version} is already registered");
+                $"Workflow {definition.Name} v{definition.Version} is already registered with structure hash " +
+                $"'{registeredHash}'; loaded structure hash '{loadedHash}' differs");
         }
     }
 
     public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)
     {
-        var key = $"{name}:{version}";
-        _workflows.TryGetValue(key, out var definition);
-        return Task.FromResult(definition);
+        var key = (name, version);
+        _workflows.TryGetValue(key, out var registration);
+        return Task.FromResult(registration?.Definition);
+    }
+
+    public Task<string?> GetWorkflowStructureHashAsync(string name, int version)
+    {
+        _workflows.TryGetValue((name, version), out var registration);
+        return Task.FromResult(registration?.StructureHash);
     }
 
     public Task DeactivateWorkflowVersionAsync(string name, int version)
     {
-        var key = $"{name}:{version}";
-        if (_workflows.TryGetValue(key, out var definition))
+        var key = (name, version);
+        if (_workflows.TryGetValue(key, out var registration))
         {
+            var definition = registration.Definition;
             // Create a copy with IsActive = false
             var updatedDefinition = new WorkflowDefinition
             {
@@ -1009,7 +1020,7 @@ public class WorkflowVersionRegistry : IWorkflowVersionRegistry
                 }
             };
             WorkflowDefinitionValidator.Validate(updatedDefinition);
-            _workflows.TryUpdate(key, updatedDefinition, definition);
+            _workflows.TryUpdate(key, new Registration(updatedDefinition, registration.StructureHash), registration);
         }
 
         return Task.CompletedTask;

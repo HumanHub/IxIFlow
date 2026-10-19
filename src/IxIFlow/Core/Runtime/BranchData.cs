@@ -701,7 +701,7 @@ internal static class BranchData
            definition == typeof(IReadOnlyList<>) || definition == typeof(IReadOnlyDictionary<,>) ||
            definition == typeof(IReadOnlySet<>)));
 
-    /// <summary>The combiners a data type declares, for the fingerprint.</summary>
+    /// <summary>The combiners a data type declares, for the structure hash.</summary>
     public static string CombinerSignature(Type? dataType)
     {
         if (dataType == null)

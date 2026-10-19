@@ -18,7 +18,7 @@ internal static class ExecutionCheckpointWriter
     public static async Task<bool> CommitAsync(IExecutionHost host, WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object? workflowData, WorkflowScopeCatalog scopes, DateTime now,
         bool preserveSavedWorkflowData = false, bool enforceLimit = true, bool clearsCrashCount = true,
-        TimeSpan? parkFor = null)
+        TimeSpan? parkFor = null, bool preserveContinuationState = false)
     {
         checkpoint.Trace.Configure(instance, checkpoint, host.Limits, null, scopes);
         var lastCommitted = SavedForm.Of(instance);
@@ -28,7 +28,7 @@ internal static class ExecutionCheckpointWriter
         try
         {
             stored = Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData,
-                host.Limits.VerifyCheckpointParts);
+                host.Limits.VerifyCheckpointParts, preserveContinuationState);
         }
         catch (CheckpointVerificationException)
         {
@@ -128,11 +128,13 @@ internal static class ExecutionCheckpointWriter
     /// </summary>
     public static StoredCheckpoint Prepare(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
         object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false,
-        bool verify = false)
+        bool verify = false, bool preserveContinuationState = false)
     {
         try
         {
-            ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
+            // An operator stop retains saved positions even if their definition is unavailable.
+            if (!preserveContinuationState)
+                ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
             checkpoint.RecordBranchChanges();
             var dataJson = preserveSavedWorkflowData
                 ? instance.WorkflowDataJson

@@ -19,9 +19,19 @@ public sealed class WorkflowSourceOptions
     public IDictionary<string, string> Types { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
     /// <summary>The data type inferred from a workflow type's IWorkflow&lt;T&gt; contract.</summary>
     public IDictionary<string, string> WorkflowDataTypes { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    /// <summary>Class identities read from WorkflowAttribute by the compiling host.</summary>
+    public IDictionary<string, WorkflowClassIdentity> WorkflowIdentities { get; } =
+        new Dictionary<string, WorkflowClassIdentity>(StringComparer.Ordinal);
     public IDictionary<string, string> Members { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
     public IDictionary<string, WorkflowSourceReference> Workflows { get; } =
         new Dictionary<string, WorkflowSourceReference>(StringComparer.Ordinal);
+}
+
+/// <summary>The identity declared on a workflow CLR class.</summary>
+public sealed class WorkflowClassIdentity(string name, int version)
+{
+    public string Name { get; } = name;
+    public int Version { get; } = version;
 }
 
 /// <summary>A pinned child workflow and its data contract.</summary>

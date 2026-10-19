@@ -146,7 +146,7 @@ internal sealed class StoredCheckpoint
                 "The instance holds the trunk of its state without the parts it was saved with"));
 
     /// <summary>
-    /// The whole checkpoint from its trunk and parts. A whole schema-3 checkpoint is returned as it is.
+    /// The whole checkpoint from its trunk and parts. A whole schema-4 checkpoint is returned as it is.
     /// </summary>
     public static string AssembleState(string trunkJson, IReadOnlyDictionary<string, string> parts)
     {

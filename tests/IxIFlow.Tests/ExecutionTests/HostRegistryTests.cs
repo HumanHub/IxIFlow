@@ -58,7 +58,7 @@ public sealed class HostRegistryTests
             Assert.False(string.IsNullOrWhiteSpace(initial.EngineVersion));
             foreach (var key in new[] { "os", "arch", "runtime" })
                 Assert.False(string.IsNullOrWhiteSpace(initial.Capabilities[key]));
-            Assert.Equal(new WorkflowScopeCatalog(definition).Fingerprint,
+            Assert.Equal(new WorkflowScopeCatalog(definition).StructureHash,
                 initial.Capabilities["workflow:RegistryStart@3"]);
 
             await hostTime.WaitForTimerAsync(timer => timer.Period == interval && timer.Pending);
@@ -75,7 +75,7 @@ public sealed class HostRegistryTests
             storeTime.Advance(interval);
             hostTime.Advance(interval);
             Assert.True(await store.Beats.Reader.ReadAsync().AsTask().WaitAsync(Patience));
-            Assert.Equal(new WorkflowScopeCatalog(child).Fingerprint,
+            Assert.Equal(new WorkflowScopeCatalog(child).StructureHash,
                 Assert.Single(await store.GetLiveMembersAsync()).Capabilities["workflow:RuntimeChild@2"]);
         }
         finally { await host.StopAsync(); }

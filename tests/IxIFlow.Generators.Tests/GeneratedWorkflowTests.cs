@@ -33,11 +33,11 @@ public sealed class GeneratedWorkflowTests
         var second = await Execute(generated, new FlowData { Value = 4 });
         Assert.Equal(48, second.Data.Result);
         Assert.Equal(first.Data.Result, second.Data.Result);
-        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        Assert.Equal(first.StructureHash, second.StructureHash);
     }
 
     [Fact]
-    public async Task GeneratedWaitAndInvocationMatchFluentDefinitionFingerprintAndResults()
+    public async Task GeneratedWaitAndInvocationMatchFluentStructureHashAndResults()
     {
         var fluent = new WorkflowBuilder<FlowData, object>([], "Waiting")
             .Suspend<Answer>("answer", configure: setup => setup
@@ -53,7 +53,7 @@ public sealed class GeneratedWorkflowTests
         var second = await Execute(generated, new FlowData(), resume: true);
         Assert.Equal(14, second.Data.Result);
         Assert.Equal(first.Data.Result, second.Data.Result);
-        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        Assert.Equal(first.StructureHash, second.StructureHash);
     }
 
     [Fact]
@@ -105,7 +105,7 @@ public sealed class GeneratedWorkflowTests
         return services.BuildServiceProvider();
     }
 
-    internal static async Task<(FlowData Data, string Fingerprint)> Execute(WorkflowDefinition definition,
+    internal static async Task<(FlowData Data, string StructureHash)> Execute(WorkflowDefinition definition,
         FlowData data, bool resume = false)
     {
         await using var services = Services();
@@ -122,7 +122,7 @@ public sealed class GeneratedWorkflowTests
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
-        return (Assert.IsAssignableFrom<FlowData>(result.WorkflowData), checkpoint.RootElement.GetProperty("DefinitionFingerprint").GetString()!);
+        return (Assert.IsAssignableFrom<FlowData>(result.WorkflowData), checkpoint.RootElement.GetProperty("StructureHash").GetString()!);
     }
 
     internal static string Shape(WorkflowDefinition definition) => JsonSerializer.Serialize(new

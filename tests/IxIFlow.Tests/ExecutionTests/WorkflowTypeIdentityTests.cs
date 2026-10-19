@@ -9,7 +9,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class WorkflowTypeIdentityTests
 {
     [Fact]
-    public void DefinitionFingerprintSurvivesAnActivityAssemblyVersionChange()
+    public void StructureHashSurvivesAnActivityAssemblyVersionChange()
     {
         var first = VersionedType(new Version(1, 0, 0, 0));
         var second = VersionedType(new Version(2, 0, 0, 0));
@@ -24,8 +24,8 @@ public class WorkflowTypeIdentityTests
             Steps = [new WorkflowStep { StepType = WorkflowStepType.Activity, ActivityType = second }]
         };
 
-        Assert.Equal(new WorkflowScopeCatalog(firstDefinition).Fingerprint,
-            new WorkflowScopeCatalog(secondDefinition).Fingerprint);
+        Assert.Equal(new WorkflowScopeCatalog(firstDefinition).StructureHash,
+            new WorkflowScopeCatalog(secondDefinition).StructureHash);
     }
 
     [Fact]

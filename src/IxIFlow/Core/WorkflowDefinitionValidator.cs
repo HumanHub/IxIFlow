@@ -34,6 +34,12 @@ public static class WorkflowDefinitionValidator
     {
         Check(() =>
         {
+            if (string.IsNullOrWhiteSpace(definition.Name))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    "A workflow name is required");
+            if (definition.Version < 1)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Workflow '{definition.Name}' requires a positive version");
             var steps = definition.Steps;
             var ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var step in ParallelRules.Flatten(steps))
@@ -95,8 +101,7 @@ public static class WorkflowDefinitionValidator
                 throw WorkflowBuildError.Invalid(step,
                     $"Wait at '{id}' requires a positive timeout and a timeout branch");
             if (step.StepType == WorkflowStepType.WorkflowInvocation &&
-                step.WorkflowType == null &&
-                (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowVersion == null))
+                (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowVersion is not > 0))
                 throw WorkflowBuildError.Invalid(step,
                     $"Workflow invocation at '{id}' has no child workflow reference");
             if (step.StepMetadata.ContainsKey("OutcomeType") &&

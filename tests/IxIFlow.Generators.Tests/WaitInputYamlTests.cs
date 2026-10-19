@@ -17,7 +17,7 @@ public sealed class WaitInputYamlTests
     [InlineData("waitFor", true)]
     [InlineData("suspend", false)]
     [InlineData("suspend", true)]
-    public async Task YamlAndFluentMappingsHaveTheSameSuggestionAndFingerprint(string kind, bool hasDefault)
+    public async Task YamlAndFluentMappingsHaveTheSameSuggestionAndStructureHash(string kind, bool hasDefault)
     {
         var yaml = """
             workflow:
@@ -54,10 +54,10 @@ public sealed class WaitInputYamlTests
         }
         var fluent = (kind == "suspend" ? builder.Suspend<WaitDefaultAnswer>("review", configure: Configure)
             : builder.WaitFor<WaitDefaultAnswer>("review", configure: Configure)).WithId("review").Build();
-        var fingerprint = new WorkflowScopeCatalog(generated).Fingerprint;
-        Assert.Equal(new WorkflowScopeCatalog(fluent).Fingerprint, fingerprint);
-        Assert.NotEqual(fingerprint, new WorkflowScopeCatalog(GeneratorRegressionTests.Build(
-            yaml.Replace("workflow.Value + previousStep.Result", "workflow.Value + previousStep.Result + 1"))).Fingerprint);
+        var structureHash = new WorkflowScopeCatalog(generated).StructureHash;
+        Assert.Equal(new WorkflowScopeCatalog(fluent).StructureHash, structureHash);
+        Assert.NotEqual(structureHash, new WorkflowScopeCatalog(GeneratorRegressionTests.Build(
+            yaml.Replace("workflow.Value + previousStep.Result", "workflow.Value + previousStep.Result + 1"))).StructureHash);
         Assert.Equal(await Suggestion(fluent), await Suggestion(generated));
 
         async Task<string> Suggestion(WorkflowDefinition definition)
