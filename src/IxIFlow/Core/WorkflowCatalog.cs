@@ -11,10 +11,18 @@ public sealed record WorkflowVersionReference(string Name, int Version);
 public sealed record WorkflowVersion(string Name, int Version, string StructureHash,
     WorkflowVersionState State = WorkflowVersionState.Published, ArtifactDigest? ArtifactDigest = null,
     IReadOnlyList<WorkflowVersionReference>? Dependencies = null,
-    IReadOnlyList<ArtifactDigest>? ArtifactReferences = null);
+    IReadOnlyList<ArtifactDigest>? ArtifactReferences = null,
+    long? PublishedDraftRevision = null, string? ManifestJson = null);
 
 /// <summary>Editable source, independently revisioned from immutable workflow versions.</summary>
-public sealed record WorkflowDraft(string Name, int Version, string Kind, string Source, long Revision = 0);
+public sealed record WorkflowDraft(string Name, int Version, string Kind, string Source, long Revision = 0)
+{
+    public WorkflowDraftId Id => new(Name, Version, Revision);
+    public WorkflowVersionState State => WorkflowVersionState.Draft;
+}
+
+/// <summary>Identifies the exact source revision being published, including on retries after deletion.</summary>
+public sealed record WorkflowDraftId(string Name, int Version, long Revision);
 
 /// <summary>Durable catalog operations, shared with the instance commit protocol.</summary>
 public interface IWorkflowCatalogStore
@@ -41,7 +49,13 @@ public interface IWorkflowCatalog : IWorkflowCatalogStore
     Task RetireWorkflowVersionAsync(string name, int version);
 }
 
-public sealed class WorkflowCatalog : IWorkflowCatalog
+/// <summary>Catalogs that support the atomic draft-to-version publication transaction.</summary>
+public interface IWorkflowPublicationStore : IWorkflowCatalogStore
+{
+    Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version);
+}
+
+public sealed class WorkflowCatalog : IWorkflowCatalog, IWorkflowPublicationStore
 {
     private readonly IWorkflowCatalogStore _store;
     private readonly ConcurrentDictionary<(string, int), WorkflowDefinition> _definitions = new();
@@ -89,6 +103,9 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
         _store.SaveDefinitionAsync(definition, expectedRevision);
     public Task RegisterWorkflowVersionAsync(WorkflowVersion version) => _store.RegisterWorkflowVersionAsync(version);
+    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version) =>
+        (_store as IWorkflowPublicationStore ?? throw new InvalidOperationException("The catalog store does not support atomic publication"))
+            .PublishDefinitionAsync(draftId, version);
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _store.GetWorkflowVersionAsync(name, version);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _store.GetWorkflowVersionsAsync(name);
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state) =>
@@ -100,6 +117,23 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
 /// <summary>Rules used under each store's catalog/start lock.</summary>
 internal static class WorkflowCatalogRules
 {
+    public static void CheckPublication(WorkflowDraftId id, WorkflowVersion version, WorkflowDraft? draft, WorkflowVersion? existing)
+    {
+        Validate(version);
+        if (id.Revision < 1 || version.Name != id.Name || version.Version != id.Version ||
+            version.PublishedDraftRevision != id.Revision || version.State != WorkflowVersionState.Published ||
+            version.ArtifactDigest == null || string.IsNullOrWhiteSpace(version.ManifestJson))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Invalid draft publication metadata");
+        if (existing != null && existing.PublishedDraftRevision == id.Revision)
+        {
+            // A revision is the idempotency key: another publisher may have won using
+            // a different compiler/reference snapshot. Return its immutable receipt.
+            return;
+        }
+        if (draft?.Revision != id.Revision || existing != null)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed or was already published");
+    }
+
     public static void Validate(WorkflowVersion row)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(row.Name);
@@ -121,7 +155,8 @@ internal static class WorkflowCatalogRules
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 $"Workflow {loaded.Name} v{loaded.Version} is already registered with structure hash " +
                 $"'{existing.StructureHash}'; loaded structure hash '{loaded.StructureHash}' differs");
-        if (existing.ArtifactDigest != loaded.ArtifactDigest ||
+        if (existing.ArtifactDigest != loaded.ArtifactDigest || existing.PublishedDraftRevision != loaded.PublishedDraftRevision ||
+            existing.ManifestJson != loaded.ManifestJson ||
             !(existing.Dependencies ?? []).SequenceEqual(loaded.Dependencies ?? []) ||
             !(existing.ArtifactReferences ?? []).SequenceEqual(loaded.ArtifactReferences ?? []))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version metadata is immutable");

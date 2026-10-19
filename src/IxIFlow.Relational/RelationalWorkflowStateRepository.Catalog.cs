@@ -5,7 +5,7 @@ using IxIFlow.Core;
 
 namespace IxIFlow.Relational;
 
-public abstract partial class RelationalWorkflowStateRepository
+public abstract partial class RelationalWorkflowStateRepository : IWorkflowPublicationStore
 {
     private sealed class DraftRow
     {
@@ -57,6 +57,8 @@ public abstract partial class RelationalWorkflowStateRepository
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         return CatalogWriteAsync(async (connection, transaction) =>
         {
+            if ((await ReadVersionsAsync(connection, transaction)).Any(row => row.Name == definition.Name && row.Version == definition.Version))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A published version cannot be edited");
             var existing = await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition),
                 new { definition.Name, definition.Version }, transaction);
             if ((existing?.Revision ?? 0) != expectedRevision)
@@ -66,6 +68,26 @@ public abstract partial class RelationalWorkflowStateRepository
             return saved;
         });
     }
+
+    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version) =>
+        CatalogWriteAsync(async (connection, transaction) =>
+        {
+            var versions = await ReadVersionsAsync(connection, transaction);
+            var existing = versions.SingleOrDefault(row => row.Name == draftId.Name && row.Version == draftId.Version);
+            var draft = await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition), draftId, transaction);
+            WorkflowCatalogRules.CheckPublication(draftId, version, draft?.Value, existing);
+            if (existing != null) return existing;
+            foreach (var dependency in version.Dependencies ?? [])
+                WorkflowCatalogRules.CheckStartable(versions.SingleOrDefault(row => row.Name == dependency.Name && row.Version == dependency.Version), dependency.Name, dependency.Version);
+            await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionInsert), new
+            {
+                version.Name, version.Version, version.StructureHash, State = version.State.ToString(),
+                ArtifactDigest = version.ArtifactDigest!.Value.Value, MetadataJson = JsonSerializer.Serialize(version)
+            }, transaction);
+            if (await connection.ExecuteAsync(RequiredSql(Statement.CatalogDefinitionDelete), draftId, transaction) != 1)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed");
+            return version;
+        });
 
     public Task RegisterWorkflowVersionAsync(WorkflowVersion version)
     {

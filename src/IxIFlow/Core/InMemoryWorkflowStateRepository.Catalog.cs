@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace IxIFlow.Core;
 
-public partial class InMemoryWorkflowStateRepository
+public partial class InMemoryWorkflowStateRepository : IWorkflowPublicationStore
 {
     private readonly Dictionary<(string, int), WorkflowDraft> _definitions = new();
     private readonly Dictionary<(string, int), WorkflowVersion> _versions = new();
@@ -23,12 +23,30 @@ public partial class InMemoryWorkflowStateRepository
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         lock (_claimLock)
         {
+            if (_versions.ContainsKey((definition.Name, definition.Version)))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A published version cannot be edited");
             var revision = _definitions.GetValueOrDefault((definition.Name, definition.Version))?.Revision ?? 0;
             if (revision != expectedRevision)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed");
             var saved = definition with { Revision = checked(revision + 1) };
             _definitions[(saved.Name, saved.Version)] = saved;
             return Task.FromResult(saved);
+        }
+    }
+
+    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version)
+    {
+        lock (_claimLock)
+        {
+            var key = (draftId.Name, draftId.Version);
+            var existing = _versions.GetValueOrDefault(key);
+            WorkflowCatalogRules.CheckPublication(draftId, version, _definitions.GetValueOrDefault(key), existing);
+            if (existing != null) return Task.FromResult(CopyVersion(existing));
+            foreach (var dependency in version.Dependencies ?? [])
+                WorkflowCatalogRules.CheckStartable(_versions.GetValueOrDefault((dependency.Name, dependency.Version)), dependency.Name, dependency.Version);
+            _versions.Add(key, CopyVersion(version));
+            _definitions.Remove(key);
+            return Task.FromResult(CopyVersion(version));
         }
     }
 

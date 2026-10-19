@@ -40,7 +40,7 @@ internal sealed class ExecutionCheckpoint
     /// as unsupported rather than read wrongly.
     /// </summary>
     [JsonRequired]
-    public int SchemaVersion { get; set; } = 4;
+    public int SchemaVersion { get; set; } = WorkflowDefinitionValidator.CheckpointContractVersion;
     [JsonRequired]
     public string StructureHash { get; set; } = "";
     public List<ContinuationState> Continuations { get; set; } = [];
