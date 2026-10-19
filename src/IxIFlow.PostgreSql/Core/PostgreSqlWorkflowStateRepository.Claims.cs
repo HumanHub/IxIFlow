@@ -32,7 +32,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId)
             OR EXISTS (SELECT 1 FROM ixiflow_workflow_instances AS instance
                 WHERE instance.instance_id = @InstanceId
-                  AND (instance.runnable_at_utc <= @Now OR (@Operator AND instance.runnable_at_utc IS NULL
+                  AND instance.status NOT IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
+                  AND (instance.runnable_at_utc <= @Now OR (@Operator
                       AND (instance.status = 'NeedsResolution' OR jsonb_typeof(instance.state_json::jsonb -> 'ExecutionStateJson' -> 'OperatorStop') = 'object')))
                   AND {MatchingDemands}) THEN 1 ELSE 0 END
         """;

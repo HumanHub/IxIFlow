@@ -411,8 +411,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         {
             var now = Now;
             if (_instances.TryGetValue(instanceId, out var candidate) &&
-                (!(candidate.RunnableAtUtc <= now || kind == ExecutionClaimKind.Operator &&
-                    candidate.RunnableAtUtc == null && (candidate.Status == WorkflowStatus.NeedsResolution ||
+                (WorkflowStoreRules.IsTerminal(candidate.Status) ||
+                 !(candidate.RunnableAtUtc <= now || kind == ExecutionClaimKind.Operator &&
+                    (candidate.Status == WorkflowStatus.NeedsResolution ||
                         ExecutionCheckpoint.IsStructured(candidate.ExecutionStateJson) && ExecutionCheckpoint.StopOf(candidate) != null)) ||
                  !DemandMatching.Meets(_demands.GetValueOrDefault(instanceId) ?? [], query.Capabilities, now)))
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
@@ -574,7 +575,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             snapshot.LastHostId = admission == null && _leases.TryGetValue(commit.InstanceId, out var committingLease)
                 ? committingLease.HostId : null;
             snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit,
-                (commit.Parks && !parked) || (unread && snapshot.Status == WorkflowStatus.Suspended) ||
+                (commit.Parks && !parked) || (unread && !commit.Stopped &&
+                    snapshot.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) ||
                 WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.CancellationReason != null, unacknowledged),
                 now, OpenWaits(commit.InstanceId).Min(open => open.DeadlineUtc));
             // A finished instance takes no more events; those still pending are closed, and so are its waits.

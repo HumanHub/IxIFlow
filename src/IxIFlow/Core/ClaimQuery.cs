@@ -16,7 +16,7 @@ public sealed record ClaimQuery
     public int Limit { get; }
 }
 
-/// <summary>Operator claims may enter an idle resolution or stopped checkpoint, never a future park.</summary>
+/// <summary>Operator claims may enter a resolution or stopped checkpoint regardless of its next timer.</summary>
 public enum ExecutionClaimKind { Runnable, Operator }
 
 /// <summary>The ordinal matching rule shared by hosts and the in-memory store.</summary>
