@@ -492,6 +492,7 @@ public sealed record CommittedInstance(string InstanceId, string WorkflowName, s
 {
     public int WorkflowVersion { get; init; }
     public string? ParentInstanceId { get; init; }
+    public string? ParentWaitId { get; init; }
     public DateTime CreatedAt { get; init; }
     public long CommandVersion { get; init; }
     public WorkflowStopKind? StopKind { get; init; }
@@ -503,7 +504,7 @@ public sealed record CommittedInstance(string InstanceId, string WorkflowName, s
         return new(instance.InstanceId, instance.WorkflowName, instance.CorrelationId, instance.Status,
             instance.CancellationReason != null)
         {
-            ParentInstanceId = instance.ParentInstanceId, WorkflowVersion = instance.WorkflowVersion,
+            ParentInstanceId = instance.ParentInstanceId, ParentWaitId = instance.ParentWaitId, WorkflowVersion = instance.WorkflowVersion,
             CreatedAt = instance.CreatedAt, CommandVersion = instance.CancellationReason?.CommandVersion ?? 0,
             StopKind = projection.StopKind, StopCrashCount = projection.CrashCount
         };

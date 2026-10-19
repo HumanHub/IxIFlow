@@ -72,7 +72,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     }
 
     internal override async Task<CancellationOutcome> RequestCancellationAsync(DbConnection connection,
-        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? now)
+        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? now, Guid? expectedIncarnation = null)
     {
         var clock = now == null ? "SYSUTCDATETIME()" : "@Now";
         var update = $"""
@@ -82,9 +82,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                     THEN 0 ELSE CancellationAcknowledged END,
                 RunnableAtUtc = CASE WHEN CancellationJson IS NULL OR CancellationAcknowledged = 0
                     THEN {clock} ELSE RunnableAtUtc END
-            WHERE InstanceId = @InstanceId AND Status IN ('Running', 'Suspended', 'NeedsResolution')
+            WHERE InstanceId = @InstanceId AND (@ExpectedIncarnation IS NULL OR Incarnation = @ExpectedIncarnation) AND Status IN ('Running', 'Suspended', 'NeedsResolution')
             """;
-        var parameters = new DynamicParameters(new { InstanceId = instanceId, ReasonJson = reasonJson });
+        var parameters = new DynamicParameters(new { InstanceId = instanceId, ReasonJson = reasonJson, ExpectedIncarnation = expectedIncarnation });
         if (now == null)
         {
             var changed = await connection.ExecuteAsync(update, parameters, transaction);
@@ -255,8 +255,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             var child = start.Instance!;
             await connection.ExecuteAsync("""
                 INSERT INTO dbo.IxIFlowWorkflowInstances
-                    (InstanceId, Incarnation, WorkflowName, WorkflowVersion, CreatedAtUtc, StopKind, StopCrashCount, Status, CorrelationId, RunnableAtUtc, StateJson, Revision, ParentInstanceId)
-                VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @Now, @StateJson, 1, @ParentInstanceId)
+                    (InstanceId, Incarnation, WorkflowName, WorkflowVersion, CreatedAtUtc, StopKind, StopCrashCount, Status, CorrelationId, RunnableAtUtc, StateJson, Revision, ParentInstanceId, ParentWaitId)
+                VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @Now, @StateJson, 1, @ParentInstanceId, @ParentWaitId)
                 """, WithTimes(new
             {
                 child.InstanceId,
@@ -268,7 +268,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 Status = child.Status.ToString(),
                 child.CorrelationId,
                 StateJson = start.Payload,
-                ParentInstanceId = parentInstanceId
+                ParentInstanceId = parentInstanceId,
+                ParentWaitId = start.ParentWaitId
             }, ("Now", now), ("CreatedAtUtc", child.CreatedAt)), transaction);
         }
     }
@@ -611,15 +612,15 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             WHEN MATCHED THEN UPDATE SET
                 WorkflowName = @WorkflowName, WorkflowVersion = @WorkflowVersion, CreatedAtUtc = @CreatedAtUtc,
                   StopKind = @StopKind, StopCrashCount = @StopCrashCount, Status = @Status,
-                CorrelationId = @CorrelationId, ParentInstanceId = @ParentInstanceId,
+                CorrelationId = @CorrelationId, ParentInstanceId = @ParentInstanceId, ParentWaitId = @ParentWaitId,
                 RunnableAtUtc = @RunnableAtUtc,
                 InboxReadThrough = COALESCE(@InboxReadThrough, target.InboxReadThrough),
                 StateJson = @StateJson, Revision = @Revision,
                 CancellationAcknowledged = CASE WHEN @AcknowledgesCancellation = 1 AND
                     target.CancellationJson IS NOT NULL THEN 1 ELSE target.CancellationAcknowledged END
             WHEN NOT MATCHED THEN INSERT
-                (InstanceId, Incarnation, WorkflowName, WorkflowVersion, CreatedAtUtc, StopKind, StopCrashCount, Status, CorrelationId, ParentInstanceId, RunnableAtUtc, StateJson, Revision)
-                VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson,
+                (InstanceId, Incarnation, WorkflowName, WorkflowVersion, CreatedAtUtc, StopKind, StopCrashCount, Status, CorrelationId, ParentInstanceId, ParentWaitId, RunnableAtUtc, StateJson, Revision)
+                VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @ParentWaitId, @RunnableAtUtc, @StateJson,
                         @Revision);
             INSERT INTO dbo.IxIFlowWorkflowCommits (InstanceId, CommitId, ExpectedRevision, Revision, PayloadHash)
             VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
@@ -719,7 +720,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 InboxSequence BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_InboxSequence DEFAULT 0,
                 InboxReadThrough BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_InboxReadThrough DEFAULT 0,
                 Incarnation UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_Incarnation DEFAULT NEWID(),
-                ParentInstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL
+                ParentInstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
+                ParentWaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL
             );
             CREATE INDEX IX_IxIFlowWorkflowInstances_creation ON dbo.IxIFlowWorkflowInstances (CreatedAtUtc DESC, InstanceId ASC);
             CREATE INDEX IX_IxIFlowWorkflowInstances_status_creation ON dbo.IxIFlowWorkflowInstances (Status, CreatedAtUtc DESC, InstanceId ASC);

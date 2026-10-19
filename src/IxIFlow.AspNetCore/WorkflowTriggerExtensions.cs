@@ -250,6 +250,7 @@ public static class WorkflowTriggerExtensions
         WorkflowExecutionStatus.Success => "Completed",
         WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.Failed => "Failed",
         WorkflowExecutionStatus.Cancelled => "Cancelled",
+        WorkflowExecutionStatus.Terminated => "Terminated",
         WorkflowExecutionStatus.TimedOut => "TimedOut",
         WorkflowExecutionStatus.Removed => "Removed",
         WorkflowExecutionStatus.Suspended => "Waiting",

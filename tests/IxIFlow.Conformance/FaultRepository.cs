@@ -110,8 +110,8 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         return result;
     }
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
-        inner.RequestCancellationAsync(instanceId, reason);
+    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         inner.GetCancellationRequestAsync(instanceId);
     public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
@@ -133,8 +133,8 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
     public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
         inner.QueryInstancesAsync(query);
 
-    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason) =>
-        inner.RequestTerminationAsync(instanceId, reason);
+    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
         int limit = 1000) =>
         inner.GetTraceAsync(instanceId, afterSequence, limit);

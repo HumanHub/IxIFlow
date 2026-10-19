@@ -1394,9 +1394,9 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool CompleteOnCancellationRequest { get; set; }
         public bool PauseFirstRead { get; set; } = true;
-        public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
+        public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
         {
-            var accepted = await inner.RequestCancellationAsync(instanceId, reason);
+            var accepted = await inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
             if (accepted && CompleteOnCancellationRequest)
             {
                 var instance = (await inner.GetWorkflowInstanceAsync(instanceId))!;
@@ -1497,8 +1497,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
             inner.QueryInstancesAsync(query);
 
-        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason) =>
-            inner.RequestTerminationAsync(instanceId, reason);
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+            inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             inner.GetTraceAsync(instanceId, afterSequence, limit);

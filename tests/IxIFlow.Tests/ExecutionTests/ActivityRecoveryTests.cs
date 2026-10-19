@@ -953,8 +953,8 @@ public sealed class ActivityRecoveryTests
             _inner.GetOpenWaitsAsync(query);
 
         private readonly InMemoryWorkflowStateRepository _inner = new();
-        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
-            _inner.RequestCancellationAsync(instanceId, reason);
+        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+            _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
         public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
@@ -1008,8 +1008,8 @@ public sealed class ActivityRecoveryTests
         public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
             _inner.QueryInstancesAsync(query);
 
-        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason) =>
-            _inner.RequestTerminationAsync(instanceId, reason);
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+            _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);

@@ -93,26 +93,35 @@ public static class WorkflowOperationsExtensions
             ArgumentException.ThrowIfNullOrWhiteSpace(request.Note);
             var kind = ParseEnum<ActivityResolutionKind>(request.Kind);
             var resolution = kind == ActivityResolutionKind.Completed
-                ? ActivityResolution.Completed(new Dictionary<string, object?>(request.Outputs ?? [], StringComparer.OrdinalIgnoreCase), request.Note, Actor(http))
+                ? request.InvocationResult is { } result
+                    ? ActivityResolution.CompletedInvocation(result, request.Note, Actor(http))
+                    : ActivityResolution.Completed(new Dictionary<string, object?>(request.Outputs ?? [], StringComparer.OrdinalIgnoreCase), request.Note, Actor(http))
                 : ActivityResolution.Failed(request.ErrorMessage ?? request.Note, Actor(http));
-            return await MutateAsync(http, summary.InstanceId, options,
-                () => Operations(http).SubmitResolutionAsync(summary.InstanceId, request.InvocationId, resolution));
+            try
+            {
+                return await MutateAsync(http, summary.InstanceId, options,
+                    () => Operations(http).SubmitResolutionAsync(summary.InstanceId, request.InvocationId, resolution, summary.Incarnation));
+            }
+            catch (ArgumentException error) when (error.ParamName == "invocationResult")
+            {
+                return Results.Problem(statusCode: 400, title: "Invalid child workflow result", detail: error.Message);
+            }
         });
         MapInstance("POST", "/release", options.WritePolicy!, (http, summary) => MutateAsync(http, summary.InstanceId, options,
-            () => Operations(http).SubmitReleaseAsync(summary.InstanceId, Actor(http))));
+            () => Operations(http).SubmitReleaseAsync(summary.InstanceId, Actor(http), summary.Incarnation)));
         MapInstance("POST", "/cancel", options.WritePolicy!, async (http, summary) =>
         {
             var request = await BodyAsync<ReasonRequest>(http);
             ArgumentException.ThrowIfNullOrWhiteSpace(request.ReasonCode);
             return await MutateAsync(http, summary.InstanceId, options, () => Operations(http).SubmitCancellationAsync(
-                summary.InstanceId, new CancellationReason { ReasonCode = request.ReasonCode, Description = request.Description ?? "", RequestedBy = Actor(http) }));
+                summary.InstanceId, new CancellationReason { ReasonCode = request.ReasonCode, Description = request.Description ?? "", RequestedBy = Actor(http) }, summary.Incarnation));
         });
         MapInstance("POST", "/terminate", options.WritePolicy!, async (http, summary) =>
         {
             var request = await BodyAsync<ReasonRequest>(http);
             ArgumentException.ThrowIfNullOrWhiteSpace(request.ReasonCode);
             return await MutateAsync(http, summary.InstanceId, options, () => Operations(http).SubmitTerminationAsync(
-                summary.InstanceId, request.ReasonCode, request.Description, Actor(http)));
+                summary.InstanceId, request.ReasonCode, request.Description, Actor(http), summary.Incarnation));
         });
         Map("GET", "/outbox/publishers", options.OutboxPolicy!, async http =>
             Results.Ok(await Operations(http).ListPublishersAsync(Actor(http), http.RequestAborted)));
@@ -248,7 +257,7 @@ public static class WorkflowOperationsExtensions
     private static IResult Removed() => Results.Problem(statusCode: 410, title: "Workflow removed");
     private static IResult Conflict() => Results.Problem(statusCode: 409, title: "Invalid workflow state");
     private sealed record ReasonRequest(string ReasonCode, string? Description);
-    private sealed record ResolutionRequest(string InvocationId, string Kind, Dictionary<string, object?>? Outputs, string Note, string? ErrorMessage);
+    private sealed record ResolutionRequest(string InvocationId, string Kind, Dictionary<string, object?>? Outputs, string Note, string? ErrorMessage, JsonElement? InvocationResult);
     private static T ParseEnum<T>(string value) where T : struct, Enum =>
         System.Enum.TryParse<T>(value, true, out var parsed) && System.Enum.IsDefined(parsed) ? parsed : throw new ArgumentException("Invalid enum value");
     private sealed class Query(HttpContext http)

@@ -18,7 +18,7 @@ public partial class InMemoryWorkflowStateRepository
         else if (RequestCancellation(instanceId, reason, now)) madeRunnable.Add(instanceId);
     }
 
-    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason)
+    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
@@ -26,7 +26,9 @@ public partial class InMemoryWorkflowStateRepository
         {
             var command = JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!;
             command.Mode = WorkflowControlMode.Terminate;
-            var accepted = RequestCancellation(instanceId, command, Now);
+            var accepted = (expectedIncarnation == null ||
+                _instances.GetValueOrDefault(instanceId)?.Incarnation == expectedIncarnation) &&
+                RequestCancellation(instanceId, command, Now);
             return Task.FromResult(new WorkflowControlReceipt(accepted,
                 accepted ? _cancellations[instanceId].CommandVersion : 0,
                 _instances.GetValueOrDefault(instanceId)?.Incarnation ?? Guid.Empty));

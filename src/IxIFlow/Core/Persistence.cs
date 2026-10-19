@@ -176,10 +176,10 @@ public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStor
     /// caller never overwrites the running owner's state. The first request wins.
     /// Returns false when the instance is absent or terminal.
     /// </summary>
-    Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason);
+    Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null);
 
     /// <summary>Durably upgrades cancellation to termination; repeated termination returns the same command version.</summary>
-    Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason);
+    Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null);
 
     /// <summary>Reads a durable cancellation request for an instance.</summary>
     Task<CancellationReason?> GetCancellationRequestAsync(string instanceId);
@@ -302,12 +302,14 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly Dictionary<string, List<string>> _traces = new(StringComparer.Ordinal);
     private readonly HashSet<string> _acknowledgedCancellations = new();
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
+    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         lock (_claimLock)
-            return Task.FromResult(RequestCancellation(instanceId, reason, Now));
+            return Task.FromResult((expectedIncarnation == null ||
+                _instances.GetValueOrDefault(instanceId)?.Incarnation == expectedIncarnation) &&
+                RequestCancellation(instanceId, reason, Now));
     }
 
     // Caller holds _claimLock.
