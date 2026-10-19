@@ -54,6 +54,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     // The lease is lost once; the host counts it (D-39).
     private void Lose(Exception error)
     {
+        if (_stop.IsCancellationRequested) return;
         if (Interlocked.CompareExchange(ref _loss, error, null) == null)
         {
             Telemetry.LeasesLost.Add(1);
@@ -101,6 +102,13 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     }
 
     private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>The assignment's acknowledged commit already released the persisted lease.</summary>
+    public void StopRenewing()
+    {
+        _stop.Cancel();
+        _cancellationWatch.Dispose();
+    }
 
     // Loss is decided by the clock, not by when a store call returns: a renewal that has not
     // succeeded by the time the lease may have expired ends ownership (B-09). The expiry counts
@@ -173,8 +181,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _stop.Cancel();
-        _cancellationWatch.Dispose();
+        StopRenewing();
         await _renewal;
         _stop.Dispose();
         try
