@@ -146,6 +146,10 @@ public sealed partial class WorkflowHost
         public Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
             _runner.GetTraceAsync(instanceId);
 
+        public Task<InstanceInspection?> InspectAsync(string id, CancellationToken token) => _runner.InspectAsync(id, token);
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string id, long afterSequence, int limit,
+            CancellationToken token) => _runner.GetTracePageAsync(id, afterSequence, limit, token);
+
         public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId)
         {
             try

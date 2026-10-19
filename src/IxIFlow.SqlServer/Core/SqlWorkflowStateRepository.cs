@@ -198,7 +198,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     }
 
     internal override async Task AppendTraceAsync(DbConnection connection, DbTransaction transaction,
-        string instanceId, IReadOnlyList<string> entries)
+        string instanceId, IReadOnlyList<string> entries, long revision, WorkflowStatus? commitStatus)
     {
         var last = await connection.ExecuteScalarAsync<long>("""
             SELECT ISNULL(MAX(Sequence), 0) FROM dbo.IxIFlowWorkflowTraces WHERE InstanceId = @InstanceId
@@ -206,16 +206,17 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         var offset = 0;
         foreach (var batch in entries.Chunk(StatementBatch))
         {
-            var parameters = new DynamicParameters(new { InstanceId = instanceId });
+            var parameters = new DynamicParameters(new { InstanceId = instanceId, Revision = revision,
+                CommitEndSequence = commitStatus != null ? (long?)(last + entries.Count) : null, CommitStatus = (int?)commitStatus });
             var rows = new List<string>();
             for (var index = 0; index < batch.Length; index++)
             {
-                rows.Add($"(@InstanceId, @S{index}, @J{index})");
+                rows.Add($"(@InstanceId, @S{index}, @J{index}, @Revision, @CommitEndSequence, @CommitStatus)");
                 parameters.Add($"S{index}", last + offset + index + 1);
                 parameters.Add($"J{index}", batch[index]);
             }
             await connection.ExecuteAsync(
-                $"INSERT INTO dbo.IxIFlowWorkflowTraces (InstanceId, Sequence, EntryJson) VALUES {string.Join(", ", rows)}",
+                $"INSERT INTO dbo.IxIFlowWorkflowTraces (InstanceId, Sequence, EntryJson, Revision, CommitEndSequence, CommitStatus) VALUES {string.Join(", ", rows)}",
                 parameters, transaction);
             offset += batch.Length;
         }
@@ -474,7 +475,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         // that lock is held, which orders it against every read of the inbox (D-35); a statement reads
         // its time when it starts, so the time is read by the statement after the lock.
         Statement.LockInbox => """
-            SELECT Status, InboxSequence,
+            SELECT Status, InboxSequence, Revision,
                 CAST(COALESCE(JSON_VALUE(StateJson, '$.TracingEnabled'), 'true') AS bit) AS TracingEnabled
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId;
@@ -635,7 +636,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId;
             """,
         Statement.Trace => """
-            SELECT TOP (@Limit) Sequence, EntryJson FROM dbo.IxIFlowWorkflowTraces
+            SELECT TOP (@Limit) Sequence, EntryJson, Revision, CommitEndSequence, CommitStatus FROM dbo.IxIFlowWorkflowTraces
             WHERE InstanceId = @InstanceId AND Sequence > @AfterSequence
             ORDER BY Sequence
             """,
@@ -747,6 +748,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 Sequence BIGINT NOT NULL,
                 EntryJson NVARCHAR(MAX) NOT NULL,
+                Revision BIGINT NOT NULL,
+                CommitEndSequence BIGINT NULL,
+                CommitStatus INT NULL,
                 CONSTRAINT PK_IxIFlowWorkflowTraces PRIMARY KEY (InstanceId, Sequence)
             );
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowWaits', N'U') IS NULL

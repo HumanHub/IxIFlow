@@ -188,7 +188,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     internal abstract Task InsertPartsAsync(DbConnection connection, DbTransaction transaction,
         string instanceId, IReadOnlyList<CheckpointPart> parts);
     internal abstract Task AppendTraceAsync(DbConnection connection, DbTransaction transaction,
-        string instanceId, IReadOnlyList<string> entries);
+        string instanceId, IReadOnlyList<string> entries, long revision, WorkflowStatus? commitStatus);
     internal abstract Task InsertChildrenAsync(DbConnection connection, DbTransaction transaction,
         string parentInstanceId, IReadOnlyList<ChildStart> children, DateTime now);
 
@@ -396,7 +396,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         var finished = instance.Status is "Completed" or "Failed" or "Cancelled" or "Terminated" or "TimedOut";
         if (finished && workflowEvent.TargetWaitId == null)
         {
-            await TraceRefusalAsync(connection, transaction, workflowEvent, EventRejection.InstanceFinished, now, instance.TracingEnabled);
+            await TraceRefusalAsync(connection, transaction, workflowEvent, EventRejection.InstanceFinished, now, instance.TracingEnabled, instance.Revision);
             return new EventAppendResult(EventAppendStatus.Closed);
         }
         var waits = (await connection.QueryAsync<WaitRow>(RequiredSql(Statement.CandidateWait), WithTimes(WithIntegers(new
@@ -432,18 +432,18 @@ public abstract partial class RelationalWorkflowStateRepository :
         // A refusal on arrival never reaches an executor pass. Store its one entry atomically with the
         // refusal, using the shared trace append and the same instance lock as checkpoint commits.
         if (rejection is { } refused)
-            await TraceRefusalAsync(connection, transaction, workflowEvent, refused, now, instance.TracingEnabled);
+            await TraceRefusalAsync(connection, transaction, workflowEvent, refused, now, instance.TracingEnabled, instance.Revision);
         return rejection == null
             ? new EventAppendResult(EventAppendStatus.Stored, sequence, madeRunnable)
             : new EventAppendResult(EventAppendStatus.Rejected, Rejection: rejection);
     }
 
     private async Task TraceRefusalAsync(DbConnection connection, DbTransaction transaction,
-        WorkflowEvent workflowEvent, EventRejection rejection, DateTime now, bool tracingEnabled)
+        WorkflowEvent workflowEvent, EventRejection rejection, DateTime now, bool tracingEnabled, long revision)
     {
         if (tracingEnabled)
             await AppendTraceAsync(connection, transaction, workflowEvent.InstanceId,
-                [WorkflowStoreRules.SerializeTrace(WorkflowStoreRules.RefusedEventTrace(workflowEvent, rejection, now))]);
+                [WorkflowStoreRules.SerializeTrace(WorkflowStoreRules.RefusedEventTrace(workflowEvent, rejection, now))], revision, null);
     }
 
     public async Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit)
@@ -725,7 +725,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         await WriteDebugAcknowledgementsAsync(connection, transaction, commit.InstanceId, debugCommands, acknowledgedDebug);
         await RecordCompletionAsync(connection, transaction, WorkflowStoreRules.IsTerminal(snapshot.Status) ? commit.ReadTrunk() : null, revision, now);
         if (traces.Count > 0)
-            await AppendTraceAsync(connection, transaction, commit.InstanceId, traces);
+            await AppendTraceAsync(connection, transaction, commit.InstanceId, traces, revision, snapshot.Status);
         // The lease row is written only when something changes, so most commits touch only their
         // instance row. An idle owner that has not read every arrival keeps the lease and reads them.
         var keepsLease = unread && snapshot.Status == WorkflowStatus.Suspended;
@@ -983,10 +983,11 @@ public abstract partial class RelationalWorkflowStateRepository :
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<(long Sequence, string EntryJson)>(RequiredSql(Statement.Trace),
+        var rows = await connection.QueryAsync<(long Sequence, string EntryJson, long Revision, long? CommitEndSequence, int? CommitStatus)>(RequiredSql(Statement.Trace),
             new { InstanceId = instanceId, AfterSequence = afterSequence, Limit = limit });
         return rows.Select(row => new StoredTraceEntry(row.Sequence,
-            JsonSerializer.Deserialize<ExecutionTraceEntry>(row.EntryJson)!)).ToArray();
+            JsonSerializer.Deserialize<ExecutionTraceEntry>(row.EntryJson)!)
+            { Revision = row.Revision, CommitEndSequence = row.CommitEndSequence, CommitStatus = (WorkflowStatus?)row.CommitStatus }).ToArray();
     }
 
     private static WorkflowEvent ToEvent(ParentNotice notice) =>
@@ -996,6 +997,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     private sealed class InboxRow
     {
         public bool TracingEnabled { get; set; }
+        public long Revision { get; set; }
         public string Status { get; set; } = "";
         public long InboxSequence { get; set; }
     }

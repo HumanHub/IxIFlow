@@ -34,6 +34,7 @@ internal sealed partial class TraceBuffer
     {
         Configure(limits.MaxTraceEntriesPerCommit);
         _instanceId = instance.InstanceId;
+        _instance = instance;
         _enabled = instance.TracingEnabled;
         _detail = limits.TraceDetail;
         _budget = limits.MaxTraceEntriesPerInstance;
@@ -41,7 +42,17 @@ internal sealed partial class TraceBuffer
         {
             _acknowledgedCount = checkpoint.TraceEntriesRecorded;
             _acknowledgedBudget = checkpoint.TraceBudgetExhausted;
+            _acknowledgedReplayInitialized = checkpoint.TraceReplayInitialized;
             _acknowledgedDebug = checkpoint.Debug;
+            if (!_origin && checkpoint.TraceReplayInitialized && checkpoint.StructureHash == scopes.StructureHash &&
+                _enabled && _detail == TraceDetail.Full && !checkpoint.TraceBudgetExhausted)
+            {
+                // Establish the saved baseline before recovery reactivates continuations.
+                _positions = InspectionProjection.Threads(instance, checkpoint, scopes,
+                    (time ?? _time).GetUtcNow().UtcDateTime).ToDictionary(t => t.ContinuationId, StringComparer.Ordinal);
+                _acknowledgedPositions = new(_positions, StringComparer.Ordinal);
+                _origin = _acknowledgedOrigin = true;
+            }
         }
         _checkpoint = checkpoint;
         _scopes = scopes;
@@ -112,6 +123,21 @@ internal sealed partial class TraceBuffer
 
     public void Add(ExecutionTraceEntry entry)
     {
+        CapturePositions(entry.Timestamp);
+        var (stepId, continuationId) = entry.Payload switch
+        {
+            ControlFlowTrace p => (p.StepId, p.ContinuationId),
+            ConditionTrace p => (p.StepId, p.ContinuationId),
+            JoinTrace p => (p.StepId, p.ContinuationId),
+            ItemEndTrace p => (p.StepId, p.ContinuationId),
+            TimeoutTrace p => (p.StepId, p.ContinuationId),
+            RetryTrace p => (p.StepId, p.ContinuationId),
+            _ => (entry.StepId, entry.ContinuationId)
+        };
+        entry.StepId ??= stepId;
+        entry.ContinuationId ??= continuationId;
+        entry.FrameActivationId ??= _checkpoint?.Continuations.FirstOrDefault(c => c.Id == continuationId)
+            ?.Stack.LastOrDefault()?.ActivationId;
         if (Accepts(entry.EntryType, entry.Timestamp))
         {
             _pending.Add(entry);
@@ -130,7 +156,8 @@ internal sealed partial class TraceBuffer
         TraceEntryType.CatchEntered or TraceEntryType.FinallyEntered or TraceEntryType.ForEachItemStarted or
         TraceEntryType.ForEachItemEnded or TraceEntryType.CompensationStarted or TraceEntryType.CompensationCompleted or
         TraceEntryType.CompensationFailed or TraceEntryType.WaitTimedOut or TraceEntryType.DelayFired or
-        TraceEntryType.SagaRetryStarted or TraceEntryType.StepRetryScheduled;
+        TraceEntryType.SagaRetryStarted or TraceEntryType.StepRetryScheduled or
+        TraceEntryType.ReplayOrigin or TraceEntryType.ThreadPosition;
 
     public void Committed()
     {
@@ -138,20 +165,26 @@ internal sealed partial class TraceBuffer
         {
             _acknowledgedCount = _checkpoint.TraceEntriesRecorded;
             _acknowledgedBudget = _checkpoint.TraceBudgetExhausted;
+            _acknowledgedReplayInitialized = _checkpoint.TraceReplayInitialized;
             _acknowledgedDebug = _checkpoint.Debug;
         }
         _pending.Clear();
         _audits.Clear();
         _truncated = null;
         _budgetMarker = null;
+        _acknowledgedPositions = new(_positions, StringComparer.Ordinal);
+        _acknowledgedOrigin = _origin;
     }
 
     public void DiscardPending()
     {
+        _positions = new(_acknowledgedPositions, StringComparer.Ordinal);
+        _origin = _acknowledgedOrigin;
         if (_checkpoint != null)
         {
             _checkpoint.TraceEntriesRecorded = _acknowledgedCount;
             _checkpoint.TraceBudgetExhausted = _acknowledgedBudget;
+            _checkpoint.TraceReplayInitialized = _acknowledgedReplayInitialized;
             _checkpoint.Debug = _acknowledgedDebug;
         }
         _pending.Clear();

@@ -186,19 +186,22 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     }
 
     internal override async Task AppendTraceAsync(DbConnection connection, DbTransaction transaction,
-        string instanceId, IReadOnlyList<string> entries)
+        string instanceId, IReadOnlyList<string> entries, long revision, WorkflowStatus? commitStatus)
     {
         var sequence = await connection.ExecuteScalarAsync<long>("""
             SELECT COALESCE(max(sequence), 0) FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId
             """, new { InstanceId = instanceId }, transaction);
         await connection.ExecuteAsync("""
-            INSERT INTO ixiflow_workflow_traces (instance_id, sequence, entry_json)
-            VALUES (@InstanceId, @Sequence, @Entry)
+            INSERT INTO ixiflow_workflow_traces (instance_id, sequence, entry_json, revision, commit_end_sequence, commit_status)
+            VALUES (@InstanceId, @Sequence, @Entry, @Revision, @CommitEndSequence, @CommitStatus)
             """, entries.Select((entry, index) => new
         {
             InstanceId = instanceId,
             Sequence = sequence + index + 1,
-            Entry = entry
+            Entry = entry,
+            Revision = revision,
+            CommitEndSequence = commitStatus != null ? (long?)(sequence + entries.Count) : null,
+            CommitStatus = (int?)commitStatus
         }), transaction);
     }
 
@@ -420,7 +423,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 WHERE instance_id = @InstanceId AND token = @Token AND expires_at_utc > @Now
                 """,
         Statement.LockInbox or Statement.ParentInbox or Statement.DeleteParentInbox => """
-            SELECT status AS Status, inbox_sequence AS InboxSequence,
+            SELECT status AS Status, inbox_sequence AS InboxSequence, revision AS Revision,
                 COALESCE(json_extract(state_json, '$.TracingEnabled'), 1) AS TracingEnabled
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
@@ -560,7 +563,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 DELETE FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId;
                 """,
         Statement.Trace => """
-            SELECT sequence, entry_json FROM ixiflow_workflow_traces
+            SELECT sequence, entry_json, revision, commit_end_sequence, commit_status FROM ixiflow_workflow_traces
             WHERE instance_id = @InstanceId AND sequence > @AfterSequence
             ORDER BY sequence
             LIMIT @Limit
@@ -650,6 +653,9 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             instance_id TEXT COLLATE BINARY NOT NULL,
             sequence INTEGER NOT NULL,
             entry_json TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            commit_end_sequence INTEGER NULL,
+            commit_status INTEGER NULL,
             PRIMARY KEY (instance_id, sequence)
         );
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_waits (

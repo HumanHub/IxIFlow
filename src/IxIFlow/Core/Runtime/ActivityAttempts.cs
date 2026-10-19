@@ -143,6 +143,8 @@ internal sealed class ActivityAttempts(
                 Timestamp = Now,
                 EntryType = TraceEntryType.ActivityStarted,
                 StepId = scopes.Id(step),
+                ContinuationId = continuation.Id,
+                FrameActivationId = continuation.Stack[^1].ActivationId,
                 ActivityName = step.ActivityType?.Name ?? "Activity",
                 StepNumber = continuation.Stack[^1].NextStepIndex,
                 Metadata = new Dictionary<string, object>
@@ -402,6 +404,8 @@ internal sealed class ActivityAttempts(
             Timestamp = Now,
             EntryType = TraceEntryType.ActivityStarted,
             StepId = pending.StepId,
+            ContinuationId = continuation.Id,
+            FrameActivationId = continuation.Stack[^1].ActivationId,
             ActivityName = step.Name,
             StepNumber = continuation.Stack[^1].NextStepIndex,
             Metadata = new Dictionary<string, object>
@@ -591,6 +595,8 @@ internal sealed class ActivityAttempts(
             Timestamp = Now,
             EntryType = error == null ? TraceEntryType.ActivityCompleted : TraceEntryType.ActivityFailed,
             StepId = pending.StepId,
+            ContinuationId = running.Continuation.Id,
+            FrameActivationId = running.Continuation.Stack.LastOrDefault()?.ActivationId,
             ActivityName = running.Step.ActivityType?.Name ?? running.Step.Name,
             StepNumber = running.StepNumber,
             Duration = attempt.EndedAtUtc - attempt.StartedAtUtc,

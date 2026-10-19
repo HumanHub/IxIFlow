@@ -216,16 +216,20 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     }
 
     internal override async Task AppendTraceAsync(DbConnection connection, DbTransaction transaction,
-        string instanceId, IReadOnlyList<string> entries)
+        string instanceId, IReadOnlyList<string> entries, long revision, WorkflowStatus? commitStatus)
     {
         await connection.ExecuteAsync("""
-            INSERT INTO ixiflow_workflow_traces (instance_id, sequence, entry_json)
+            INSERT INTO ixiflow_workflow_traces (instance_id, sequence, entry_json, revision, commit_end_sequence, commit_status)
             SELECT @InstanceId,
                 (SELECT COALESCE(max(sequence), 0) FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId)
                     + entry.position,
-                entry.entry_json
+                entry.entry_json, @Revision,
+                CASE WHEN @CommitStatus::integer IS NULL THEN NULL ELSE
+                    (SELECT COALESCE(max(sequence), 0) FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId)
+                        + @Count END, @CommitStatus
             FROM unnest(@Entries::text[]) WITH ORDINALITY AS entry (entry_json, position)
-            """, new { InstanceId = instanceId, Entries = entries.ToArray() }, transaction);
+            """, new { InstanceId = instanceId, Entries = entries.ToArray(), Revision = revision,
+                Count = entries.Count, CommitStatus = (int?)commitStatus }, transaction);
     }
 
     internal override async Task<int> SettleAsync(DbConnection connection, DbTransaction transaction,
@@ -471,7 +475,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // Locks an instance row as appends and commits lock it, then reads the store's time: a statement that
         // waits for a lock would otherwise carry a time from before it was granted (D-35).
         Statement.LockInbox or Statement.DeleteParentInbox => """
-            SELECT status AS Status, inbox_sequence AS InboxSequence,
+            SELECT status AS Status, inbox_sequence AS InboxSequence, revision AS Revision,
                 COALESCE((state_json::jsonb ->> 'TracingEnabled')::boolean, true) AS TracingEnabled
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
@@ -627,7 +631,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 DELETE FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId;
                 """,
         Statement.Trace => """
-            SELECT sequence, entry_json FROM ixiflow_workflow_traces
+            SELECT sequence, entry_json, revision, commit_end_sequence, commit_status FROM ixiflow_workflow_traces
             WHERE instance_id = @InstanceId AND sequence > @AfterSequence
             ORDER BY sequence
             LIMIT @Limit
@@ -723,6 +727,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             instance_id varchar(100) COLLATE "C" NOT NULL,
             sequence bigint NOT NULL,
             entry_json text NOT NULL,
+            revision bigint NOT NULL,
+            commit_end_sequence bigint NULL,
+            commit_status integer NULL,
             PRIMARY KEY (instance_id, sequence)
         );
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_waits (

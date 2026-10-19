@@ -8,6 +8,11 @@ namespace IxIFlow.Core;
 /// </summary>
 internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time) : IWorkflowClient, IWorkflowOperations
 {
+    public Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default) =>
+        host.ReadAsync(client => client.InspectAsync(instanceId, cancellationToken));
+    public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000,
+        CancellationToken cancellationToken = default) =>
+        host.ReadAsync(client => client.GetTraceAsync(instanceId, afterSequence, limit, cancellationToken));
     // AwaitAsync also notices work finished on another host; until the store can notify (D-05,
     // D-12), it checks the saved state at this interval.
     private static readonly TimeSpan AwaitPollInterval = TimeSpan.FromSeconds(1);
