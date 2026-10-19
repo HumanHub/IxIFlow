@@ -14,7 +14,7 @@ public class ExceptionHandlingSyntaxTests
     public void Build_TryCatchWithSingleCatch_ShouldCompileSuccessfully()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("TryCatchSingleTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -30,8 +30,8 @@ public class ExceptionHandlingSyntaxTests
                         .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                         .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId)
                         .Output(act => act.LoggedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp));
-                }),
-            "TryCatchSingleTest");
+                })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -45,7 +45,7 @@ public class ExceptionHandlingSyntaxTests
     public void Build_TryCatchWithMultipleCatches_ShouldCompileSuccessfully()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("TryCatchMultipleTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -67,8 +67,8 @@ public class ExceptionHandlingSyntaxTests
                     catchBlock.Step<BusinessErrorHandlerAsyncActivity>(setup => setup
                         .Input(act => act.BusinessErrors).From(ctx => ctx.Fault.BusinessErrors)
                         .Output(act => act.HandledErrors).To(ctx => ctx.WorkflowData.ProcessedOrder));
-                }),
-            "TryCatchMultipleTest");
+                })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -81,7 +81,7 @@ public class ExceptionHandlingSyntaxTests
     public void Build_TryCatchWithFinally_ShouldCompileSuccessfully()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("TryCatchFinallyTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -102,8 +102,8 @@ public class ExceptionHandlingSyntaxTests
                     finallyBlock.Step<CleanupAsyncActivity>(setup => setup
                         .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId)
                         .Output(act => act.CleanupResult).To(ctx => ctx.WorkflowData.ProcessedOrder));
-                }),
-            "TryCatchFinallyTest");
+                })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -117,7 +117,7 @@ public class ExceptionHandlingSyntaxTests
     public void Build_TryCatchStructure_ShouldHaveCorrectStepTypes()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("TryCatchStructureTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Try(tryBlock =>
@@ -129,8 +129,8 @@ public class ExceptionHandlingSyntaxTests
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
                         .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message));
-                }),
-            "TryCatchStructureTest");
+                })
+            .Build();
 
         // Assert
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
@@ -150,7 +150,7 @@ public class ExceptionHandlingSyntaxTests
     public void Build_ExceptionContextAccess_ShouldCompileCorrectly()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("ExceptionContextAccessTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Try(tryBlock =>
@@ -163,8 +163,8 @@ public class ExceptionHandlingSyntaxTests
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
                         .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                         .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId));
-                }),
-            "ExceptionContextAccessTest");
+                })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -176,7 +176,7 @@ public class ExceptionHandlingSyntaxTests
     public void Build_BusinessExceptionWithCustomProperties_ShouldCompileCorrectly()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("BusinessExceptionTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Try(tryBlock =>
@@ -188,8 +188,8 @@ public class ExceptionHandlingSyntaxTests
                 {
                     catchBlock.Step<BusinessErrorHandlerAsyncActivity>(setup => setup
                         .Input(act => act.BusinessErrors).From(ctx => ctx.Fault.BusinessErrors));
-                }),
-            "BusinessExceptionTest");
+                })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -202,7 +202,7 @@ public class ExceptionHandlingSyntaxTests
     public void Build_StepAfterTryCatch_ShouldAccessTryBlockResult()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("StepAfterTryCatchTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -219,8 +219,8 @@ public class ExceptionHandlingSyntaxTests
                 })
                 .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null)),
-            "StepAfterTryCatchTest");
+                    .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -233,7 +233,7 @@ public class ExceptionHandlingSyntaxTests
     public void Build_NestedTryBlockSteps_ShouldCompileCorrectly()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("NestedTryBlockTest")
                 .Step<NoopActivity>()
                 .Try(tryBlock =>
                 {
@@ -249,8 +249,8 @@ public class ExceptionHandlingSyntaxTests
                 {
                     catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
                         .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message));
-                }),
-            "NestedTryBlockTest");
+                })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);

@@ -30,9 +30,6 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time)
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(workflowData);
         options ??= new WorkflowOptions();
-        if (!options.PersistState)
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                "A workflow started without waiting must persist its state");
         // Inside a slot the start runs inline, so it cannot return before the run ends. The host
         // decides inline or queued once, so a run that ends meanwhile cannot change the choice.
         if (host.TryRunInline((client, _, token) => client.RunAsync(definition, workflowData, options, token),

@@ -52,14 +52,14 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
 {
     /// <summary>
     /// The definition an invocation step invokes. To start a child it must be active, as for a client's start,
-    /// and it is registered under its name and version, so any host can run the child.
+    /// and already registered under its name and version, so any host can run the child.
     /// </summary>
     public async Task<WorkflowDefinition> ResolveAsync(WorkflowStep step, bool starting)
     {
         WorkflowDefinition definition;
         if (step.WorkflowType != null)
         {
-            definition = await BuildAsync(step);
+            definition = await ResolveRegisteredTypeAsync(step);
         }
         else
         {
@@ -73,29 +73,19 @@ internal sealed class ChildWorkflows(IServiceProvider services, IWorkflowVersion
         if (definition.WorkflowDataType == null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Workflow {definition.Name} has no data type");
-        if (!starting)
-        {
-            // Recovery can resolve a child without registering it. Require an existing Apply result.
-            _ = WorkflowDefinitionValidator.ForExecution(definition);
-            return definition;
-        }
-        var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
-        if (registered?.Metadata.TryGetValue("IsActive", out var isActive) == true && isActive is false)
+        if (starting && definition.Metadata.TryGetValue("IsActive", out var isActive) && isActive is false)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Workflow {definition.Name} v{definition.Version} is deactivated");
-        await registry.RegisterWorkflowAsync(definition);
         _ = WorkflowDefinitionValidator.ForExecution(definition);
         return definition;
     }
 
-    // A workflow class with no registration is built from the class, and must match what is registered
-    // under its name and version, if anything is.
-    private async Task<WorkflowDefinition> BuildAsync(WorkflowStep step)
+    private async Task<WorkflowDefinition> ResolveRegisteredTypeAsync(WorkflowStep step)
     {
         var definition = step.Runtime.ChildDefinition!(services);
-        var published = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
-        if (published == null)
-            return definition;
+        var published = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                $"Workflow definition not found: {definition.Name} v{definition.Version}");
         if (new WorkflowScopeCatalog(published).Fingerprint != new WorkflowScopeCatalog(definition).Fingerprint)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Workflow {definition.Name} v{definition.Version} differs from its registered definition");

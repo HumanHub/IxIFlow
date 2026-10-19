@@ -327,7 +327,7 @@ public sealed class CommitBudgetTests
         {
             var result = await base.CommitWorkflowInstanceAsync(commit);
             if (result.Status == WorkflowCommitStatus.Applied)
-                _applied.Enqueue((commit.StateBytes, commit.Parts.Count, commit.DeletedParts.Count));
+                _applied.Enqueue((commit.StateBytes(), commit.Parts.Count, commit.DeletedParts.Count));
             return result;
         }
     }

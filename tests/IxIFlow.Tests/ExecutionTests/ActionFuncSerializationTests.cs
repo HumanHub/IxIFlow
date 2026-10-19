@@ -57,7 +57,7 @@ public class ActionFuncSerializationTests
         var result = await _workflowEngine.RunAsync(definition, data);
 
         Assert.NotNull(result);
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(data.ErrorResponse);
         Assert.Equal("Security Error: Security check failed. Invalid credentials.", data.ErrorResponse.Status.StatusDesc);
     }
@@ -92,7 +92,7 @@ public class ActionFuncSerializationTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(data.ErrorResponse);
         Assert.Equal("-3", data.ErrorResponse.Status.StatusCode);
     }
@@ -113,7 +113,7 @@ public class ActionFuncSerializationTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.True(data.AsyncLogExecuted);
     }
 
@@ -160,7 +160,7 @@ public class ActionFuncSerializationTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(data.ErrorResponse);
         Assert.Contains("Security Error:", data.ErrorResponse.Status.StatusDesc);
     }
@@ -195,7 +195,7 @@ public class ActionFuncSerializationTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.True(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.NotNull(data.ErrorResponse);
         Assert.Contains("Security Error for WorkflowDataMethodTest:", data.ErrorResponse.Status.StatusDesc);
     }

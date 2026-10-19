@@ -20,7 +20,7 @@ public class SuspendResumeSyntaxTests
     public void Build_SuspendWithEvent_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that suspend with event syntax compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SuspendWithEventTest")
                 .Step<ProcessOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder))
@@ -35,8 +35,8 @@ public class SuspendResumeSyntaxTests
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.ProcessedData)
                     .From(ctx => ctx.WorkflowData.ProcessedOrder) // Access from workflow data
-                    .Output(act => act.CompletedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp)),
-            "SuspendWithEventTest");
+                    .Output(act => act.CompletedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp))
+            .Build();
 
         // Assert - Verify workflow definition was created successfully
         Assert.NotNull(definition);
@@ -50,7 +50,7 @@ public class SuspendResumeSyntaxTests
     public void Build_ResumeEventAccess_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that resume event access compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("ResumeEventAccessTest")
                 .Step<ProcessOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Suspend<ApprovalEventData>("Waiting for approval",
@@ -73,8 +73,8 @@ public class SuspendResumeSyntaxTests
                         @else.Step<CompleteOrderAsyncActivity>(setup => setup
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                             .Output(act => act.CompletedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp));
-                    }),
-            "ResumeEventAccessTest");
+                    })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -87,7 +87,7 @@ public class SuspendResumeSyntaxTests
     public void Build_NestedSuspendInConditional_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that nested suspend in conditional branches compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("NestedSuspendTest")
                 .Step<ProcessOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Suspend<ApprovalEventData>("Waiting for first approval",
@@ -112,8 +112,8 @@ public class SuspendResumeSyntaxTests
                         @else.Step<FinalizeOrderAsyncActivity>(setup => setup
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                             .Output(act => act.FinalizedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp));
-                    }),
-            "NestedSuspendTest");
+                    })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -126,7 +126,7 @@ public class SuspendResumeSyntaxTests
     public void Build_SuspendWithComplexCondition_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that suspend with complex condition compiles
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SuspendComplexConditionTest")
                 .Step<ProcessOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Suspend<ApprovalEventData>("Waiting for complex approval",
@@ -136,8 +136,8 @@ public class SuspendResumeSyntaxTests
                     setup => setup
                         .Input(evt => evt.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Step<CompleteOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)),
-            "SuspendComplexConditionTest");
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -149,7 +149,7 @@ public class SuspendResumeSyntaxTests
     public void Build_SuspendStructure_ShouldHaveCorrectStepTypes()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SuspendStructureTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Suspend<ApprovalEventData>("Waiting for approval",
@@ -157,8 +157,8 @@ public class SuspendResumeSyntaxTests
                     setup => setup
                         .Input(evt => evt.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Step<CompleteOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)),
-            "SuspendStructureTest");
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
+            .Build();
 
         // Assert - Verify step types and structure
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
@@ -176,7 +176,7 @@ public class SuspendResumeSyntaxTests
     public void Build_StepAfterSuspend_ShouldAccessPreSuspendResult()
     {
         // Arrange & Act - Test that step after suspend can access results from before suspend
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("StepAfterSuspendTest")
                 .Step<ProcessOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder))
@@ -186,8 +186,8 @@ public class SuspendResumeSyntaxTests
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.ProcessedData)
                     .From(ctx => ctx.WorkflowData.ProcessedOrder) // Access from workflow data
-                    .Output(act => act.CompletedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp)),
-            "StepAfterSuspendTest");
+                    .Output(act => act.CompletedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -200,7 +200,7 @@ public class SuspendResumeSyntaxTests
     public void Build_MultipleSuspends_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that multiple suspends compile correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("MultipleSuspendsTest")
                 .Step<ProcessOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Suspend<ApprovalEventData>("Waiting for first approval",
@@ -214,8 +214,8 @@ public class SuspendResumeSyntaxTests
                     setup => setup
                         .Input(evt => evt.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Step<CompleteOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)),
-            "MultipleSuspendsTest");
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -230,7 +230,7 @@ public class SuspendResumeSyntaxTests
     public void Build_SuspendResumeEventProperties_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that accessing resume event properties compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SuspendResumeEventPropertiesTest")
                 .Step<ProcessOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Suspend<ApprovalEventData>("Waiting for approval",
@@ -239,8 +239,8 @@ public class SuspendResumeSyntaxTests
                         .Input(evt => evt.OrderId).From(ctx => ctx.WorkflowData.OrderId))
                 .Step<CompleteOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.PreviousStep.OrderId) // Access resume event properties
-                    .Output(act => act.CompletedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp)),
-            "SuspendResumeEventPropertiesTest");
+                    .Output(act => act.CompletedAt).To(ctx => ctx.WorkflowData.CompletedTimestamp))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);

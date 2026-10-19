@@ -44,7 +44,7 @@ public sealed class GeneratorReviewTests
         var yaml = template ? Header + "  - {kind: activityRef, ref: reusable}\nactivities:\n  reusable:\n    activity: IxIFlow.Generators.Tests.Multiply\n    activityVersion: '2.0'\n    defaults: {Value: 1}\n"
             : Header + Activity + "    activityVersion: '2.0'\n";
         var options = new WorkflowSourceOptions();
-        options.ActivityVersions[typeof(Multiply).FullName!] = "1.0";
+        options.Activities[typeof(Multiply).FullName!] = new(typeof(Multiply).FullName!, "1.0");
         var error = Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(yaml, "invalid.yaml", options));
         Assert.Contains("requires version '1.0'", error.Message);
         var diagnostic = Assert.Single(WorkflowGeneratorHarness.Generate(yaml).Diagnostics);

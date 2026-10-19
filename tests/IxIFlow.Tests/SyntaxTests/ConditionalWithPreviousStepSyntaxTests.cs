@@ -14,7 +14,7 @@ public class ConditionalWithPreviousStepSyntaxTests
     public void Build_ConditionalWithPreviousStepAccess_ShouldCompileSuccessfully()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("ConditionalWithPreviousStepTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
@@ -39,8 +39,8 @@ public class ConditionalWithPreviousStepSyntaxTests
                 .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null)
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus)),
-            "ConditionalWithPreviousStepTest");
+                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -54,7 +54,7 @@ public class ConditionalWithPreviousStepSyntaxTests
     public void Build_ConditionalWithPreviousStepAccess_ShouldHaveCorrectStepStructure()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("ConditionalWithPreviousStepTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
@@ -78,8 +78,8 @@ public class ConditionalWithPreviousStepSyntaxTests
                 .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null)
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus)),
-            "ConditionalWithPreviousStepTest");
+                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Build();
 
         // Assert
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
@@ -99,7 +99,7 @@ public class ConditionalWithPreviousStepSyntaxTests
     public void Build_IfConditionAccess_ShouldCompileCorrectly()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("IfConditionAccessTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
@@ -107,8 +107,8 @@ public class ConditionalWithPreviousStepSyntaxTests
                     then => then.Step<ProcessValidOrderAsyncActivity>(setup => setup
                         .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)),
                     @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
-                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))),
-            "IfConditionAccessTest");
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -120,7 +120,7 @@ public class ConditionalWithPreviousStepSyntaxTests
     public void Build_ThenBranchPreviousStepAccess_ShouldCompileCorrectly()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("ThenBranchAccessTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
@@ -129,8 +129,8 @@ public class ConditionalWithPreviousStepSyntaxTests
                         .Input(act => act.ValidationResult)
                         .From(ctx => ctx.PreviousStep.IsValid)),
                     @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
-                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))),
-            "ThenBranchAccessTest");
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -143,7 +143,7 @@ public class ConditionalWithPreviousStepSyntaxTests
     public void Build_ElseBranchPreviousStepAccess_ShouldCompileCorrectly()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("ElseBranchAccessTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
@@ -152,8 +152,8 @@ public class ConditionalWithPreviousStepSyntaxTests
                         .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)),
                     @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
                         .Input(act => act.ValidationErrors)
-                        .From(ctx => ctx.PreviousStep.ValidationErrors))),
-            "ElseBranchAccessTest");
+                        .From(ctx => ctx.PreviousStep.ValidationErrors)))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -166,7 +166,7 @@ public class ConditionalWithPreviousStepSyntaxTests
     public void Build_StepAfterConditional_ShouldAccessStepBeforeConditional()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("StepAfterConditionalTest")
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
@@ -177,8 +177,8 @@ public class ConditionalWithPreviousStepSyntaxTests
                         .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
                 .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                     .Input(act => act.Success).From(ctx => ctx.PreviousStep.IsValid)
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)),
-            "StepAfterConditionalTest");
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);

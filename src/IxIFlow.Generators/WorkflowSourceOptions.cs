@@ -1,3 +1,5 @@
+using IxIFlow.Dsl.Compilation;
+
 namespace IxIFlow.Generators;
 
 /// <summary>Names resolved by the authoring host before translation.</summary>
@@ -9,7 +11,9 @@ public sealed class WorkflowSourceOptions
     /// Without this option, type names are not resolved, so STEP003, STEP009 and WF003 cannot be reported.
     /// </summary>
     public bool RequireResolvedTypes { get; set; }
-    public IDictionary<string, string> ActivityVersions { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    /// <summary>Resolved activity versions and their declaring package identities.</summary>
+    public IDictionary<string, ActivityDocumentContract> Activities { get; } =
+        new Dictionary<string, ActivityDocumentContract>(StringComparer.Ordinal);
     /// <summary>Package or workflow imports resolved and pinned by the publishing host.</summary>
     public ISet<string> ResolvedImports { get; } = new HashSet<string>(StringComparer.Ordinal);
     public IDictionary<string, string> Types { get; } = new Dictionary<string, string>(StringComparer.Ordinal);

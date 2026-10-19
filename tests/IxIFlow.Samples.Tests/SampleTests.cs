@@ -86,7 +86,7 @@ public sealed class SampleTests
     {
         await using var services = Services();
         var result = await Client(services).RunAsync(Restock.Definition(), new StockData { Count = initial });
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(expected, Assert.IsType<StockData>(result.WorkflowData).Count);
     }
 
@@ -95,7 +95,7 @@ public sealed class SampleTests
     {
         await using var services = Services();
         var result = await Client(services).RunAsync(FailedQuote.Definition(), new FailureData());
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var data = Assert.IsType<FailureData>(result.WorkflowData);
         Assert.Equal("Quote expired", data.Message);
         Assert.True(data.Audited);
@@ -109,7 +109,7 @@ public sealed class SampleTests
     {
         await using var services = Services();
         var result = await Client(services).RunAsync(ParallelQuotes.Definition(join), new QuoteData());
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var amount = Assert.IsType<QuoteData>(result.WorkflowData).Amount;
         if (join == "all")
             Assert.Equal(17.5m, amount);
@@ -122,7 +122,7 @@ public sealed class SampleTests
     {
         await using var services = Services();
         var result = await Client(services).RunAsync(RetryQuote.Definition(), new RetryData());
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var data = Assert.IsType<RetryData>(result.WorkflowData);
         Assert.Equal(2, data.Attempt);
         Assert.Equal("Primary unavailable", data.EarlierError);
@@ -145,7 +145,7 @@ public sealed class SampleTests
         Assert.True(early.Status == WorkflowExecutionStatus.Suspended, early.Status + ": " + early.ErrorMessage);
         time.Advance(TimeSpan.FromMinutes(1));
         var end = await client.AwaitAsync(start.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.True(end.IsSuccess, end.ErrorMessage);
+        Assert.True(end.Status == WorkflowExecutionStatus.Success, end.ErrorMessage);
         Assert.Equal(time.GetUtcNow(), Assert.IsType<ReminderData>(end.WorkflowData).SentAt);
     }
 
@@ -154,7 +154,7 @@ public sealed class SampleTests
     {
         await using var services = Services();
         var result = await Client(services).RunAsync(Contracts.ValidateQuote(), new QuoteData());
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var catalog = Contracts.Catalog();
         var activity = Assert.Single(Assert.Single(catalog.Packages).Activities, entry => entry.Key == "samples.add-fee");
         Assert.Equal(2.5m, Assert.IsType<decimal>(activity.Defaults["Fee"]));
@@ -184,7 +184,7 @@ public sealed class SampleTests
     {
         await using var services = Services();
         var result = await Client(services).RunAsync(Quote.Definition(), new QuoteData { Customer = "" });
-        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("Customer", result.ErrorMessage);
     }
 
@@ -195,7 +195,7 @@ public sealed class SampleTests
         await using var services = Services();
         var client = Client(services);
         var result = await client.RunAsync(Quote.Definition(), new QuoteData());
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var inspection = await Observability.InspectAsync(client, result.InstanceId);
         Assert.NotEmpty(inspection.Trace);
         Assert.NotNull(inspection.Snapshot);
@@ -215,7 +215,7 @@ public sealed class SampleTests
         await QuoteMessage.PublishAsync(services);
         await QuoteMessage.PublishAsync(services);
         var result = await Client(services).RunAsync(QuoteMessage.Definition(), new MessageData());
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var data = Assert.IsType<MessageData>(result.WorkflowData);
         Assert.Equal("Devis pour Ada", data.Body!.Content);
         var message = Assert.Single(sender.Messages);
@@ -230,7 +230,7 @@ public sealed class SampleTests
     public async Task GenericHostRunsAndDrains()
     {
         var result = await Hosting.RunHostedAsync();
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(12.5m, Assert.IsType<QuoteData>(result.WorkflowData).Amount);
     }
 
@@ -257,7 +257,7 @@ public sealed class SampleTests
             if (store is "memory" or "sqlite")
             {
                 var result = await Client(provider).RunAsync(Quote.Definition(), new QuoteData());
-                Assert.True(result.IsSuccess, result.ErrorMessage);
+                Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
                 Assert.Equal(12.5m, Assert.IsType<QuoteData>(result.WorkflowData).Amount);
             }
         }
@@ -315,7 +315,7 @@ public sealed class SampleTests
         }
         if (result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
             result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
         return (result.WorkflowData!, checkpoint.RootElement.GetProperty("DefinitionFingerprint").GetString()!);

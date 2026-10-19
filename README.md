@@ -81,14 +81,14 @@ var definition = Workflow.Create<QuoteData>("QuickStart")
 WorkflowDefinitionValidator.Validate(definition);
 
 var result = await client.RunAsync(definition, new QuoteData());
-if (!result.IsSuccess)
+if (result.Status != WorkflowExecutionStatus.Success)
     throw new InvalidOperationException(result.ErrorMessage);
 Console.WriteLine(((QuoteData)result.WorkflowData!).Amount); // 12.50
 ```
 
 This snippet is compiled and exercised in [ReadmeExamples.cs](tests/IxIFlow.Samples.Tests/ReadmeExamples.cs). Parameterless activities can be constructed by the executor; register activities with constructor dependencies in DI.
 
-`RunAsync` returns when the instance is idle, including at a wait or when operator resolution is needed. Check `Status`/`IsSuccess` and read the returned `WorkflowData`. `StartAsync` normally returns an instance ID after saving the start; inside a host slot it runs inline until the nested run ends. `AwaitAsync` waits for idle or terminal state. A caller's cancellation token can interrupt the current run while leaving saved state recoverable; `CancelAsync` requests durable workflow cancellation. For a queued `StartAsync`, the host owns the run and the token only stops waiting for acceptance.
+`RunAsync` returns when the instance is idle, including at a wait or when operator resolution is needed. Check `Status` and read the returned `WorkflowData`. `StartAsync` normally returns an instance ID after saving the start; inside a host slot it runs inline until the nested run ends. `AwaitAsync` waits for idle or terminal state. A caller's cancellation token can interrupt the current run while leaving saved state recoverable; `CancelAsync` requests durable workflow cancellation. For a queued `StartAsync`, the host owns the run and the token only stops waiting for acceptance.
 
 ## YAML authoring
 

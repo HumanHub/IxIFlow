@@ -21,11 +21,6 @@ public class WorkflowExecutionResult
     /// </summary>
     public EventReceipt? Event { get; set; }
     
-    /// <summary>
-    /// Legacy property for backward compatibility. Returns true only if Status is Success.
-    /// </summary>
-    public bool IsSuccess => Status == WorkflowExecutionStatus.Success;
-    
     public string? ErrorMessage { get; set; }
     public string? ErrorType { get; set; }
     public string? ErrorStackTrace { get; set; }

@@ -24,7 +24,7 @@ Persisted execution state is a validated schema-3 checkpoint JSON object. Whole 
 
 Definition/version registries are in memory for every provider. Load the matching definitions and activity code on every host that could resume work. The default template store is also in memory; workflow bundles and artifact storage remain planned.
 
-`IWorkflowVersionRegistry` already supports registration, exact lookup, latest-version lookup, version/definition listings, deactivation and default-version metadata. Latest lookup chooses the highest version even if deactivated; named invocations still require a pinned version. Re-registering a name/version rejects changed data types, descriptions, tags or runtime fingerprints. Deactivation blocks new starts while existing instances can recover.
+`IWorkflowVersionRegistry` supports registration, exact name/version lookup and deactivation. Child invocations require a registered definition; named invocations pin its version. Selecting the latest published version belongs to the planned publishing lifecycle. Re-registering a name/version rejects changed data types, descriptions, tags or runtime fingerprints. Deactivation blocks new starts while existing instances can recover.
 
 ## Memory
 

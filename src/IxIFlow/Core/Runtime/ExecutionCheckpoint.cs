@@ -1041,7 +1041,7 @@ internal sealed class SerializedValue
     /// <summary>An activity created through the container, with each saved property set as its own attributes read it.</summary>
     public static object ReadActivity(Type type, string json, IServiceProvider services)
     {
-        var activity = ActivatorUtilities.CreateInstance(services, type);
+        var activity = ActivityActivation.Create(type, services);
         var properties = ActivityProperties.GetOrAdd(type, SettableProperties);
         using var document = JsonDocument.Parse(json);
         foreach (var value in document.RootElement.EnumerateObject())

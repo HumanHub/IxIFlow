@@ -201,12 +201,6 @@ internal static class SagaScopeTransitions
             state.PreviousCompensation = SerializedValue.From(output);
     }
 
-    public static bool IsForwardActivity(WorkflowScopeCatalog scopes,
-        ContinuationState continuation, WorkflowStep activity)
-    {
-        return ForwardOwner(scopes, continuation, activity) != null;
-    }
-
     private static ScopePosition? ForwardOwner(WorkflowScopeCatalog scopes,
         ContinuationState continuation, WorkflowStep activity)
     {

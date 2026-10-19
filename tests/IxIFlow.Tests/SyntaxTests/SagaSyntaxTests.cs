@@ -19,7 +19,7 @@ public class SagaSyntaxTests
     public void Build_SagaWithCompensation_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that saga with compensation syntax compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SagaWithCompensationTest", 1)
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -34,9 +34,8 @@ public class SagaSyntaxTests
                     {
                         comp.Input(act => act.TransactionId).From(ctx => ctx.WorkflowData.TransactionId);
                     }));
-            }),
-
-            "SagaWithCompensationTest", 1);
+            })
+            .Build();
 
         // Assert - Verify workflow definition was created successfully
         Assert.NotNull(definition);
@@ -50,7 +49,7 @@ public class SagaSyntaxTests
     public void Build_SagaWithErrorHandling_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that saga with error handling compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SagaWithErrorHandlingTest", 1)
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
 
@@ -66,9 +65,8 @@ public class SagaSyntaxTests
             {
                 error.Compensate() // All successful steps
                     .ThenTerminate(); // Throws SagaTerminatedException
-            }),
-
-            "SagaWithErrorHandlingTest", 1);
+            })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -79,7 +77,7 @@ public class SagaSyntaxTests
     public void Build_SagaWithMultipleSteps_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that saga with multiple steps compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SagaWithMultipleStepsTest", 1)
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -100,9 +98,8 @@ public class SagaSyntaxTests
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Input(act => act.ShipmentId).From(ctx => ctx.PreviousStep.ReservationId) // Access previous step
                     .CompensateWith<SendCancellationAsyncActivity>());
-            }),
-
-            "SagaWithMultipleStepsTest", 1);
+            })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -113,7 +110,7 @@ public class SagaSyntaxTests
     public void Build_SagaWithTryCatch_ShouldCompileSuccessfully()
     {
         // Arrange & Act - This test verifies that saga within try/catch compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SagaWithTryCatchTest", 1)
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -132,9 +129,8 @@ public class SagaSyntaxTests
                     .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                     .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandled));
             })
-                .Catch(x => { }),
-
-            "SagaWithTryCatchTest", 1);
+                .Catch(x => { })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -146,7 +142,7 @@ public class SagaSyntaxTests
     public void Build_SagaStructure_ShouldHaveCorrectStepTypes()
     {
         // Arrange & Act
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SagaStructureTest", 1)
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
 
@@ -155,9 +151,8 @@ public class SagaSyntaxTests
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
                     .Input(act => act.TransactionId).From(ctx => ctx.PreviousStep.OrderId)
                     .CompensateWith<RefundPaymentAsyncActivity>());
-            }),
-
-            "SagaStructureTest", 1);
+            })
+            .Build();
 
         // Assert - Verify step types and structure
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
@@ -171,7 +166,7 @@ public class SagaSyntaxTests
     public void Build_SagaErrorStrategies_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that saga error strategies compile correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SagaErrorStrategiesTest", 1)
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -183,9 +178,8 @@ public class SagaSyntaxTests
                     .OnError<InsufficientFundsException>(handler => handler.ThenTerminate()) // Terminate strategy
                     .OnError(handler => handler.ThenIgnore()) // Ignore strategy
                     .CompensateWith<RefundPaymentAsyncActivity>());
-            }),
-
-            "SagaErrorStrategiesTest", 1);
+            })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -196,7 +190,7 @@ public class SagaSyntaxTests
     public void Build_SagaCompensationStrategies_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that saga compensation strategies compile correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SagaCompensationStrategiesTest", 1)
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -215,9 +209,8 @@ public class SagaSyntaxTests
             {
                 error.CompensateUpTo<ChargePaymentAsyncActivity>() // Compensate up to specific step
                     .ThenRetry(maxAttempts: 3);
-            }),
-
-            "SagaCompensationStrategiesTest", 1);
+            })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -228,7 +221,7 @@ public class SagaSyntaxTests
     public void Build_StepAfterSaga_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that step after saga can access saga results
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("StepAfterSagaTest", 1)
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -243,9 +236,8 @@ public class SagaSyntaxTests
             .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Input(act => act.Success).From(ctx => !string.IsNullOrEmpty(ctx.WorkflowData.TransactionId)) // Access saga result
-                .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus)),
-
-            "StepAfterSagaTest", 1);
+                .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -259,7 +251,7 @@ public class SagaSyntaxTests
     public void Build_SagaWithComplexCompensation_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that saga with complex compensation logic compiles
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SagaComplexCompensationTest", 1)
                 .Step<ValidateOrderAsyncActivity>(setup => setup
                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                     .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -273,9 +265,8 @@ public class SagaSyntaxTests
                         comp.Input(act => act.TransactionId).From(ctx => ctx.WorkflowData.TransactionId);
                         comp.Input(act => act.TransactionId).From(ctx => ctx.CurrentStep.TransactionId); // Access previous step in compensation
                     }));
-            }),
-
-            "SagaComplexCompensationTest", 1);
+            })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -286,7 +277,7 @@ public class SagaSyntaxTests
     public void Build_SagaWithOutcomeOnPattern_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that saga with OutcomeOn pattern compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SagaOutcomeOnTest", 1)
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -314,9 +305,8 @@ public class SagaSyntaxTests
                     .DefaultOutcome(defaultPath => defaultPath
                         .Step<LogUnknownStatusAsyncActivity>(setup => setup
                             .Input(act => act.Status).From(ctx => ctx.WorkflowData.PaymentStatus))));
-            }),
-
-            "SagaOutcomeOnTest", 1);
+            })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
@@ -330,7 +320,7 @@ public class SagaSyntaxTests
     public void Build_SagaWithSimpleOutcomeOn_ShouldCompileCorrectly()
     {
         // Arrange & Act - Test that saga with simple OutcomeOn pattern compiles correctly
-        var definition = Workflow.Build<OrderWorkflowData>(builder => builder
+        var definition = Workflow.Create<OrderWorkflowData>("SagaSimpleOutcomeOnTest", 1)
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -349,9 +339,8 @@ public class SagaSyntaxTests
                     .DefaultOutcome(invalid => invalid
                         .Step<RejectOrderAsyncActivity>(setup => setup
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))));
-            }),
-
-            "SagaSimpleOutcomeOnTest", 1);
+            })
+            .Build();
 
         // Assert
         Assert.NotNull(definition);
