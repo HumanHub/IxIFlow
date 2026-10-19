@@ -8,7 +8,7 @@ namespace IxIFlow.Core.Runtime;
 /// Control arrives through delivered messages; commits, inbox reads and child workflows
 /// are requested through <see cref="IExecutionHost"/>.
 /// </summary>
-internal sealed class WorkflowExecutor
+public sealed class WorkflowExecutor
 {
     private readonly TimeProvider _time;
     private readonly ContinuationTransitions _transitions;
@@ -18,11 +18,13 @@ internal sealed class WorkflowExecutor
 
     private readonly IExecutionHost _host;
     private readonly IWorkflowDefinitionSource _definitions;
+    private readonly string _executorName;
 
     public WorkflowExecutor(IServiceProvider services, IExecutionHost host)
     {
         _host = host;
         _definitions = (IWorkflowDefinitionSource)services.GetService(typeof(IWorkflowDefinitionSource))!;
+        _executorName = (services.GetService(typeof(HostSettings)) as HostSettings ?? HostSettings.Default).Name;
         var activityExecutor = (IActivityExecutor)services.GetService(typeof(IActivityExecutor))!;
         var time = (TimeProvider)services.GetService(typeof(TimeProvider))!;
         _time = time;
@@ -53,6 +55,7 @@ internal sealed class WorkflowExecutor
 
     public async Task<Ready> ExecuteAsync(Assign assign, CancellationToken stop)
     {
+        ExecutionContract.RequireVersion(assign.ContractVersion);
         var signals = PrepareAssignment(assign.AssignmentId);
         var session = new ExecutionSession(_host, assign.AssignmentId, assign.Instance.InstanceId,
             assign.Epoch, assign.Limits, assign.CanPark);
@@ -73,7 +76,7 @@ internal sealed class WorkflowExecutor
             // Assignment input is saved state. Never execute against a host-owned instance or data object.
             var instance = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
                 System.Text.Json.JsonSerializer.Serialize(assign.Instance))!;
-            instance.Incarnation = assign.Instance.Incarnation;
+            instance.Incarnation = assign.Incarnation;
             if (assign.Parts != null) instance.Saved(new Dictionary<string, string>(assign.Parts), instance.Revision);
             instance.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
@@ -114,15 +117,16 @@ internal sealed class WorkflowExecutor
                         preserveSavedWorkflowData: true, enforceLimit: false);
             }
             var outcome = await RunCoreAsync(definition, instance, checkpoint, data, session, signals);
-            return new(assign.AssignmentId, outcome, session.LastAcknowledgedCommit);
+            return new(assign.AssignmentId, outcome, session.LastAcknowledgedCommit, ExecutorName: _executorName);
         }
         catch (ExecutionOwnershipLostException)
         {
-            return new(assign.AssignmentId, new(AssignmentOutcomeKind.OwnershipLost), session.LastAcknowledgedCommit);
+            return new(assign.AssignmentId, new(AssignmentOutcomeKind.OwnershipLost), session.LastAcknowledgedCommit,
+                ExecutorName: _executorName);
         }
         catch (CheckpointInterruptedException error)
         {
-            return new(assign.AssignmentId, new(AssignmentOutcomeKind.Interrupted, error.Message), session.LastAcknowledgedCommit);
+            return new(assign.AssignmentId, Interrupted(error), session.LastAcknowledgedCommit, ExecutorName: _executorName);
         }
         finally
         {
@@ -131,6 +135,12 @@ internal sealed class WorkflowExecutor
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
+
+    private static AssignmentOutcome Interrupted(CheckpointInterruptedException error) =>
+        new(AssignmentOutcomeKind.Interrupted, error.Message,
+            error.InnerException?.GetType().FullName, error.InnerException?.StackTrace,
+            (error.InnerException as WorkflowEngineException)?.StepId,
+            (error.InnerException as WorkflowEngineException)?.AttemptId);
 
     private async Task<AssignmentOutcome> RunCoreAsync(
         WorkflowDefinition definition,
@@ -511,7 +521,7 @@ internal sealed class WorkflowExecutor
         catch (CheckpointInterruptedException error)
         {
             await AbandonInFlightAsync(inFlight);
-            return new(AssignmentOutcomeKind.Interrupted, error.Message);
+            return Interrupted(error);
         }
         catch (RunCancelledException)
         {

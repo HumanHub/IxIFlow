@@ -937,7 +937,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 /// <summary>
 ///     Workflow version registry interface
 /// </summary>
-public interface IWorkflowVersionRegistry
+public interface IWorkflowVersionRegistry : IWorkflowDefinitionSource
 {
     /// <summary>A snapshot of all registered definitions the host can load.</summary>
     Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync();
@@ -946,11 +946,6 @@ public interface IWorkflowVersionRegistry
     ///     Register a workflow version
     /// </summary>
     Task RegisterWorkflowAsync(WorkflowDefinition definition);
-
-    /// <summary>
-    ///     Get workflow definition by name and version
-    /// </summary>
-    Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
 
     /// <summary>
     ///     The structure hash recorded when the version was registered, or null if it is not registered.

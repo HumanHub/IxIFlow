@@ -1,28 +1,6 @@
 namespace IxIFlow.Core.Runtime;
 
-internal sealed record Assign(Guid AssignmentId, WorkflowInstance Instance,
-    IReadOnlyDictionary<string, string>? Parts, string StructureHash, long Epoch, long InboxSequence,
-    ExecutionLimits Limits, bool CanPark, IReadOnlyList<Breakpoint> Breakpoints,
-    RecoveryPreparation? Recovery = null);
-internal sealed record Breakpoint(string StepId, string? Condition = null, int? HitCount = null);
-internal sealed record RecoveryPreparation(IReadOnlyList<string> ReactivatedContinuations,
-    CancellationReason? PendingCancellation, bool ClearOperatorStop = false, bool Released = false, string? Actor = null);
-internal sealed record AcknowledgedCommit(string CommitId, long Revision);
-internal sealed record Ready(Guid AssignmentId, AssignmentOutcome Outcome, AcknowledgedCommit? LastAcknowledgedCommit);
-
-internal enum CancelKind { Workflow, Run, Ownership }
-
-// A fresh ID is allocated before acquiring the lease, including for nested runs in one slot.
-internal sealed record Cancel(Guid AssignmentId, CancelKind Kind, CancellationReason? Reason = null);
-internal sealed record Arrivals(Guid AssignmentId, long InboxSequence);
-internal sealed record Recycle(Guid AssignmentId);
-
-internal enum AssignmentOutcomeKind { Idle, Drained, Parked, OwnershipLost, RunCancelled, Interrupted }
-
-internal sealed record AssignmentOutcome(AssignmentOutcomeKind Kind,
-    string? ErrorMessage = null, string? ErrorType = null, string? ErrorStackTrace = null);
-
-/// <summary>One run's coalesced messages. Delivery only uses atomic operations and asynchronous wakes.</summary>
+/// <summary>One assignment's coalesced control messages.</summary>
 internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : IDisposable
 {
     private TaskCompletionSource _changed = NewSignal();
@@ -90,3 +68,6 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
 }
 
 internal sealed class RunCancelledException : Exception;
+
+internal sealed class ExecutionOwnershipLostException(Exception cause) : Exception(
+    "Workflow execution ownership was lost", cause);

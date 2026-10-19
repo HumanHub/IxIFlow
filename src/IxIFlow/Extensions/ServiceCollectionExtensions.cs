@@ -54,7 +54,7 @@ public static class ServiceCollectionExtensions
         
         // Workflow state and persistence
         services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
-        services.AddSingleton<IWorkflowDefinitionSource, RegisteredWorkflowDefinitionSource>();
+        services.AddSingleton<IWorkflowDefinitionSource>(provider => provider.GetRequiredService<IWorkflowVersionRegistry>());
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
         return new IxIFlowBuilder(services);
     }
