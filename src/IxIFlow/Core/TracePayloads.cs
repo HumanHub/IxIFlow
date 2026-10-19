@@ -74,4 +74,8 @@ public enum TraceClock { Host, Store }
 
 public sealed record DebugCommandTrace(string Actor, string CommandId, long PauseGeneration) : TracePayload;
 public sealed record BreakpointHitTrace(string BranchId, string StepId, string BreakpointId,
-    long HitCount, long PauseGeneration) : TracePayload;
+    long HitCount, long PauseGeneration) : TracePayload
+{
+    public string? Reason { get; init; }
+    public IReadOnlyList<BreakpointConditionDiagnostic> Diagnostics { get; init; } = [];
+}

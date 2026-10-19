@@ -48,8 +48,74 @@ var current = await operations.GetBreakpointsAsync(instanceId);
 
 A function address must resolve uniquely. A source address resolves to the first step in that file at or after the requested line, including generated YAML steps. The returned `StepId` is the resolved catalog path; `Source` retains the requested location, `VerifiedSource` answers the actual line, and `StructureHash` pins the definition used for resolution. Unresolved or ambiguous addresses and invalid hit conditions are refused before saving the change.
 
-An enabled breakpoint counts each visit before its step runs. `HitCondition` accepts `"== n"` (the nth visit), `">= n"` (the nth and subsequent visits), or `"% n"` (every nth visit), with positive `n`. Omit it to stop on every visit. Counts survive recovery, and an abandoned execution pass abandons its uncommitted counts. Updating an existing ID at the same catalog step preserves its count; removing it and later adding it resets the count. Disabled breakpoints neither count nor pause. Expression conditions are not available yet.
+An enabled breakpoint counts each visit before its step runs. `HitCondition` accepts `"== n"` (the nth visit), `">= n"` (the nth and subsequent visits), or `"% n"` (every nth visit), with positive `n`. Omit it to match every visit. Counts survive recovery, and an abandoned execution pass abandons its uncommitted counts. Updating an existing ID at the same catalog step preserves its count; removing it and later adding it resets the count. Disabled breakpoints neither count nor pause.
 
 On a hit, all branches stop admitting new work. Activities already in flight finish and commit before `Paused` is saved and the lease released. The committed stop names the branch, step and breakpoint, and the trace records `BreakpointHit`. Continue records a durable skip for that stopped occurrence before dispatch; the first pick of that branch at that step skips all breakpoints once without incrementing counts. Later loop visits and ForEach items can stop again.
 
 Changes use the same ordered, acknowledged command rows and watch as pause and continue, so a change submitted on another host reaches the running owner. The set returned by the operations read includes the latest requested configuration and committed counts; command acknowledgement marks when the owner has applied it. A configuration accepted just before an automatic breakpoint pause remains applicable after that pause. Setting breakpoints does not continue a paused instance; passing an empty list removes them. Debug-disabled hosts ignore breakpoint matching, refuse breakpoint writes, and continue to honor durable pauses.
+
+## Conditions
+
+Install `IxIFlow.Debugging` on hosts that compile conditions, and register its compiler:
+
+<!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#configure-conditions -->
+```csharp
+using IxIFlow.Debugging;
+
+services.AddIxIFlow(options => options.Debugging = true);
+services.AddBreakpointConditions();
+```
+
+The core engine has no Roslyn dependency. Debugging hosts can omit the compiler and still pause, continue, and set unconditional breakpoints.
+
+`Condition` is one C# Boolean expression. The typed `context` exposes `WorkflowData`, `PreviousStep` (the output type before the target step), `Item` and nullable `Index` (the innermost enclosing ForEach item and its zero-based position), and `UtcNow`. Outside a ForEach, `Item` is an object with a null value and `Index` is null. When there is no previous output type, `PreviousStep` is an object with a null value.
+
+<!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#conditions -->
+```csharp
+await operations.SetBreakpointsAsync(instanceId,
+[
+    new Breakpoint("large-order", "charge-card",
+        Condition: "context.WorkflowData.Total > 1000"),
+    new Breakpoint("failed-output", "after-charge",
+        Condition: "context.PreviousStep.Succeeded == false"),
+    new Breakpoint("second-item", "root/2/foreach/0", HitCondition: ">= 2",
+        Condition: "context.Index == 1 && context.Item.Amount > 100")
+], actor: "operator@example.com");
+```
+
+The count increments first, then the hit condition is checked, and only a passing hit condition evaluates the expression. A false expression continues execution. Before a conditional evaluation, the engine commits the count, occurrence, and evaluation time together. Recovery evaluates that same occurrence before taking new events or deadlines, using the saved time for `context.UtcNow`, and never counts it twice. The next ordinary commit saves the result. This adds a checkpoint for each visit that reaches a condition.
+
+The compiler caches successful and refused compilations by workflow structure hash, exact text, and input types. The input types distinguish steps with different previous outputs or items within the same workflow.
+
+### Allowed expressions
+
+The compiler checks every resolved operation and member, including lambda bodies, before emitting code. The allowlist includes:
+
+| Area | Allowed reads and operations |
+| --- | --- |
+| Inputs | Context properties; instance properties and fields reached through data, previous output, items, or lambda parameters. Property getters are part of the application's data contract; their bodies are not inspected. |
+| Expressions | Literals, arithmetic, comparisons, Boolean operators, conditional and null operators, array indexing, constant and relational patterns, casts without application-defined operators, and expression lambdas. Application-defined operators and conversions are refused. |
+| Strings | `Length`, character indexing, `IsNullOrEmpty`, `IsNullOrWhiteSpace`, `Substring`, invariant casing, trimming, and string/character overloads of `Replace`, `Concat`, `Equals`, and `Contains`. `Compare`, `Equals`, `Contains`, `StartsWith`, `EndsWith`, `IndexOf`, and `LastIndexOf` may take an explicit `StringComparison.Ordinal` or `OrdinalIgnoreCase`. |
+| Math | Numeric operators and constants, and explicitly listed `Math`/`MathF` members: absolute value, min/max, clamp, rounding, sign, powers, logarithms, roots, trigonometry, hyperbolic functions, and the deterministic floating-point helpers. |
+| Collections | Array lengths and indexers; standard `List`, `Dictionary`, and `HashSet` counts; list/dictionary indexers; dictionary keys, values and key/value pairs. |
+| Nullable | `HasValue`, `Value`, and `GetValueOrDefault`. |
+| Date/time values | Calendar components, ticks, UTC components, offsets, duration components, deterministic date arithmetic, Unix-time conversion, and minimum/maximum/epoch constants. The only source of current time is `context.UtcNow`. |
+| LINQ | In-memory arrays, lists, dictionaries, sets, and permitted LINQ pipelines, using inline expression lambdas subject to the same allowlist. |
+
+Permitted LINQ methods are `All`, `Any`, `Append`, `Average`, `Cast`, `Chunk`, `Concat`, `Count`, `DefaultIfEmpty`, `Distinct`, `ElementAt`, `ElementAtOrDefault`, `Empty`, `First`, `FirstOrDefault`, `Last`, `LastOrDefault`, `LongCount`, `Max`, `MaxBy`, `Min`, `MinBy`, `OfType`, `Order`, `OrderBy`, `OrderByDescending`, `OrderDescending`, `Prepend`, `Range`, `Repeat`, `Reverse`, `Select`, `SelectMany`, `SequenceEqual`, `Single`, `SingleOrDefault`, `Skip`, `SkipLast`, `SkipWhile`, `Sum`, `Take`, `TakeLast`, `TakeWhile`, `ThenBy`, `ThenByDescending`, `ToArray`, `ToList`, `Where`, and `Zip`. Ordering, equality-based sequence operations, and extrema require numeric comparison types; custom comparers are refused. Arbitrary `IEnumerable` implementations and deferred sequences supplied by application properties are refused, including those returned from a `SelectMany` selector.
+
+For example:
+
+<!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#pure-conditions -->
+```csharp
+Breakpoint[] examples =
+[
+    new("total", "charge-card", Condition: "context.WorkflowData.Items.Where(x => x.Amount > 0).Sum(x => x.Amount) > 1000"),
+    new("name", "charge-card", Condition: "context.WorkflowData.Name.StartsWith(\"test\", StringComparison.OrdinalIgnoreCase)"),
+    new("time", "charge-card", Condition: "context.UtcNow.Hour >= 18")
+];
+```
+
+Everything outside the allowlist is refused, including helper methods, application constructors, mutation, statement lambdas, I/O, reflection, `dynamic`, wall-clock APIs such as `DateTime.Now`, culture-dependent formatting, string interpolation, and implicit culture-sensitive string comparisons or casing. A refusal raises `BreakpointConditionException` with diagnostics containing a code, message, zero-based text span, and one-based line and column. The entire replacement is refused before saving a command, preserving the installed set.
+
+If an owning host encounters a stored condition it cannot handle, it pauses at that breakpoint. The persisted stop and `BreakpointHit` trace contain `ConditionCompilerUnavailable`, `ConditionCompilationFailed` (with diagnostics), or `ConditionEvaluationFailed` (with the exception type). Exception messages and application values are omitted. A failure takes precedence over an ordinary match at the same step. A mixed fleet therefore stops safely when a debugging host lacks the compiler. Correct or remove the condition, then continue; the stopped occurrence is skipped once as with any other breakpoint.

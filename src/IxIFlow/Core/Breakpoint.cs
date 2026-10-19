@@ -7,7 +7,7 @@ public sealed record BreakpointSource(string Path, int Line);
 
 /// <summary>A per-instance breakpoint. Hit conditions are "== n", ">= n", or "% n".</summary>
 public sealed record Breakpoint(string Id, string StepId = "", BreakpointSource? Source = null,
-    string? HitCondition = null, bool Enabled = true)
+    string? HitCondition = null, bool Enabled = true, string? Condition = null)
 {
     public string? RequestedStepId { get; init; }
     public BreakpointSource? VerifiedSource { get; init; }
@@ -79,4 +79,12 @@ public static class BreakpointResolver
 
 /// <summary>A stopped occurrence; activation and iteration distinguish repeated visits to a step.</summary>
 public sealed record BreakpointStop(string BranchId, string StepId, string BreakpointId,
-    string ActivationId, int Iteration, long HitCount, DateTime HitAtUtc);
+    string ActivationId, int Iteration, long HitCount, DateTime HitAtUtc)
+{
+    public string? Reason { get; init; }
+    public IReadOnlyList<BreakpointConditionDiagnostic> Diagnostics { get; init; } = [];
+}
+
+/// <summary>A counted occurrence awaiting condition evaluation, committed before evaluation starts.</summary>
+public sealed record BreakpointEvaluation(string BranchId, string StepId, string ActivationId,
+    int Iteration, DateTime HitAtUtc);
