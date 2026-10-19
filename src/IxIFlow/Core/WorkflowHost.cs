@@ -38,6 +38,20 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
 
     // Handlers enqueue subscription changes only. They run under the host lock to preserve ordering.
     internal event Action<string, bool>? AwaitingChanged;
+    internal event Action? FreeSlotsChanged;
+    internal Func<string, CancellationToken, Task>? AwaitSubscriptionAsync;
+
+    internal Task ConfirmSubscriptionAsync(string instanceId, CancellationToken token) =>
+        AwaitSubscriptionAsync?.Invoke(instanceId, token) ?? Task.CompletedTask;
+
+    internal void ObserveAwaiters(Action<string, bool> observer)
+    {
+        lock (_lock)
+        {
+            AwaitingChanged += observer;
+            foreach (var id in _awaiters.Keys) observer(id, true);
+        }
+    }
 
     // A new coordinator link replays this snapshot, acknowledges subscriptions, then rereads the store.
     internal IReadOnlyList<string> AwaitedInstances
@@ -348,6 +362,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             using (var waiting = CancellationTokenSource.CreateLinkedTokenSource(stop.Token, _draining.Token))
                 await _slots.WaitAsync(waiting.Token);
             slotTaken = true;
+            FreeSlotsChanged?.Invoke();
             item.MarkStarted();
             var scope = _scopes.CreateAsyncScope();
             RunContext? context = null;
@@ -387,6 +402,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
                         finally
                         {
                             _slots.Release();
+                            FreeSlotsChanged?.Invoke();
                             lock (_lock)
                                 _lingering.Remove(released.Task);
                             released.TrySetResult();
@@ -402,7 +418,10 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         finally
         {
             if (slotTaken)
+            {
                 _slots.Release();
+                FreeSlotsChanged?.Invoke();
+            }
             item.Complete();
             Finish(item);
         }

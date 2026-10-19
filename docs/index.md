@@ -18,6 +18,7 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Execution model](execution-model.md) | Commits, recovery, leases, inboxes, waits, children and parallel data |
 | [Sagas](sagas.md) | Compensation, saved faults and retry scopes |
 | [Hosting](coordinator-and-hosts.md) | The core host, slots, store selection, recovery and shutdown |
+| [Coordinators](coordinators.md) | Local matching services, host links, awaits, discovery and fallback |
 | [Stores](stores.md) | Memory, SQLite, SQL Server and PostgreSQL |
 | [Incoming webhooks](incoming-webhooks.md) | Authorized triggers, atomic idempotency, CloudEvents and public status |
 | [Outbox and publishers](outbox-and-publishers.md) | Completion delivery, custom publishers, outgoing webhooks and templates |
