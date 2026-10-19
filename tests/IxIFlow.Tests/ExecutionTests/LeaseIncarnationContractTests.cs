@@ -360,7 +360,17 @@ public sealed class LeaseIncarnationContractTests
                 Assert.Equal(commit.Incarnation, instance.Incarnation);
                 var applied = await store.CommitWorkflowInstanceAsync(commit); // The acknowledgement is lost.
                 Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1,
-                    Parked: kind == "parking"), applied);
+                    Parked: kind == "parking"), applied with { Notice = null, MadeRunnable = [] });
+                Assert.Empty(applied.MadeRunnable);
+                if (kind == "completed")
+                {
+                    Assert.NotNull(applied.Notice);
+                    Assert.Equal(id, applied.Notice.InstanceId);
+                    Assert.True(applied.Notice.Idle);
+                    Assert.False(applied.Notice.Claimable);
+                }
+                else
+                    Assert.Null(applied.Notice);
                 var receipt = await store.CommitWorkflowInstanceAsync(commit); // Resend the same immutable commit.
                 Assert.Equal(applied with { Status = WorkflowCommitStatus.AlreadyApplied }, receipt);
                 var row = (await store.GetWorkflowInstanceAsync(id))!;

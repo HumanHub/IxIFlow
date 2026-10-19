@@ -50,7 +50,10 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
         try
         {
             var first = await inbox.AppendEventAsync(Event(instance, "e1", "{\"n\":1}"));
-            Assert.Equal(new EventAppendResult(EventAppendStatus.Stored, 1, true), first);
+            Assert.Equal(new EventAppendResult(EventAppendStatus.Stored, 1, true), first with { Notice = null });
+            Assert.NotNull(first.Notice);
+            Assert.Equal(instance, first.Notice.InstanceId);
+            Assert.True(first.Notice.Claimable);
             Assert.Contains(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == instance);
 
             // The same event again is the same delivery; another event under its ID is refused.

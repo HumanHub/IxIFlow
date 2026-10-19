@@ -366,8 +366,15 @@ public sealed class StoreWideEpochContractTests
             Assert.Equal(replacement.Incarnation, unchanged.Incarnation);
             Assert.Equal(WorkflowStatus.Suspended, unchanged.Status);
             Assert.Equal(replacement.WorkflowDataJson, unchanged.WorkflowDataJson);
+            var applied = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(unchanged,
+                (await StoreTestSupport.LeaseAsync(store, unchanged.InstanceId)).Epoch, unchanged.Revision));
             Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 2),
-                await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(unchanged, (await StoreTestSupport.LeaseAsync(store, unchanged.InstanceId)).Epoch, unchanged.Revision)));
+                applied with { Notice = null, MadeRunnable = [] });
+            Assert.Empty(applied.MadeRunnable);
+            Assert.NotNull(applied.Notice);
+            Assert.Equal(id, applied.Notice.InstanceId);
+            Assert.True(applied.Notice.Idle);
+            Assert.False(applied.Notice.Claimable);
         }
         finally { await store.DeleteWorkflowInstanceAsync(id); }
     }
