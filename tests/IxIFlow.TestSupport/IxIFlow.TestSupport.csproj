@@ -30,9 +30,17 @@
     <EmbeddedResource Include="NativeFixtures/linux-x64/*.so" LogicalName="IxIFlow.TestSupport.NativeFixtures.linux-x64.%(Filename)%(Extension)" />
     <EmbeddedResource Include="NativeFixtures/osx-arm64/*.dylib" LogicalName="IxIFlow.TestSupport.NativeFixtures.osx-arm64.%(Filename)%(Extension)" />
     <Content Include="$(PkgNETStandard_Library)/build/netstandard2.0/ref/*.dll" Link="PackageDownloads/netstandard.library/2.0.3/build/netstandard2.0/ref/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <_PackageDownloadRoot Include="$(NuGetPackageFolders)" />
-    <Content Include="%(_PackageDownloadRoot.Identity)/microsoft.netcore.app.ref/8.0.0/ref/net8.0/*.dll" Link="PackageDownloads/microsoft.netcore.app.ref/8.0.0/ref/net8.0/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <!-- Wildcards cannot batch over package folders during evaluation; resolve them in a target
+       so the .NET 8 reference pack is found in the global or a fallback package folder. -->
+  <Target Name="IncludeLowerFrameworkReferences" BeforeTargets="AssignTargetPaths">
+    <ItemGroup>
+      <_PackageDownloadRoot Include="$(NuGetPackageFolders)" />
+      <_LowerFrameworkReference Include="%(_PackageDownloadRoot.Identity)/microsoft.netcore.app.ref/8.0.0/ref/net8.0/*.dll" />
+      <Content Include="@(_LowerFrameworkReference)" Link="PackageDownloads/microsoft.netcore.app.ref/8.0.0/ref/net8.0/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <Using Include="Xunit" />
