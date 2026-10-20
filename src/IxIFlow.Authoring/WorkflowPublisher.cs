@@ -89,6 +89,9 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 return Failure("PUB005", $"Declared identity '{tested.Name}' v{tested.Version} does not match draft '{draft.Name}' v{draft.Version}");
             }
             stage = WorkflowPublishStage.Publish;
+            // Without a profile every runtime and SDK assembly would be bundled privately and no host could load it.
+            if (!WorkflowSharedAssemblies.IsUsable)
+                return Failure("PUB008", "This process has no usable shared compatibility profile (a self-contained single-file process, or unreadable runtime metadata); publish from a framework-dependent process");
             var (entries, shared) = BundleAssemblies(compilation.Assembly, references.Paths);
             var manifest = new WorkflowBundleManifest(1, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,

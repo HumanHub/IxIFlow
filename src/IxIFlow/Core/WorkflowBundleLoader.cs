@@ -182,6 +182,12 @@ public static class WorkflowSharedAssemblies
 {
     private static readonly IReadOnlyDictionary<string, AssemblyName> Profile = CreateProfile();
 
+    /// <summary>
+    /// Whether this process found its runtime and SDK identities. Self-contained single-file processes
+    /// expose no runtime manifest, so they can neither publish nor host bundles.
+    /// </summary>
+    public static bool IsUsable => IsShared(typeof(WorkflowDefinition).Assembly.GetName());
+
     public static bool IsShared(AssemblyName name) => name.Name != null &&
         Profile.TryGetValue(name.Name, out var identity) &&
         (name.CultureName ?? "") == (identity.CultureName ?? "") &&
