@@ -46,9 +46,13 @@ Instance, event, wait and commit IDs, parent IDs, lease tokens, checkpoint-part 
 
 Database time governs event arrival and deadlines. A separate ownership/cancellation connection pool defaults to 16 connections so ordinary workflow traffic does not consume all lease-renewal capacity. For cancellation reads to avoid waiting behind unrelated commits, enable `READ_COMMITTED_SNAPSHOT` in the database.
 
+Execution claims skip rows held by another transaction using `UPDLOCK, READPAST, ROWLOCK`. A contended claim returns no grant so the pass can try its next candidate. Claims and candidate scans use repeatable read so `READPAST` also works with `READ_COMMITTED_SNAPSHOT` enabled. A nonblocking range probe protects claims of instance IDs that do not yet exist. Commits, deletes, termination requests and retention retain their waiting locks. Skipping does not remove or reschedule work: a later poll or wake finds the row again, and a successful claim still rechecks eligibility and reads store time after locking.
+
 ## PostgreSQL
 
 PostgreSQL has the same durable responsibilities and fenced ownership. Database time governs event arrival and deadlines. A separate ownership pool also protects lease/cancellation work.
+
+Execution claims use `pg_try_advisory_xact_lock` for the instance ID and `FOR UPDATE SKIP LOCKED` for its row. Contention on either returns no grant immediately, including while creation or deletion holds the ID lock. A later poll or wake retries the instance. Commits, deletes, termination requests and retention keep their waiting locks; eligibility, fencing and store time after locking follow the common contract.
 
 The provider implements `IRunnableWakeSource` using `LISTEN`/`NOTIFY`. Notifications prompt recovery scans when instances become runnable; they are wake-up hints, with normal polling providing the fallback after missed notifications or reconnection.
 

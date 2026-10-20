@@ -40,7 +40,7 @@ public sealed partial class SqlWorkflowStateRepository
         -- Only distinct sets and their rows participate in capability matching.
         SELECT sets.DemandSetId INTO #ClaimMatched
         FROM dbo.IxIFlowDemandSets AS sets
-        WHERE (SELECT TOP (1) 1 FROM dbo.IxIFlowWorkflowInstances AS due WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
+        WHERE (SELECT TOP (1) 1 FROM dbo.IxIFlowWorkflowInstances AS due WITH (READPAST, ROWLOCK, FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
                 WHERE due.DemandSetId = sets.DemandSetId AND due.RunnableAtUtc <= @Now
                 ORDER BY due.RunnableAtUtc, due.InstanceId) = 1
           AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDemandSetRows AS demand
@@ -55,21 +55,21 @@ public sealed partial class SqlWorkflowStateRepository
             SELECT own.*, 0 AS Affinity FROM #ClaimMatched AS matched
             CROSS APPLY (
                 SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
-                FROM dbo.IxIFlowWorkflowInstances AS instance WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetAffinity))
+                FROM dbo.IxIFlowWorkflowInstances AS instance WITH (READPAST, ROWLOCK, FORCESEEK, INDEX(IX_IxIFlowInstances_SetAffinity))
                 WHERE instance.DemandSetId = matched.DemandSetId AND instance.LastHostId = @HostId
                   AND instance.RunnableAtUtc <= @Now AND {PinMatches}
-                  AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowLeases AS lease
+                  AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowLeases AS lease WITH (READPAST, ROWLOCK)
                       WHERE lease.InstanceId = instance.InstanceId AND lease.ExpiresAtUtc > @Now)
                 ORDER BY instance.RunnableAtUtc, instance.InstanceId) AS own
             UNION ALL
             SELECT other.*, 1 AS Affinity FROM #ClaimMatched AS matched
             CROSS APPLY (
                 SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
-                FROM dbo.IxIFlowWorkflowInstances AS instance WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
+                FROM dbo.IxIFlowWorkflowInstances AS instance WITH (READPAST, ROWLOCK, FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
                 WHERE instance.DemandSetId = matched.DemandSetId
                   AND (instance.LastHostId IS NULL OR instance.LastHostId <> @HostId)
                   AND instance.RunnableAtUtc <= @Now AND {PinMatches}
-                  AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowLeases AS lease
+                  AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowLeases AS lease WITH (READPAST, ROWLOCK)
                       WHERE lease.InstanceId = instance.InstanceId AND lease.ExpiresAtUtc > @Now)
                 ORDER BY instance.RunnableAtUtc, instance.InstanceId) AS other)
         -- Under read committed, affinity can move between the two seeks.
